@@ -889,6 +889,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1472 | [ui-and-layout](decisions/ui-and-layout.md#d1472) | current |
 | D1473 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1473) | current |
 | D1474 | [ui-and-layout](decisions/ui-and-layout.md#d1474) | current |
+| D1475 | [android-drawing](decisions/android-drawing.md#d1475) | current |
 | D1500 | [runtime](decisions/runtime.md#d1500) | current |
 | D1501 | [runtime](decisions/runtime.md#d1501) | current |
 | D1502 | [runtime](decisions/runtime.md#d1502) | current |

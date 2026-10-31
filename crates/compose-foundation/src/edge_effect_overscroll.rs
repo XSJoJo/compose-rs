@@ -29,6 +29,10 @@ pub const DEFAULT_GLOW_COLOR: Color = Color::from_argb(0xff66_6666);
 /// stretch away looks wrong when little happens at first, as `FlingDestretchFactor`.
 const FLING_DESTRETCH_FACTOR: f32 = 4.0;
 
+/// How far across its axis a stretch keeps what's drawn past its bounds: what a scrolling
+/// container's clip leaves for shadows, as `MaxSupportedElevation`.
+const MAX_SUPPORTED_ELEVATION: compose_ui::Dp = compose_ui::Dp(30.0);
+
 /// Makes effects over a platform's edge effects, as `AndroidEdgeEffectOverscrollFactory`.
 pub struct EdgeEffectOverscrollFactory {
     edge_effects: Rc<dyn EdgeEffectFactory>,
@@ -157,7 +161,6 @@ struct Shared {
     owner: u32,
     made: Cell<bool>,
     glow_color: Color,
-    #[allow(dead_code)]
     glow_draw_padding: PaddingValues,
     edges: [Edge; 4],
     /// The last drawn size, as `containerSize`: empty, it takes nothing.
@@ -170,6 +173,10 @@ struct Shared {
     /// The node drawing it, as Compose's one attached `node`.
     holder: RefCell<Option<NodeHandle>>,
     invalidation_enabled: Rc<Cell<bool>>,
+    /// Drawing has opened its ops, for `draw_after` to close them.
+    drawing: Cell<bool>,
+    /// Each active frame's: the same bytes would keep a group's recording (D1475).
+    stamp: Cell<u32>,
 }
 
 impl Drop for Shared {
@@ -202,6 +209,8 @@ impl EdgeEffectOverscrollEffect {
                 scroll_cycle_in_progress: Cell::new(false),
                 holder: RefCell::new(None),
                 invalidation_enabled,
+                drawing: Cell::new(false),
+                stamp: Cell::new(0),
             }),
         }
     }
@@ -582,12 +591,38 @@ impl OverscrollNode for Shared {
                 active = active || edge.active.get();
             }
         }
-        if active {
-            self.invalidate();
+        let size = scope.size();
+        if !active || size.width == 0.0 || size.height == 0.0 {
+            return;
         }
+        self.invalidate();
+        let density = scope.density();
+        let padding = self.glow_draw_padding;
+        let (left, right) = if scope.layout_direction() == compose_ui::LayoutDirection::Rtl {
+            (padding.end, padding.start)
+        } else {
+            (padding.start, padding.end)
+        };
+        self.stamp.set(self.stamp.get().wrapping_add(1));
+        self.drawing.set(true);
+        scope.begin_edge_effects(
+            self.owner,
+            self.stamp.get(),
+            density.to_px(MAX_SUPPORTED_ELEVATION).round(),
+            [
+                density.to_px(left),
+                density.to_px(padding.top),
+                density.to_px(right),
+                density.to_px(padding.bottom),
+            ],
+        );
     }
 
-    fn draw_after(&self, _scope: &mut DrawScope<'_>) {}
+    fn draw_after(&self, scope: &mut DrawScope<'_>) {
+        if self.drawing.take() {
+            scope.end_edge_effects();
+        }
+    }
 
     fn on_pointer_event(
         &self,

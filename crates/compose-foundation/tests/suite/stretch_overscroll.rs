@@ -844,6 +844,70 @@ fn a_drag_ending_as_it_passes_a_list_s_estimated_end_goes_back() {
     }
 }
 
+// Compose: compose/foundation/foundation/src/androidMain/kotlin/androidx/compose/foundation/AndroidOverscroll.android.kt, StretchOverscrollNode.draw
+#[test]
+fn drawing_wraps_the_content_only_while_an_effect_is_active_a_new_stamp_each_frame() {
+    use compose_ui::EdgeEffect;
+    use compose_ui::platform::DrawOp;
+    let effects = FakeEdgeEffects::stretch();
+    let factory: Rc<dyn OverscrollFactory> =
+        Rc::new(EdgeEffectOverscrollFactory::new(effects.clone()));
+    let kept = Rc::new(std::cell::RefCell::new(None));
+    let into = kept.clone();
+    let mut host = compose_test::default_host();
+    host.set_content(move || {
+        let into = into.clone();
+        CompositionLocalProvider(
+            LOCAL_OVERSCROLL_FACTORY.provides(Some(factory.clone())),
+            move || {
+                let effect = remember_overscroll_effect();
+                *into.borrow_mut() = effect.clone();
+                Box!(
+                    modifier = Modifier.offset(10.dp(), 20.dp()).size(100.dp()).overscroll(effect)
+                );
+            },
+        );
+    });
+    host.frame();
+    let stamps = |host: &compose_ui::platform::UiHost| {
+        let list = host.display_list();
+        let begun: Vec<(u32, compose_ui::Rect)> = list
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                DrawOp::BeginEdgeEffects { stamp, bounds, .. } => Some((*stamp, *bounds)),
+                _ => None,
+            })
+            .collect();
+        let ended = list.ops.iter().filter(|op| matches!(op, DrawOp::EndEdgeEffects)).count();
+        assert_eq!(begun.len(), ended, "balanced");
+        begun
+    };
+    assert!(stamps(&host).is_empty(), "at rest: no op");
+    assert!(!host.needs_frame());
+    let effect: Rc<dyn OverscrollEffect> = kept.borrow().clone().expect("the effect");
+    effect.apply_to_scroll(Offset::new(0.0, 25.0), NestedScrollSource::UserInput, &mut |_| {
+        Offset::ZERO
+    });
+    assert!(host.needs_frame(), "a pull asks for a frame");
+    host.frame();
+    let first = stamps(&host);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].1, compose_ui::Rect::new(10.0, 20.0, 110.0, 120.0), "the node's bounds");
+    // Pulled and the same bytes: each frame says it's another, and asks for the next.
+    assert!(host.needs_frame());
+    host.frame();
+    let second = stamps(&host);
+    assert_ne!(first[0].0, second[0].0);
+    // Over, as the platform says at a frame's replay: the next frame draws plainly, and stops.
+    let top = effects.at(EdgeEffectSide::Top).expect("pulled");
+    top.finish();
+    assert!(host.needs_frame());
+    host.frame();
+    assert!(stamps(&host).is_empty());
+    assert!(!host.needs_frame());
+}
+
 /// Takes half of what a post-scroll offers.
 struct TakesHalf(Rc<Cell<f32>>);
 
