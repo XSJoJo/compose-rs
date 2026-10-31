@@ -8,7 +8,7 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use compose_runtime::platform::{NodeRef, with_lent_applier};
+use compose_runtime::platform::{Applier, NodeRef, with_lent_applier};
 use compose_runtime::snapshots::Snapshot;
 use compose_runtime::{
     Callback, Composition, CompositionContext, DisposableEffect, ReusableComposition, SideEffect,
@@ -20,6 +20,9 @@ use crate::layout::{
     IntrinsicMeasurable, IntrinsicMeasureScope, Measurable, MeasurePolicy, MeasureResult,
     MeasureScope,
 };
+use crate::node_chain::NodeKinds;
+use crate::node_context::NodeContext;
+use crate::traversal::{TraversableNode, TraverseDescendantsAction, TraverseKey};
 use crate::tree::{NodeId, UiTree};
 use crate::{IntSize, Modifier};
 
@@ -40,6 +43,15 @@ impl<T: PartialEq + 'static> SlotId for T {
 }
 
 type SlotKey = Rc<dyn SlotId>;
+
+/// What a slot's id is once its layout's content has gone from under it: anything can use it, as
+/// `ReusedSlotId`.
+#[derive(PartialEq)]
+struct ReusedSlotId;
+
+fn is_reused(key: &SlotKey) -> bool {
+    (**key).as_any().is::<ReusedSlotId>()
+}
 
 /// The slots a reuse policy's asked about, as `SlotIdsSet`, oldest used first.
 #[derive(Default)]
@@ -70,6 +82,18 @@ impl SlotIdsSet {
         self.ids.retain(|id| keep((**id).as_any()));
     }
 
+    /// Leaves out those `remove` says, as `removeAll`.
+    pub fn remove_all(&mut self, mut remove: impl FnMut(&dyn Any) -> bool) {
+        self.ids.retain(|id| !remove((**id).as_any()));
+    }
+
+    /// Leaves out `id`, as `remove`: whether it was there.
+    pub fn remove(&mut self, id: impl PartialEq + 'static) -> bool {
+        let before = self.ids.len();
+        self.ids.retain(|other| !other.same_slot(&id));
+        self.ids.len() != before
+    }
+
     /// Keeps the first `size`, as `trimToSize`.
     pub fn trim_to_size(&mut self, size: usize) {
         self.ids.truncate(size);
@@ -77,6 +101,13 @@ impl SlotIdsSet {
 
     fn contains(&self, id: &dyn SlotId) -> bool {
         self.ids.iter().any(|other| other.same_slot(id))
+    }
+
+    /// In order, once each: those whose content went are one id.
+    fn add(&mut self, id: SlotKey) {
+        if !self.contains(&*id) {
+            self.ids.push(id);
+        }
     }
 }
 
@@ -144,29 +175,77 @@ struct Subcompositions {
     precomposed_count: usize,
 }
 
-/// What a `SubcomposeLayout` keeps, as `SubcomposeLayoutState`: its slots, for it to reuse and for
-/// precomposing ahead of a measurement. Shared by `Rc`, so a test or a lazy list holds one.
+thread_local! {
+    /// The one policy of a state keeping nothing, as `NoOpSubcomposeSlotReusePolicy`: a layout
+    /// given a new such state has the same policy.
+    static NO_REUSE: Rc<dyn SubcomposeSlotReusePolicy> = Rc::new(NoReuse);
+}
+
+/// What's given to a `SubcomposeLayout`, as `SubcomposeLayoutState`: the policy for what's kept for
+/// reuse, and the way to precompose ahead of a measurement. Its slots are the layout's, whichever
+/// state it's given next. Shared by `Rc`, so a test or a lazy list holds one.
 pub struct SubcomposeLayoutState {
-    policy: RefCell<Rc<dyn SubcomposeSlotReusePolicy>>,
-    inner: RefCell<Subcompositions>,
+    policy: Rc<dyn SubcomposeSlotReusePolicy>,
+    layout: RefCell<Option<Rc<SubcompositionsState>>>,
 }
 
 impl SubcomposeLayoutState {
     /// With no slots kept for reuse, as `SubcomposeLayoutState()`.
     pub fn new() -> Rc<SubcomposeLayoutState> {
-        SubcomposeLayoutState::with_policy(NoReuse)
-    }
-
-    pub fn with_policy(policy: impl SubcomposeSlotReusePolicy) -> Rc<SubcomposeLayoutState> {
         Rc::new(SubcomposeLayoutState {
-            policy: RefCell::new(Rc::new(policy)),
-            inner: RefCell::default(),
+            policy: NO_REUSE.with(Rc::clone),
+            layout: RefCell::new(None),
         })
     }
 
-    /// A new policy, as the state object being replaced does: what's kept is asked of it next.
-    pub fn set_policy(&self, policy: impl SubcomposeSlotReusePolicy) {
-        *self.policy.borrow_mut() = Rc::new(policy);
+    pub fn with_policy(policy: impl SubcomposeSlotReusePolicy) -> Rc<SubcomposeLayoutState> {
+        Rc::new(SubcomposeLayoutState { policy: Rc::new(policy), layout: RefCell::new(None) })
+    }
+
+    fn layout(&self) -> Option<Rc<SubcompositionsState>> {
+        self.layout.borrow().clone()
+    }
+
+    /// `content` under `slot_id`, ahead of the measurement that will ask for it, as `precompose`.
+    /// A slot already composed in a measurement stays as it is, and the handle has nothing of it;
+    /// so with no layout there.
+    pub fn precompose(
+        &self,
+        slot_id: impl PartialEq + 'static,
+        content: Callback,
+    ) -> PrecomposedSlotHandle {
+        match self.layout() {
+            Some(layout) => layout.precompose(Rc::new(slot_id), content),
+            None => PrecomposedSlotHandle { slot: None },
+        }
+    }
+
+    /// How many are kept for reuse, for tests and tools.
+    pub fn reusable_count(&self) -> usize {
+        self.layout().map_or(0, |layout| layout.inner.borrow().reusable_count)
+    }
+}
+
+/// A layout's slots, as `LayoutNodeSubcompositionsState`: its own, as its node's, past a new state
+/// and past reuse.
+struct SubcompositionsState {
+    policy: RefCell<Rc<dyn SubcomposeSlotReusePolicy>>,
+    inner: RefCell<Subcompositions>,
+}
+
+/// What the layout's group keeps: gone, the layout's gone, and its slots with it, as `onRelease`.
+/// Not an effect, as deactivating the layout forgets those and leaves it this (D1309).
+struct LayoutKeeper(Rc<SubcompositionsState>);
+
+impl Drop for LayoutKeeper {
+    fn drop(&mut self) {
+        self.0.dispose_current_nodes();
+    }
+}
+
+impl SubcompositionsState {
+    fn new(policy: Rc<dyn SubcomposeSlotReusePolicy>) -> SubcompositionsState {
+        SubcompositionsState { policy: RefCell::new(policy), inner: RefCell::default() }
     }
 
     fn set_place(&self, context: CompositionContext, root: NodeRef) {
@@ -197,6 +276,68 @@ impl SubcomposeLayoutState {
                 tree.invalidate_measure(root);
             });
         }
+    }
+
+    /// A new policy: what's composed is out of use, for the next measurement to take or to give to
+    /// the policy, as `slotReusePolicy`'s setter.
+    fn set_policy(&self, policy: &Rc<dyn SubcomposeSlotReusePolicy>) {
+        if Rc::ptr_eq(&self.policy.borrow(), policy) {
+            return;
+        }
+        *self.policy.borrow_mut() = policy.clone();
+        self.mark_active_as_reused();
+        let (handle, root) = {
+            let inner = self.inner.borrow();
+            (inner.handle.clone(), inner.root)
+        };
+        if let (Some(handle), Some(root)) = (handle, root) {
+            handle.with_applier(|tree: &mut UiTree| {
+                let root = tree.id_of(root);
+                tree.invalidate_measure(root);
+            });
+        }
+    }
+
+    /// The layout's group forgot what it remembers: reused or deactivated, its node stays and all
+    /// its slots are out of use, as `onReuse` and `onDeactivate`; removed, its node's gone and so
+    /// will the slots be, with what's kept ([`LayoutKeeper`]).
+    fn on_layout_forgotten(&self) {
+        let (handle, root) = {
+            let inner = self.inner.borrow();
+            let (Some(handle), Some(root)) = (inner.handle.clone(), inner.root) else { return };
+            (handle, root)
+        };
+        if !handle.is_disposed() && handle.with_applier(|tree: &mut UiTree| tree.contains(root)) {
+            self.mark_active_as_reused();
+        }
+    }
+
+    /// Every slot goes out of use, deactivated, to be taken by any next measurement:
+    /// `markActiveNodesAsReused`.
+    fn mark_active_as_reused(&self) {
+        let (compositions, handle, root) = {
+            let mut inner = self.inner.borrow_mut();
+            inner.precomposed_count = 0;
+            let (Some(handle), Some(root)) = (inner.handle.clone(), inner.root) else { return };
+            if inner.reusable_count == inner.slots.len() {
+                return;
+            }
+            inner.reusable_count = inner.slots.len();
+            let mut compositions = Vec::new();
+            for slot in &mut inner.slots {
+                if std::mem::replace(&mut slot.active, false) {
+                    slot.key = Rc::new(ReusedSlotId);
+                    slot.force_reuse = true;
+                    compositions.extend(slot.composition.clone());
+                }
+            }
+            (compositions, handle, root)
+        };
+        with_the_tree(&handle, root, None, || {
+            for composition in compositions {
+                composition.deactivate();
+            }
+        });
     }
 
     /// Its slots' compositions go with it, as its `onRelease`.
@@ -237,7 +378,9 @@ impl SubcomposeLayoutState {
         let chosen =
             (start..end).rev().find(|at| inner.slots[*at].key.same_slot(&**key)).or_else(|| {
                 (start..end).rev().find(|at| {
-                    policy.are_compatible((**key).as_any(), (*inner.slots[*at].key).as_any())
+                    let reusable = &inner.slots[*at].key;
+                    is_reused(reusable)
+                        || policy.are_compatible((**key).as_any(), (**reusable).as_any())
                 })
             })?;
         let root = tree.id_of(inner.root.expect("it's measured or precomposed under a place"));
@@ -301,7 +444,9 @@ impl SubcomposeLayoutState {
             if start >= end {
                 return;
             }
-            set.ids = (start..end).map(|at| inner.slots[at].key.clone()).collect();
+            for at in start..end {
+                set.add(inner.slots[at].key.clone());
+            }
             (end, inner.handle.clone().expect("under a place"))
         };
         policy.get_slots_to_retain(&mut set);
@@ -359,18 +504,11 @@ impl SubcomposeLayoutState {
         }
     }
 
-    /// `content` under `slot_id`, ahead of the measurement that will ask for it, as `precompose`.
-    /// A slot already composed in a measurement stays as it is, and the handle has nothing of it.
-    pub fn precompose(
-        self: &Rc<Self>,
-        slot_id: impl PartialEq + 'static,
-        content: Callback,
-    ) -> PrecomposedSlotHandle {
-        let key: SlotKey = Rc::new(slot_id);
+    fn precompose(self: &Rc<Self>, key: SlotKey, content: Callback) -> PrecomposedSlotHandle {
         let (handle, root, end) = {
             let inner = self.inner.borrow();
             let Some(handle) = inner.handle.clone() else {
-                return PrecomposedSlotHandle { state: self.clone(), key: None };
+                return PrecomposedSlotHandle { slot: None };
             };
             let end = inner.slots.len();
             (handle, inner.root.expect("with its handle"), end)
@@ -380,7 +518,7 @@ impl SubcomposeLayoutState {
             end - inner.precomposed_count - inner.reusable_count
         };
         if self.slot_index(&*key, 0..active_end).is_some() {
-            return PrecomposedSlotHandle { state: self.clone(), key: None };
+            return PrecomposedSlotHandle { slot: None };
         }
         let precomposed = end - self.inner.borrow().precomposed_count;
         let at = match self.slot_index(&*key, precomposed..end) {
@@ -408,7 +546,7 @@ impl SubcomposeLayoutState {
             }),
         };
         self.compose_slot(at, content, None);
-        PrecomposedSlotHandle { state: self.clone(), key: Some(key) }
+        PrecomposedSlotHandle { slot: Some((self.clone(), key)) }
     }
 
     fn precomposed_at(&self, key: &SlotKey) -> Option<usize> {
@@ -428,11 +566,6 @@ impl SubcomposeLayoutState {
                 "compose-ui: a SubcomposeLayout's slots aren't its virtual nodes"
             );
         }
-    }
-
-    /// How many are kept for reuse, for tests and tools.
-    pub fn reusable_count(&self) -> usize {
-        self.inner.borrow().reusable_count
     }
 }
 
@@ -491,18 +624,17 @@ fn move_slot(inner: &mut Subcompositions, tree: &mut UiTree, host: NodeId, from:
 
 /// What can be done with a slot precomposed, as `PrecomposedSlotHandle`.
 pub struct PrecomposedSlotHandle {
-    state: Rc<SubcomposeLayoutState>,
-    key: Option<SlotKey>,
+    slot: Option<(Rc<SubcompositionsState>, SlotKey)>,
 }
 
 impl PrecomposedSlotHandle {
     /// Done with it: it's kept for reuse or disposed, as the policy says, unless a measurement's
     /// taken it.
     pub fn dispose(&self) {
-        let Some(key) = &self.key else { return };
-        let Some(at) = self.state.precomposed_at(key) else { return };
+        let Some((state, key)) = &self.slot else { return };
+        let Some(at) = state.precomposed_at(key) else { return };
         let (handle, root, start) = {
-            let mut inner = self.state.inner.borrow_mut();
+            let mut inner = state.inner.borrow_mut();
             inner.reusable_count += 1;
             inner.precomposed_count -= 1;
             let start = inner.slots.len() - inner.precomposed_count - inner.reusable_count;
@@ -511,17 +643,40 @@ impl PrecomposedSlotHandle {
         with_the_tree(&handle, root, None, || {
             handle.with_applier(|tree: &mut UiTree| {
                 let host = tree.id_of(root);
-                let mut inner = self.state.inner.borrow_mut();
+                let mut inner = state.inner.borrow_mut();
                 move_slot(&mut inner, tree, host, at, start);
             });
         });
-        self.state.dispose_or_reuse_from(start, None);
+        state.dispose_or_reuse_from(start, None);
     }
 
     fn node(&self) -> Option<(Rc<Composition>, NodeId)> {
-        let at = self.state.precomposed_at(self.key.as_ref()?)?;
-        let inner = self.state.inner.borrow();
+        let (state, key) = self.slot.as_ref()?;
+        let at = state.precomposed_at(key)?;
+        let inner = state.inner.borrow();
         Some((inner.handle.clone()?, inner.slots[at].node))
+    }
+
+    /// Calls `f` with each traversable node under the slot with `key`, as `traverseDescendants`:
+    /// what it returns says how to go on. A slot it doesn't hold has none.
+    pub fn traverse_descendants(
+        &self,
+        key: &'static TraverseKey,
+        mut f: impl FnMut(&mut dyn TraversableNode, &mut NodeContext<'_>) -> TraverseDescendantsAction,
+    ) {
+        let Some((handle, node)) = self.node() else { return };
+        handle.with_applier(|tree: &mut UiTree| {
+            let branches = tree.node(node).children.iter().rev().map(|c| (c.node, 0)).collect();
+            tree.walk_subtree_if(
+                branches,
+                NodeKinds::TRAVERSABLE,
+                false,
+                &mut |visited, context| match visited.as_traversable() {
+                    Some(found) if found.traverse_key() == key => f(found, context),
+                    _ => TraverseDescendantsAction::ContinueTraversal,
+                },
+            );
+        });
     }
 
     /// How many layouts it emitted, as `placeablesCount`.
@@ -561,7 +716,7 @@ impl PrecomposedSlotHandle {
 /// What a `SubcomposeLayout`'s policy measures in: a [`MeasureScope`] that also composes.
 pub struct SubcomposeMeasureScope<'s, 'a> {
     scope: &'s mut MeasureScope<'a>,
-    state: &'s Rc<SubcomposeLayoutState>,
+    state: &'s Rc<SubcompositionsState>,
 }
 
 impl<'a> std::ops::Deref for SubcomposeMeasureScope<'_, 'a> {
@@ -665,7 +820,7 @@ where
 }
 
 struct Adapter {
-    state: Rc<SubcomposeLayoutState>,
+    state: Rc<SubcompositionsState>,
     policy: Rc<dyn SubcomposeMeasurePolicy>,
 }
 
@@ -756,16 +911,23 @@ pub fn SubcomposeLayoutWithState(
     measure_policy: Rc<dyn SubcomposeMeasurePolicy>,
 ) {
     let context = remember_composition_context();
+    let keeper = compose_runtime::platform::remember_across_reuse(|| {
+        Rc::new(LayoutKeeper(Rc::new(SubcompositionsState::new(state.policy.clone()))))
+    });
+    let layout = keeper.0.clone();
     let adapter: Rc<dyn MeasurePolicy> =
-        Rc::new(Adapter { state: state.clone(), policy: measure_policy });
+        Rc::new(Adapter { state: layout.clone(), policy: measure_policy });
     let node = crate::layout::emit_layout_node(modifier, adapter, || {});
     compose_runtime::platform::current().with_applier(|tree: &mut UiTree| {
         let id = tree.id_of(node);
         tree.node_mut(id).composes_while_measured = true;
     });
-    state.set_place(context, node);
-    let told = state.clone();
-    SideEffect(move || told.force_recompose_children());
-    let released = state.clone();
-    DisposableEffect((), move |scope| scope.on_dispose(move || released.dispose_current_nodes()));
+    layout.set_place(context, node);
+    *state.layout.borrow_mut() = Some(layout.clone());
+    let told = layout.clone();
+    SideEffect(move || {
+        told.set_policy(&state.policy);
+        told.force_recompose_children();
+    });
+    DisposableEffect((), move |scope| scope.on_dispose(move || layout.on_layout_forgotten()));
 }

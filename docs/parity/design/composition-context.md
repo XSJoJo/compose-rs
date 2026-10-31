@@ -471,7 +471,9 @@ Its loop wakes by `Compositions::recomposer_wake`, set while a loop runs, pushed
 
 **The frame loop** needs nothing: `UiHost::frame` recomposes the tree, a slot invalid composing there through the shared applier per node operation, before layout; its measurement then finds it clean. A measurement's `measure_runs` and the layout's observation aren't told of what a slot reads (`without_read_observation`).
 
-**Not here.** `create_paused_precomposition`; slots of a deactivated layout kept for its reuse (they're disposed: `on_dispose`, where Compose's `onDeactivate` keeps them); `traverse_descendants`; lookahead. Lazy lists stay as they are until C8, so `LOCAL_CONSTRAINTS_HINT` stays, `BoxWithConstraints` providing it to what's inside. `movableContent_virtual_node` and the other device tests of movable content in subcompositions are for after paused precomposition.
+**The layout's slots are the layout's.** `SubcomposeLayoutState` holds a policy and finds the layout; the slots are `SubcompositionsState`, kept by the layout's group across reuse, as Compose's are its `LayoutNode`'s. So a new state takes over the same slots, with its policy (compared by identity): what's composed goes out of use for the next measurement. The group's effect forgotten with the node still there (`onDeactivate`, `onReuse`) deactivates every slot and makes it `ReusedSlotId`, for any next measurement to take; the kept value dropped (`onRelease`) disposes them, after what the group's own effects did, where Compose's goes in the node's release. Slots deactivate at once, as Compose's do with an `outOfFrameExecutor` or forced, never through `ReusableContentHost`'s active flag (D1310).
+
+**Not here.** `create_paused_precomposition`; lookahead. Lazy lists stay as they are until C8, so `LOCAL_CONSTRAINTS_HINT` stays, `BoxWithConstraints` providing it to what's inside. `movableContent_virtual_node` and the other device tests of movable content in subcompositions are for after paused precomposition.
 
 ### C5 and C7 (D1305, D1306)
 
