@@ -5,10 +5,11 @@
 //! non-Android stub.
 
 use std::any::Any;
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
 use crate::graphics::Color;
+use crate::node_context::NodeContext;
 use crate::platform_services::of_composing_tree;
 use crate::tree::UiTree;
 
@@ -87,9 +88,29 @@ impl PlatformEdgeEffects {
     }
 }
 
-/// The edge effects of the tree composing now: `None` outside a tree's composition, or without any.
+thread_local! {
+    /// The edge effects of the tree whose node reads a local, outside composition.
+    static READING: RefCell<Option<Rc<PlatformEdgeEffects>>> = const { RefCell::new(None) };
+}
+
+/// The edge effects of the tree composing now, or whose node is in
+/// [`with_platform_edge_effects`](NodeContext::with_platform_edge_effects): `None` elsewhere, or
+/// without any.
 pub fn platform_edge_effects() -> Option<Rc<PlatformEdgeEffects>> {
-    of_composing_tree(|tree| tree.edge_effects.clone()).flatten()
+    READING
+        .with(|reading| reading.borrow().clone())
+        .or_else(|| of_composing_tree(|tree| tree.edge_effects.clone()).flatten())
+}
+
+impl NodeContext<'_> {
+    /// Runs `read` with [`platform_edge_effects`] saying this tree's: a node reads a local whose
+    /// default is the composing tree's outside composition (`vertical_scroll` at a press, D1474).
+    pub fn with_platform_edge_effects<R>(&self, read: impl FnOnce() -> R) -> R {
+        READING.with(|reading| *reading.borrow_mut() = self.tree.edge_effects.clone());
+        let result = read();
+        READING.with(|reading| *reading.borrow_mut() = None);
+        result
+    }
 }
 
 impl UiTree {

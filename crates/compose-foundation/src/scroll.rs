@@ -569,7 +569,8 @@ impl ScrollNode {
         if !matches!(self.overscroll, OverscrollSource::LocalFactory) {
             return;
         }
-        let factory = context.current_value_of(&LOCAL_OVERSCROLL_FACTORY);
+        let factory = context
+            .with_platform_edge_effects(|| context.current_value_of(&LOCAL_OVERSCROLL_FACTORY));
         let same = match (&factory, &self.local_overscroll) {
             (Some(factory), Some((made_by, _))) => Rc::ptr_eq(made_by, factory),
             (None, None) => true,

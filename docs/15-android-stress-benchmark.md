@@ -1335,6 +1335,19 @@ What each one does here:
 - **The others** (`reuse_paragraph_at_same_layout_width`, `prefetch_two_ahead`, `prefetch_budget_recent_maximum`, `prefetch_at_rest`, `keep_items_behind`, `grid_lines_beyond`, `paragraph_render_nodes`) are within 3 runs' spread on these flings: each is for a case these runs have little of (a width changing, D551; a reversal's first frame, D375/D380; overruns past the vsync, D341/D381, which need more runs to count; grids, D456). `paragraph_render_nodes` no longer helps: each card is a render node of its own since D522, so a paragraph's node saves little recording.
 
 
+## Overscroll's node per scroller (D1475)
+
+Android gained stretch and glow overscroll by default (D1472 to D1475), so each scroller has one more node, and the `LazyColumn` of the feed one more per list, drawing nothing and calling no JNI until it hits an edge. Re-read with `measure.py --scenarios scroll --runs 3 --optimizations parity`, the feed's 10 flings, which never reach an end, against the base's build, in four interleaved sessions with Compose beside each (Pixel 8 Pro, Android 17, dynamic clocks, 2026-10-31, battery 31 °C and thermal status 0):
+
+| bench-rs, parity | Session | Janky (FrameTimeline) | Main p50 / p90 / p99 ms | RenderThread p50 / p90 / p99 ms | Work main / render ms |
+|---|---|---|---|---|---|
+| base | 1 | 0, 0, 0 | 1.45 / 2.40 / 3.69 | 2.45 / 3.26 / 4.54 | 455 / 635 |
+| with the node | 2 | 0, 0, 0 | 1.47 / 2.39 / 3.56 | 2.45 / 3.31 / 4.71 | 464 / 645 |
+| base | 3 | 0, 0, 0 | 1.46 / 2.32 / 3.43 | 2.46 / 3.36 / 4.74 | 457 / 644 |
+| with the node | 4 | 0, 0, 0 | 1.45 / 2.37 / 3.54 | 2.47 / 3.35 / 4.69 | 467 / 640 |
+
+No missed frame on either side. The sessions overlap within their spread: nothing here to attribute to the node. The work metric reads about 1 to 2 % higher on the main thread with it (455 and 457 against 464 and 467), at the edge of what 3 runs tell. The "base" is the main branch's build of minutes before, which may hold a commit or two past this branch's base. By retired instructions on the host, with no factory, which is what a host without edge effects gets, every scenario is within its spread; `first_frame_scrollables` +0.23 to +0.35 % is the most ([14](14-performance-opportunities.md), "Method"): nodes a little larger, and a default read per list.
+
 ## Next steps
 
 - **Pausable composition: done** (D590–D599): a request composes its item with a paused composition, as Compose's default; measured against parity before it in "Pausable composition (D598)": no change beyond the runs' spread on this device, where the idle times fit whole compositions; round 15 beside Compose agrees ("Results").

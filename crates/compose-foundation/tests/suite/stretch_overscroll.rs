@@ -647,6 +647,64 @@ fn vertical_scroll_with_the_local_factory_pulls_at_a_press() {
     assert_eq!(top.displacement(), Some(0.25));
 }
 
+// Compose: compose/foundation/foundation/src/androidMain/kotlin/androidx/compose/foundation/AndroidOverscroll.android.kt, defaultOverscrollFactory
+#[test]
+fn vertical_scroll_with_the_default_factory_reads_the_host_s_at_a_press() {
+    let effects = FakeEdgeEffects::stretch();
+    let host = compose_test::default_host();
+    let factory: Rc<dyn compose_ui::EdgeEffectFactory> = effects.clone();
+    host.with_tree(|tree| tree.set_edge_effect_factory(factory));
+    let mut ui = ComposeTestRule::with_host(host, || {
+        let state = remember_scroll_state(0);
+        Box!(modifier = Modifier.size(200.dp()).vertical_scroll(state), {
+            Box!(modifier = Modifier.size(300.dp()));
+        });
+    });
+    no_slop(&mut ui);
+    press_and_move(&mut ui, Offset::new(50.0, 50.0), Offset::new(0.0, 100.0));
+    assert_eq!(effects.at(EdgeEffectSide::Top).expect("pulled").distance_now(), 0.5);
+}
+
+// Compose: compose/foundation/foundation/src/androidMain/kotlin/androidx/compose/foundation/AndroidOverscroll.android.kt, defaultOverscrollFactory
+#[test]
+fn a_list_inside_an_item_has_the_host_s_effect_too() {
+    let effects = FakeEdgeEffects::stretch();
+    let host = compose_test::default_host();
+    let factory: Rc<dyn compose_ui::EdgeEffectFactory> = effects.clone();
+    host.with_tree(|tree| tree.set_edge_effect_factory(factory));
+    let mut ui = ComposeTestRule::with_host(host, || {
+        LazyColumn!(
+            modifier = Modifier.size(300.dp()),
+            content = |scope: LazyListScope| {
+                scope.items(1, |_| {
+                    LazyRow!(
+                        modifier = Modifier.size(300.dp()),
+                        content = |scope: LazyListScope| {
+                            scope.items(10, |_| Box!(modifier = Modifier.size(100.dp())));
+                        }
+                    );
+                });
+            }
+        );
+    });
+    no_slop(&mut ui);
+    press_and_move(&mut ui, Offset::new(50.0, 50.0), Offset::new(30.0, 0.0));
+    let left = effects.at(EdgeEffectSide::Left).expect("pulled");
+    assert!((left.distance_now() - 0.1).abs() < 1e-5);
+}
+
+/// A touch's press and move, sent as a host sends them: with the host's factory its effect asks for
+/// frames while it's pulled, so the rule's waiting for idle wouldn't end.
+fn press_and_move(ui: &mut ComposeTestRule, down: Offset, by: Offset) {
+    let touch = |event: compose_ui::PointerEvent| compose_ui::PointerEvent {
+        pointer_type: compose_ui::PointerType::Touch,
+        ..event
+    };
+    ui.host().send_pointer(touch(compose_ui::PointerEvent::press(down)));
+    ui.host().frame();
+    ui.host().send_pointer(touch(compose_ui::PointerEvent::moved(down + by, true)));
+}
+
 fn no_slop(ui: &mut ComposeTestRule) {
     ui.host().set_view_configuration(Some(compose_ui::ViewConfiguration {
         touch_slop: 0.0,
@@ -906,6 +964,63 @@ fn drawing_wraps_the_content_only_while_an_effect_is_active_a_new_stamp_each_fra
     host.frame();
     assert!(stamps(&host).is_empty());
     assert!(!host.needs_frame());
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/OverscrollTest.kt, modifierDoesNotAddAlreadyAttachedNode
+#[test]
+fn an_effect_at_two_places_is_written_once() {
+    use compose_ui::platform::DrawOp;
+    let effects = FakeEdgeEffects::stretch();
+    let factory: Rc<dyn OverscrollFactory> =
+        Rc::new(EdgeEffectOverscrollFactory::new(effects.clone()));
+    let kept = Rc::new(std::cell::RefCell::new(None));
+    let into = kept.clone();
+    let mut host = compose_test::default_host();
+    host.set_content(move || {
+        let into = into.clone();
+        CompositionLocalProvider(
+            LOCAL_OVERSCROLL_FACTORY.provides(Some(factory.clone())),
+            move || {
+                let effect = remember_overscroll_effect();
+                *into.borrow_mut() = effect.clone();
+                Box!(modifier = Modifier.size(100.dp()).overscroll(effect.clone()), {
+                    Box!(modifier = Modifier.size(50.dp()).overscroll(effect.clone()));
+                });
+            },
+        );
+    });
+    host.frame();
+    let effect: Rc<dyn OverscrollEffect> = kept.borrow().clone().expect("the effect");
+    effect.apply_to_scroll(Offset::new(0.0, 25.0), NestedScrollSource::UserInput, &mut |_| {
+        Offset::ZERO
+    });
+    host.frame();
+    let list = host.display_list();
+    let begun = list.ops.iter().filter(|op| matches!(op, DrawOp::BeginEdgeEffects { .. })).count();
+    assert_eq!(begun, 1);
+}
+
+// Compose: compose/foundation/foundation/src/androidMain/kotlin/androidx/compose/foundation/AndroidOverscroll.android.kt, FlingDestretchFactor
+#[test]
+fn a_fling_relaxes_a_stretch_four_times_as_fast_as_a_drag() {
+    for (source, left) in
+        [(NestedScrollSource::UserInput, 0.36), (NestedScrollSource::SideEffect, 0.24)]
+    {
+        let effects = FakeEdgeEffects::stretch();
+        let (_ui, effect) = with_effect(&effects, |effect| {
+            Box!(modifier = Modifier.size(250.dp()).overscroll(effect));
+        });
+        let mut nothing = |_| Offset::ZERO;
+        effect.apply_to_scroll(
+            Offset::new(0.0, 100.0),
+            NestedScrollSource::UserInput,
+            &mut nothing,
+        );
+        let consumed = effect.apply_to_scroll(Offset::new(0.0, -10.0), source, &mut nothing);
+        assert_eq!(consumed, Offset::new(0.0, -10.0));
+        let top = effects.at(EdgeEffectSide::Top).expect("pulled");
+        assert!((top.distance_now() - left).abs() < 1e-5, "{}", top.distance_now());
+    }
 }
 
 /// Takes half of what a post-scroll offers.

@@ -1,6 +1,6 @@
 # Stretch and glow overscroll on Android
 
-Design note, nothing built. Written from Compose's `AndroidOverscroll.android.kt` (1,078 lines) and the replayer, with nothing run. AOSP's `EdgeEffect` and HWUI aren't in androidx-main, so statements about them come from Compose's code and comments and are unverified. Line counts are estimates.
+Design note, written before anything was built, from Compose's `AndroidOverscroll.android.kt` and the replayer; statements about AOSP's `EdgeEffect` and HWUI came from Compose's code and comments. **Built since** (D1472 to D1475) and checked on a phone, a Pixel 8 Pro at API 37: the end of this note says what held and what changed.
 
 ## Decision
 
@@ -49,3 +49,17 @@ The factory comes from the host. `LOCAL_OVERSCROLL_FACTORY` stays `None` until a
 1. Trait, event port, fake, `StretchOverscrollIntegrationTest` on the host, the list-end fix. About 800 lines including tests. No Android.
 2. JNI, ops, replayer, stretch and glow, default factory. About 500 lines. `assembleRelease` proves it builds, not that it looks right.
 3. Phone check by the user. Then ledger: `rememberPlatformOverscrollFactory`, the rest of `OverscrollTest`.
+
+## What held
+
+Written after building it.
+
+- **Negation effects:** the decision holds. A list pulled, held, pulled back part of the way and released, at either end, or flung into its start, ends with its rows identical to the screen before it, no stretch left on the render node. So a fresh node per frame wasn't tried.
+- **The trait** went to `compose-ui`, not `compose-foundation`: `compose-android` and `compose-test` don't depend on foundation. It gained `on_release_with_opposite_delta` for the glow. `is_finished` on Android counts a stretch still to be taken back, which the op has to be written for.
+- **`stamp`** isn't what makes a new version: a node's draw being invalidated does, as for any group. It's kept in the op, for what compares bytes.
+- **Sizes** come with the op rather than from the canvas, where Compose reads `canvas.width`: a group's recording canvas here is the window's size.
+- **Risk 1** stayed small (D1473): `Overshoot` carries the effect, and a late pull is `apply_to_scroll` of a scroll consuming nothing. It found one case the note didn't: a drag ending in the batch that passes the end has had its fling by then, and stayed stretched.
+- **Risk 3** (one effect at two places): the first node to attach draws it (D1474).
+- **The default at a press:** `vertical_scroll` reads the factory outside composition, where a local's default can't read the composing tree; it does through `NodeContext::with_platform_edge_effects`.
+- **Not seen:** glow on API 29 or 30, no such device being at hand; it's Compose's code path, built and linted, tested only on the fake.
+
