@@ -61,5 +61,6 @@ Written after building it.
 - **Risk 1** stayed small (D1473): `Overshoot` carries the effect, and a late pull is `apply_to_scroll` of a scroll consuming nothing. It found one case the note didn't: a drag ending in the batch that passes the end has had its fling by then, and stayed stretched.
 - **Risk 3** (one effect at two places): the first node to attach draws it (D1474).
 - **The default at a press:** `vertical_scroll` reads the factory outside composition, where a local's default can't read the composing tree; it does through `NodeContext::with_platform_edge_effects`.
+- **"A scroller that never hits an edge makes no JNI call"** has an exception, Compose's too: a release at 1 px/s or less doesn't fling, so its velocity is left over and the effect absorbs it mid-list, making the effect and calling it.
 - **Not seen:** glow on API 29 or 30, no such device being at hand; it's Compose's code path, built and linted, tested only on the fake.
 

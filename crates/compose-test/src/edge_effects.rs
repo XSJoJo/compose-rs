@@ -171,7 +171,8 @@ impl FakeEdgeEffects {
         self.made.borrow().iter().rev().find(|made| made.1 == side).map(|made| made.2.clone())
     }
 
-    /// How many effects were made: none until a scroller hits an edge.
+    /// How many effects were made: none until a scroller hits an edge, or is let go at 1 px/s or
+    /// less, whose velocity is left to the effect.
     pub fn made(&self) -> usize {
         self.made.borrow().len()
     }

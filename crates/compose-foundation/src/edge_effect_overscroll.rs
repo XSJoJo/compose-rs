@@ -4,7 +4,8 @@
 //!
 //! An effect is made when its side is first pulled, and only an active effect is asked anything: a
 //! scroller that never hits an edge calls the platform never, and a normal scroll's delta costs a
-//! few flags.
+//! few flags. The one exception is Compose's too: a release at 1 px/s or less doesn't fling, its
+//! velocity is left over, and the effect absorbs it, anywhere in the list.
 
 use std::any::Any;
 use std::cell::{Cell, OnceCell, RefCell};

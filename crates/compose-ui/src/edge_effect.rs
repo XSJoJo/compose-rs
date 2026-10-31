@@ -106,10 +106,17 @@ impl NodeContext<'_> {
     /// Runs `read` with [`platform_edge_effects`] saying this tree's: a node reads a local whose
     /// default is the composing tree's outside composition (`vertical_scroll` at a press, D1474).
     pub fn with_platform_edge_effects<R>(&self, read: impl FnOnce() -> R) -> R {
+        /// Clears it however `read` ends: a panic caught above mustn't leave a tree's factory for
+        /// the next composition to read.
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                READING.with(|reading| *reading.borrow_mut() = None);
+            }
+        }
         READING.with(|reading| *reading.borrow_mut() = self.tree.edge_effects.clone());
-        let result = read();
-        READING.with(|reading| *reading.borrow_mut() = None);
-        result
+        let _reset = Reset;
+        read()
     }
 }
 
