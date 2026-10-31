@@ -6,6 +6,7 @@
 
 use std::any::Any;
 use std::cell::RefCell;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::rc::Rc;
 
 use compose_runtime::platform::{Applier, NodeRef, with_lent_applier};
@@ -53,7 +54,7 @@ fn is_reused(key: &SlotKey) -> bool {
     (**key).as_any().is::<ReusedSlotId>()
 }
 
-/// The slots a reuse policy's asked about, as `SlotIdsSet`, oldest used first.
+/// The slots a reuse policy's asked about, as `SlotIdsSet`, the last used first.
 #[derive(Default)]
 pub struct SlotIdsSet {
     ids: Vec<SlotKey>,
@@ -713,24 +714,30 @@ fn with_the_tree<R>(
         Some(tree) => {
             let host = tree.id_of(root);
             let ignoring = tree.ignoring_remeasure.replace(host);
-            let result = Snapshot::without_read_observation(|| with_lent_applier(handle, tree, f));
+            // Restored past a panic in the pass too: the layout has to hear what asks it next.
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                Snapshot::without_read_observation(|| with_lent_applier(handle, tree, f))
+            }));
             tree.ignoring_remeasure = ignoring;
-            result
+            result.unwrap_or_else(|panic| resume_unwind(panic))
         }
         None => {
             let ignoring = handle.with_applier(|tree: &mut UiTree| {
                 let host = tree.id_of(root);
                 tree.ignoring_remeasure.replace(host)
             });
-            let result = Snapshot::without_read_observation(f);
+            let result = catch_unwind(AssertUnwindSafe(|| Snapshot::without_read_observation(f)));
             handle.with_applier(|tree: &mut UiTree| tree.ignoring_remeasure = ignoring);
-            result
+            result.unwrap_or_else(|panic| resume_unwind(panic))
         }
     }
 }
 
+/// A new slot at `at`, which asks no measurement of `host`, as `createNodeAt`.
 fn add_slot(inner: &mut Subcompositions, tree: &mut UiTree, host: NodeId, key: SlotKey, at: usize) {
+    let ignoring = tree.ignoring_remeasure.replace(host);
     let node = tree.add_virtual_node(host, at);
+    tree.ignoring_remeasure = ignoring;
     inner.slots.insert(
         at,
         Slot {
@@ -746,13 +753,16 @@ fn add_slot(inner: &mut Subcompositions, tree: &mut UiTree, host: NodeId, key: S
     );
 }
 
+/// A slot moved, which asks no measurement of `host`, as `move`.
 fn move_slot(inner: &mut Subcompositions, tree: &mut UiTree, host: NodeId, from: usize, to: usize) {
     if from == to {
         return;
     }
     let slot = inner.slots.remove(from);
     inner.slots.insert(to, slot);
+    let ignoring = tree.ignoring_remeasure.replace(host);
     tree.move_virtual_node(host, from, to);
+    tree.ignoring_remeasure = ignoring;
 }
 
 /// A slot being precomposed in steps, as `PausedPrecomposition`.

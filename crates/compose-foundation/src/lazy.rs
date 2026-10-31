@@ -2257,7 +2257,7 @@ fn LazyItems(
             .with_applier(|tree: &mut compose_ui::platform::UiTree| tree.invalidate_measure(list));
     }
     *inner.children.borrow_mut() = indices.clone();
-    // The items' constraints, for those composing for theirs (`BoxWithConstraints`).
+    // The items' constraints, for what's composed in them that guesses at its own (a nested list).
     let hint = inner.item_constraints.get().or(fallback);
     drop(inner);
     let composed = {

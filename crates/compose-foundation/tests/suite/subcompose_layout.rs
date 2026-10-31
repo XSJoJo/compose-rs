@@ -14,9 +14,9 @@ use compose_runtime::*;
 use compose_test::*;
 use compose_ui::subcompose::*;
 use compose_ui::{
-    Constraints, IntSize, Layout, Measurable, ModifierNode, ModifierNodeElement, Placeable,
-    Remeasurement, RemeasurementModifier, TraversableNode, TraverseDescendantsAction, TraverseKey,
-    UnitExt, measure_policy,
+    Constraints, FocusRequester, IntSize, Layout, Measurable, ModifierNode, ModifierNodeElement,
+    NodeContext, Placeable, Remeasurement, RemeasurementModifier, TraversableNode,
+    TraverseDescendantsAction, TraverseKey, UnitExt, measure_policy,
 };
 
 fn sized(tag: String, size: i32) -> impl Fn() + 'static {
@@ -563,8 +563,7 @@ fn a_slot_can_hold_a_subcompose_layout() {
 }
 
 /// An effect in a slot's pass runs in the measurement that lent the tree: a coordinates query there
-/// finds it busy, with no panic (D1211), where Compose's are not attached yet either; the frame
-/// after, it answers.
+/// finds it busy, with no panic (D1211); the frame after, it answers.
 #[test]
 fn a_query_in_a_slots_effect_finds_the_tree_busy() {
     let coordinates: Rc<RefCell<Option<compose_ui::LayoutCoordinates>>> = Rc::default();
@@ -844,7 +843,7 @@ fn slots_are_in_the_tree_in_the_order_they_compose() {
     in_order(tops(&ui), 3);
 }
 
-// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precomposeOverReusedNodeWithUpdatedModifierIsNotCausingEarlyRemeasureForDeactivatedNode
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precomposeOverReusedNodeWithUpdatedModifierIsNotCausingEarlyRemeasureForIt
 #[test]
 fn precomposing_over_what_was_kept_measures_nothing_again() {
     let state = SubcomposeLayoutState::with_policy(subcompose_slot_reuse_policy(2));
@@ -1911,4 +1910,541 @@ fn a_deactivated_layout_s_paused_slot_is_cancelled() {
     assert!(composed.get());
     handle.dispose();
     assert!(!composed.get());
+}
+
+// ---- A layout reused, a new state, a panic, a reorder ------------------------------------------
+
+/// A `BoxWithConstraints` holding a tagged box.
+fn box_with_constraints(tag: String) {
+    BoxWithConstraints!(move |_| {
+        Box!(modifier = Modifier.size((10.dp(), 10.dp())).test_tag(tag.clone()));
+    });
+}
+
+/// Not a test of Compose's: an item reused on a scroll holds a `BoxWithConstraints`.
+#[test]
+fn a_lazy_item_s_box_with_constraints_is_reused_on_a_scroll() {
+    let state = LazyListState::new(0, 0);
+    let handle = *state;
+    let mut ui = compose_test(move || {
+        LazyColumn!(
+            modifier = Modifier.size((100.dp(), 100.dp())),
+            state = handle,
+            |scope: LazyListScope| {
+                scope.items(100, |index| box_with_constraints(index.to_string()));
+            }
+        );
+    });
+    ui.wait_for_idle();
+    ui.on_node_with_tag("0").assert_exists();
+    handle.request_scroll_to_item(20, 0);
+    ui.wait_for_idle();
+    ui.on_node_with_tag("20").assert_exists();
+    ui.on_node_with_tag("0").assert_does_not_exist();
+    handle.request_scroll_to_item(0, 0);
+    ui.wait_for_idle();
+    ui.on_node_with_tag("0").assert_exists();
+}
+
+/// Not a test of Compose's: `ReusableContent` with its key changing around one.
+#[test]
+fn a_box_with_constraints_is_reused_by_a_new_key() {
+    let key = mutable_state_of(0);
+    let k = key.handle();
+    let mut ui = compose_test(move || {
+        let at = k.get();
+        ReusableContent(at, move || box_with_constraints(at.to_string()));
+    });
+    ui.wait_for_idle();
+    for at in 1..4 {
+        key.set(at);
+        ui.wait_for_idle();
+        ui.on_node_with_tag(&at.to_string()).assert_exists();
+        ui.on_node_with_tag(&(at - 1).to_string()).assert_does_not_exist();
+    }
+}
+
+/// Not a test of Compose's: `ReusableContentHost` toggled around one.
+#[test]
+fn a_box_with_constraints_comes_back_with_its_host() {
+    let active = mutable_state_of(true);
+    let a = active.handle();
+    let mut ui = compose_test(move || {
+        ReusableContentHost(a.get(), || box_with_constraints("it".into()));
+    });
+    ui.wait_for_idle();
+    for _ in 0..3 {
+        ui.on_node_with_tag("it").assert_exists();
+        active.set(false);
+        ui.wait_for_idle();
+        ui.on_node_with_tag("it").assert_does_not_exist();
+        active.set(true);
+        ui.wait_for_idle();
+    }
+    ui.on_node_with_tag("it").assert_exists();
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, reusingWithNestedSubcomposeLayoutInside
+#[test]
+fn a_nested_layout_in_a_retained_slot_is_reused() {
+    let slot_state = mutable_state_of(0);
+    let state = SubcomposeLayoutState::with_policy(subcompose_slot_reuse_policy(1));
+    let s = slot_state.handle();
+    let inner = Callback::new(|| {
+        Box!(modifier = Modifier.size((10.dp(), 10.dp())));
+    });
+    let policy = subcompose_policy(move |scope, constraints| {
+        let slot = s.get();
+        let inner = inner.clone();
+        let content = Callback::new(move || {
+            let inner = inner.clone();
+            ReusableContent(slot, move || {
+                let inner = inner.clone();
+                Box!(|_| {
+                    let inner = inner.clone();
+                    SubcomposeLayout!(
+                        modifier = Modifier.test_tag(slot.to_string()),
+                        measure_policy = subcompose_policy(move |scope, constraints| {
+                            let placeable = measure_slot(scope, 0, constraints, inner.clone());
+                            scope.place(&placeable, 0, 0);
+                            scope.layout(placeable.width, placeable.height)
+                        })
+                    );
+                });
+            });
+        });
+        let child = measure_slot(scope, slot, constraints, content);
+        scope.place(&child, 0, 0);
+        scope.layout(child.width, child.height)
+    });
+    let mut ui = compose_test(move || {
+        SubcomposeLayoutWithState!(state.clone(), measure_policy = policy.clone())
+    });
+    ui.wait_for_idle();
+    slot_state.set(1);
+    ui.wait_for_idle();
+    slot_state.set(2);
+    ui.wait_for_idle();
+    ui.on_node_with_tag("2").assert_exists();
+    ui.on_node_with_tag("1").assert_does_not_exist();
+    ui.on_node_with_tag("0").assert_does_not_exist();
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, updatingStateWorks
+#[test]
+fn a_new_state_object_takes_over_the_layout() {
+    let tag_state = mutable_state_of("box1".to_string());
+    let t = tag_state.handle();
+    let mut ui = compose_test(move || {
+        let tag = t.get();
+        let state = remember_keyed(tag.clone(), SubcomposeLayoutState::new);
+        let content = Callback::new(sized(tag, 10));
+        let policy = stack_policy(move |scope| vec![scope.subcompose((), content.clone())]);
+        SubcomposeLayoutWithState!(state, measure_policy = policy);
+    });
+    ui.wait_for_idle();
+    ui.on_node_with_tag("box1").assert_exists();
+    tag_state.set("box2".to_string());
+    ui.wait_for_idle();
+    ui.on_node_with_tag("box2").assert_exists();
+    ui.on_node_with_tag("box1").assert_does_not_exist();
+}
+
+/// The scene of the two tests that change the state object: a slot of `slot_state`, its one box
+/// counting its measurements, under the state `layout_state` picks.
+fn state_change_scene(
+    measures: &Rc<Cell<i32>>,
+    slot_state: MutableState<i32>,
+    layout_state: MutableState<usize>,
+) -> ComposeTestRule {
+    let states = [
+        SubcomposeLayoutState::with_policy(subcompose_slot_reuse_policy(1)),
+        SubcomposeLayoutState::with_policy(subcompose_slot_reuse_policy(1)),
+    ];
+    let m = measures.clone();
+    let counting = Modifier.layout(move |scope, _, _| {
+        m.set(m.get() + 1);
+        scope.layout(10, 10)
+    });
+    compose_test(move || {
+        let slot = slot_state.get();
+        let counting = counting.clone();
+        let policy = subcompose_policy(move |scope, _| {
+            let counting = counting.clone();
+            let content = Callback::new(move || {
+                let counting = counting.clone();
+                ReusableContent(slot, move || {
+                    Box!(modifier = counting.clone());
+                });
+            });
+            let placeable = measure_slot(scope, slot, Constraints::new(0, 100, 0, 100), content);
+            scope.place(&placeable, 0, 0);
+            scope.layout(placeable.width, placeable.height)
+        });
+        SubcomposeLayoutWithState!(states[layout_state.get()].clone(), measure_policy = policy);
+    })
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, nodesKeptAsReusableAreReusedWhenTheStateObjectChanges
+#[test]
+fn what_was_kept_is_reused_under_a_new_state_object() {
+    let (slot_state, layout_state) = (mutable_state_of(0), mutable_state_of(0));
+    let measures = Rc::new(Cell::new(0));
+    let mut ui = state_change_scene(&measures, slot_state.handle(), layout_state.handle());
+    ui.wait_for_idle();
+    slot_state.set(1); // Slot 0 is kept for reuse.
+    ui.wait_for_idle();
+    assert_eq!(measures.get(), 2);
+    measures.set(0);
+    slot_state.set(2); // Slot 0 should be reused.
+    layout_state.set(1);
+    ui.wait_for_idle();
+    assert_eq!(measures.get(), 0, "reused, its modifier the same");
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, previouslyActiveNodesAreReusedWhenTheStateObjectChanges
+#[test]
+fn what_was_active_is_reused_under_a_new_state_object() {
+    let (slot_state, layout_state) = (mutable_state_of(0), mutable_state_of(0));
+    let measures = Rc::new(Cell::new(0));
+    let mut ui = state_change_scene(&measures, slot_state.handle(), layout_state.handle());
+    ui.wait_for_idle();
+    assert_eq!(measures.get(), 1);
+    measures.set(0);
+    slot_state.set(1);
+    layout_state.set(1);
+    ui.wait_for_idle();
+    assert_eq!(measures.get(), 0, "reused, its modifier the same");
+}
+
+/// A child wanted by `need`, under the state `which` picks of two with the policies given.
+fn child_scene(
+    policies: [usize; 2],
+    need: MutableState<bool>,
+    which: MutableState<usize>,
+) -> (ComposeTestRule, [Rc<SubcomposeLayoutState>; 2]) {
+    let states =
+        policies.map(|max| SubcomposeLayoutState::with_policy(subcompose_slot_reuse_policy(max)));
+    let content = Callback::new(|| {
+        Box!(modifier = Modifier.test_tag("child"));
+    });
+    let policy = stack_policy(move |scope| {
+        if need.get() { vec![scope.subcompose((), content.clone())] } else { Vec::new() }
+    });
+    let given = states.clone();
+    let ui = compose_test(move || {
+        SubcomposeLayoutWithState!(given[which.get()].clone(), measure_policy = policy.clone())
+    });
+    (ui, states)
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, reusableNodeIsKeptAsReusableAfterStateUpdate
+#[test]
+fn what_s_kept_stays_kept_under_a_new_state_object() {
+    let (need, which) = (mutable_state_of(true), mutable_state_of(0));
+    let (mut ui, states) = child_scene([1, 1], need.handle(), which.handle());
+    ui.wait_for_idle();
+    ui.on_node_with_tag("child").assert_exists();
+    need.set(false);
+    ui.wait_for_idle();
+    assert_eq!(states[0].reusable_count(), 1);
+    which.set(1);
+    ui.wait_for_idle();
+    assert_eq!(states[1].reusable_count(), 1);
+    ui.on_node_with_tag("child").assert_does_not_exist();
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, passingSmallerMaxSlotsToRetainForReuse
+#[test]
+fn a_new_state_object_keeping_less_disposes_what_s_kept() {
+    let (need, which) = (mutable_state_of(true), mutable_state_of(0));
+    let (mut ui, states) = child_scene([1, 0], need.handle(), which.handle());
+    ui.wait_for_idle();
+    need.set(false);
+    ui.wait_for_idle();
+    assert_eq!(states[0].reusable_count(), 1);
+    which.set(1);
+    ui.wait_for_idle();
+    assert_eq!(states[1].reusable_count(), 0);
+}
+
+/// Not a test of Compose's: a panic in a slot's pass leaves the layout hearing what asks it next.
+#[test]
+fn the_layout_responds_after_a_slot_panicked() {
+    let tag = mutable_state_of(0);
+    let t = tag.handle();
+    let policy = stack_policy(move |scope| {
+        let tag = t.get();
+        let content = Callback::new(move || {
+            assert_ne!(tag, 1, "the panicking slot");
+            sized(tag.to_string(), 10)();
+        });
+        vec![scope.subcompose(tag, content)]
+    });
+    let mut ui = compose_test(move || SubcomposeLayout!(measure_policy = policy.clone()));
+    ui.wait_for_idle();
+    ui.on_node_with_tag("0").assert_exists();
+    tag.set(1);
+    let panicked =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ui.wait_for_idle())).is_err();
+    assert!(panicked);
+    tag.set(2);
+    ui.wait_for_idle();
+    ui.on_node_with_tag("2").assert_exists();
+}
+
+/// Not a test of Compose's: a reorder in a measurement leaves nothing to measure again, as its
+/// `move` ignores what it asks.
+#[test]
+fn a_reorder_leaves_the_layout_clean() {
+    let (first_up, size) = (mutable_state_of(true), mutable_state_of(10));
+    let runs = Rc::new(Cell::new(0));
+    let (f, r) = (first_up.handle(), runs.clone());
+    let (a, b) = (Callback::new(sized("a".into(), 10)), Callback::new(sized("b".into(), 10)));
+    let policy = stack_policy(move |scope| {
+        r.set(r.get() + 1);
+        if f.get() {
+            vec![scope.subcompose("a", a.clone()), scope.subcompose("b", b.clone())]
+        } else {
+            vec![scope.subcompose("b", b.clone()), scope.subcompose("a", a.clone())]
+        }
+    });
+    let s = size.handle();
+    let mut ui = compose_test(move || {
+        let policy = policy.clone();
+        Column!(|_| {
+            SubcomposeLayout!(measure_policy = policy.clone());
+            sized("sibling".into(), s.get())();
+        });
+    });
+    ui.wait_for_idle();
+    first_up.set(false);
+    ui.wait_for_idle();
+    assert_eq!(runs.get(), 2);
+    size.set(20);
+    ui.wait_for_idle();
+    assert_eq!(runs.get(), 2, "a sibling's size is nothing to it");
+}
+
+/// The tags of the tree's layouts under the layout, top to bottom as placed, read by the order of
+/// `dump_tree`: their tops go down with the tree's order.
+fn children_tops(ui: &ComposeTestRule) -> Vec<i32> {
+    ui.dump_tree()
+        .lines()
+        .filter(|line| line.starts_with("    ") && !line.starts_with("     "))
+        .map(|line| {
+            let position = &line[line.find('[').expect("a position") + 1..];
+            let (_, y) = position.split_once(',').expect("x,y");
+            y.split_whitespace().next().expect("y").parse::<i32>().expect("a number")
+        })
+        .collect()
+}
+
+/// Not a test of Compose's: `move_nodes` in the second slot moves its nodes, past the first's.
+#[test]
+fn a_move_in_a_later_slot_stays_in_its_slot() {
+    let swapped = mutable_state_of(false);
+    let s = swapped.handle();
+    let first = Callback::new(|| {
+        sized("a".into(), 1)();
+        sized("b".into(), 2)();
+    });
+    let second = Callback::new(move || {
+        let order = if s.get() { [4, 3] } else { [3, 4] };
+        for size in order {
+            key(size, move || sized(size.to_string(), size)());
+        }
+    });
+    // Each measured and placed in the tree's order, so the tops say what the order is.
+    let policy = stack_policy(move |scope| {
+        vec![scope.subcompose(1, first.clone()), scope.subcompose(2, second.clone())]
+    });
+    let mut ui = compose_test(move || SubcomposeLayout!(measure_policy = policy.clone()));
+    ui.wait_for_idle();
+    assert_eq!(children_tops(&ui), [0, 1, 3, 6]);
+    swapped.set(true);
+    ui.wait_for_idle();
+    assert_eq!(children_tops(&ui), [0, 1, 3, 7], "the fourth's size comes third");
+}
+
+/// Not a test of Compose's: a paused slot's nodes attach under its virtual node, past the slot
+/// before it, and a measurement finds them in order.
+#[test]
+fn a_paused_slot_attaches_past_those_before_it() {
+    let state = SubcomposeLayoutState::new();
+    let take = mutable_state_of(false);
+    let first = Callback::new(|| {
+        sized("a".into(), 1)();
+        sized("b".into(), 2)();
+    });
+    let second = Callback::new(|| {
+        sized("c".into(), 3)();
+        sized("d".into(), 4)();
+    });
+    let (t, s, st) = (take.handle(), second.clone(), state.clone());
+    let policy = stack_policy(move |scope| {
+        let mut slots = vec![scope.subcompose(1, first.clone())];
+        if t.get() {
+            slots.push(scope.subcompose(2, s.clone()));
+        }
+        slots
+    });
+    let mut ui = compose_test(move || {
+        SubcomposeLayoutWithState!(st.clone(), measure_policy = policy.clone())
+    });
+    ui.wait_for_idle();
+    let paused = state.create_paused_precomposition(2, second);
+    resume_until_completed(&paused);
+    let handle = paused.apply();
+    assert_eq!(handle.placeables_count(), 2);
+    take.set(true);
+    ui.wait_for_idle();
+    assert_eq!(children_tops(&ui), [0, 1, 3, 6]);
+}
+
+/// Not a test of Compose's: among those kept, the slot's own is taken first, though others are
+/// compatible and nearer the end.
+#[test]
+fn a_slot_takes_its_own_composition_first() {
+    let retained: Rc<RefCell<Vec<i32>>> = Rc::default();
+    let r = retained.clone();
+    let policy = PolicyOf(
+        move |slots: &mut SlotIdsSet| *r.borrow_mut() = ids(slots),
+        |_: &dyn std::any::Any, _: &dyn std::any::Any| true,
+    );
+    let (mut ui, _, items) = items_scene(&[0, 1, 2], policy);
+    ui.wait_for_idle();
+    items.set(Vec::new());
+    ui.wait_for_idle();
+    assert_eq!(*retained.borrow(), [0, 1, 2]);
+    items.set(vec![0]);
+    ui.wait_for_idle();
+    assert_eq!(*retained.borrow(), [1, 2], "0's its own, not 2's");
+}
+
+/// Not a test of Compose's: precomposing what a measurement holds composes nothing, and its handle
+/// has nothing of it.
+#[test]
+fn precomposing_an_active_slot_does_nothing() {
+    let (mut ui, state, _) = items_scene(&[0], subcompose_slot_reuse_policy(1));
+    ui.wait_for_idle();
+    let composed = Rc::new(Cell::new(false));
+    let handle = state.precompose(0, composed_box(&composed, 10.0));
+    assert!(!composed.get());
+    assert_eq!(handle.placeables_count(), 0);
+    handle.dispose();
+    ui.wait_for_idle();
+    ui.on_node_with_tag("0").assert_exists();
+    assert_eq!(state.reusable_count(), 0);
+}
+
+// ---- In a lend ---------------------------------------------------------------------------------
+
+/// Its `on_attach` asks where it is.
+#[derive(Clone, PartialEq)]
+struct AskingElement(Rc<Cell<Option<bool>>>);
+
+struct AskingNode(Rc<Cell<Option<bool>>>);
+
+impl ModifierNodeElement for AskingElement {
+    type Node = AskingNode;
+    fn create(&self) -> AskingNode {
+        AskingNode(self.0.clone())
+    }
+    fn update(&self, _: &mut AskingNode) {}
+    fn same(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
+impl ModifierNode for AskingNode {
+    fn on_attach(&mut self, context: &mut NodeContext<'_>) {
+        let coordinates = context.require_layout_coordinates();
+        // Whatever it answers it answers: a read through the cell the lend swapped.
+        let _ = coordinates.size();
+        self.0.set(Some(coordinates.is_busy()));
+    }
+}
+
+/// `on_attach` runs in `on_end_changes`, in the slot's pass in the lend: the window's opened again
+/// at the cell's address, with real answers (D1309).
+#[test]
+fn a_node_attached_in_a_lend_asks_the_tree() {
+    let asked = Rc::new(Cell::new(None));
+    let a = asked.clone();
+    let content = Callback::new(move || {
+        Box!(modifier = Modifier.then_custom(AskingElement(a.clone())));
+    });
+    let policy = stack_policy(move |scope| vec![scope.subcompose((), content.clone())]);
+    let mut ui = compose_test(move || SubcomposeLayout!(measure_policy = policy.clone()));
+    ui.wait_for_idle();
+    assert_eq!(asked.get(), Some(false), "it answers");
+}
+
+/// A focused node leaving in a lend: the callback runs there and asks where something is.
+#[test]
+fn a_focus_callback_in_a_lend_asks_the_tree() {
+    let (shown, told) = (mutable_state_of(true), Rc::new(Cell::new(None)));
+    let requester = FocusRequester::new();
+    let coordinates: Rc<Cell<Option<compose_ui::LayoutCoordinates>>> = Rc::default();
+    let (c, t) = (coordinates.clone(), told.clone());
+    let content = Callback::new(move || {
+        let (c, c2, t) = (c.clone(), c.clone(), t.clone());
+        Box!(
+            modifier = Modifier
+                .size((10.dp(), 10.dp()))
+                .on_placed(move |coordinates: compose_ui::LayoutCoordinates| {
+                    c.set(Some(coordinates))
+                })
+                .focus_requester(requester)
+                .on_focus_changed(move |state: compose_ui::FocusState| {
+                    if !state.is_focused()
+                        && let Some(coordinates) = c2.get()
+                    {
+                        let _ = coordinates.size();
+                        t.set(Some(coordinates.is_busy()));
+                    }
+                })
+                .focusable(),
+            {}
+        );
+    });
+    let s = shown.handle();
+    let policy = stack_policy(move |scope| {
+        if s.get() { vec![scope.subcompose((), content.clone())] } else { Vec::new() }
+    });
+    let mut ui = compose_test(move || SubcomposeLayout!(measure_policy = policy.clone()));
+    ui.wait_for_idle();
+    requester.request_focus();
+    ui.wait_for_idle();
+    shown.set(false);
+    ui.wait_for_idle();
+    assert!(told.get().is_some(), "told in the slot's going");
+}
+
+/// A `LaunchedEffect`'s body runs after the frame, the tree free.
+#[test]
+fn a_launched_effect_in_a_slot_runs_after_the_frame() {
+    let asked = Rc::new(Cell::new(None));
+    let coordinates: Rc<Cell<Option<compose_ui::LayoutCoordinates>>> = Rc::default();
+    let (c, a) = (coordinates.clone(), asked.clone());
+    let content = Callback::new(move || {
+        let holder = c.clone();
+        Box!(
+            modifier =
+                Modifier
+                    .size((10.dp(), 10.dp()))
+                    .on_placed(move |coordinates: compose_ui::LayoutCoordinates| holder
+                        .set(Some(coordinates))),
+            {}
+        );
+        let (c, a) = (c.clone(), a.clone());
+        LaunchedEffect((), async move {
+            a.set(c.get().map(|coordinates| coordinates.is_busy()));
+        });
+    });
+    let policy = stack_policy(move |scope| vec![scope.subcompose((), content.clone())]);
+    let mut ui = compose_test(move || SubcomposeLayout!(measure_policy = policy.clone()));
+    ui.wait_for_idle();
+    assert_eq!(asked.get(), Some(false), "placed by then, and the tree's free");
 }

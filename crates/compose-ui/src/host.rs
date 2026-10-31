@@ -86,10 +86,10 @@ fn Content(content: compose_runtime::Callback) {
     content()
 }
 
-/// The constraints what's composed here will likely be measured with, for content that composes
-/// for its constraints (`BoxWithConstraints`) to compose right the first time: the window's at
-/// the root, the items' in a lazy list, the cells' in a grid. Compose composes such content
-/// while measuring; here it composes again within the frame when the hint was wrong.
+/// The constraints what's composed here will likely be measured with, for what composes for its
+/// constraints between measure rounds to compose right the first time: the window's at
+/// the root, the items' in a lazy list, the cells' in a grid. `BoxWithConstraints` composes while
+/// it's measured (D1309), and provides its own for what's inside it.
 pub static LOCAL_CONSTRAINTS_HINT: compose_runtime::CompositionLocal<
     Option<crate::constraints::Constraints>,
 > = compose_runtime::CompositionLocal::new("LocalConstraintsHint", || None);
