@@ -1506,3 +1506,409 @@ fn a_precomposed_slot_finds_what_s_under_it() {
     handle.dispose();
     assert_eq!(found(|_| TraverseDescendantsAction::ContinueTraversal), Vec::<i32>::new());
 }
+
+// ---- Paused precomposition --------------------------------------------------------------------
+
+/// A layout whose slot is measured when `add_slot` says, `content` counting its compositions and
+/// their applications.
+type PausedScene = (
+    ComposeTestRule,
+    Rc<SubcomposeLayoutState>,
+    OwnedState<bool>,
+    Callback,
+    Rc<Cell<i32>>,
+    Rc<Cell<i32>>,
+);
+
+fn paused_scene() -> PausedScene {
+    let (add_slot, composing, applied) =
+        (mutable_state_of(false), Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+    let (c, a) = (composing.clone(), applied.clone());
+    let content = Callback::new(move || {
+        c.set(c.get() + 1);
+        let a = a.clone();
+        SideEffect(move || a.set(a.get() + 1));
+    });
+    let state = SubcomposeLayoutState::new();
+    let (add, slot, st) = (add_slot.handle(), content.clone(), state.clone());
+    let policy = subcompose_policy(move |scope, _| {
+        if add.get() {
+            scope.subcompose((), slot.clone());
+        }
+        scope.layout(10, 10)
+    });
+    let ui = compose_test(move || {
+        SubcomposeLayoutWithState!(st.clone(), measure_policy = policy.clone())
+    });
+    (ui, state, add_slot, content, composing, applied)
+}
+
+fn resume_until_completed(precomposition: &PausedPrecomposition) {
+    while !precomposition.is_complete() {
+        precomposition.resume(|| false);
+    }
+}
+
+/// A sized box with an effect saying it's composed. Keyed by its size, as the tests' lambdas are by
+/// where they're written: each size is other content.
+fn composed_box(composed: &Rc<Cell<bool>>, size: f32) -> Callback {
+    let composed = composed.clone();
+    Callback::new(move || {
+        let composed = composed.clone();
+        key(size as i32, move || {
+            Box!(modifier = Modifier.size((size.dp(), size.dp())));
+            let composed = composed.clone();
+            DisposableEffect((), move |scope| {
+                composed.set(true);
+                scope.on_dispose(move || composed.set(false))
+            });
+        });
+    })
+}
+
+/// A layout composing no slot of its own, for what's precomposed.
+fn empty_layout(state: &Rc<SubcomposeLayoutState>) -> ComposeTestRule {
+    let st = state.clone();
+    let policy = subcompose_policy(|scope, _| scope.layout(10, 10));
+    let mut ui = compose_test(move || {
+        SubcomposeLayoutWithState!(st.clone(), measure_policy = policy.clone())
+    });
+    ui.wait_for_idle();
+    ui
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precomposePaused_composeAndApply
+#[test]
+fn a_paused_slot_composes_when_resumed_and_applies_when_applied() {
+    let (mut ui, state, add_slot, content, composing, applied) = paused_scene();
+    ui.wait_for_idle();
+    assert_eq!(composing.get(), 0);
+    let precomposition = state.create_paused_precomposition((), content);
+    ui.wait_for_idle();
+    assert_eq!(composing.get(), 0);
+    resume_until_completed(&precomposition);
+    assert_eq!((composing.get(), applied.get()), (1, 0));
+    precomposition.apply();
+    assert_eq!((composing.get(), applied.get()), (1, 1));
+    ui.wait_for_idle();
+    add_slot.set(true);
+    ui.wait_for_idle();
+    assert_eq!((composing.get(), applied.get()), (1, 1));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precomposePaused_composeOnly_applyDuringRegularPhase
+#[test]
+fn a_composed_paused_slot_is_applied_by_its_measurement() {
+    let (mut ui, state, add_slot, content, composing, applied) = paused_scene();
+    ui.wait_for_idle();
+    let precomposition = state.create_paused_precomposition((), content);
+    resume_until_completed(&precomposition);
+    ui.wait_for_idle();
+    assert_eq!((composing.get(), applied.get()), (1, 0));
+    add_slot.set(true);
+    ui.wait_for_idle();
+    assert_eq!((composing.get(), applied.get()), (1, 1));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precomposePaused_pauseStraightAway_doTheRestDuringRegularPhase
+#[test]
+fn a_slot_paused_straight_away_is_finished_by_its_measurement() {
+    let (mut ui, state, add_slot, content, composing, applied) = paused_scene();
+    ui.wait_for_idle();
+    let precomposition = state.create_paused_precomposition((), content);
+    ui.wait_for_idle();
+    assert_eq!(composing.get(), 0);
+    precomposition.resume(|| true);
+    ui.wait_for_idle();
+    add_slot.set(true);
+    ui.wait_for_idle();
+    assert_eq!((composing.get(), applied.get()), (1, 1));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, disposePrecomposedPausedItem
+#[test]
+fn a_cancelled_paused_slot_composes_again_in_its_measurement() {
+    let (mut ui, state, add_slot, content, composing, applied) = paused_scene();
+    ui.wait_for_idle();
+    assert_eq!(composing.get(), 0);
+    let precomposition = state.create_paused_precomposition((), content);
+    resume_until_completed(&precomposition);
+    assert_eq!(composing.get(), 1);
+    precomposition.cancel();
+    ui.wait_for_idle();
+    add_slot.set(true);
+    ui.wait_for_idle();
+    assert_eq!((composing.get(), applied.get()), (2, 1));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precomposePaused_isComplete
+#[test]
+fn a_paused_slot_says_it_s_complete_as_resuming_does() {
+    let state = SubcomposeLayoutState::new();
+    let _ui = empty_layout(&state);
+    let precomposition =
+        state.create_paused_precomposition((), Callback::new(sized("box".into(), 100)));
+    assert!(!precomposition.is_complete());
+    while !precomposition.is_complete() {
+        let result = precomposition.resume(|| true);
+        assert_eq!(result, precomposition.is_complete());
+    }
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precomposePaused_applyOnNotCompletedPrecompositionThrows
+#[test]
+#[should_panic]
+fn applying_what_s_not_complete_panics() {
+    let state = SubcomposeLayoutState::new();
+    let _ui = empty_layout(&state);
+    let precomposition =
+        state.create_paused_precomposition((), Callback::new(sized("box".into(), 100)));
+    assert!(!precomposition.is_complete());
+    precomposition.apply();
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, premeasuringAfterPrecomposePaused
+#[test]
+fn a_paused_slot_applied_can_be_premeasured() {
+    let state = SubcomposeLayoutState::new();
+    let _ui = empty_layout(&state);
+    let measures = Rc::new(Cell::new(0));
+    let modifier = add_counter(&measures).fill_max_size();
+    let content = Callback::new(move || {
+        Box!(modifier = modifier.clone());
+    });
+    assert_eq!(measures.get(), 0);
+    let precomposition = state.create_paused_precomposition((), content);
+    resume_until_completed(&precomposition);
+    let handle = precomposition.apply();
+    assert_eq!(measures.get(), 0);
+    assert_eq!(handle.placeables_count(), 1);
+    handle.premeasure(0, Constraints::new(100, 100, 0, i32::MAX));
+    assert_eq!(measures.get(), 1);
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precomposeOnTopOfCancelledPrecomposition
+#[test]
+fn precomposing_over_a_cancelled_one_composes_the_new_content() {
+    let state = SubcomposeLayoutState::with_policy(subcompose_slot_reuse_policy(1));
+    let _ui = empty_layout(&state);
+    let (first, second) = (Rc::new(Cell::new(false)), Rc::new(Cell::new(false)));
+    let precomposition = state.create_paused_precomposition((), composed_box(&first, 100.0));
+    resume_until_completed(&precomposition);
+    precomposition.cancel();
+    let precomposition2 = state.create_paused_precomposition((), composed_box(&second, 5.0));
+    resume_until_completed(&precomposition2);
+    precomposition2.apply();
+    assert!(!first.get());
+    assert!(second.get());
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precomposingDifferentContentOnTop
+#[test]
+fn precomposing_other_content_replaces_what_was_precomposed() {
+    let state = SubcomposeLayoutState::new();
+    let _ui = empty_layout(&state);
+    let (first, second) = (Rc::new(Cell::new(false)), Rc::new(Cell::new(false)));
+    state.precompose((), composed_box(&first, 100.0));
+    assert!(first.get());
+    let handle = state.precompose((), composed_box(&second, 5.0));
+    assert!(!first.get());
+    assert!(second.get());
+    handle.dispose();
+    assert!(!first.get());
+    assert!(!second.get());
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precomposingDifferentContentOnTop_paused
+#[test]
+fn a_paused_one_with_other_content_replaces_what_was_applied() {
+    let state = SubcomposeLayoutState::new();
+    let _ui = empty_layout(&state);
+    let (first, second) = (Rc::new(Cell::new(false)), Rc::new(Cell::new(false)));
+    let precomposition = state.create_paused_precomposition((), composed_box(&first, 100.0));
+    resume_until_completed(&precomposition);
+    precomposition.apply();
+    assert!(first.get());
+    let precomposition2 = state.create_paused_precomposition((), composed_box(&second, 5.0));
+    resume_until_completed(&precomposition2);
+    let handle = precomposition2.apply();
+    assert!(!first.get());
+    assert!(second.get());
+    handle.dispose();
+    assert!(!first.get());
+    assert!(!second.get());
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precomposingNotPausedOnTopOfPaused
+#[test]
+fn precomposing_over_an_applied_paused_one_replaces_it() {
+    let state = SubcomposeLayoutState::new();
+    let _ui = empty_layout(&state);
+    let (first, second) = (Rc::new(Cell::new(false)), Rc::new(Cell::new(false)));
+    let precomposition = state.create_paused_precomposition((), composed_box(&first, 100.0));
+    resume_until_completed(&precomposition);
+    precomposition.apply();
+    assert!(first.get());
+    let handle = state.precompose((), composed_box(&second, 5.0));
+    assert!(!first.get());
+    assert!(second.get());
+    handle.dispose();
+    assert!(!first.get());
+    assert!(!second.get());
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precomposingNotPausedOnTopOfNotAppliedPaused
+#[test]
+fn precomposing_the_same_content_applies_what_s_paused() {
+    let state = SubcomposeLayoutState::new();
+    let _ui = empty_layout(&state);
+    let composed = Rc::new(Cell::new(false));
+    let content = composed_box(&composed, 100.0);
+    let precomposition = state.create_paused_precomposition((), content.clone());
+    resume_until_completed(&precomposition); // But not applying.
+    assert!(!composed.get());
+    let handle = state.precompose((), content);
+    assert!(composed.get());
+    // Nothing: another's composed over it.
+    precomposition.cancel();
+    assert!(composed.get());
+    handle.dispose();
+    assert!(!composed.get());
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precomposingNotPausedOnTopOfNotAppliedPaused_differentContent
+#[test]
+fn precomposing_other_content_cancels_what_s_paused() {
+    let state = SubcomposeLayoutState::new();
+    let _ui = empty_layout(&state);
+    let (first, second) = (Rc::new(Cell::new(false)), Rc::new(Cell::new(false)));
+    let precomposition = state.create_paused_precomposition((), composed_box(&first, 100.0));
+    resume_until_completed(&precomposition); // But not applying.
+    let handle = state.precompose((), composed_box(&second, 5.0));
+    assert!(!first.get());
+    assert!(second.get());
+    // Nothing: another's composed over it.
+    precomposition.cancel();
+    assert!(second.get());
+    handle.dispose();
+    assert!(!second.get());
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precomposingPausedOnTopOfNotAppliedPaused
+#[test]
+fn a_second_paused_one_with_the_same_content_is_the_first() {
+    let state = SubcomposeLayoutState::new();
+    let _ui = empty_layout(&state);
+    let composed = Rc::new(Cell::new(false));
+    let content = composed_box(&composed, 100.0);
+    let precomposition = state.create_paused_precomposition((), content.clone());
+    resume_until_completed(&precomposition); // But not applying.
+    assert!(!composed.get());
+    let precomposition2 = state.create_paused_precomposition((), content);
+    assert!(!composed.get());
+    resume_until_completed(&precomposition2);
+    let handle = precomposition2.apply();
+    assert!(composed.get());
+    // Both nothing: it's applied.
+    precomposition.cancel();
+    precomposition2.cancel();
+    assert!(composed.get());
+    handle.dispose();
+    assert!(!composed.get());
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precomposingPausedOnTopOfNotAppliedPaused_differentContent
+#[test]
+fn a_second_paused_one_with_other_content_cancels_the_first() {
+    let state = SubcomposeLayoutState::new();
+    let _ui = empty_layout(&state);
+    let (first, second) = (Rc::new(Cell::new(false)), Rc::new(Cell::new(false)));
+    let precomposition = state.create_paused_precomposition((), composed_box(&first, 100.0));
+    resume_until_completed(&precomposition); // But not applying.
+    let precomposition2 = state.create_paused_precomposition((), composed_box(&second, 5.0));
+    assert!(!first.get());
+    assert!(!second.get());
+    resume_until_completed(&precomposition2);
+    precomposition2.apply();
+    assert!(!first.get());
+    assert!(second.get());
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, nestedDeactivateWithPausableComposition
+#[test]
+fn a_nested_layout_deactivated_with_a_paused_slot_comes_back_able_to_pause() {
+    let state = SubcomposeLayoutState::with_policy(subcompose_slot_reuse_policy(1));
+    let nested_state: Rc<RefCell<Option<Rc<SubcomposeLayoutState>>>> = Rc::default();
+    let has_content = mutable_state_of(true);
+    let nested_content = Callback::new(|| {
+        Box!(modifier = Modifier.size((10.dp(), 10.dp())));
+    });
+    let n = nested_state.clone();
+    let content = Callback::new(move || {
+        let nested =
+            remember(|| SubcomposeLayoutState::with_policy(subcompose_slot_reuse_policy(1)));
+        *n.borrow_mut() = Some(nested.clone());
+        SubcomposeLayoutWithState!(
+            nested,
+            measure_policy = subcompose_policy(|scope, _| scope.layout(10, 10))
+        );
+    });
+    let (has, c) = (has_content.handle(), content.clone());
+    let policy =
+        stack_policy(
+            move |scope| {
+                if has.get() { vec![scope.subcompose((), c.clone())] } else { Vec::new() }
+            },
+        );
+    let st = state.clone();
+    let mut ui = compose_test(move || {
+        SubcomposeLayoutWithState!(st.clone(), measure_policy = policy.clone())
+    });
+    ui.wait_for_idle();
+    // Nested content being prefetched: composed, not applied.
+    let nested = nested_state.borrow_mut().take().expect("composed");
+    let paused = nested.create_paused_precomposition((), nested_content.clone());
+    resume_until_completed(&paused);
+    // The first layer goes, and everything in the nested content deactivates.
+    has_content.set(false);
+    ui.wait_for_idle();
+    // The main content's prefetched, then the nested's.
+    state.precompose((), content);
+    let nested = nested_state.borrow_mut().take().expect("composed");
+    let paused = nested.create_paused_precomposition((), nested_content);
+    assert!(!paused.is_complete());
+    resume_until_completed(&paused);
+    paused.apply();
+}
+
+/// Not a test of Compose's: slots of a deactivated layout, one paused, come back with it, the
+/// paused one's composition new.
+#[test]
+fn a_deactivated_layout_s_paused_slot_is_cancelled() {
+    let (active, composed) = (mutable_state_of(true), Rc::new(Cell::new(false)));
+    let state = SubcomposeLayoutState::with_policy(subcompose_slot_reuse_policy(1));
+    let st = state.clone();
+    let policy = subcompose_policy(|scope, _| scope.layout(10, 10));
+    let a = active.handle();
+    let mut ui = compose_test(move || {
+        let (policy, st) = (policy.clone(), st.clone());
+        ReusableContentHost(a.get(), move || {
+            SubcomposeLayoutWithState!(st.clone(), measure_policy = policy.clone());
+        });
+    });
+    ui.wait_for_idle();
+    let content = composed_box(&composed, 10.0);
+    let paused = state.create_paused_precomposition((), content.clone());
+    resume_until_completed(&paused);
+    active.set(false);
+    ui.wait_for_idle();
+    assert!(paused.is_complete(), "nothing's left to it");
+    assert!(!composed.get());
+    assert_eq!(state.reusable_count(), 1);
+    active.set(true);
+    ui.wait_for_idle();
+    let handle = state.precompose(1, content);
+    assert!(composed.get());
+    handle.dispose();
+    assert!(!composed.get());
+}

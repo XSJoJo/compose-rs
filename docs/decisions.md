@@ -819,6 +819,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1308 | [runtime](decisions/runtime.md#d1308) | current |
 | D1309 | [ui-and-layout](decisions/ui-and-layout.md#d1309) | current |
 | D1310 | [ui-and-layout](decisions/ui-and-layout.md#d1310) | current |
+| D1311 | [ui-and-layout](decisions/ui-and-layout.md#d1311) | current |
 | D1350 | [ui-and-layout](decisions/ui-and-layout.md#d1350) | current |
 | D1351 | [ui-and-layout](decisions/ui-and-layout.md#d1351) | current |
 | D1352 | [ui-and-layout](decisions/ui-and-layout.md#d1352) | current |

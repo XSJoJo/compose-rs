@@ -11,8 +11,8 @@ use std::rc::Rc;
 use compose_runtime::platform::{Applier, NodeRef, with_lent_applier};
 use compose_runtime::snapshots::Snapshot;
 use compose_runtime::{
-    Callback, Composition, CompositionContext, DisposableEffect, ReusableComposition, SideEffect,
-    composable, remember_composition_context,
+    Callback, Composition, CompositionContext, DisposableEffect, PausableComposition,
+    PausedComposition, ShouldPauseCallback, SideEffect, composable, remember_composition_context,
 };
 
 use crate::constraints::Constraints;
@@ -156,7 +156,9 @@ pub fn subcompose_slot_reuse_policy(
 struct Slot {
     node: NodeId,
     key: SlotKey,
-    composition: Option<Rc<ReusableComposition>>,
+    composition: Option<Rc<PausableComposition>>,
+    /// A composition precomposed in pauses, not applied yet.
+    paused: Option<Rc<PausedComposition>>,
     content: Option<Callback>,
     force_recompose: bool,
     force_reuse: bool,
@@ -214,10 +216,22 @@ impl SubcomposeLayoutState {
         slot_id: impl PartialEq + 'static,
         content: Callback,
     ) -> PrecomposedSlotHandle {
-        match self.layout() {
-            Some(layout) => layout.precompose(Rc::new(slot_id), content),
-            None => PrecomposedSlotHandle { slot: None },
-        }
+        let key: SlotKey = Rc::new(slot_id);
+        let slot = self.layout().filter(|layout| layout.precompose(&key, content, false));
+        PrecomposedSlotHandle { slot: slot.map(|layout| (layout, key)) }
+    }
+
+    /// [`precompose`](Self::precompose) in steps, as `createPausedPrecomposition`: nothing's
+    /// composed before its first [`resume`](PausedPrecomposition::resume), and nothing's applied
+    /// before its [`apply`](PausedPrecomposition::apply), or the measurement taking the slot.
+    pub fn create_paused_precomposition(
+        &self,
+        slot_id: impl PartialEq + 'static,
+        content: Callback,
+    ) -> PausedPrecomposition {
+        let key: SlotKey = Rc::new(slot_id);
+        let slot = self.layout().filter(|layout| layout.precompose(&key, content, true));
+        PausedPrecomposition { slot: slot.map(|layout| (layout, key)) }
     }
 
     /// How many are kept for reuse, for tests and tools.
@@ -328,14 +342,14 @@ impl SubcompositionsState {
                 if std::mem::replace(&mut slot.active, false) {
                     slot.key = Rc::new(ReusedSlotId);
                     slot.force_reuse = true;
-                    compositions.extend(slot.composition.clone());
+                    compositions.push(OutOfUse::of(slot));
                 }
             }
             (compositions, handle, root)
         };
         with_the_tree(&handle, root, None, || {
             for composition in compositions {
-                composition.deactivate();
+                composition.run();
             }
         });
     }
@@ -394,42 +408,101 @@ impl SubcompositionsState {
         Some(start)
     }
 
-    /// `at`'s composition composes `content` if it has to. `lend` is the tree a measurement holds.
-    fn compose_slot(&self, at: usize, content: Callback, lend: Option<&mut UiTree>) {
-        let (compose, handle) = {
+    /// `at`'s composition composes `content` if it has to, in a paused composition if `pausable`.
+    /// `lend` is the tree a measurement holds. As `subcompose(node, slotId, pausable, content)`.
+    fn compose_slot(
+        &self,
+        at: usize,
+        content: Callback,
+        mut lend: Option<&mut UiTree>,
+        pausable: bool,
+    ) {
+        let (same, paused) = {
+            let inner = self.inner.borrow();
+            let slot = &inner.slots[at];
+            let same = slot.content.as_ref().is_some_and(|last| last.ptr_eq(&content));
+            (same, slot.paused.is_some())
+        };
+        if paused {
+            if !same {
+                // What's there can't be applied as this content.
+                self.cancel_paused(at, lend.as_deref_mut());
+            } else if pausable {
+                return;
+            } else {
+                self.apply_paused(at, true, lend.as_deref_mut());
+            }
+        }
+        let (composition, reuse, handle, root) = {
             let mut inner = self.inner.borrow_mut();
             let context = inner.context.expect("under a place");
             let handle = inner.handle.clone().expect("under a place");
+            let root = inner.root.expect("under a place");
             let slot = &mut inner.slots[at];
             let pending = slot.composition.as_ref().is_none_or(|it| it.has_invalidations());
-            let same = slot.content.as_ref().is_some_and(|last| last.ptr_eq(&content));
             if same && !pending && !slot.force_recompose {
                 return;
             }
             slot.content = Some(content.clone());
             slot.force_recompose = false;
             let reuse = std::mem::take(&mut slot.force_reuse);
-            let root = slot.node.to_ref();
+            let node = slot.node.to_ref();
             let composition = slot
                 .composition
                 .get_or_insert_with(|| {
-                    Rc::new(compose_runtime::platform::reusable_subcomposition(context, root))
+                    Rc::new(compose_runtime::platform::pausable_subcomposition(context, node))
                 })
                 .clone();
-            ((composition, reuse), handle)
+            (composition, reuse, handle, root)
         };
-        let (composition, reuse) = compose;
         // A closure as a `Callback` isn't an `Fn` of its own.
         #[allow(clippy::redundant_closure)]
-        let pass = move || {
-            if reuse {
+        let pass = move || match (pausable, reuse) {
+            (true, true) => Some(composition.set_pausable_content_with_reuse(move || content())),
+            (true, false) => Some(composition.set_pausable_content(move || content())),
+            (false, true) => {
                 composition.set_content_with_reuse(move || content());
-            } else {
+                None
+            }
+            (false, false) => {
                 composition.set_content(move || content());
+                None
             }
         };
-        let root = self.inner.borrow().root.expect("under a place");
-        with_the_tree(&handle, root, lend, pass);
+        // Setting pausable content composes nothing, so `at` is still where it was.
+        if let Some(paused) = with_the_tree(&handle, root, lend, pass) {
+            self.inner.borrow_mut().slots[at].paused = Some(Rc::new(paused));
+        }
+    }
+
+    /// `applyPausedPrecomposition`: with `complete`, what's left of it is composed first.
+    fn apply_paused(&self, at: usize, complete: bool, lend: Option<&mut UiTree>) {
+        let (paused, handle, root) = {
+            let inner = self.inner.borrow();
+            let Some(paused) = inner.slots[at].paused.clone() else { return };
+            (paused, inner.handle.clone().expect("it's precomposed"), inner.root.expect("too"))
+        };
+        with_the_tree(&handle, root, lend, || {
+            if complete {
+                while !paused.is_complete() {
+                    paused.resume(|| false);
+                }
+            }
+            paused.apply();
+        });
+        self.inner.borrow_mut().slots[at].paused = None;
+    }
+
+    /// `cancelPausedPrecomposition`: it goes with its composition, the next one being new.
+    fn cancel_paused(&self, at: usize, lend: Option<&mut UiTree>) {
+        let (composition, handle, root) = {
+            let mut inner = self.inner.borrow_mut();
+            let handle = inner.handle.clone().expect("it's precomposed");
+            let root = inner.root.expect("it's precomposed");
+            let slot = &mut inner.slots[at];
+            (OutOfUse::of(slot), handle, root)
+        };
+        with_the_tree(&handle, root, lend, || composition.run());
     }
 
     /// From `start` on: those the policy retains are kept for reuse, deactivated, and the others
@@ -465,10 +538,10 @@ impl SubcompositionsState {
                         let slot = &mut inner.slots[at];
                         let was_active = std::mem::replace(&mut slot.active, false);
                         slot.force_reuse = true;
-                        slot.composition.clone().filter(|_| was_active)
+                        was_active.then(|| OutOfUse::of(slot))
                     };
                     if let Some(composition) = composition {
-                        composition.deactivate();
+                        composition.run();
                     }
                 } else {
                     let slot = self.inner.borrow_mut().slots.remove(at);
@@ -504,12 +577,12 @@ impl SubcompositionsState {
         }
     }
 
-    fn precompose(self: &Rc<Self>, key: SlotKey, content: Callback) -> PrecomposedSlotHandle {
+    /// `key`'s slot composing `content`, unless a measurement holds it already or there's no layout
+    /// any more: then it says so.
+    fn precompose(self: &Rc<Self>, key: &SlotKey, content: Callback, pausable: bool) -> bool {
         let (handle, root, end) = {
             let inner = self.inner.borrow();
-            let Some(handle) = inner.handle.clone() else {
-                return PrecomposedSlotHandle { slot: None };
-            };
+            let Some(handle) = inner.handle.clone() else { return false };
             let end = inner.slots.len();
             (handle, inner.root.expect("with its handle"), end)
         };
@@ -517,16 +590,16 @@ impl SubcompositionsState {
             let inner = self.inner.borrow();
             end - inner.precomposed_count - inner.reusable_count
         };
-        if self.slot_index(&*key, 0..active_end).is_some() {
-            return PrecomposedSlotHandle { slot: None };
+        if self.slot_index(&**key, 0..active_end).is_some() {
+            return false;
         }
         let precomposed = end - self.inner.borrow().precomposed_count;
-        let at = match self.slot_index(&*key, precomposed..end) {
+        let at = match self.slot_index(&**key, precomposed..end) {
             Some(at) => at,
             None => handle.with_applier(|tree: &mut UiTree| {
                 let host = tree.id_of(root);
                 let ignoring = tree.ignoring_remeasure.replace(host);
-                let at = match self.take_from_reusables(&key, tree) {
+                let at = match self.take_from_reusables(key, tree) {
                     Some(taken) => {
                         let mut inner = self.inner.borrow_mut();
                         let last = inner.slots.len() - 1;
@@ -545,8 +618,36 @@ impl SubcompositionsState {
                 at
             }),
         };
-        self.compose_slot(at, content, None);
-        PrecomposedSlotHandle { slot: Some((self.clone(), key)) }
+        self.compose_slot(at, content, None, pausable);
+        true
+    }
+
+    /// A slot precomposed goes out of use, for the policy to keep or dispose, as
+    /// `disposePrecomposedSlot`.
+    fn dispose_precomposed(&self, key: &SlotKey) {
+        let Some(at) = self.precomposed_at(key) else { return };
+        let (handle, root, start) = {
+            let mut inner = self.inner.borrow_mut();
+            inner.reusable_count += 1;
+            inner.precomposed_count -= 1;
+            let start = inner.slots.len() - inner.precomposed_count - inner.reusable_count;
+            (inner.handle.clone().expect("it's precomposed"), inner.root.expect("too"), start)
+        };
+        self.cancel_paused_if_any(at);
+        with_the_tree(&handle, root, None, || {
+            handle.with_applier(|tree: &mut UiTree| {
+                let host = tree.id_of(root);
+                let mut inner = self.inner.borrow_mut();
+                move_slot(&mut inner, tree, host, at, start);
+            });
+        });
+        self.dispose_or_reuse_from(start, None);
+    }
+
+    fn cancel_paused_if_any(&self, at: usize) {
+        if self.inner.borrow().slots[at].paused.is_some() {
+            self.cancel_paused(at, None);
+        }
     }
 
     fn precomposed_at(&self, key: &SlotKey) -> Option<usize> {
@@ -565,6 +666,37 @@ impl SubcompositionsState {
                 nodes.iter().eq(inner.slots.iter().map(|slot| &slot.node)),
                 "compose-ui: a SubcomposeLayout's slots aren't its virtual nodes"
             );
+        }
+    }
+}
+
+/// What's done to a slot's composition as it goes out of use, once the state's not borrowed: as
+/// `reuseComposition`, one still paused is cancelled and disposed, another deactivated.
+enum OutOfUse {
+    Nothing,
+    Deactivate(Rc<PausableComposition>),
+    Cancel(Rc<PausedComposition>, Option<Rc<PausableComposition>>),
+}
+
+impl OutOfUse {
+    fn of(slot: &mut Slot) -> OutOfUse {
+        match (slot.paused.take(), &slot.composition) {
+            (Some(paused), _) => OutOfUse::Cancel(paused, slot.composition.take()),
+            (None, Some(composition)) => OutOfUse::Deactivate(composition.clone()),
+            (None, None) => OutOfUse::Nothing,
+        }
+    }
+
+    fn run(self) {
+        match self {
+            OutOfUse::Nothing => {}
+            OutOfUse::Deactivate(composition) => composition.deactivate(),
+            OutOfUse::Cancel(paused, composition) => {
+                paused.cancel();
+                if let Some(composition) = composition {
+                    composition.dispose();
+                }
+            }
         }
     }
 }
@@ -605,6 +737,7 @@ fn add_slot(inner: &mut Subcompositions, tree: &mut UiTree, host: NodeId, key: S
             node,
             key,
             composition: None,
+            paused: None,
             content: None,
             force_recompose: false,
             force_reuse: false,
@@ -622,6 +755,62 @@ fn move_slot(inner: &mut Subcompositions, tree: &mut UiTree, host: NodeId, from:
     tree.move_virtual_node(host, from, to);
 }
 
+/// A slot being precomposed in steps, as `PausedPrecomposition`.
+pub struct PausedPrecomposition {
+    slot: Option<(Rc<SubcompositionsState>, SlotKey)>,
+}
+
+impl PausedPrecomposition {
+    /// Its slot's place, and what's there, while it's waiting to be applied.
+    fn paused(&self) -> Option<(usize, Rc<PausedComposition>)> {
+        let (state, key) = self.slot.as_ref()?;
+        let at = state.precomposed_at(key)?;
+        let paused = state.inner.borrow().slots[at].paused.clone()?;
+        Some((at, paused))
+    }
+
+    /// Whether what's left is only to [`apply`](Self::apply) it, as `isComplete`: what it read
+    /// having changed, it's to be resumed first. Nothing's left once it's applied, cancelled or
+    /// its slot composed over.
+    pub fn is_complete(&self) -> bool {
+        self.paused().is_none_or(|(_, paused)| paused.is_complete())
+    }
+
+    /// Composes what's left, pausing where `should_pause` says, as `resume`: whether it's complete.
+    pub fn resume(&self, should_pause: impl ShouldPauseCallback + 'static) -> bool {
+        let Some((_, paused)) = self.paused().filter(|(_, paused)| !paused.is_complete()) else {
+            return true;
+        };
+        let (state, _) = self.slot.as_ref().expect("it's paused");
+        let (handle, root) = {
+            let inner = state.inner.borrow();
+            (inner.handle.clone().expect("it's precomposed"), inner.root.expect("too"))
+        };
+        with_the_tree(&handle, root, None, || paused.resume(should_pause))
+    }
+
+    /// Applies it, as `apply`, for its slot to be used.
+    ///
+    /// # Panics
+    ///
+    /// If it isn't [complete](Self::is_complete), as Compose's.
+    pub fn apply(&self) -> PrecomposedSlotHandle {
+        if let Some((at, _)) = self.paused() {
+            let (state, _) = self.slot.as_ref().expect("it's paused");
+            state.apply_paused(at, false, None);
+        }
+        PrecomposedSlotHandle { slot: self.slot.clone() }
+    }
+
+    /// Done with it: its slot's out of use, if it's still waiting to be applied, as `cancel`.
+    pub fn cancel(&self) {
+        if self.paused().is_some() {
+            let (state, key) = self.slot.as_ref().expect("it's paused");
+            state.dispose_precomposed(key);
+        }
+    }
+}
+
 /// What can be done with a slot precomposed, as `PrecomposedSlotHandle`.
 pub struct PrecomposedSlotHandle {
     slot: Option<(Rc<SubcompositionsState>, SlotKey)>,
@@ -631,23 +820,9 @@ impl PrecomposedSlotHandle {
     /// Done with it: it's kept for reuse or disposed, as the policy says, unless a measurement's
     /// taken it.
     pub fn dispose(&self) {
-        let Some((state, key)) = &self.slot else { return };
-        let Some(at) = state.precomposed_at(key) else { return };
-        let (handle, root, start) = {
-            let mut inner = state.inner.borrow_mut();
-            inner.reusable_count += 1;
-            inner.precomposed_count -= 1;
-            let start = inner.slots.len() - inner.precomposed_count - inner.reusable_count;
-            (inner.handle.clone().expect("it's precomposed"), inner.root.expect("too"), start)
-        };
-        with_the_tree(&handle, root, None, || {
-            handle.with_applier(|tree: &mut UiTree| {
-                let host = tree.id_of(root);
-                let mut inner = state.inner.borrow_mut();
-                move_slot(&mut inner, tree, host, at, start);
-            });
-        });
-        state.dispose_or_reuse_from(start, None);
+        if let Some((state, key)) = &self.slot {
+            state.dispose_precomposed(key);
+        }
     }
 
     fn node(&self) -> Option<(Rc<Composition>, NodeId)> {
@@ -783,7 +958,7 @@ impl SubcomposeMeasureScope<'_, '_> {
             move_slot(&mut inner, tree, root, at, current);
             inner.current_index = current + 1;
         }
-        state.compose_slot(current, content, Some(tree));
+        state.compose_slot(current, content, Some(tree), false);
         let inner = state.inner.borrow();
         tree.virtual_measurables(inner.slots[current].node)
     }

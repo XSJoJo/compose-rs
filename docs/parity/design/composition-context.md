@@ -473,7 +473,9 @@ Its loop wakes by `Compositions::recomposer_wake`, set while a loop runs, pushed
 
 **The layout's slots are the layout's.** `SubcomposeLayoutState` holds a policy and finds the layout; the slots are `SubcompositionsState`, kept by the layout's group across reuse, as Compose's are its `LayoutNode`'s. So a new state takes over the same slots, with its policy (compared by identity): what's composed goes out of use for the next measurement. The group's effect forgotten with the node still there (`onDeactivate`, `onReuse`) deactivates every slot and makes it `ReusedSlotId`, for any next measurement to take; the kept value dropped (`onRelease`) disposes them, after what the group's own effects did, where Compose's goes in the node's release. Slots deactivate at once, as Compose's do with an `outOfFrameExecutor` or forced, never through `ReusableContentHost`'s active flag (D1310).
 
-**Not here.** `create_paused_precomposition`; lookahead. Lazy lists stay as they are until C8, so `LOCAL_CONSTRAINTS_HINT` stays, `BoxWithConstraints` providing it to what's inside. `movableContent_virtual_node` and the other device tests of movable content in subcompositions are for after paused precomposition.
+**Paused precomposition** (D1311) is `pausable_subcomposition` for every slot, as Compose's `ReusableComposition` and `PausableComposition` are one class. `create_paused_precomposition` sets the content and composes nothing; a measurement taking the slot completes and applies it if its content's the same, and cancels it if not.
+
+**Not here.** Lookahead. Lazy lists stay as they are until C8, so `LOCAL_CONSTRAINTS_HINT` stays, `BoxWithConstraints` providing it to what's inside. `movableContent_virtual_node` and the other device tests of movable content in subcompositions are for after paused precomposition.
 
 ### C5 and C7 (D1305, D1306)
 
