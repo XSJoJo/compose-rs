@@ -717,23 +717,26 @@ impl LazyListState {
         };
         let used =
             if estimated { pixels } else { pixels.signum() * pixels.abs().min(room.max(0.0)) };
-        if estimated && let Some(Outer { chain, vertical, reverse, source, overscroll }) = outer {
+        {
+            // Once one is open, every delta counts, estimated or not: a finger going back in the
+            // batch would otherwise leave what it took back as left over.
             let mut overshoot = inner.overshoot.borrow_mut();
-            match &mut *overshoot {
-                Some(overshoot) => overshoot.asked += used,
-                None => {
-                    *overshoot = Some(Overshoot {
-                        chain,
-                        vertical,
-                        reverse,
-                        overscroll,
-                        list: *self,
-                        from: inner.position.get(),
-                        from_key: inner.first_key.get(),
-                        asked: inner.pending.get() + used,
-                        source,
-                    })
-                }
+            if let Some(open) = overshoot.as_mut() {
+                open.asked += used;
+            } else if estimated
+                && let Some(Outer { chain, vertical, reverse, source, overscroll }) = outer
+            {
+                *overshoot = Some(Overshoot {
+                    chain,
+                    vertical,
+                    reverse,
+                    overscroll,
+                    list: *self,
+                    from: inner.position.get(),
+                    from_key: inner.first_key.get(),
+                    asked: inner.pending.get() + used,
+                    source,
+                });
             }
         }
         if used != 0.0 {

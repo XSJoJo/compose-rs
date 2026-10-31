@@ -1023,6 +1023,30 @@ fn a_fling_relaxes_a_stretch_four_times_as_fast_as_a_drag() {
     }
 }
 
+// Compose: compose/foundation/foundation/src/androidMain/kotlin/androidx/compose/foundation/AndroidOverscroll.android.kt, applyToScroll
+#[test]
+fn a_finger_going_back_in_one_batch_doesn_t_stretch_a_list_not_at_its_end() {
+    for kind in 0..3 {
+        let effects = FakeEdgeEffects::stretch();
+        let mut ui = lazy_layout(kind, &effects, None, 0);
+        // Two moves before a layout: forward past what's laid out, then a part of it back.
+        let touch = |event: compose_ui::PointerEvent| compose_ui::PointerEvent {
+            pointer_type: compose_ui::PointerType::Touch,
+            ..event
+        };
+        let down = Offset::new(100.0, 250.0);
+        ui.host().send_pointer(touch(compose_ui::PointerEvent::press(down)));
+        ui.advance_time_by_frame();
+        for by in [-100.0, -70.0] {
+            let at = down + Offset::new(0.0, by);
+            ui.host().send_pointer(touch(compose_ui::PointerEvent::moved(at, true)));
+        }
+        ui.wait_for_idle();
+        // 17 items are still below.
+        assert_eq!(effects.made(), 0, "{kind}");
+    }
+}
+
 /// Takes half of what a post-scroll offers.
 struct TakesHalf(Rc<Cell<f32>>);
 
