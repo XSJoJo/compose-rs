@@ -1,6 +1,6 @@
 //! Overscroll over the platform's edge effects: the events of Compose's
 //! `AndroidEdgeEffectOverscrollEffect`, over `compose_ui::EdgeEffect`, whose physics stay the
-//! platform's (docs/parity/design/stretch-overscroll.md, D1472).
+//! platform's (docs/parity/design/stretch-overscroll.md, D1476).
 //!
 //! An effect is made when its side is first pulled, and only an active effect is asked anything: a
 //! scroller that never hits an edge calls the platform never, and a normal scroll's delta costs a

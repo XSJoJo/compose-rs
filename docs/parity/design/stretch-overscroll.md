@@ -1,6 +1,6 @@
 # Stretch and glow overscroll on Android
 
-Design note, written before anything was built, from Compose's `AndroidOverscroll.android.kt` and the replayer; statements about AOSP's `EdgeEffect` and HWUI came from Compose's code and comments. **Built since** (D1472 to D1475) and checked on a phone, a Pixel 8 Pro at API 37: the end of this note says what held and what changed.
+Design note, written before anything was built, from Compose's `AndroidOverscroll.android.kt` and the replayer; statements about AOSP's `EdgeEffect` and HWUI came from Compose's code and comments. **Built since** (D1473 to D1476) and checked on a phone, a Pixel 8 Pro at API 37: the end of this note says what held and what changed.
 
 ## Decision
 

@@ -1337,7 +1337,7 @@ class ComposeRsView @JvmOverloads constructor(
      * to the main looper (D226). A failure (nothing opens it, a `file:` URI the app may not
      * expose, a permission) is logged, never thrown at the looper.
      */
-    /** An edge's effect of the scroller [owner], as Rust's overscroll makes them (D1472). */
+    /** An edge's effect of the scroller [owner], as Rust's overscroll makes them (D1476). */
     fun createEdgeEffect(owner: Int, side: Int, color: Int): ComposeRsEdgeEffect =
         edgeEffects.create(owner, side, color)
 

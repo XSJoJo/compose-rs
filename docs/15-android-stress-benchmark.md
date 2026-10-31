@@ -1337,7 +1337,7 @@ What each one does here:
 
 ## Overscroll's node per scroller (D1475)
 
-Android gained stretch and glow overscroll by default (D1472 to D1475), so each scroller has one more node, and the `LazyColumn` of the feed one more per list, drawing nothing and calling no JNI until it hits an edge. Re-read with `measure.py --scenarios scroll --runs 3 --optimizations parity`, the feed's 10 flings, which never reach an end, against the base's build, in four interleaved sessions with Compose beside each (Pixel 8 Pro, Android 17, dynamic clocks, 2026-10-31, battery 31 °C and thermal status 0):
+Android gained stretch and glow overscroll by default (D1473 to D1476), so each scroller has one more node, and the `LazyColumn` of the feed one more per list, drawing nothing and calling no JNI until it hits an edge. Re-read with `measure.py --scenarios scroll --runs 3 --optimizations parity`, the feed's 10 flings, which never reach an end, against the base's build, in four interleaved sessions with Compose beside each (Pixel 8 Pro, Android 17, dynamic clocks, 2026-10-31, battery 31 °C and thermal status 0):
 
 | bench-rs, parity | Session | Janky (FrameTimeline) | Main p50 / p90 / p99 ms | RenderThread p50 / p90 / p99 ms | Work main / render ms |
 |---|---|---|---|---|---|

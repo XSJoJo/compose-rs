@@ -5,7 +5,7 @@
 //! looper, as it does host events (D226). Links are checked first, in Rust
 //! (`PlatformUriHandler`: allowed schemes only, D283). The edge effects of overscroll are here too:
 //! `android.widget.EdgeEffect`s, in Kotlin's `ComposeRsEdgeEffect`, called only from a scroller's
-//! first pull at an edge on (D1472).
+//! first pull at an edge on (D1476).
 
 use std::cell::OnceCell;
 use std::rc::Rc;
