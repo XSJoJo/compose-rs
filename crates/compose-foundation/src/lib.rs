@@ -13,6 +13,7 @@
 extern crate compose_runtime as compose;
 
 mod dark_theme;
+mod edge_effect_overscroll;
 mod fling;
 pub mod gestures;
 mod image;
@@ -41,6 +42,9 @@ pub use compose_ui::{
 
 pub use compose_ui::{BorderRenderer, BorderStroke};
 pub use dark_theme::is_system_in_dark_theme;
+pub use edge_effect_overscroll::{
+    DEFAULT_GLOW_COLOR, EdgeEffectOverscrollFactory, remember_platform_overscroll_factory,
+};
 pub use gestures::{
     AnchoredDragScope, AnchoredDraggableDefaults, AnchoredDraggableModifier,
     AnchoredDraggableOptions, AnchoredDraggableState, DraggableAnchors, DraggableAnchorsConfig,
@@ -88,7 +92,8 @@ pub use mutator::{MutatePriority, MutationInterrupted, MutatorMutex};
 pub use output_transformation::{OutputTransform, OutputTransformation};
 pub use overscroll::{
     LOCAL_OVERSCROLL_FACTORY, OverscrollEffect, OverscrollFactory, OverscrollModifier,
-    PerformFling, remember_overscroll_effect, without_event_handling, without_visual_effect,
+    OverscrollNode, PerformFling, remember_overscroll_effect, without_event_handling,
+    without_visual_effect,
 };
 pub use scroll::{ScrollModifiers, ScrollState, remember_scroll_state};
 pub use scroll_indicator::ScrollIndicatorState;

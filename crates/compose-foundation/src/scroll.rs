@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use crate::overscroll::{
     LOCAL_OVERSCROLL_FACTORY, OverscrollEffect, OverscrollFactory, OverscrollModifier,
-    PerformFling, same_overscroll,
+    OverscrollNode, PerformFling, same_overscroll,
 };
 use compose_ui::Velocity;
 use std::task::Poll;
@@ -418,6 +418,7 @@ impl ModifierNodeElement for ScrollElement {
             reverse_scrolling: self.reverse_scrolling,
             overscroll: self.overscroll.clone(),
             local_overscroll: None,
+            local_overscroll_node: None,
             drag: DragScroller::along(self.vertical),
             laid_out: Rc::default(),
             rtl: false,
@@ -543,6 +544,8 @@ pub(crate) struct ScrollNode {
     overscroll: OverscrollSource,
     /// The effect of the local factory, and the factory, as of the last press.
     local_overscroll: Option<(Rc<dyn OverscrollFactory>, Rc<dyn OverscrollEffect>)>,
+    /// What draws that effect, if this node is the one to, as a node delegating to its `node`.
+    local_overscroll_node: Option<Rc<dyn OverscrollNode>>,
     reverse_scrolling: bool,
     drag: DragScroller,
     /// The offset the last placing used.
@@ -560,23 +563,33 @@ impl ScrollNode {
         }
     }
 
-    /// Reads `LOCAL_OVERSCROLL_FACTORY` where it's composed: a new factory, a new effect. It only
-    /// gets events for now: a node can't delegate to a `modifier()`, so it's drawn with the stretch.
+    /// Reads `LOCAL_OVERSCROLL_FACTORY` where it's composed: a new factory, a new effect. This node
+    /// holds what draws it, as a node can't delegate to a `modifier()` (D1474).
     fn read_local_overscroll(&mut self, context: &mut EventContext<'_>) {
         if !matches!(self.overscroll, OverscrollSource::LocalFactory) {
             return;
         }
         let factory = context.current_value_of(&LOCAL_OVERSCROLL_FACTORY);
-        self.local_overscroll = match (factory, self.local_overscroll.take()) {
-            (Some(factory), Some((made_by, effect))) if Rc::ptr_eq(&made_by, &factory) => {
-                Some((made_by, effect))
-            }
-            (Some(factory), _) => {
-                let effect = factory.create_overscroll_effect();
-                Some((factory, effect))
-            }
-            (None, _) => None,
+        let same = match (&factory, &self.local_overscroll) {
+            (Some(factory), Some((made_by, _))) => Rc::ptr_eq(made_by, factory),
+            (None, None) => true,
+            _ => false,
         };
+        if same {
+            return;
+        }
+        if let Some(node) = self.local_overscroll_node.take() {
+            node.detach();
+        }
+        self.local_overscroll = factory.map(|factory| {
+            let effect = factory.create_overscroll_effect();
+            (factory, effect)
+        });
+        if let Some(node) = self.local_overscroll.as_ref().and_then(|(_, effect)| effect.node())
+            && node.attach(context.handle())
+        {
+            self.local_overscroll_node = Some(node);
+        }
     }
 
     /// Whether the content runs against the pointer: scrolled from its end
@@ -684,6 +697,13 @@ impl ModifierNode for ScrollNode {
     fn on_reset(&mut self, _context: &mut compose_ui::NodeContext<'_>) {
         self.drag.cancel_leaving();
         self.drag.detach();
+    }
+    fn on_detach(&mut self, _context: &mut compose_ui::NodeContext<'_>) {
+        // The press after it reads the factory again and attaches a new one.
+        if let Some(node) = self.local_overscroll_node.take() {
+            node.detach();
+            self.local_overscroll = None;
+        }
     }
 
     fn as_layout(&mut self) -> Option<&mut dyn LayoutModifierNode> {
@@ -873,9 +893,15 @@ impl DrawModifierNode for ScrollNode {
         scope.save();
         let size = scope.size();
         scope.clip_outline(Outline::Rectangle(Rect::new(0.0, 0.0, size.width, size.height)));
+        if let Some(node) = &self.local_overscroll_node {
+            node.draw(scope);
+        }
     }
 
     fn draw_after(&mut self, scope: &mut DrawScope<'_>) {
+        if let Some(node) = &self.local_overscroll_node {
+            node.draw_after(scope);
+        }
         scope.restore();
     }
 }
@@ -900,6 +926,9 @@ impl PointerInputModifierNode for ScrollNode {
         // Read as a press comes, for what a scroll with no effect given and no press pays nothing.
         if event.kind == PointerEventType::Press && pass == PointerEventPass::Initial {
             self.read_local_overscroll(context);
+        }
+        if let Some(node) = &self.local_overscroll_node {
+            node.on_pointer_event(event, pass, bounds, context.density());
         }
         let state = self.state;
         let reverse = self.mirrored(context.layout_direction() == compose_ui::LayoutDirection::Rtl);
@@ -935,6 +964,9 @@ impl PointerInputModifierNode for ScrollNode {
     }
 
     fn on_cancel_pointer_input(&mut self) {
+        if let Some(node) = &self.local_overscroll_node {
+            node.on_pointer_cancelled();
+        }
         self.drag.cancel();
     }
 }
@@ -986,21 +1018,26 @@ fn through_overscroll(
     -along(effect.apply_to_scroll(axis(-delta), source, &mut perform))
 }
 
-/// Tells a lazy list's scope the nested-scroll parents its next deltas come through (`None`
-/// after them).
-pub(crate) type OuterSetter = Rc<dyn Fn(Option<(NestedScrollChain, NestedScrollSource)>)>;
+/// Tells a lazy list's scope the nested-scroll parents and the overscroll effect its next deltas
+/// come through (`None` after them, and with neither).
+pub(crate) type OuterSetter =
+    Rc<dyn Fn(Option<(NestedScrollChain, NestedScrollSource, Option<Rc<dyn OverscrollEffect>>)>)>;
 
-/// Scrolls `delta` through `scope`, the parents named to `set_outer` around it.
+/// Scrolls `delta` through `scope`, the parents and the effect named to `set_outer` around it.
 fn scope_scroll(
     scope: &ScrollScope,
     set_outer: Option<&OuterSetter>,
     chain: &NestedScrollChain,
+    overscroll: Option<&Rc<dyn OverscrollEffect>>,
     source: NestedScrollSource,
     delta: f32,
 ) -> f32 {
     match set_outer {
         Some(set_outer) => {
-            set_outer((!chain.is_empty()).then(|| (chain.clone(), source)));
+            set_outer(
+                (!chain.is_empty() || overscroll.is_some())
+                    .then(|| (chain.clone(), source, overscroll.cloned())),
+            );
             let used = scope.scroll_by(delta);
             set_outer(None);
             used
@@ -1010,19 +1047,21 @@ fn scope_scroll(
 }
 
 /// A pointer's `delta`, as Compose's `performScroll`: through the connections around, then `scope`
-/// (the parents named to `set_outer`). A horizontal scroll in a right-to-left layout goes the
-/// other way, as Compose's `reverseDirection`. Returns what all of them used.
+/// (the parents and the effect named to `set_outer`). A horizontal scroll in a right-to-left layout
+/// goes the other way, as Compose's `reverseDirection`. Returns what all of them used.
 fn scroll_through(
     scope: &ScrollScope,
     set_outer: Option<&OuterSetter>,
     chain: &NestedScrollChain,
+    overscroll: Option<&Rc<dyn OverscrollEffect>>,
     vertical: bool,
     reverse: bool,
     delta: f32,
 ) -> f32 {
     let mut own = |delta: f32| {
         let delta = if reverse { -delta } else { delta };
-        let used = scope_scroll(scope, set_outer, chain, NestedScrollSource::UserInput, delta);
+        let used =
+            scope_scroll(scope, set_outer, chain, overscroll, NestedScrollSource::UserInput, delta);
         if reverse { -used } else { used }
     };
     dispatch_scroll(chain, vertical, delta, NestedScrollSource::UserInput, &mut own)
@@ -1085,6 +1124,8 @@ impl ScrollTarget {
             scope,
             self.set_outer.as_ref(),
             &self.chain,
+            // A wheel goes past the effect (D1464).
+            None,
             self.vertical,
             self.reverse,
             delta,
@@ -1127,6 +1168,7 @@ impl ScrollTarget {
                                 &scope,
                                 flung.set_outer.as_ref(),
                                 &flung.chain,
+                                dispatching_overscroll(flung.overscroll.as_ref(), &flung.state),
                                 NestedScrollSource::SideEffect,
                                 delta,
                             );
@@ -1417,12 +1459,15 @@ impl DragScroller {
         let set_outer = driver.set_outer;
         let drag_by = |session: &Option<DragSession>, delta: f32| {
             if let Some(scope) = session.as_ref().and_then(DragSession::scope) {
+                let effect = dispatching_overscroll(driver.overscroll, driver.state);
                 through_overscroll(
-                    dispatching_overscroll(driver.overscroll, driver.state),
+                    effect,
                     vertical,
                     delta,
                     NestedScrollSource::UserInput,
-                    &mut |delta| scroll_through(&scope, set_outer, chain, vertical, reverse, delta),
+                    &mut |delta| {
+                        scroll_through(&scope, set_outer, chain, effect, vertical, reverse, delta)
+                    },
                 );
             }
         };
