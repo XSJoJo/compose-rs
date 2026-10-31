@@ -544,11 +544,9 @@ impl compose_runtime::ComposeArg for BoxWithConstraintsScope {
     }
 }
 
-/// A box whose content depends on its constraints, as Compose's `BoxWithConstraints`: the
-/// content reads them from its scope. Compose composes it while measuring; here it first
-/// composes for the constraints it'll likely get (`LOCAL_CONSTRAINTS_HINT`: the window's, a
-/// lazy list's items', a grid's cells'), then measuring writes those it got as state and the
-/// content composes again within the frame if they differ.
+/// A box whose content depends on its constraints, as Compose's `BoxWithConstraints`: a
+/// `SubcomposeLayout` composing the content while it's measured, reading them from its scope. A
+/// measurement with the constraints it last composed for composes nothing.
 #[composable]
 pub fn BoxWithConstraints(
     #[default(crate::Modifier)] modifier: Modifier,
@@ -556,32 +554,44 @@ pub fn BoxWithConstraints(
     #[default(false)] propagate_min_constraints: bool,
     content: impl Fn(BoxWithConstraintsScope) + 'static,
 ) {
-    // First the constraints it'll likely get (`LOCAL_CONSTRAINTS_HINT`), then those it got.
-    let hint = compose_ui::platform::LOCAL_CONSTRAINTS_HINT.current();
-    let measured = compose_runtime::remember(|| {
-        compose_runtime::mutable_state_of(hint.unwrap_or(compose_ui::Constraints::fixed(0, 0)))
-    });
+    let density = compose_ui::LOCAL_DENSITY.current();
     let policy = compose_runtime::remember_keyed(
-        (AlignmentKey(content_alignment), propagate_min_constraints),
+        (AlignmentKey(content_alignment), propagate_min_constraints, content.clone(), density),
         || {
-            Rc::new(BoxWithConstraintsPolicy {
-                inner: BoxMeasurePolicy { alignment: content_alignment, propagate_min_constraints },
-                measured,
-            }) as Rc<dyn compose_ui::MeasurePolicy>
+            let inner =
+                BoxMeasurePolicy { alignment: content_alignment, propagate_min_constraints };
+            let content = content.clone();
+            let composed: std::cell::RefCell<Option<(Constraints, compose_runtime::Callback)>> =
+                std::cell::RefCell::new(None);
+            compose_ui::subcompose::subcompose_policy(move |scope, constraints| {
+                let slot = {
+                    let mut composed = composed.borrow_mut();
+                    match &*composed {
+                        Some((last, slot)) if *last == constraints => slot.clone(),
+                        _ => {
+                            let content = content.clone();
+                            let slot = compose_runtime::Callback::new(move || {
+                                let content = content.clone();
+                                // What's in it: a lazy list's first guess at its own constraints.
+                                compose_runtime::CompositionLocalProvider(
+                                    compose_ui::platform::LOCAL_CONSTRAINTS_HINT
+                                        .provides(Some(constraints.loosen())),
+                                    move || {
+                                        content(BoxWithConstraintsScope { constraints, density })
+                                    },
+                                )
+                            });
+                            *composed = Some((constraints, slot.clone()));
+                            slot
+                        }
+                    }
+                };
+                let measurables = scope.subcompose((), slot);
+                inner.measure(scope, &measurables, constraints)
+            })
         },
     );
-    let density = compose_ui::LOCAL_DENSITY.current();
-    Layout(
-        modifier,
-        policy,
-        compose_runtime::callback(move || {
-            let constraints = measured.get();
-            compose_runtime::CompositionLocalProvider(
-                compose_ui::platform::LOCAL_CONSTRAINTS_HINT.provides(Some(constraints.loosen())),
-                || content(BoxWithConstraintsScope { constraints, density }),
-            )
-        }),
-    );
+    compose_ui::subcompose::SubcomposeLayout(modifier, policy);
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -590,67 +600,6 @@ struct AlignmentKey(Alignment);
 impl compose_runtime::ComposeArg for AlignmentKey {
     fn same(&self, other: &Self) -> bool {
         self == other
-    }
-}
-
-/// A box's policy that also writes the constraints it's measured with, for the content.
-struct BoxWithConstraintsPolicy {
-    inner: BoxMeasurePolicy,
-    measured: compose_runtime::MutableState<compose_ui::Constraints>,
-}
-
-impl compose_ui::MeasurePolicy for BoxWithConstraintsPolicy {
-    fn measure(
-        &self,
-        scope: &mut MeasureScope<'_>,
-        measurables: &[Measurable],
-        constraints: Constraints,
-    ) -> MeasureResult {
-        if self.measured.get() != constraints {
-            self.measured.set(constraints);
-        }
-        self.inner.measure(scope, measurables, constraints)
-    }
-
-    // As Compose's `SubcomposeLayout`: it composes while measuring, so it has no intrinsics.
-    fn min_intrinsic_width(
-        &self,
-        _: &mut compose_ui::IntrinsicMeasureScope<'_>,
-        _: &[compose_ui::IntrinsicMeasurable],
-        _: i32,
-    ) -> i32 {
-        panic!("{}", compose_ui::platform::NO_INTRINSICS_MESSAGE)
-    }
-
-    fn min_intrinsic_height(
-        &self,
-        _: &mut compose_ui::IntrinsicMeasureScope<'_>,
-        _: &[compose_ui::IntrinsicMeasurable],
-        _: i32,
-    ) -> i32 {
-        panic!("{}", compose_ui::platform::NO_INTRINSICS_MESSAGE)
-    }
-
-    fn max_intrinsic_width(
-        &self,
-        _: &mut compose_ui::IntrinsicMeasureScope<'_>,
-        _: &[compose_ui::IntrinsicMeasurable],
-        _: i32,
-    ) -> i32 {
-        panic!("{}", compose_ui::platform::NO_INTRINSICS_MESSAGE)
-    }
-
-    fn max_intrinsic_height(
-        &self,
-        _: &mut compose_ui::IntrinsicMeasureScope<'_>,
-        _: &[compose_ui::IntrinsicMeasurable],
-        _: i32,
-    ) -> i32 {
-        panic!("{}", compose_ui::platform::NO_INTRINSICS_MESSAGE)
-    }
-
-    fn debug_name(&self) -> &'static str {
-        "BoxWithConstraints"
     }
 }
 

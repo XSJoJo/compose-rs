@@ -86,6 +86,7 @@ mod semantics_node;
 mod semantics_properties;
 mod semantics_sort;
 mod span_style;
+pub mod subcompose;
 mod text;
 mod text_attributes;
 mod text_editing;

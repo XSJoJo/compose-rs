@@ -494,7 +494,11 @@ impl UiTree {
             result
         } else {
             let policy = value.policy.clone();
-            let children = mem::take(&mut value.children);
+            let children = if value.composes_while_measured {
+                value.children.clone()
+            } else {
+                mem::take(&mut value.children)
+            };
             // Deactivated children (content kept for reuse) aren't measured, so not placed: at
             // the end, as a lazy list keeps them, the others are a prefix; anywhere else, a copy.
             let mut active = children.len();
@@ -535,7 +539,10 @@ impl UiTree {
                 relative = scope.relative;
                 result
             }));
-            self.node_mut(node).children = children;
+            // A `SubcomposeLayout`'s are as its slots left them in this measurement.
+            if !self.node(node).composes_while_measured {
+                self.node_mut(node).children = children;
+            }
             let result = self.recover(node, result);
             self.mirror(relative, result.width);
             result

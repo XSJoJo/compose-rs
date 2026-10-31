@@ -1,0 +1,867 @@
+//! Compose's `SubcomposeLayoutTest`, rewritten: slots composed while measuring, kept for reuse and
+//! precomposed, their compositions going as they should (composition-context.md §3.4, D1309).
+
+#![allow(non_snake_case)]
+// A closure as a `Callback` isn't an `Fn` of its own.
+#![allow(clippy::redundant_closure)]
+
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+use compose_foundation::layout::*;
+use compose_foundation::*;
+use compose_runtime::*;
+use compose_test::*;
+use compose_ui::subcompose::*;
+use compose_ui::{Constraints, IntSize, Layout, Measurable, Placeable, UnitExt, measure_policy};
+
+fn sized(tag: String, size: i32) -> impl Fn() + 'static {
+    move || {
+        Box!(modifier = Modifier.size(((size as f32).dp(), (size as f32).dp())).test_tag(&tag));
+    }
+}
+
+/// Measures and places in a column all that `slots` compose, as the file's simple policies do.
+fn stack_policy(
+    slots: impl Fn(&mut SubcomposeMeasureScope<'_, '_>) -> Vec<Vec<Measurable>> + 'static,
+) -> Rc<dyn SubcomposeMeasurePolicy> {
+    subcompose_policy(move |scope, constraints| {
+        let measurables = slots(scope);
+        let placeables: Vec<Placeable> = measurables
+            .into_iter()
+            .flatten()
+            .map(|measurable| scope.measure(measurable, constraints.loosen()))
+            .collect();
+        let (mut width, mut height) = (0, 0);
+        for placeable in &placeables {
+            width = width.max(placeable.width);
+            scope.place(placeable, 0, height);
+            height += placeable.height;
+        }
+        scope.layout(width, height)
+    })
+}
+
+/// Lives while it's remembered.
+struct Live(Rc<Cell<i32>>);
+
+impl RememberObserver for Live {
+    fn on_remembered(&self) {
+        self.0.set(self.0.get() + 1);
+    }
+    fn on_forgotten(&self) {
+        self.0.set(self.0.get() - 1);
+    }
+}
+
+fn live_content(live: &Rc<Cell<i32>>) -> Callback {
+    let live = live.clone();
+    Callback::new(move || {
+        let live = live.clone();
+        remember_observer(move || Live(live));
+        Box!(modifier = Modifier.size((10.dp(), 10.dp())));
+    })
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, useSizeOfTheFirstItemInSecondSubcomposition
+#[test]
+fn a_second_slot_is_sized_by_what_the_first_measured() {
+    let mut ui = compose_test(|| {
+        SubcomposeLayout!(
+            measure_policy = subcompose_policy(|scope, constraints| {
+                let first = scope.subcompose("first", Callback::new(sized("first".into(), 50)));
+                let placeable = scope.measure(first[0], constraints);
+                let size = placeable.width;
+                let second =
+                    scope.subcompose("second", Callback::new(sized("second".into(), size / 2)));
+                let second = scope.measure(second[0], constraints);
+                scope.place(&placeable, 0, 0);
+                scope.place(&second, 0, placeable.height);
+                scope.layout(placeable.width, placeable.height + second.height)
+            })
+        );
+    });
+    ui.wait_for_idle();
+    ui.on_node_with_tag("first").assert_exists();
+    ui.on_node_with_tag("second").assert_exists();
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, subcomposeMultipleLayoutsInOneSlot
+#[test]
+fn a_slot_can_emit_several_layouts() {
+    let count = Rc::new(Cell::new(0));
+    let c = count.clone();
+    let mut ui = compose_test(move || {
+        let c = c.clone();
+        SubcomposeLayout!(
+            measure_policy = subcompose_policy(move |scope, constraints| {
+                let items = scope.subcompose(
+                    (),
+                    Callback::new(|| {
+                        sized("one".into(), 10)();
+                        sized("two".into(), 10)();
+                    }),
+                );
+                c.set(items.len());
+                let placeables: Vec<Placeable> =
+                    items.iter().map(|item| scope.measure(*item, constraints)).collect();
+                let mut y = 0;
+                for placeable in &placeables {
+                    scope.place(placeable, 0, y);
+                    y += placeable.height;
+                }
+                scope.layout(10, y)
+            })
+        );
+    });
+    ui.wait_for_idle();
+    assert_eq!(count.get(), 2);
+    ui.on_node_with_tag("one").assert_exists();
+    ui.on_node_with_tag("two").assert_exists();
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, recompositionOfTheFirstSlotDoestAffectTheSecond
+#[test]
+fn a_slot_recomposing_leaves_the_other_alone() {
+    let (value, first_runs, second_runs) =
+        (mutable_state_of(0), Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+    let (v, f, s) = (value.handle(), first_runs.clone(), second_runs.clone());
+    let first = Callback::new(move || {
+        v.get();
+        f.set(f.get() + 1);
+    });
+    let second = Callback::new(move || s.set(s.get() + 1));
+    let policy = stack_policy(move |scope| {
+        vec![scope.subcompose(1, first.clone()), scope.subcompose(2, second.clone())]
+    });
+    let mut ui = compose_test(move || SubcomposeLayout!(measure_policy = policy.clone()));
+    ui.wait_for_idle();
+    assert_eq!((first_runs.get(), second_runs.get()), (1, 1));
+    value.set(1);
+    ui.wait_for_idle();
+    assert_eq!((first_runs.get(), second_runs.get()), (2, 1));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, addLayoutOnlyAfterRecomposition
+#[test]
+fn a_slot_adding_a_layout_measures_its_parent_again() {
+    let added = mutable_state_of(false);
+    let a = added.handle();
+    let content = Callback::new(move || {
+        if a.get() {
+            sized("added".into(), 10)();
+        }
+    });
+    let policy = stack_policy(move |scope| vec![scope.subcompose((), content.clone())]);
+    let mut ui = compose_test(move || SubcomposeLayout!(measure_policy = policy.clone()));
+    ui.wait_for_idle();
+    ui.on_node_with_tag("added").assert_does_not_exist();
+    added.set(true);
+    ui.wait_for_idle();
+    ui.on_node_with_tag("added").assert_exists();
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, providingNewLambdaCausingRecomposition
+#[test]
+fn a_new_lambda_composes_the_slot_again() {
+    let content =
+        mutable_state_of_with(Callback::new(sized("first".into(), 10)), ReferentialEqualityPolicy);
+    let c = content.handle();
+    let policy = stack_policy(move |scope| vec![scope.subcompose((), c.get())]);
+    let mut ui = compose_test(move || SubcomposeLayout!(measure_policy = policy.clone()));
+    ui.wait_for_idle();
+    ui.on_node_with_tag("first").assert_exists();
+    content.set(Callback::new(sized("second".into(), 10)));
+    ui.wait_for_idle();
+    ui.on_node_with_tag("first").assert_does_not_exist();
+    ui.on_node_with_tag("second").assert_exists();
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, notSubcomposedSlotIsDisposed
+#[test]
+fn a_slot_no_longer_composed_is_disposed() {
+    let (shown, live) = (mutable_state_of(true), Rc::new(Cell::new(0)));
+    let (s, content) = (shown.handle(), live_content(&live));
+    let policy = stack_policy(move |scope| {
+        if s.get() { vec![scope.subcompose((), content.clone())] } else { Vec::new() }
+    });
+    let mut ui = compose_test(move || SubcomposeLayout!(measure_policy = policy.clone()));
+    ui.wait_for_idle();
+    assert_eq!(live.get(), 1);
+    shown.set(false);
+    ui.wait_for_idle();
+    assert_eq!(live.get(), 0);
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, slotsCouldBeReordered
+#[test]
+fn slots_can_be_reordered() {
+    let first_up = mutable_state_of(true);
+    let f = first_up.handle();
+    let (a, b) = (Callback::new(sized("a".into(), 10)), Callback::new(sized("b".into(), 10)));
+    let policy = stack_policy(move |scope| {
+        if f.get() {
+            vec![scope.subcompose("a", a.clone()), scope.subcompose("b", b.clone())]
+        } else {
+            vec![scope.subcompose("b", b.clone()), scope.subcompose("a", a.clone())]
+        }
+    });
+    let mut ui = compose_test(move || SubcomposeLayout!(measure_policy = policy.clone()));
+    ui.wait_for_idle();
+    let height = ui.on_node_with_tag("a").get_bounds_in_root().height();
+    ui.on_node_with_tag("b").assert_top_position_in_root_is_equal_to(height);
+    first_up.set(false);
+    ui.wait_for_idle();
+    ui.on_node_with_tag("a").assert_exists();
+    ui.on_node_with_tag("b").assert_top_position_in_root_is_equal_to(0.dp());
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, slotsAreDisposedWhenLayoutIsDisposed
+#[test]
+fn slots_go_with_the_layout() {
+    let (shown, live) = (mutable_state_of(true), Rc::new(Cell::new(0)));
+    let (s, content) = (shown.handle(), live_content(&live));
+    let policy = stack_policy(move |scope| vec![scope.subcompose((), content.clone())]);
+    let mut ui = compose_test(move || {
+        if s.get() {
+            SubcomposeLayout!(measure_policy = policy.clone());
+        }
+    });
+    ui.wait_for_idle();
+    assert_eq!(live.get(), 1);
+    shown.set(false);
+    ui.wait_for_idle();
+    assert_eq!(live.get(), 0);
+}
+
+fn composes_the_keys(
+    keys: MutableState<Vec<i32>>,
+    live: &Rc<Cell<i32>>,
+) -> Rc<dyn SubcomposeMeasurePolicy> {
+    let live = live.clone();
+    stack_policy(move |scope| {
+        keys.get().into_iter().map(|key| scope.subcompose(key, live_content(&live))).collect()
+    })
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precompose
+#[test]
+fn a_precomposed_slot_is_there_before_its_measurement() {
+    let (state, live) = (SubcomposeLayoutState::new(), Rc::new(Cell::new(0)));
+    let keys = mutable_state_of(Vec::<i32>::new());
+    let policy = composes_the_keys(keys.handle(), &live);
+    let st = state.clone();
+    let mut ui = compose_test(move || {
+        SubcomposeLayoutWithState!(st.clone(), measure_policy = policy.clone())
+    });
+    ui.wait_for_idle();
+    assert_eq!(live.get(), 0);
+    let handle = state.precompose(1, live_content(&live));
+    ui.wait_for_idle();
+    assert_eq!(live.get(), 1);
+    assert_eq!(handle.placeables_count(), 1);
+    keys.set(vec![1]);
+    ui.wait_for_idle();
+    assert_eq!(live.get(), 1, "taken by the measurement");
+    assert_eq!(handle.placeables_count(), 0, "the measurement's now");
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, disposePrecomposedItem
+#[test]
+fn a_precomposed_slot_can_be_disposed() {
+    let (state, live) = (SubcomposeLayoutState::new(), Rc::new(Cell::new(0)));
+    let keys = mutable_state_of(Vec::<i32>::new());
+    let policy = composes_the_keys(keys.handle(), &live);
+    let st = state.clone();
+    let mut ui = compose_test(move || {
+        SubcomposeLayoutWithState!(st.clone(), measure_policy = policy.clone())
+    });
+    ui.wait_for_idle();
+    let handle = state.precompose(1, live_content(&live));
+    assert_eq!(live.get(), 1);
+    handle.dispose();
+    ui.wait_for_idle();
+    assert_eq!(live.get(), 0);
+    // Compose: composeItemRegularlyAfterDisposingPrecomposedItem
+    keys.set(vec![1]);
+    ui.wait_for_idle();
+    assert_eq!(live.get(), 1);
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precomposedItemDisposedWhenSubcomposeLayoutIsDisposed
+#[test]
+fn a_precomposed_slot_goes_with_the_layout() {
+    let (state, live, shown) =
+        (SubcomposeLayoutState::new(), Rc::new(Cell::new(0)), mutable_state_of(true));
+    let keys = mutable_state_of(Vec::<i32>::new());
+    let policy = composes_the_keys(keys.handle(), &live);
+    let (st, s) = (state.clone(), shown.handle());
+    let mut ui = compose_test(move || {
+        if s.get() {
+            SubcomposeLayoutWithState!(st.clone(), measure_policy = policy.clone());
+        }
+    });
+    ui.wait_for_idle();
+    let _handle = state.precompose(1, live_content(&live));
+    assert_eq!(live.get(), 1);
+    shown.set(false);
+    ui.wait_for_idle();
+    assert_eq!(live.get(), 0);
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precomposeIsNotTriggeringParentRemeasure
+#[test]
+fn precomposing_measures_nothing_again() {
+    let (state, measures) = (SubcomposeLayoutState::new(), Rc::new(Cell::new(0)));
+    let (st, m) = (state.clone(), measures.clone());
+    let mut ui = compose_test(move || {
+        let m = m.clone();
+        SubcomposeLayoutWithState!(
+            st.clone(),
+            measure_policy = subcompose_policy(move |scope, _| {
+                m.set(m.get() + 1);
+                scope.layout(10, 10)
+            })
+        );
+    });
+    ui.wait_for_idle();
+    let measured = measures.get();
+    let handle = state.precompose(1, Callback::new(sized("item".into(), 10)));
+    ui.wait_for_idle();
+    assert_eq!(measures.get(), measured);
+    handle.dispose();
+    ui.wait_for_idle();
+    assert_eq!(measures.get(), measured, "precomposedItemDisposalIsNotTriggeringParentRemeasure");
+}
+
+/// A composition kept for reuse is what a new slot takes: what's remembered goes and comes.
+type ReuseScene = (ComposeTestRule, Rc<SubcomposeLayoutState>, OwnedState<Vec<i32>>, Rc<Cell<i32>>);
+
+fn reuse_scene(max: usize) -> ReuseScene {
+    let state = SubcomposeLayoutState::with_policy(subcompose_slot_reuse_policy(max));
+    let (keys, live) = (mutable_state_of(vec![0, 1, 2]), Rc::new(Cell::new(0)));
+    let policy = composes_the_keys(keys.handle(), &live);
+    let st = state.clone();
+    let ui = compose_test(move || {
+        SubcomposeLayoutWithState!(st.clone(), measure_policy = policy.clone())
+    });
+    (ui, state, keys, live)
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, slotsKeptForReuse
+#[test]
+fn slots_are_kept_for_reuse_as_the_policy_says() {
+    let (mut ui, state, keys, live) = reuse_scene(2);
+    ui.wait_for_idle();
+    assert_eq!(live.get(), 3);
+    keys.set(Vec::new());
+    ui.wait_for_idle();
+    assert_eq!(state.reusable_count(), 2, "of three");
+    assert_eq!(live.get(), 0, "what's remembered is forgotten when it's deactivated");
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, newSlotIsUsingReusedSlot
+#[test]
+fn a_new_slot_uses_what_was_kept() {
+    let (mut ui, state, keys, _) = reuse_scene(2);
+    ui.wait_for_idle();
+    keys.set(vec![0]);
+    ui.wait_for_idle();
+    assert_eq!(state.reusable_count(), 2);
+    keys.set(vec![0, 5]);
+    ui.wait_for_idle();
+    assert_eq!(state.reusable_count(), 1, "one's in use again");
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, nothingIsReusedWhenMaxSlotsAre0
+#[test]
+fn nothing_is_kept_with_a_policy_of_none() {
+    let (mut ui, state, keys, live) = reuse_scene(0);
+    ui.wait_for_idle();
+    keys.set(Vec::new());
+    ui.wait_for_idle();
+    assert_eq!(state.reusable_count(), 0);
+    assert_eq!(live.get(), 0);
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, prefetchIsUsingReusableNodes
+#[test]
+fn precomposing_uses_what_was_kept() {
+    let (mut ui, state, keys, live) = reuse_scene(1);
+    ui.wait_for_idle();
+    keys.set(vec![0, 1]);
+    ui.wait_for_idle();
+    assert_eq!(state.reusable_count(), 1);
+    let handle = state.precompose(7, live_content(&live));
+    assert_eq!(state.reusable_count(), 0);
+    assert_eq!(handle.placeables_count(), 1);
+    assert_eq!(live.get(), 3);
+    handle.dispose();
+    assert_eq!(state.reusable_count(), 1);
+    assert_eq!(live.get(), 2);
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, reusedCompositionResetsRememberedObject
+#[test]
+fn a_reused_composition_remembers_anew() {
+    let keys = mutable_state_of(vec![0]);
+    let made = Rc::new(Cell::new(0));
+    let m = made.clone();
+    let state = SubcomposeLayoutState::with_policy(subcompose_slot_reuse_policy(1));
+    let k = keys.handle();
+    let policy = stack_policy(move |scope| {
+        let m = m.clone();
+        k.get()
+            .into_iter()
+            .map(|key| {
+                let m = m.clone();
+                scope.subcompose(
+                    key,
+                    Callback::new(move || {
+                        let m = m.clone();
+                        remember(move || m.set(m.get() + 1));
+                    }),
+                )
+            })
+            .collect()
+    });
+    let st = state.clone();
+    let mut ui = compose_test(move || {
+        SubcomposeLayoutWithState!(st.clone(), measure_policy = policy.clone())
+    });
+    ui.wait_for_idle();
+    assert_eq!(made.get(), 1);
+    keys.set(Vec::new());
+    ui.wait_for_idle();
+    keys.set(vec![1]);
+    ui.wait_for_idle();
+    assert_eq!(made.get(), 2);
+}
+
+static DYNAMIC: CompositionLocal<i32> = CompositionLocal::new("subcompose.dynamic", || 0);
+static STATIC: CompositionLocal<i32> = CompositionLocal::new_static("subcompose.static", || 0);
+
+fn local_change_reaches(local: &'static CompositionLocal<i32>) {
+    let (value, seen) = (mutable_state_of(1), Rc::new(Cell::new(0)));
+    let s = seen.clone();
+    let content = Callback::new(move || s.set(local.current()));
+    let policy = stack_policy(move |scope| vec![scope.subcompose((), content.clone())]);
+    let v = value.handle();
+    let mut ui = compose_test(move || {
+        let policy = policy.clone();
+        CompositionLocalProvider(local.provides(v.get()), move || {
+            SubcomposeLayout!(measure_policy = policy.clone());
+        });
+    });
+    ui.wait_for_idle();
+    assert_eq!(seen.get(), 1);
+    value.set(2);
+    ui.wait_for_idle();
+    assert_eq!(seen.get(), 2);
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, compositionLocalChangeInMainCompositionRecomposesSubcomposition
+#[test]
+fn a_dynamic_local_above_reaches_a_slot() {
+    local_change_reaches(&DYNAMIC);
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, staticCompositionLocalChangeInMainCompositionRecomposesSubcomposition
+#[test]
+fn a_static_local_above_reaches_a_slot() {
+    local_change_reaches(&STATIC);
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, premeasuringAllowsToSkipMeasureOnceTheSlotIsComposed
+#[test]
+fn a_premeasured_slot_is_measured_when_its_measurement_takes_it() {
+    let (state, keys, measures) =
+        (SubcomposeLayoutState::new(), mutable_state_of(Vec::<i32>::new()), Rc::new(Cell::new(0)));
+    let m = measures.clone();
+    let content = Callback::new(move || {
+        let m = m.clone();
+        Layout!(
+            measure_policy = measure_policy(move |scope, _, _| {
+                m.set(m.get() + 1);
+                scope.layout(10, 10)
+            }),
+            || {}
+        );
+    });
+    let (k, c) = (keys.handle(), content.clone());
+    let policy = stack_policy(move |scope| {
+        k.get().into_iter().map(|key| scope.subcompose(key, c.clone())).collect()
+    });
+    let st = state.clone();
+    let mut ui = compose_test(move || {
+        SubcomposeLayoutWithState!(st.clone(), measure_policy = policy.clone())
+    });
+    ui.wait_for_idle();
+    let handle = state.precompose(1, content);
+    let constraints = Constraints::fixed(10, 10);
+    handle.premeasure(0, constraints);
+    assert_eq!(measures.get(), 1);
+    assert_eq!(handle.get_size(0), IntSize::new(10, 10));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, premeasuringIncorrectIndexesCrashes
+#[test]
+#[should_panic(expected = "out of bound")]
+fn premeasuring_an_index_it_doesnt_have_panics() {
+    let state = SubcomposeLayoutState::new();
+    let st = state.clone();
+    let mut ui = compose_test(move || {
+        SubcomposeLayoutWithState!(
+            st.clone(),
+            measure_policy = subcompose_policy(|scope, _| scope.layout(10, 10))
+        );
+    });
+    ui.wait_for_idle();
+    let handle = state.precompose(1, Callback::new(sized("item".into(), 10)));
+    handle.premeasure(1, Constraints::fixed(10, 10));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, composingTheSameKeyTwiceIsNotAllowed
+#[test]
+#[should_panic(expected = "subcompose the same slot id twice")]
+fn a_key_composed_twice_in_a_measurement_panics() {
+    let mut ui = compose_test(|| {
+        SubcomposeLayout!(
+            measure_policy = subcompose_policy(|scope, _| {
+                scope.subcompose(1, Callback::new(|| {}));
+                scope.subcompose(1, Callback::new(|| {}));
+                scope.layout(10, 10)
+            })
+        );
+    });
+    ui.wait_for_idle();
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, reusingWithNestedSubcomposeLayoutInside
+#[test]
+fn a_slot_can_hold_a_subcompose_layout() {
+    let (value, seen) = (mutable_state_of(1), Rc::new(Cell::new(0)));
+    let (v, s) = (value.handle(), seen.clone());
+    let inner = Callback::new(move || s.set(v.get()));
+    let outer = Callback::new(move || {
+        let inner = inner.clone();
+        SubcomposeLayout!(
+            measure_policy = stack_policy(move |scope| vec![scope.subcompose((), inner.clone())])
+        );
+    });
+    let policy = stack_policy(move |scope| vec![scope.subcompose((), outer.clone())]);
+    let mut ui = compose_test(move || SubcomposeLayout!(measure_policy = policy.clone()));
+    ui.wait_for_idle();
+    assert_eq!(seen.get(), 1);
+    value.set(2);
+    ui.wait_for_idle();
+    assert_eq!(seen.get(), 2);
+}
+
+/// An effect in a slot's pass runs in the measurement that lent the tree: a coordinates query there
+/// finds it busy, with no panic (D1211), where Compose's are not attached yet either; the frame
+/// after, it answers.
+#[test]
+fn a_query_in_a_slots_effect_finds_the_tree_busy() {
+    let coordinates: Rc<RefCell<Option<compose_ui::LayoutCoordinates>>> = Rc::default();
+    let busy_seen = Rc::new(Cell::new(None));
+    let (c, b) = (coordinates.clone(), busy_seen.clone());
+    let content = Callback::new(move || {
+        let (c, b) = (c.clone(), b.clone());
+        let holder = c.clone();
+        Box!(
+            modifier = Modifier.size((10.dp(), 10.dp())).on_placed(
+                move |coordinates: compose_ui::LayoutCoordinates| {
+                    *holder.borrow_mut() = Some(coordinates)
+                }
+            ),
+            {}
+        );
+        SideEffect(move || {
+            if let Some(coordinates) = *c.borrow() {
+                b.set(Some(coordinates.is_busy()));
+            }
+        });
+    });
+    let tick = mutable_state_of(0);
+    let t = tick.handle();
+    let policy = stack_policy(move |scope| {
+        t.get();
+        // A new one each time, for its pass to be the measurement's.
+        let content = content.clone();
+        vec![scope.subcompose((), Callback::new(move || content()))]
+    });
+    let mut ui = compose_test(move || SubcomposeLayout!(measure_policy = policy.clone()));
+    ui.wait_for_idle();
+    tick.set(1);
+    ui.wait_for_idle();
+    assert_eq!(busy_seen.get(), Some(true), "its effect runs in the measurement's lend");
+    let coordinates = (*coordinates.borrow()).expect("placed");
+    assert!(coordinates.is_attached());
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, subcomposeCoordinates
+#[test]
+fn its_placement_block_has_coordinates() {
+    let attached = Rc::new(Cell::new(None));
+    let a = attached.clone();
+    let mut ui = compose_test(move || {
+        let a = a.clone();
+        SubcomposeLayout!(
+            measure_policy = subcompose_policy(move |scope, constraints| {
+                let a = a.clone();
+                scope.layout_with(constraints.max_width, constraints.max_height, move |placement| {
+                    a.set(placement.coordinates().map(|coordinates| coordinates.is_attached()));
+                })
+            })
+        );
+    });
+    ui.wait_for_idle();
+    assert_eq!(attached.get(), Some(true));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, deactivatedNodesAreNotPartOfChildrenSemantics
+#[test]
+fn what_s_kept_for_reuse_isnt_in_the_semantics() {
+    let state = SubcomposeLayoutState::with_policy(subcompose_slot_reuse_policy(1));
+    let shown = mutable_state_of(true);
+    let s = shown.handle();
+    let content = Callback::new(sized("kept".into(), 10));
+    let policy = stack_policy(move |scope| {
+        if s.get() { vec![scope.subcompose((), content.clone())] } else { Vec::new() }
+    });
+    let st = state.clone();
+    let mut ui = compose_test(move || {
+        SubcomposeLayoutWithState!(st.clone(), measure_policy = policy.clone())
+    });
+    ui.wait_for_idle();
+    ui.on_node_with_tag("kept").assert_exists();
+    shown.set(false);
+    ui.wait_for_idle();
+    ui.on_node_with_tag("kept").assert_does_not_exist();
+    assert_eq!(state.reusable_count(), 1);
+    shown.set(true);
+    ui.wait_for_idle();
+    ui.on_node_with_tag("kept").assert_exists();
+}
+
+// ---- BoxWithConstraints -----------------------------------------------------------------------
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/BoxWithConstraintsTest.kt, withConstraintCallbackIsNotExecutedWithInnerRecompositions
+#[test]
+fn its_content_doesnt_run_for_what_recomposes_inside_it() {
+    #[composable]
+    fn Inner(model: MutableState<i32>, runs: Rc<Cell<i32>>) {
+        model.get();
+        runs.set(runs.get() + 1);
+    }
+    let (model, outer, inner) = (mutable_state_of(0), Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+    let (m, o, i) = (model.handle(), outer.clone(), inner.clone());
+    let mut ui = compose_test(move || {
+        let (o, i) = (o.clone(), i.clone());
+        BoxWithConstraints!(move |_| {
+            o.set(o.get() + 1);
+            Inner!(m, i.clone());
+        });
+    });
+    ui.wait_for_idle();
+    model.set(1);
+    ui.wait_for_idle();
+    assert_eq!((outer.get(), inner.get()), (1, 2));
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/BoxWithConstraintsTest.kt, updateConstraintsRecomposingWithConstraints
+#[test]
+fn new_constraints_compose_its_content() {
+    let (size, seen, runs) =
+        (mutable_state_of(50), Rc::new(Cell::new(None)), Rc::new(Cell::new(0)));
+    let (sz, s, r) = (size.handle(), seen.clone(), runs.clone());
+    let mut ui = compose_test(move || {
+        let (s, r) = (s.clone(), r.clone());
+        let side = (sz.get() as f32).dp();
+        Box!(modifier = Modifier.size((side, side)), {
+            let (s, r) = (s.clone(), r.clone());
+            BoxWithConstraints!(move |scope: BoxWithConstraintsScope| {
+                s.set(Some(scope.constraints));
+                r.set(r.get() + 1);
+            });
+        });
+    });
+    ui.wait_for_idle();
+    let first = seen.get().expect("composed");
+    assert_eq!(runs.get(), 1, "composed once for its constraints");
+    size.set(100);
+    ui.wait_for_idle();
+    assert_ne!(seen.get(), Some(first));
+    assert_eq!(runs.get(), 2);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/BoxWithConstraintsTest.kt, allTheStepsCalledExactlyOnce
+#[test]
+fn each_step_runs_exactly_once() {
+    let (composed, measured) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+    let (c, m) = (composed.clone(), measured.clone());
+    let mut ui = compose_test(move || {
+        let (c, m) = (c.clone(), m.clone());
+        BoxWithConstraints!(move |_| {
+            c.set(c.get() + 1);
+            let m = m.clone();
+            Layout!(
+                measure_policy = measure_policy(move |scope, _, _| {
+                    m.set(m.get() + 1);
+                    scope.layout(100, 100)
+                }),
+                || {}
+            );
+        });
+    });
+    ui.wait_for_idle();
+    assert_eq!((composed.get(), measured.get()), (1, 1));
+}
+
+// Compose: compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/AndroidMovableContentTests.kt, testMovableContentParameterInBoxWithConstraints
+#[test]
+fn movable_content_moves_in_and_out_of_a_box_with_constraints() {
+    let state = mutable_state_of(false);
+    let (last_seen, made) = (Rc::new(Cell::new(None)), Rc::new(Cell::new(0)));
+    let (l, m) = (last_seen.clone(), made.clone());
+    let content = movable_content_of_with(move |parameter: bool| {
+        let m = m.clone();
+        remember(move || m.set(m.get() + 1));
+        l.set(Some(parameter));
+        Box!(modifier = Modifier.size((10.dp(), 10.dp())).test_tag("moved"));
+    });
+    let s = state.handle();
+    let mut ui = compose_test(move || {
+        let content = content.clone();
+        key(s.get(), move || {
+            if s.get() {
+                content(true);
+            } else {
+                let content = content.clone();
+                BoxWithConstraints!(move |_| content(false));
+            }
+        });
+    });
+    ui.wait_for_idle();
+    for round in 0..4 {
+        assert_eq!(last_seen.get(), Some(state.get()), "round {round}");
+        ui.on_node_with_tag("moved").assert_exists();
+        state.update(|state| !state);
+        ui.wait_for_idle();
+    }
+    assert_eq!(made.get(), 1, "the one state");
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, subcomposeLayoutInsideMovableContent_compositionIsNotDisposed
+#[test]
+fn a_subcompose_layout_in_movable_content_keeps_its_slots() {
+    let (state, live) = (mutable_state_of(false), Rc::new(Cell::new(0)));
+    let slot = live_content(&live);
+    let content = movable_content_of(move || {
+        let slot = slot.clone();
+        SubcomposeLayout!(
+            measure_policy = stack_policy(move |scope| vec![scope.subcompose((), slot.clone())])
+        );
+    });
+    let s = state.handle();
+    let mut ui = compose_test(move || {
+        let content = content.clone();
+        Box!({
+            let (first, second) = (content.clone(), content.clone());
+            key(s.get(), move || {
+                if s.get() {
+                    first();
+                }
+            });
+            Box!({
+                let second = second.clone();
+                key(s.get(), move || {
+                    if !s.get() {
+                        second();
+                    }
+                });
+            });
+        });
+    });
+    ui.wait_for_idle();
+    assert_eq!(live.get(), 1);
+    state.set(true);
+    ui.wait_for_idle();
+    assert_eq!(live.get(), 1, "its slot's composition stays");
+}
+
+/// The layouts of the slots, in the tree, in their order: what's added to the first comes before
+/// the second's, and a reorder moves them.
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, slotsAreDrawnInTheOrderTheyComposed
+#[test]
+fn slots_are_in_the_tree_in_the_order_they_compose() {
+    let (more, first_up) = (mutable_state_of(false), mutable_state_of(true));
+    let (m, f) = (more.handle(), first_up.handle());
+    let a = Callback::new(move || {
+        sized("a".into(), 10)();
+        if m.get() {
+            sized("more".into(), 10)();
+        }
+    });
+    let b = Callback::new(sized("b".into(), 10));
+    let policy = stack_policy(move |scope| {
+        if f.get() {
+            vec![scope.subcompose("a", a.clone()), scope.subcompose("b", b.clone())]
+        } else {
+            vec![scope.subcompose("b", b.clone()), scope.subcompose("a", a.clone())]
+        }
+    });
+    let mut ui = compose_test(move || SubcomposeLayout!(measure_policy = policy.clone()));
+    ui.wait_for_idle();
+    // Placed down in the order they compose: the tree's children go down too.
+    let tops = |ui: &ComposeTestRule| {
+        let dump = ui.dump_tree();
+        let children =
+            dump.lines().filter(|line| line.starts_with("    ") && !line.starts_with("     "));
+        children
+            .map(|line| {
+                let position = &line[line.find('[').expect("a position") + 1..];
+                let (_, y) = position.split_once(',').expect("x,y");
+                y.split_whitespace().next().expect("y").parse::<i32>().expect("a number")
+            })
+            .collect::<Vec<_>>()
+    };
+    let in_order = |tops: Vec<i32>, count: usize| {
+        assert_eq!(tops.len(), count, "{tops:?}");
+        assert!(tops.is_sorted(), "{tops:?}");
+    };
+    in_order(tops(&ui), 2);
+    more.set(true);
+    ui.wait_for_idle();
+    in_order(tops(&ui), 3);
+    first_up.set(false);
+    ui.wait_for_idle();
+    in_order(tops(&ui), 3);
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precomposeOverReusedNodeWithUpdatedModifierIsNotCausingEarlyRemeasureForDeactivatedNode
+#[test]
+fn precomposing_over_what_was_kept_measures_nothing_again() {
+    let state = SubcomposeLayoutState::with_policy(subcompose_slot_reuse_policy(2));
+    let (keys, measures, live) =
+        (mutable_state_of(vec![0, 1, 2]), Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+    let (k, m, l) = (keys.handle(), measures.clone(), live.clone());
+    let policy = stack_policy(move |scope| {
+        m.set(m.get() + 1);
+        k.get().into_iter().map(|key| scope.subcompose(key, live_content(&l))).collect()
+    });
+    let st = state.clone();
+    let mut ui = compose_test(move || {
+        SubcomposeLayoutWithState!(st.clone(), measure_policy = policy.clone())
+    });
+    ui.wait_for_idle();
+    keys.set(vec![0]);
+    ui.wait_for_idle();
+    assert_eq!(state.reusable_count(), 2);
+    let measured = measures.get();
+    let handle = state.precompose(7, live_content(&live));
+    ui.wait_for_idle();
+    assert_eq!(measures.get(), measured);
+    assert_eq!(handle.placeables_count(), 1);
+}

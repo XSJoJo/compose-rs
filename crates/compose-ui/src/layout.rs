@@ -793,7 +793,7 @@ pub fn emit_layout_node(
     modifier: Modifier,
     measure_policy: Rc<dyn MeasurePolicy>,
     content: impl FnOnce(),
-) {
+) -> compose_runtime::platform::NodeRef {
     let composer = current();
     let node = composer.start_reusable_node(compose_runtime::key_of("compose_ui::Layout"), || {
         crate::tree::LayoutNode::new(measure_policy.clone())
@@ -845,4 +845,5 @@ pub fn emit_layout_node(
     });
     content();
     composer.end_group();
+    node
 }
