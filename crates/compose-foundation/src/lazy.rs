@@ -22,6 +22,7 @@ mod animate_scroll;
 mod cache_window;
 mod grid;
 mod item_animator;
+pub mod layout;
 mod layout_info;
 pub(crate) mod pager;
 mod prefetch;
@@ -1612,12 +1613,9 @@ impl compose_ui::LayoutModifierNode for ParentSizeElement {
 
 /// The items a list's content declared, for one composition of the list.
 struct Items {
-    intervals: Vec<Interval>,
-    /// Each interval's first item: a binary search finds an item's interval.
-    starts: Vec<usize>,
-    /// The interval found last, looked at first, as `MutableIntervalList.lastInterval`: a walk
-    /// over the items, as a grid's spans, stays in it for a while.
-    last_found: Cell<usize>,
+    /// The intervals, found by an item's index (the one found last looked at first: a walk over
+    /// the items, as a grid's spans, stays in it for a while).
+    intervals: layout::MutableIntervalList<Interval>,
     count: usize,
     /// The sticky headers' indices, in order.
     headers: Vec<usize>,
@@ -1636,29 +1634,21 @@ const KEY_CACHE: usize = 64;
 
 impl Items {
     fn new(intervals: Vec<Interval>) -> Items {
-        let mut starts = Vec::with_capacity(intervals.len());
+        let mut list = layout::MutableIntervalList::new();
         let mut headers = Vec::new();
-        let mut count = 0;
         let has_custom_spans = intervals.iter().any(|interval| interval.span.is_some());
-        for interval in &intervals {
-            starts.push(count);
+        let keyed = intervals.iter().any(|interval| interval.key.is_some());
+        for interval in intervals {
+            let count = layout::IntervalList::size(&list);
             if interval.sticky {
                 headers.extend(count..count + interval.count);
             }
-            count += interval.count;
+            list.add_interval(interval.count, interval);
         }
-        let keyed = intervals.iter().any(|interval| interval.key.is_some());
+        let count = layout::IntervalList::size(&list);
         let cached = if keyed { count.min(KEY_CACHE) } else { 0 };
         let keys = (0..cached).map(|_| Cell::new((usize::MAX, 0))).collect();
-        Items {
-            intervals,
-            starts,
-            last_found: Cell::new(0),
-            count,
-            headers,
-            has_custom_spans,
-            keys,
-        }
+        Items { intervals: list, count, headers, has_custom_spans, keys }
     }
 
     /// The interval holding item `index`, and the item's index in it.
@@ -1666,13 +1656,8 @@ impl Items {
         if index >= self.count {
             return None;
         }
-        let last = self.last_found.get();
-        let in_last = self.starts[last] <= index
-            && self.starts.get(last + 1).is_none_or(|next| index < *next);
-        let interval =
-            if in_last { last } else { self.starts.partition_point(|start| *start <= index) - 1 };
-        self.last_found.set(interval);
-        Some((&self.intervals[interval], index - self.starts[interval]))
+        let interval = layout::IntervalList::get(&self.intervals, index);
+        Some((interval.value(), index - interval.start_index()))
     }
 
     /// The item with `key`, looked for within a window around `near` (as Compose's

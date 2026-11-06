@@ -1,6 +1,6 @@
 # The public `LazyLayout` (C8, stages 2 to 4)
 
-Status: proposed, not built (2026-11-06). C8's stage 1 (D1312 to D1317) moved lists, grids and staggered grids onto per-item subcomposition: each item is a slot of a `SubcomposeLayout`, composed when the measurement reaches it. This note is how that becomes Compose's public `lazy.layout` API, so apps can write their own lazy layouts, and how the existing layouts sit on it.
+Status: being built (2026-11-06): step 1 is in (D1322). C8's stage 1 (D1312 to D1317) moved lists, grids and staggered grids onto per-item subcomposition: each item is a slot of a `SubcomposeLayout`, composed when the measurement reaches it. This note is how that becomes Compose's public `lazy.layout` API, so apps can write their own lazy layouts, and how the existing layouts sit on it.
 
 ## What Compose has at tip
 
