@@ -3,7 +3,6 @@
 //! composed (D1226). Vertical grids, density 1.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use compose_animation::{AnimatedVisibility, AnimationModifiers, LINEAR_EASING, tween};
@@ -11,9 +10,10 @@ use compose_foundation::layout::*;
 use compose_foundation::*;
 use compose_runtime::*;
 use compose_test::*;
-use compose_ui::{Constraints, Dp, IntOffset, IntSize, Offset, UnitExt};
+use compose_ui::{Constraints, Dp, IntSize, UnitExt};
 
 use crate::lazy_animate_support::paused;
+use crate::lazy_lookahead_support::*;
 use crate::lazy_support::Lazy;
 use crate::scroll_support::run;
 
@@ -180,54 +180,6 @@ fn a_small_scroll_in_a_scope_moves_the_items() {
 // `isCacheWindowLookaheadCheckEnabled`, off at tip, so none of them runs there; none but the
 // dispose test's last expectations needs it.
 
-/// Where each item was placed, by key: ahead, from the root as the scope sees it
-/// (`localLookaheadPositionOf`), and now, in the root; rounded.
-#[derive(Clone, Default)]
-struct Positions {
-    ahead: Rc<RefCell<HashMap<i32, IntOffset>>>,
-    now: Rc<RefCell<HashMap<i32, IntOffset>>>,
-}
-
-impl Positions {
-    fn ahead(&self, item: i32) -> Option<IntOffset> {
-        self.ahead.borrow().get(&item).copied()
-    }
-
-    fn now(&self, item: i32) -> Option<IntOffset> {
-        self.now.borrow().get(&item).copied()
-    }
-
-    fn clear(&self) {
-        self.ahead.borrow_mut().clear();
-        self.now.borrow_mut().clear();
-    }
-}
-
-fn rounded(offset: Offset) -> IntOffset {
-    IntOffset::new(offset.x.round() as i32, offset.y.round() as i32)
-}
-
-/// Compose's tests' `trackPositions`: notes where `item` is placed in either pass.
-fn track(positions: &Positions, scope: compose_ui::LookaheadScope, item: i32) -> Modifier {
-    let positions = positions.clone();
-    Modifier.layout(move |measure, measurable, constraints| {
-        let placeable = measure.measure(measurable, constraints);
-        let positions = positions.clone();
-        measure.layout_with(placeable.width, placeable.height, move |placement| {
-            if let Some(at) = placement.coordinates() {
-                if placement.is_looking_ahead() {
-                    let root = at.find_root_coordinates();
-                    let offset = scope.local_lookahead_position_of(root, at, Offset::ZERO);
-                    positions.ahead.borrow_mut().insert(item, rounded(offset));
-                } else {
-                    positions.now.borrow_mut().insert(item, rounded(at.position_in_root()));
-                }
-            }
-            placement.place(&placeable, 0, 0);
-        })
-    })
-}
-
 /// Compose's tests' `LazyStaggeredGrid(lanes, modifier, state)` in `lazy`'s orientation.
 fn grid(
     lazy: Lazy,
@@ -254,27 +206,6 @@ fn grid(
             state = state,
             move |scope: LazyStaggeredGridScope| content(scope)
         );
-    }
-}
-
-fn main_axis(lazy: Lazy, offset: Option<IntOffset>) -> Option<i32> {
-    offset.map(|it| if lazy.vertical { it.y } else { it.x })
-}
-
-/// `(cross, main)` in `lazy`'s orientation.
-fn at(lazy: Lazy, cross: i32, main: i32) -> IntOffset {
-    if lazy.vertical { IntOffset::new(cross, main) } else { IntOffset::new(main, cross) }
-}
-
-/// An expected position: `None` for none, a cross axis of `None` for any (Compose's
-/// `UnspecifiedOffset`, the cross axis of items before those in view having no contract).
-type Expected = Option<(Option<i32>, i32)>;
-
-fn assert_offset(lazy: Lazy, expected: Expected, actual: Option<IntOffset>, what: &str) {
-    match expected {
-        None => assert_eq!(actual, None, "{what}"),
-        Some((None, main)) => assert_eq!(main_axis(lazy, actual), Some(main), "{what}"),
-        Some((Some(cross), main)) => assert_eq!(actual, Some(at(lazy, cross, main)), "{what}"),
     }
 }
 
@@ -347,13 +278,9 @@ fn positions_with_the_placement_animator(
                 assert_offset(lazy, expected, positions.ahead(item as i32), &what);
             }
         }
-        // Compose's asks this of an item ending just out of view too (`+ itemSize >= 0`), placed
-        // where it is ahead only in the frame its animation ends; here, as Compose's measurement
-        // reading `isPlacementAnimationInProgress` does, that frame lets it go before placing it.
-        // Its class doesn't run at tip, so that expectation isn't one tip meets either.
         for item in 0..target.len() as i32 {
             let ahead = positions.ahead(item);
-            if main_axis(lazy, ahead).is_none_or(|main| main + ITEM > 0) {
+            if main_axis(lazy, ahead).is_none_or(|main| main + ITEM >= 0) {
                 assert_eq!(positions.now(item), ahead, "{lazy:?} item {item} now in the end");
             }
         }
@@ -730,14 +657,6 @@ fn a_grid_smaller_ahead_places_what_it_shows_now() {
             check(&mut ui, shown, size);
         }
     }
-}
-
-/// Whether `tag`'s node is there and placed, as `assertIsPlaced`.
-fn is_placed(ui: &mut ComposeTestRule, tag: &str) -> bool {
-    ui.on_all_nodes_with_tag(tag)
-        .fetch_semantics_nodes()
-        .first()
-        .is_some_and(|it| it.layout_info().is_placed())
 }
 
 // Compose: LazyStaggeredGridInLookaheadTest.approachItemsComposedBasedOnScrollDelta

@@ -114,6 +114,11 @@ struct LazyListInner {
     /// The items the pass that's now last wanted, after a pass ahead: the pass ahead keeps them
     /// composed too, so what either pass wants stays composed across frames (D1226).
     wanted_now: Cell<Option<(usize, usize)>>,
+    /// A grid's: the last item the pass that's now showed after a pass ahead (Compose's
+    /// `approachLayoutInfo`), and the last the pass ahead showed. The pass ahead places the lines
+    /// up to the first's past its own (`linesRetainedForLookahead`, D1318).
+    approach_last: Cell<Option<usize>>,
+    ahead_last: Cell<Option<usize>>,
     /// Where the pass ahead placed each animated item: the pass that's now places it there.
     lookahead_places: RefCell<Vec<item_animator::LookaheadPlace>>,
     /// What runs `animate_item`, shared with its items' nodes.
@@ -468,6 +473,8 @@ impl LazyListInner {
             laid_out: layout_info::LaidOut::new(),
             measured_ahead: Cell::new(false),
             wanted_now: Cell::new(None),
+            approach_last: Cell::new(None),
+            ahead_last: Cell::new(None),
             lookahead_places: RefCell::default(),
             density: Cell::new(1.0),
             laid_items: RefCell::new(None),

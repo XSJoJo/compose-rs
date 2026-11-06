@@ -345,6 +345,11 @@ pub(super) struct ItemAnimation {
     released: Cell<bool>,
     running_moving_away: Cell<bool>,
     placement_in_progress: Cell<bool>,
+    /// Placement animations started: one ended keeps an item moving away a frame more only if no
+    /// other started since.
+    placement_runs: Cell<u32>,
+    /// Found past the bounds at its last frame: the next one ends it, after it's placed there.
+    cancel_pending: Cell<bool>,
     /// The list reads whether it's in progress: it measures again when it ends.
     placement_read: Cell<bool>,
     placement_animatable: Animatable<IntOffset>,
@@ -380,6 +385,8 @@ impl ItemAnimation {
             released: Cell::new(false),
             running_moving_away: Cell::new(false),
             placement_in_progress: Cell::new(false),
+            placement_runs: Cell::new(0),
+            cancel_pending: Cell::new(false),
             placement_read: Cell::new(false),
             placement_animatable: Animatable::new(IntOffset::ZERO),
             placement_delta_state: mutable_state_of(IntOffset::ZERO),
@@ -439,8 +446,14 @@ impl ItemAnimation {
 
     /// Both where it is and where it's going are past the list's bounds: as `place`'s check.
     fn check_bounds(&self) {
+        if self.out_of_bounds() {
+            self.cancel_placement();
+        }
+    }
+
+    fn out_of_bounds(&self) -> bool {
         if !self.placement_in_progress.get() {
-            return;
+            return false;
         }
         let (min, max, vertical) = self.bounds.get();
         let size = self.size.get();
@@ -448,19 +461,18 @@ impl ItemAnimation {
         let target = self.target_offset.get();
         let animated = target + self.placement_delta.get();
         let main = |offset: IntOffset| if vertical { offset.y } else { offset.x };
-        if (main(target) <= min && main(animated) <= min)
+        (main(target) <= min && main(animated) <= min)
             || (main(target) >= max && main(animated) >= max)
-        {
-            self.cancel_placement();
-        }
     }
 
     fn animate_placement_delta(&self, delta: IntOffset, moving_away: bool) {
         let Some(spec) = self.placement_spec.borrow().clone() else { return };
         let total = self.placement_delta.get() - delta;
         self.set_delta(total);
+        self.cancel_pending.set(false);
         self.placement_in_progress.set(true);
         self.running_moving_away.set(moving_away);
+        self.placement_runs.set(self.placement_runs.get().wrapping_add(1));
         let this = self.strong();
         self.scope.launch(async move {
             let animatable = &this.placement_animatable;
@@ -477,13 +489,32 @@ impl ItemAnimation {
             let velocity = animatable.velocity();
             let result = animatable
                 .animate_to_with(target, spec, velocity, |animatable| {
+                    if this.cancel_pending.take() {
+                        this.cancel_placement();
+                        return;
+                    }
                     this.set_delta(animatable.value() - target);
-                    this.check_bounds();
+                    // Past the bounds, it's placed there once before it stops, as Compose's
+                    // `place` places it where it checked it and launches the cancelling.
+                    if this.out_of_bounds() {
+                        this.cancel_pending.set(true);
+                    }
                 })
                 .await;
-            if result.end_reason == AnimationEndReason::Finished
-                && this.placement_in_progress.replace(false)
-            {
+            if result.end_reason != AnimationEndReason::Finished {
+                return;
+            }
+            // An item moving away is placed once more where it ends before it goes: Compose's
+            // code after `animateTo` runs dispatched, after the frame lays out with the last value.
+            if this.running_moving_away.get() {
+                let runs = this.placement_runs.get();
+                compose_runtime::with_frame_nanos(|_| ()).await;
+                if this.placement_runs.get() != runs {
+                    return;
+                }
+            }
+            this.cancel_pending.set(false);
+            if this.placement_in_progress.replace(false) {
                 this.running_moving_away.set(false);
                 if this.placement_read.replace(false) {
                     this.measure_again();
@@ -949,9 +980,11 @@ impl ItemAnimator {
         for animation in self.disappearing.borrow().iter() {
             let target = animation.target_offset.get();
             let own = animation.size.get();
+            // Wrapping as Kotlin's `Int`: one disappearing before its target is known (a reorder
+            // in a lookahead scope, `reorderingInLookahead`) counts for nothing.
             size = IntSize::new(
-                size.width.max(target.x + own.width),
-                size.height.max(target.y + own.height),
+                size.width.max(target.x.wrapping_add(own.width)),
+                size.height.max(target.y.wrapping_add(own.height)),
             );
         }
         size
