@@ -502,8 +502,42 @@ fn writing_state_in_the_calculation_panics() {
     let state = mutable_state_of(0);
     let write = state.handle();
     let computed = computed_state_of(move || write.set(1));
-    assert!(catch_unwind(AssertUnwindSafe(|| computed.get())).is_err());
+    let panicked = catch_unwind(AssertUnwindSafe(|| computed.get())).expect_err("it panics");
+    assert_eq!(message(&*panicked), "Cannot modify a state object in a read-only snapshot");
     assert_eq!(state.get(), 0);
+}
+
+/// A panic's message.
+fn message(payload: &(dyn std::any::Any + Send)) -> String {
+    match payload.downcast_ref::<&str>() {
+        Some(message) => message.to_string(),
+        None => payload.downcast_ref::<String>().cloned().unwrap_or_default(),
+    }
+}
+
+/// A computed state reading itself through another panics with derived state's message, observed
+/// or not, where it would overflow the stack (D1504).
+#[test]
+fn a_computed_state_reading_itself_through_another_panics() {
+    let _open = open_snapshots();
+    let late: Rc<Cell<Option<State<i32>>>> = Rc::default();
+    let other = late.clone();
+    let a = computed_state_of(move || other.get().expect("tied").get() + 1);
+    let a_state = a.as_state();
+    let b = computed_state_of(move || a_state.get() + 1);
+    late.set(Some(b.as_state()));
+    let panicked = catch_unwind(AssertUnwindSafe(|| a.get())).expect_err("it panics");
+    assert_eq!(message(&*panicked), "A derived state calculation cannot read itself");
+    // Observed: a derived state's read, the other calculated in its calculation.
+    let observer = SnapshotStateObserver::new(|run| run());
+    observer.start();
+    let on_change: Rc<dyn Fn(&())> = Rc::new(|_| {});
+    let panicked = catch_unwind(AssertUnwindSafe(|| {
+        observer.observe_reads((), &on_change, || a.get());
+    }))
+    .expect_err("it panics");
+    assert_eq!(message(&*panicked), "A derived state calculation cannot read itself");
+    observer.stop();
 }
 
 // Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/ComputedSnapshotStateTests.kt, writingStateInInvalidationCheckThrows

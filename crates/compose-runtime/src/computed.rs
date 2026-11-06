@@ -45,7 +45,9 @@ fn new_computed<T: 'static>(
     let calculation = Rc::new(calculation);
     let read_only = move || Snapshot::with_read_only(|| calculation());
     ComputedState {
-        owner: crate::derived::new_cell(Some(equivalent), equivalent, Box::new(read_only), true),
+        // No policy for the cell: each calculation's value is the one read, as Compose's; the
+        // policy decides only whether readers are told (D1504).
+        owner: crate::derived::new_cell(None, equivalent, Box::new(read_only), true),
     }
 }
 

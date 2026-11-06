@@ -635,26 +635,33 @@ fn a_new_instance_leaves_no_reader_behind() {
 // Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/CompositionAndComputedStateTests.kt, changingComputedStateDependenciesShouldClearThem
 #[test]
 fn a_computed_state_reading_a_new_instance_leaves_the_old_one() {
-    // Compose counts the composition's derived dependencies; here, the old instances are freed
-    // and a change to one recomposes nothing.
+    // Compose counts the composition's derived dependencies; here, the old instances are freed,
+    // and what they read is no dependency any more: writing it calculates nothing.
     let mut test = composition_test();
     let reload = mutable_state_of(0);
     let r = reload.handle();
+    let sources: Rc<Vec<MutableState<i32>>> =
+        Rc::new((0..11).map(|_| kept_state(mutable_state_of(1))).collect());
     let instances: Rc<std::cell::RefCell<Vec<State<i32>>>> = Rc::default();
     let seen = instances.clone();
-    let compositions = Counter::new();
-    let c = compositions.clone();
+    let (compositions, calculations) = (Counter::new(), Counter::new());
+    let (c, l, s) = (compositions.clone(), calculations.clone(), sources.clone());
     test.compose(move || {
         c.increment();
-        let item_value = remember_keyed(r.get(), || computed_state_of(|| 1));
+        let source = s[r.get() as usize];
+        let item_value = remember_keyed(r.get(), move || computed_state_of(move || source.get()));
         seen.borrow_mut().push(item_value);
         let intermediate = remember_updated_state(item_value);
+        let l = l.clone();
         let list = remember(move || {
-            computed_state_of(move || (0..10).map(|_| intermediate.get().get()).collect::<Vec<_>>())
+            computed_state_of(move || {
+                l.increment();
+                (0..10).map(|_| intermediate.get().get()).collect::<Vec<_>>()
+            })
         });
-        Text(&format!("List of size {}", list.with(Vec::len)));
+        Text(&format!("Sum {}", list.with(|list| list.iter().sum::<i32>())));
     });
-    test.validate(|v| v.text("List of size 10"));
+    test.validate(|v| v.text("Sum 10"));
     for _ in 0..10 {
         reload.update(|r| r + 1);
         test.advance();
@@ -662,6 +669,49 @@ fn a_computed_state_reading_a_new_instance_leaves_the_old_one() {
     test.revalidate();
     assert_old_instances_freed(&instances.borrow());
     assert_eq!(compositions.get(), 11);
+    let before = calculations.get();
+    for old in &sources[..10] {
+        old.set(2);
+    }
+    test.expect_no_changes();
+    assert_eq!(calculations.get(), before, "an old instance's source is still a dependency");
+    sources[10].set(2);
+    test.expect_changes();
+    test.validate(|v| v.text("Sum 20"));
+}
+
+/// Ten apart, as one policy: `5` and `7` are the same.
+struct Tens;
+
+impl MutationPolicy<i32> for Tens {
+    fn equivalent(a: &i32, b: &i32) -> bool {
+        a / 10 == b / 10
+    }
+}
+
+/// A result its policy finds equal to the last tells no reader, but it's the value read: Compose's
+/// value is always the calculation's (D1504).
+#[test]
+fn a_policy_equal_result_is_the_value_read() {
+    let mut test = composition_test();
+    let (x, trigger) = (mutable_state_of(5), mutable_state_of(0));
+    let (xh, th) = (x.handle(), trigger.handle());
+    let computed = kept(computed_state_of_with(Tens, move || xh.get()));
+    let compositions = Counter::new();
+    let c = compositions.clone();
+    test.compose(move || {
+        c.increment();
+        th.get();
+        Text(&format!("c = {}", computed.get()));
+    });
+    test.validate(|v| v.text("c = 5"));
+    x.set(7);
+    test.expect_no_changes();
+    assert_eq!(compositions.get(), 1, "equal by the policy: no reader is told");
+    assert_eq!(computed.get(), 7);
+    trigger.set(1);
+    test.expect_changes();
+    test.validate(|v| v.text("c = 7"));
 }
 
 // Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/CompositionAndComputedStateTests.kt, computedStateOfMutationPolicyDoesNotInvalidateNestedStates

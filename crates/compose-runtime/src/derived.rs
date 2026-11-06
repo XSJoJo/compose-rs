@@ -572,7 +572,20 @@ pub(crate) fn new_cell<T: 'static>(
 /// Runs a derived state's calculation as it is, outside its records: a computed state read with
 /// nothing observing it.
 pub(crate) fn calculate<T: 'static>(cell: &Rc<dyn StateObjectCell>) -> T {
-    (DerivedCell::<T>::of(cell).calculation)()
+    /// Ends the calculation, on an unwind too.
+    struct Calculating<'a>(&'a Cell<bool>);
+    impl Drop for Calculating<'_> {
+        fn drop(&mut self) {
+            self.0.set(false);
+        }
+    }
+    let derived = DerivedCell::<T>::of(cell);
+    // Through other states too: a stack overflow would abort.
+    if derived.calculating.replace(true) {
+        panic!("A derived state calculation cannot read itself");
+    }
+    let _calculating = Calculating(&derived.calculating);
+    (derived.calculation)()
 }
 
 /// The equivalence a policy decides with, for `computed`.

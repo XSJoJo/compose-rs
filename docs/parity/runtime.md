@@ -345,6 +345,7 @@ Sizes: S under a day, M a few days, L one to two weeks, XL multi-week. None of t
 - **Does:** a `State` whose calculation runs at each read outside observation, and is cached while observed, invalidating readers only when its result changes by the policy; writes in the calculation are errors.
 - **Tests:** `CompositionAndComputedStateTests` (30), `ComputedSnapshotStateTests` (24), 16 of `SnapshotStateObserverTestsCommon`, 1 of `SnapshotStateObserverTestsJvm`: ported.
 - **Depends on:** nothing now; it's a derived state's cell where reads are observed.
+- **Gaps:** a non-transitive policy can leave a reader silent where Compose invalidates it (D1504); after a panic during a send, an observer misses the next change, as with derived state.
 
 ### snapshot-observation (M): done (steps S1 and S2 of docs/parity/design/snapshots.md; D751–D753, D759, D760)
 - **APIs:** `Snapshot::without_read_observation`, `Snapshot::observe(read_observer, write_observer, block)`, `register_apply_observer`, `register_global_write_observer`, `send_apply_notifications`, `ObserverHandle`, a public `SnapshotStateObserver` built on `platform::ReadObserver`.
