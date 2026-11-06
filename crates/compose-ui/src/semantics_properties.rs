@@ -71,6 +71,13 @@ impl PartialEq for ColorProducer {
     }
 }
 
+/// The same function, as a Kotlin lambda is compared.
+impl compose_runtime::ComposeArg for ColorProducer {
+    fn same(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
 impl fmt::Debug for ColorProducer {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{:?}", (self.0)())

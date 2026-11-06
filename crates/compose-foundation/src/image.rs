@@ -35,6 +35,43 @@ pub fn Image(
     );
 }
 
+/// What `painter` paints, as Compose's `Image(painter, contentDescription, …)` (named apart, as
+/// Rust has no overloads, D181): a node clipped to its bounds, sized by the painter's intrinsic
+/// size within its constraints, scaled by `content_scale` and placed by `alignment` (as
+/// `Modifier.paint`), at `alpha`, through `color_filter`. `content_description` is what
+/// accessibility reads; `None` for decoration.
+#[composable]
+#[allow(non_snake_case)]
+pub fn PainterImage(
+    painter: compose_ui::Painter,
+    content_description: Option<impl Into<compose_ui::SharedString>>,
+    #[default(crate::Modifier)] modifier: Modifier,
+    #[default(crate::Alignment::CENTER)] alignment: Alignment,
+    #[default(crate::ContentScale::Fit)] content_scale: ContentScale,
+    #[default(1.0)] alpha: f32,
+    #[default(None)] color_filter: Option<compose_ui::ColorFilter>,
+) {
+    let modifier = match content_description {
+        Some(description) => modifier.semantics(move |config| {
+            config.set_content_description(description.clone());
+            config.set_role(Role::Image);
+        }),
+        None => modifier,
+    };
+    compose_ui::Layout(
+        modifier.clip_to_bounds().paint_with(
+            painter,
+            true,
+            alignment,
+            content_scale,
+            alpha,
+            color_filter,
+        ),
+        compose_ui::empty_measure_policy(),
+        compose_runtime::callback(|| {}),
+    );
+}
+
 struct ImageElement {
     bitmap: ImageBitmap,
     content_description: Option<compose_ui::SharedString>,

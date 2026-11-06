@@ -31,7 +31,8 @@ These are on local branches, so they're not lost, but each still has to finish i
 - **Runtime:** computed state (about 55), composition observers, error traces, composition data.
 
 ### 3. Graphics
-- **`GraphicsLayer` as an object** (about 95), **color spaces** (about 70), **`Painter`** (about 45), offscreen canvas and bitmaps.
+- **`GraphicsLayer` as an object** (about 95), **color spaces** (about 70), offscreen canvas and bitmaps.
+- **`Painter`** is in (D1901): `Painter`, `BitmapPainter`, `ColorPainter`, `Modifier.paint`, `Image(painter)` (`PainterImage`) and Material's `Icon(painter)` with a color or a `ColorProducer` tint. Still missing: `BrushPainter`, `FilterQuality`, and `painterResource`.
 - **Blend modes and color filters** are in (D1900): `BlendMode`, `ColorFilter`'s tint, lighting and matrix, `ColorMatrix`, on paints, images and layers, on Skia and Android. Still missing: `Brush.composite`, a blend mode on `drawImage`, and a graphics layer's `colorFilter` and `blendMode`.
 - **Vector graphics** (about 90) and **animated image vectors** (about 20).
 - **Blur** (about 80), **drop and inner shadows** (about 45), brush and path extras, polygon shapes (about 65).

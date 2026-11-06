@@ -66,6 +66,7 @@ mod nodes;
 mod observer_node;
 mod optimizations;
 mod overlay;
+mod painter;
 mod paragraph;
 mod paragraph_style;
 mod parent_data;
@@ -277,6 +278,7 @@ pub use nested_scroll::{
 pub use node_context::{NodeContext, NodeHandle};
 pub use observer_node::ObserverModifierNode;
 pub use overlay::{PopupPositionProvider, WindowPosition};
+pub use painter::{BitmapPainter, ColorPainter, CustomPainter, Painter};
 pub use paragraph::{Paragraph, TextLayoutInput};
 pub use paragraph_style::ParagraphStyle;
 pub use parent_data::{LayoutIdParentData, ParentDataModifierNode};

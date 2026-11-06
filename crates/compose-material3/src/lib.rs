@@ -125,7 +125,8 @@ pub use icon::{
     BitmapIcon, FilledIconButton, FilledIconToggleButton, FilledTonalIconButton,
     FilledTonalIconToggleButton, Icon, IconButton, IconButtonColors, IconButtonDefaults,
     IconButtonShapes, IconButtonWidthOption, IconToggleButton, IconToggleButtonColors,
-    IconToggleButtonShapes, OutlinedIconButton, OutlinedIconToggleButton, icons,
+    IconToggleButtonShapes, OutlinedIconButton, OutlinedIconToggleButton, PainterIcon,
+    PainterIconWithTintProducer, icons,
 };
 pub use list_item::{
     ClickableListItem, ClickableSegmentedListItem, ListItem, ListItemColors, ListItemDefaults,
