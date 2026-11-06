@@ -29,6 +29,7 @@ mod text_field;
 mod text_field_buffer;
 mod text_field_state;
 pub mod text_input;
+mod text_undo;
 pub mod tooltip;
 
 pub use compose_ui::{
@@ -102,4 +103,5 @@ pub use text_input::{
     OffsetMapping, PasswordVisualTransformation, TransformedText, VisualTransform,
     VisualTransformation,
 };
+pub use text_undo::UndoState;
 pub use tooltip::{TooltipArea, TooltipPlacement};

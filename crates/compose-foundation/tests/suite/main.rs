@@ -146,6 +146,7 @@ mod shape_parity;
 mod snapping;
 mod text_field_semantics;
 mod text_field_state;
+mod text_field_undo;
 mod text_input;
 mod text_reuse;
 mod text_selection_colors;

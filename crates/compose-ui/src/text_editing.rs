@@ -180,6 +180,9 @@ pub struct EditingBuffer {
     selection_start: usize,
     selection_end: usize,
     composition: Option<(usize, usize)>,
+    /// What its edits replaced, in order, each in the text as it was then, when asked to keep
+    /// them (`EditProcessor::track_edits`).
+    edits: Option<Vec<(std::ops::Range<usize>, String)>>,
 }
 
 impl EditingBuffer {
@@ -190,7 +193,13 @@ impl EditingBuffer {
         let (start, end) = (selection.min(), selection.max());
         check_offset(&text, "start", start);
         check_offset(&text, "end", end);
-        EditingBuffer { text, selection_start: start, selection_end: end, composition: None }
+        EditingBuffer {
+            text,
+            selection_start: start,
+            selection_end: end,
+            composition: None,
+            edits: None,
+        }
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -234,6 +243,9 @@ impl EditingBuffer {
     /// as Compose's `replace`.
     pub(crate) fn replace(&mut self, start: usize, end: usize, text: &str) {
         self.check_range(start, end);
+        if let Some(edits) = &mut self.edits {
+            edits.push((start..end, text.to_string()));
+        }
         self.text.replace_range(start..end, text);
         // As Compose: the cursor goes after the new text (a platform setting the selection
         // after a replacement sets it again), and a change ends the composition.
@@ -248,6 +260,11 @@ impl EditingBuffer {
         let deleted = TextRange::new(start, end);
         check_offset(&self.text, "start", deleted.min());
         check_offset(&self.text, "end", deleted.max());
+        if let Some(edits) = &mut self.edits
+            && !deleted.collapsed()
+        {
+            edits.push((deleted.range(), String::new()));
+        }
         self.text.replace_range(deleted.range(), "");
         let selection = update_range_after_delete(self.selection(), deleted);
         self.selection_start = selection.min();
@@ -924,6 +941,21 @@ impl EditProcessor {
         );
         self.buffer_state = value.clone();
         value
+    }
+
+    /// Keeps what the commands applied from now on replace, for
+    /// [`take_edits`](Self::take_edits): compose-rs's, for a field whose state records its
+    /// changes (Compose's state-based field edits its state's buffer directly).
+    #[doc(hidden)]
+    pub fn track_edits(&mut self) {
+        self.buffer.edits.get_or_insert_with(Vec::new);
+    }
+
+    /// What the commands applied since tracking began replaced, in order, each range in the text
+    /// as it was then and the text put there; the list starts again.
+    #[doc(hidden)]
+    pub fn take_edits(&mut self) -> Vec<(std::ops::Range<usize>, String)> {
+        self.buffer.edits.as_mut().map(std::mem::take).unwrap_or_default()
     }
 
     /// The buffer's state, as Compose's `toTextFieldValue`.

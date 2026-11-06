@@ -1,6 +1,6 @@
 # `TextFieldState` and the state-based `BasicTextField`
 
-Design note, written before step 1. **Step 1 is built** (D1128 to D1131); steps 2 to 6 are left. From Compose's `text/input` package at the tip (`TextFieldState.kt`, `TextFieldBuffer.kt`, `internal/ChangeTracker.kt`, `TextFieldCharSequence.kt`, `InputTransformation.kt`, `OutputTransformation.kt`, `TextFieldLineLimits.kt`, `KeyboardActionHandler.kt`, `UndoState.kt`, `TextUndoManager.kt`, `internal/TransformedTextFieldState.kt`, `BasicTextField.kt`) and compose-rs's value-based field (`text_field.rs`) with the keyboard path it sits on (D1663 to D1673). Line counts are estimates. The ledger's `feature:text-field-state` and the features after it (`undo-parity`, `input-transformation`, `output-transformation`, `secure-text-field`, `text-field-styles`) are what this plans.
+Design note, written before step 1. **Steps 1 and 2 are built** (D1128 to D1132); steps 3 to 6 are left. From Compose's `text/input` package at the tip (`TextFieldState.kt`, `TextFieldBuffer.kt`, `internal/ChangeTracker.kt`, `TextFieldCharSequence.kt`, `InputTransformation.kt`, `OutputTransformation.kt`, `TextFieldLineLimits.kt`, `KeyboardActionHandler.kt`, `UndoState.kt`, `TextUndoManager.kt`, `internal/TransformedTextFieldState.kt`, `BasicTextField.kt`) and compose-rs's value-based field (`text_field.rs`) with the keyboard path it sits on (D1663 to D1673). Line counts are estimates. The ledger's `feature:text-field-state` and the features after it (`undo-parity`, `input-transformation`, `output-transformation`, `secure-text-field`, `text-field-styles`) are what this plans.
 
 ## Where it starts
 
@@ -20,7 +20,7 @@ The value-based `BasicTextField` is a node, `TextFieldNode`, holding a working c
 
 **Composition** is in the state, as Compose's (D1663 already made it part of the value-based field's value): a programmatic `edit` that changes the text or selection commits it, and a node seeing that its composition went (an edit from elsewhere) ends a desktop preedit as `end_composition` does (D1668).
 
-**Undo** is Compose's `UndoState` in the state, step 2. Until then the state-based field keeps the node's D118 history, which a programmatic edit clears as an application's new value does today.
+**Undo** is Compose's `UndoState` in the state (step 2, D1132): `TextUndoManager`'s staged operation and `UndoManager`'s two state lists, user edits merging by Compose's rules, programmatic ones never, undo and redo applied without side effects; the state-based node's Cmd+Z and Ctrl+Y go to it, and the node keeps no history of its own. The node's `EditProcessor` keeps what its commands replace (`track_edits`), so the state's changes are where the edits were.
 
 ## The field over the state
 
