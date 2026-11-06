@@ -1763,8 +1763,9 @@ pub extern "system" fn Java_rs_compose_android_ComposeRsNative_nextTimer(
     platform::next_timer().map_or(-1, |wait| wait.as_nanos().div_ceil(1_000_000) as jlong)
 }
 
-/// `ComposeRsNative.key(host, key, character, down, meta)`: a key (see `Keys` in
-/// `ComposeRsView.kt`; 0 for a character), with its typed text for a character key down.
+/// `ComposeRsNative.key(host, key, character, down, meta, soft)`: a key (see `Keys` in
+/// `ComposeRsView.kt`; 0 for a character), with its typed text for a character key down; `soft`
+/// when an on-screen keyboard sent it (`FLAG_SOFT_KEYBOARD`).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_rs_compose_android_ComposeRsNative_key(
     _env: EnvUnowned,
@@ -1774,6 +1775,7 @@ pub extern "system" fn Java_rs_compose_android_ComposeRsNative_key(
     character: jint,
     down: jboolean,
     meta: jint,
+    soft: jboolean,
 ) -> jboolean {
     // SAFETY: a live host, on the main thread.
     let host = unsafe { self::host(host) };
@@ -1814,7 +1816,8 @@ pub extern "system" fn Java_rs_compose_android_ComposeRsNative_key(
     let text = character
         .filter(|c| down && !modifiers.ctrl && !modifiers.meta && !c.is_control())
         .map(|c| c.to_string());
-    host.ui.send_key_and_text(KeyEvent { key, kind, modifiers }, text.as_deref())
+    let event = KeyEvent { key, kind, modifiers, from_soft_keyboard: soft };
+    host.ui.send_key_and_text(event, text.as_deref())
 }
 
 // ---- The keyboard's connection (`ComposeRsInputConnection`, `input_method.rs`) --------------

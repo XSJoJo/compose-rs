@@ -200,7 +200,7 @@ pub(crate) fn handle(state: &mut InputState, host: &mut UiHost, event: &WindowEv
                     && text.chars().all(|c| !c.is_control())
             });
             host.send_key_and_text(
-                KeyEvent { key, kind, modifiers: state.modifiers },
+                KeyEvent { key, kind, modifiers: state.modifiers, from_soft_keyboard: false },
                 text.map(|text| text.as_str()),
             );
         }

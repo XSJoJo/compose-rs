@@ -18,8 +18,18 @@ fn shortcut(ui: &mut ComposeTestRule, c: char) {
         KeyModifiers { ctrl: true, ..Default::default() }
     };
     let key = Key::Character(c);
-    ui.host().send_key(KeyEvent { key, kind: KeyEventType::KeyDown, modifiers });
-    ui.host().send_key(KeyEvent { key, kind: KeyEventType::KeyUp, modifiers });
+    ui.host().send_key(KeyEvent {
+        key,
+        kind: KeyEventType::KeyDown,
+        modifiers,
+        from_soft_keyboard: false,
+    });
+    ui.host().send_key(KeyEvent {
+        key,
+        kind: KeyEventType::KeyUp,
+        modifiers,
+        from_soft_keyboard: false,
+    });
     ui.wait_for_idle();
 }
 
@@ -213,8 +223,18 @@ fn shift_page_down_extends_the_selection() {
     let value = Rc::new(RefCell::new(String::new()));
     let mut ui = paged_field(3.0, 0, value.clone());
     let modifiers = KeyModifiers { shift: true, ..Default::default() };
-    ui.host().send_key(KeyEvent { key: Key::PageDown, kind: KeyEventType::KeyDown, modifiers });
-    ui.host().send_key(KeyEvent { key: Key::PageDown, kind: KeyEventType::KeyUp, modifiers });
+    ui.host().send_key(KeyEvent {
+        key: Key::PageDown,
+        kind: KeyEventType::KeyDown,
+        modifiers,
+        from_soft_keyboard: false,
+    });
+    ui.host().send_key(KeyEvent {
+        key: Key::PageDown,
+        kind: KeyEventType::KeyUp,
+        modifiers,
+        from_soft_keyboard: false,
+    });
     ui.wait_for_idle();
     ui.type_text("x");
     assert_eq!(*value.borrow(), "xD\nE");
@@ -247,6 +267,7 @@ fn a_key_a_preview_consumed_types_nothing() {
         key: Key::Character(c),
         kind: KeyEventType::KeyDown,
         modifiers: KeyModifiers::default(),
+        from_soft_keyboard: false,
     };
     assert!(ui.host().send_key_and_text(down('y'), Some("y")));
     ui.wait_for_idle();

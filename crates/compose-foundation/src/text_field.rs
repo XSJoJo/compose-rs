@@ -255,9 +255,11 @@ impl ModifierNodeElement for StateTextFieldElement {
         }
         node.enabled = self.enabled;
         node.read_only = self.read_only;
-        // No more written to: the input ends with what it composed, as Compose's `endInputSession`.
+        // No more written to: the input ends with what it composed, as Compose's `endInputSession`,
+        // and the state hears of it now.
         if !node.enabled || node.read_only {
             node.end_composition();
+            node.publish_state(true);
         }
         node.cursor_color = cursor_color;
         node.selection_color = self.selection_color;
@@ -296,6 +298,9 @@ pub(crate) struct StateLink {
     seen: Option<TextFieldCharSequence>,
     /// The node's text changed since it last wrote it.
     text_changed: bool,
+    /// The last key down came from an on-screen keyboard: the text it types is its own edit,
+    /// which doesn't restart it (Compose's `isFromSoftKeyboard`).
+    soft_key: bool,
     /// Set by the state's listener: the input method must start over (Compose's `restartIme`).
     restart: Rc<Cell<bool>>,
     listener: u64,
@@ -307,7 +312,15 @@ impl StateLink {
     fn new(state: TextFieldState, cursor_brush: Option<compose_ui::Brush>) -> StateLink {
         let restart = Rc::new(Cell::new(false));
         let listener = StateLink::listen(state, &restart);
-        StateLink { state, seen: None, text_changed: false, restart, listener, cursor_brush }
+        StateLink {
+            state,
+            seen: None,
+            text_changed: false,
+            soft_key: false,
+            restart,
+            listener,
+            cursor_brush,
+        }
     }
 
     /// Listens to `state` for its rule of restarting the input method, as the input session's
@@ -2044,12 +2057,17 @@ impl TextFieldNode {
 impl KeyInputModifierNode for TextFieldNode {
     fn on_key_event(&mut self, event: &KeyEvent, context: &mut EventContext<'_>) -> bool {
         self.adopt_state_in(context);
+        if let Some(link) = self.state.as_mut() {
+            link.soft_key = event.from_soft_keyboard && event.kind == KeyEventType::KeyDown;
+        }
         let selection = (self.anchor, self.cursor);
         let consumed = self.on_key_event_here(event, context);
         if selection != (self.anchor, self.cursor) {
             context.invalidate_semantics();
         }
-        self.publish_state(false);
+        // An on-screen keyboard's key is its own edit: it doesn't restart it, as Compose's key
+        // handler (`restartImeIfContentChanges = !isFromSoftKeyboard`).
+        self.publish_state(event.from_soft_keyboard);
         consumed
     }
 
@@ -2064,7 +2082,9 @@ impl KeyInputModifierNode for TextFieldNode {
             self.on_preedit("", None, context);
         }
         self.insert(text, true, context);
-        self.publish_state(false);
+        // The text of an on-screen keyboard's key is its own edit, as the key is.
+        let soft = self.state.as_mut().is_some_and(|link| std::mem::take(&mut link.soft_key));
+        self.publish_state(soft);
         true
     }
 

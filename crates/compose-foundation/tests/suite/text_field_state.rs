@@ -922,22 +922,126 @@ fn a_read_only_field_leaves_its_state() {
 fn undo_goes_back_in_the_state() {
     let (mut ui, state) = focused("");
     ui.type_text("abc");
+    shortcut(&mut ui, 'z');
+    assert_eq!(state.text().as_str(), "");
+}
+
+/// Cmd+`c` on macOS, Ctrl+`c` elsewhere, down and up.
+fn shortcut(ui: &mut ComposeTestRule, c: char) {
     let modifiers = if cfg!(target_os = "macos") {
         compose_ui::KeyModifiers { meta: true, ..Default::default() }
     } else {
         compose_ui::KeyModifiers { ctrl: true, ..Default::default() }
     };
-    let key = Key::Character('z');
-    ui.host().send_key(compose_ui::KeyEvent {
-        key,
-        kind: compose_ui::KeyEventType::KeyDown,
-        modifiers,
-    });
-    ui.host().send_key(compose_ui::KeyEvent {
-        key,
-        kind: compose_ui::KeyEventType::KeyUp,
-        modifiers,
-    });
+    for kind in [compose_ui::KeyEventType::KeyDown, compose_ui::KeyEventType::KeyUp] {
+        let key = Key::Character(c);
+        ui.host().send_key(compose_ui::KeyEvent {
+            key,
+            kind,
+            modifiers,
+            from_soft_keyboard: false,
+        });
+    }
     ui.wait_for_idle();
+}
+
+/// An edit of the state ends the field's history there: undo doesn't go back past it, and the
+/// edit stays (D1131).
+#[test]
+fn undo_stops_at_an_edit_of_the_state() {
+    let (mut ui, state) = focused("");
+    ui.type_text("abc");
+    state.edit(|buffer| buffer.append("X"));
+    ui.wait_for_idle();
+    ui.type_text("d");
+    shortcut(&mut ui, 'z');
+    shortcut(&mut ui, 'z');
+    assert_eq!(state.text().as_str(), "abcX");
+}
+
+/// Cut and paste without a composition don't restart the input method: the state's rule
+/// restarts it only under one, unlike the value-based field (D1664).
+#[test]
+fn cut_and_paste_restart_nothing_without_a_composition() {
+    let (mut ui, state) = focused("hello");
+    state.edit(|buffer| buffer.select_all());
+    ui.wait_for_idle();
+    ui.host().take_input_method_restart();
+    shortcut(&mut ui, 'x');
     assert_eq!(state.text().as_str(), "");
+    assert!(!ui.host().take_input_method_restart(), "cut");
+    shortcut(&mut ui, 'v');
+    assert_eq!(state.text().as_str(), "hello");
+    assert!(!ui.host().take_input_method_restart(), "paste");
+}
+
+/// Backspace under a composition restarts the input method when a hardware keyboard sent it, not
+/// when the on-screen keyboard did, as Compose's `restartImeIfContentChanges =
+/// !isFromSoftKeyboard`.
+#[test]
+fn a_soft_keyboards_key_under_a_composition_restarts_nothing() {
+    for soft in [true, false] {
+        let (mut ui, state) = focused("");
+        assert!(ui.host().send_edit_commands(&[&SetComposingTextCommand::new("hel", 1)]));
+        ui.wait_for_idle();
+        ui.host().take_input_method_restart();
+        for kind in [compose_ui::KeyEventType::KeyDown, compose_ui::KeyEventType::KeyUp] {
+            let modifiers = compose_ui::KeyModifiers::default();
+            let key = Key::Backspace;
+            ui.host().send_key(compose_ui::KeyEvent {
+                key,
+                kind,
+                modifiers,
+                from_soft_keyboard: soft,
+            });
+        }
+        ui.wait_for_idle();
+        assert_eq!(state.text().as_str(), "he");
+        assert_eq!(ui.host().take_input_method_restart(), !soft, "soft: {soft}");
+    }
+}
+
+/// A field turned read-only ends what was composed, in its state at once: what's composed after
+/// it in the same pass reads no composition.
+#[test]
+fn a_field_turned_read_only_ends_the_states_composition() {
+    let state = **Box::leak(Box::new(TextFieldState::new("")));
+    let read_only = Box::leak(Box::new(mutable_state_of(false))).handle();
+    let seen: Readings = Rc::default();
+    let log = seen.clone();
+    let mut ui = compose_test(move || {
+        let log = log.clone();
+        Column!({
+            BasicTextFieldOfState!(
+                state,
+                modifier = Modifier.width(200.dp()).test_tag("field"),
+                read_only = read_only.get(),
+            );
+            Reader(read_only, state, log.clone());
+        });
+    });
+    ui.on_node_with_tag("field").request_focus();
+    assert!(ui.host().send_edit_commands(&[&SetComposingTextCommand::new("hel", 1)]));
+    ui.wait_for_idle();
+    assert_eq!(state.composition(), Some(range(0, 3)));
+    read_only.set(true);
+    ui.wait_for_idle();
+    assert_eq!(state.composition(), None);
+    assert_eq!(state.text().as_str(), "hel");
+    let stale: Vec<_> = seen
+        .borrow()
+        .iter()
+        .filter(|(read_only, composition)| *read_only && composition.is_some())
+        .cloned()
+        .collect();
+    assert!(stale.is_empty(), "read while read-only: {:?}", seen.borrow());
+}
+
+/// What `Reader` saw, each time: read-only, and the state's composition.
+type Readings = Rc<RefCell<Vec<(bool, Option<TextRange>)>>>;
+
+/// Records whether the field is read-only and what its state composes, each time it's composed.
+#[composable]
+fn Reader(read_only: MutableState<bool>, state: TextFieldState, log: Readings) {
+    log.borrow_mut().push((read_only.get(), state.composition()));
 }

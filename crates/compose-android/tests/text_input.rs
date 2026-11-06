@@ -176,6 +176,7 @@ fn done_hides_the_keyboard_and_the_controller_shows_it() {
         key: compose_ui::Key::Enter,
         kind: compose_ui::KeyEventType::KeyDown,
         modifiers: Default::default(),
+        from_soft_keyboard: false,
     });
     host.frame();
     assert_eq!(take_text_input_state(&host, &mut last).keyboard, Some(false));
