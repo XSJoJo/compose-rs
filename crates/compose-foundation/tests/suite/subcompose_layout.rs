@@ -1656,7 +1656,7 @@ fn a_paused_slot_says_it_s_complete_as_resuming_does() {
 
 // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, precomposePaused_applyOnNotCompletedPrecompositionThrows
 #[test]
-#[should_panic]
+#[should_panic(expected = "a paused composition was used out of order")]
 fn applying_what_s_not_complete_panics() {
     let state = SubcomposeLayoutState::new();
     let _ui = empty_layout(&state);
@@ -2447,4 +2447,34 @@ fn a_launched_effect_in_a_slot_runs_after_the_frame() {
     let mut ui = compose_test(move || SubcomposeLayout!(measure_policy = policy.clone()));
     ui.wait_for_idle();
     assert_eq!(asked.get(), Some(false), "placed by then, and the tree's free");
+}
+
+/// Not a test of Compose's: a slot added in a measurement leaves nothing to measure again, as its
+/// `createNodeAt` ignores what it asks.
+#[test]
+fn a_new_slot_leaves_the_layout_clean() {
+    let (slots, size) = (mutable_state_of(1), mutable_state_of(10));
+    let runs = Rc::new(Cell::new(0));
+    let (n, r) = (slots.handle(), runs.clone());
+    let policy = stack_policy(move |scope| {
+        r.set(r.get() + 1);
+        (0..n.get())
+            .map(|at| scope.subcompose(at, Callback::new(sized(at.to_string(), 10))))
+            .collect()
+    });
+    let s = size.handle();
+    let mut ui = compose_test(move || {
+        let policy = policy.clone();
+        Column!(|_| {
+            SubcomposeLayout!(measure_policy = policy.clone());
+            sized("sibling".into(), s.get())();
+        });
+    });
+    ui.wait_for_idle();
+    slots.set(2);
+    ui.wait_for_idle();
+    assert_eq!(runs.get(), 2);
+    size.set(20);
+    ui.wait_for_idle();
+    assert_eq!(runs.get(), 2, "a sibling's size is nothing to it");
 }

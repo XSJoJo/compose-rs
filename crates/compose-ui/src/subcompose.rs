@@ -733,7 +733,8 @@ fn with_the_tree<R>(
     }
 }
 
-/// A new slot at `at`, which asks no measurement of `host`, as `createNodeAt`.
+/// A new slot at `at`, which asks no measurement of `host`, as `createNodeAt`. Adding a virtual
+/// node asks none today; the guard keeps it so if that changes.
 fn add_slot(inner: &mut Subcompositions, tree: &mut UiTree, host: NodeId, key: SlotKey, at: usize) {
     let ignoring = tree.ignoring_remeasure.replace(host);
     let node = tree.add_virtual_node(host, at);
