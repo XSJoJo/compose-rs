@@ -221,6 +221,33 @@ fn a_merging_node_declares_merging_but_only_merges_in_the_merged_tree() {
     );
 }
 
+/// A part (`PART_OF_PARENT`) below a host (`PARTS_HOST`) is the host's, through a semantics node
+/// between, in both trees and in the handles, once: compose-rs's own, for a decorated text
+/// field's semantics on its decoration's node (D2003).
+#[test]
+fn a_hosts_part_is_its_own_through_the_nodes_between_once() {
+    let mut ui = compose_test(|| {
+        let host = Modifier.semantics_with(true, |config| config.parts_host()).test_tag("host");
+        Box!(modifier = host, {
+            Box!(modifier = Modifier.test_tag("between"), {
+                let part = Modifier.semantics(|config| {
+                    config.part_of_parent();
+                    config.set_content_description("part");
+                });
+                Box!(modifier = part.then(sized(10)), {});
+            });
+        });
+    });
+    let host = node(&mut ui, "host");
+    assert_eq!(descriptions(&host.unmerged_config()), ["part"]);
+    assert_eq!(descriptions(&host.merged_config()), ["part"]);
+    assert!(!host.unmerged_config().contains(&PARTS_HOST), "not shown");
+    let between = node(&mut ui, "between");
+    assert!(descriptions(&between.unmerged_config()).is_empty());
+    ui.on_node_with_tag("host").assert_content_description_equals(&["part"]);
+    ui.on_node_with_tag_unmerged("between").assert(!has_content_description("part"));
+}
+
 // Compose: compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/semantics/SemanticsHostApiTest.kt, getMergedOrNullAndForEachMergedProperty_matchMergedConfig
 #[test]
 fn what_a_node_merges_is_read_anew_each_time_and_stops_at_merging_and_clearing_nodes() {

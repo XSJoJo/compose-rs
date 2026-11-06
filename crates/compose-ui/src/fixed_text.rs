@@ -60,6 +60,8 @@ impl Default for FixedFontMetrics {
 /// independent of fonts.
 pub struct FixedTextMeasurer {
     metrics: FixedFontMetrics,
+    /// Arabic's and Thai's characters are this many times as tall (`with_tall_scripts`).
+    tall_scripts: f32,
     fonts: Rc<PlatformFonts>,
     paragraphs: Vec<Option<FixedParagraph>>,
     free: Vec<u64>,
@@ -70,6 +72,7 @@ impl Default for FixedTextMeasurer {
     fn default() -> Self {
         FixedTextMeasurer {
             metrics: FixedFontMetrics::default(),
+            tall_scripts: 1.0,
             fonts: PlatformFonts::new(Rc::new(FixedFontLoader)),
             paragraphs: Vec::new(),
             free: Vec::new(),
@@ -185,6 +188,23 @@ impl FixedTextMeasurer {
     /// paragraph tests.
     pub fn with_metrics(metrics: FixedFontMetrics) -> FixedTextMeasurer {
         FixedTextMeasurer { metrics, ..FixedTextMeasurer::default() }
+    }
+
+    /// This measurer with Arabic's and Thai's characters half as tall again as the others, above
+    /// and below the baseline, as their fonts' are: for tests of a line as tall as its text
+    /// (Compose's tests' `tallText` falls back to such fonts).
+    pub fn with_tall_scripts(self) -> FixedTextMeasurer {
+        FixedTextMeasurer { tall_scripts: 1.5, ..self }
+    }
+
+    /// How many times as tall as the font's `character` is (`with_tall_scripts`).
+    fn height_of(&self, character: char) -> f32 {
+        if self.tall_scripts != 1.0 && matches!(character as u32, 0x0600..=0x06FF | 0x0E00..=0x0E7F)
+        {
+            self.tall_scripts
+        } else {
+            1.0
+        }
     }
 
     /// The number of live paragraphs: for leak tests.
@@ -438,8 +458,8 @@ impl FixedTextMeasurer {
                     } else {
                         font_px * metrics.advance * scale_x + spacing
                     },
-                    ascent: font_px * metrics.ascent,
-                    descent: font_px * metrics.descent,
+                    ascent: font_px * metrics.ascent * self.height_of(character),
+                    descent: font_px * metrics.descent * self.height_of(character),
                 });
             }
         }

@@ -410,11 +410,18 @@ impl UiTree {
         self.own_with_parts(node)
     }
 
-    /// `node`'s own configuration with what its parts set (`PART_OF_PARENT`), placed or not.
+    /// `node`'s own configuration with what its parts set (`PART_OF_PARENT`), placed or not: the
+    /// parts below it, before any other semantics node, but those a host above it takes; a host's
+    /// (`PARTS_HOST`), the parts below it through the semantics nodes between, before another
+    /// host (D2003).
     pub(crate) fn own_with_parts(&mut self, node: NodeId) -> Option<SemanticsConfiguration> {
         let own = self.own_semantics(node)?;
         let mut config = own.config.clone();
-        if !config.is_clearing_semantics {
+        let host = config.contains(&PARTS_HOST);
+        if host {
+            config.remove(&PARTS_HOST);
+        }
+        if !config.is_clearing_semantics || host {
             let mut stack: SmallVec<[NodeId; 8]> =
                 self.node(node).children.iter().rev().map(|child| child.node).collect();
             while let Some(child) = stack.pop() {
@@ -423,12 +430,16 @@ impl UiTree {
                 }
                 match self.own_semantics(child) {
                     Some(part) if part.config.contains(&PART_OF_PARENT) => {
-                        let mut part = part.config.clone();
-                        part.remove(&PART_OF_PARENT);
-                        config.apply(&part);
+                        if host || self.host_of_part(child).is_none() {
+                            let mut part = part.config.clone();
+                            part.remove(&PART_OF_PARENT);
+                            config.apply(&part);
+                        }
                     }
-                    // Another semantics node: its own and below are its.
-                    Some(other) if !other.config.is_empty() => continue,
+                    // Another host: the parts below are its.
+                    Some(other) if other.config.contains(&PARTS_HOST) => continue,
+                    // Another semantics node: its own and below are its, but a host's parts.
+                    Some(other) if !other.config.is_empty() && !host => continue,
                     _ => {}
                 }
                 let children = &self.node(child).children;
@@ -436,6 +447,22 @@ impl UiTree {
             }
         }
         Some(config)
+    }
+
+    /// The host whose part `node` is (`PARTS_HOST`), if one is above it, short of an overlay's
+    /// root (D2003).
+    fn host_of_part(&mut self, node: NodeId) -> Option<NodeId> {
+        let mut at = node;
+        loop {
+            let value = self.node(at);
+            match value.parent {
+                Some(parent) if !value.overlay => at = parent,
+                _ => return None,
+            }
+            if self.own_semantics(at).is_some_and(|own| own.config.contains(&PARTS_HOST)) {
+                return Some(at);
+            }
+        }
     }
 
     /// `node` with what it merges, as `mergeConfig`.
@@ -676,16 +703,25 @@ impl UiTree {
                 }
             }
             Some(own) if own.config.contains(&PART_OF_PARENT) => {
-                // Its properties are the parent's, as if its own modifiers set them.
-                let mut own = own.config.clone();
-                own.remove(&PART_OF_PARENT);
-                parent.apply(&own);
+                // Its properties are the parent's, as if its own modifiers set them; a host's,
+                // which took them in, if there's one (D2003).
+                if self.host_of_part(node).is_none() {
+                    let mut own = own.config.clone();
+                    own.remove(&PART_OF_PARENT);
+                    parent.apply(&own);
+                }
                 for child in children_of(self) {
                     self.semantics_of(child, merged, parent, out);
                 }
             }
             Some(own) => {
-                let (mut config, layer) = (own.config.clone(), own.layer);
+                let layer = own.layer;
+                // A host's parts below, through the semantics nodes between, are its (D2003).
+                let mut config = if own.config.contains(&PARTS_HOST) {
+                    self.own_with_parts(node).unwrap_or_default()
+                } else {
+                    own.config.clone()
+                };
                 let mut children = Vec::new();
                 let mut own_config = None;
                 let mut reading_order = None;
@@ -798,6 +834,8 @@ impl UiTree {
                 return;
             }
             match own.as_deref_mut() {
+                // A host's part: the host took it in (D2003).
+                _ if semantics.contains(&PART_OF_PARENT) && self.host_of_part(node).is_some() => {}
                 Some(own) if semantics.contains(&PART_OF_PARENT) => {
                     semantics.remove(&PART_OF_PARENT);
                     own.apply(&semantics);

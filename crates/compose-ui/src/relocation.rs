@@ -275,7 +275,6 @@ impl UiTree {
         let Some(value) = self.get_mut(id) else { return };
         match value.chain[index].bring_into_view_answer(local, viewport, locals) {
             Answer::Responder(responder) => {
-                walked.answered = true;
                 let scope = BringIntoViewScope { viewport, locals, handle };
                 let bounds = BringIntoViewBounds(Rc::new(BoundsPath {
                     tree: key,
@@ -293,7 +292,6 @@ impl UiTree {
                 *current = moved(parent, origin);
             }
             Answer::Shown(shown) => {
-                walked.answered = true;
                 *current = moved(shown, origin);
                 *base = Base::Entry { node: id, entry, rect: Some(shown) };
                 via.clear();
@@ -365,39 +363,25 @@ impl UiTree {
         self.bring_into_view_from(node, None, rect).launch();
     }
 
-    /// `bring_into_view`, saying whether a node around answered: one that didn't asked nothing
-    /// of any.
-    pub(crate) fn bring_node_into_view(&mut self, node: NodeId) -> bool {
-        self.bring_into_view_from(node, None, None).launch()
-    }
-
     /// The same for `rect` in the layer of chain entry `entry` of `node`, asking the entries
     /// before it in its chain first.
-    pub(crate) fn bring_entry_rect_into_view(
-        &mut self,
-        node: NodeId,
-        entry: usize,
-        rect: Rect,
-    ) -> bool {
-        self.bring_into_view_from(node, Some(entry), Some(rect)).launch()
+    pub(crate) fn bring_entry_rect_into_view(&mut self, node: NodeId, entry: usize, rect: Rect) {
+        self.bring_into_view_from(node, Some(entry), Some(rect)).launch();
     }
 }
 
-/// What a walk bringing into view found: the futures the responders give to wait for, and
-/// whether any node answered (none: the walk asked nothing of anything).
+/// What a walk bringing into view found: the futures the responders give to wait for.
 #[derive(Default)]
 pub(crate) struct Walked {
     pub(crate) futures: Vec<LocalBoxFuture<'static, ()>>,
-    pub(crate) answered: bool,
 }
 
 impl Walked {
-    /// Runs what the responders animate as a task of its own; returns whether a node answered.
-    fn launch(self) -> bool {
+    /// Runs what the responders animate as a task of its own.
+    fn launch(self) {
         if !self.futures.is_empty() {
             compose_runtime::platform::launch(join_all(self.futures));
         }
-        self.answered
     }
 }
 

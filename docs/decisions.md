@@ -19,7 +19,7 @@ The log is split by area into the files below, one table each, rows in number or
 |---|---|---|
 | [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 180 |
 | [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 412 |
-| [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 88 |
+| [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 92 |
 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md) | Lazy lists and grids, item reuse, the policy of composing only what is in view, prefetch. | 109 |
 | [android-drawing](decisions/android-drawing.md) | The display list and its replayer, render nodes and repaint boundaries, paths, shadows, layers. | 32 |
 | [android-host-and-performance](decisions/android-host-and-performance.md) | The view and activity glue, the frame loop, the hint session, jank, startup, memory, and the optimization flags. | 31 |
@@ -708,8 +708,8 @@ The log is split by area into the files below, one table each, rows in number or
 | D1145 | [text](decisions/text.md#d1145) | revised by [D1149](decisions/text.md#d1149) |
 | D1146 | [text](decisions/text.md#d1146) | current |
 | D1147 | [text](decisions/text.md#d1147) | revised by [D1148](decisions/text.md#d1148) |
-| D1148 | [text](decisions/text.md#d1148) | current |
-| D1149 | [text](decisions/text.md#d1149) | current |
+| D1148 | [text](decisions/text.md#d1148) | revised by [D2000](decisions/text.md#d2000) |
+| D1149 | [text](decisions/text.md#d1149) | revised by [D2000](decisions/text.md#d2000), [D2003](decisions/text.md#d2003) |
 | D1150 | [ui-and-layout](decisions/ui-and-layout.md#d1150) | current |
 | D1151 | [ui-and-layout](decisions/ui-and-layout.md#d1151) | current |
 | D1152 | [ui-and-layout](decisions/ui-and-layout.md#d1152) | current |
@@ -995,3 +995,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1908 | [ui-and-layout](decisions/ui-and-layout.md#d1908) | current |
 | D1950 | [runtime](decisions/runtime.md#d1950) | current |
 | D1951 | [runtime](decisions/runtime.md#d1951) | current |
+| D2000 | [text](decisions/text.md#d2000) | current |
+| D2001 | [text](decisions/text.md#d2001) | current |
+| D2002 | [text](decisions/text.md#d2002) | current |
+| D2003 | [text](decisions/text.md#d2003) | current |

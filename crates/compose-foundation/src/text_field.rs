@@ -111,7 +111,7 @@ pub fn BasicTextField(
     crate::layout::Box(
         // An I-beam over the field, as Compose Desktop's text fields.
         modifier
-            .semantics_with(true, |_| {})
+            .semantics_with(true, |config| config.parts_host())
             .then_custom(FocusOnTap { interaction_source: press_source })
             .pointer_hover_icon(compose_ui::PointerIcon::TEXT),
         crate::Alignment::TOP_START,
@@ -229,7 +229,7 @@ pub fn BasicTextFieldOfState(
     };
     crate::layout::Box(
         modifier
-            .semantics_with(true, |_| {})
+            .semantics_with(true, |config| config.parts_host())
             .then_custom(FocusOnTap { interaction_source: press_source })
             .pointer_hover_icon(compose_ui::PointerIcon::TEXT),
         crate::Alignment::TOP_START,
@@ -700,6 +700,7 @@ impl ModifierNodeElement for TextFieldElement {
             density: None,
             direction: compose_ui::LayoutDirection::Ltr,
             cursor_rect: None,
+            text_width: 0.0,
             pending_tap: None,
             scroll: Offset::ZERO,
             overflows: false,
@@ -926,6 +927,8 @@ pub(crate) struct TextFieldNode {
     /// Where the cursor is drawn, from the measurer, refreshed at measurement: moving the
     /// cursor asks for one (the paragraph is kept).
     cursor_rect: Option<Rect>,
+    /// The text's width as laid out, at measurement: what the cursor's focus rect stays in.
+    text_width: f32,
     /// The selection's highlight, from the measurer, refreshed at measurement.
     selection_rects: Vec<Rect>,
     /// A tap to put the cursor at, resolved at the next measurement by the measurer's hit test.
@@ -998,8 +1001,22 @@ impl TextFieldNode {
             constraints,
             placeholders: None,
         };
-        let size = constraints.constrain(measurer.metrics(paragraph).size);
+        // Laid out at the field's least height, as Compose's text under `heightInLines`, and
+        // with no most height but a single line's: a multi-line field scrolls.
+        let text = measurer.metrics(paragraph).size;
+        let least = self.least_lines_height().clamp(constraints.min_height, constraints.max_height);
+        let height = text.height.max(least);
+        let height = if self.single_line { height.min(constraints.max_height) } else { height };
+        let size = IntSize::new(constraints.constrain(text).width, height);
         Some(compose_ui::TextLayoutResult::new(input, measurer.paragraph(paragraph), size))
+    }
+
+    /// The fewest lines' height, as last measured (`line_bounds`).
+    fn least_lines_height(&self) -> i32 {
+        if self.single_line || self.min_lines <= 1 {
+            return 0;
+        }
+        self.line_bounds.map_or(0, |(_, min, _)| min)
     }
 
     /// A state-based field's `on_text_layout` hears each new layout (a paragraph laid out
@@ -2116,6 +2133,9 @@ impl ModifierNode for TextFieldNode {
     fn set_is_focus_target(&mut self, is_target: bool) {
         self.is_focus_target = is_target;
     }
+    fn as_focus_properties(&mut self) -> Option<&mut dyn compose_ui::FocusPropertiesModifierNode> {
+        Some(self)
+    }
     fn as_key_input(&mut self) -> Option<&mut dyn KeyInputModifierNode> {
         Some(self)
     }
@@ -2449,13 +2469,21 @@ impl LayoutModifierNode for TextFieldNode {
         }
         let metrics = scope.text_measurer().metrics(paragraph);
         // A multi-line field between `min_lines` and `max_lines` lines high, as Compose's
-        // `heightInLines`.
-        let (min_height, max_height) = self.line_bounds(scope);
+        // `heightInLines`; a value-based field of one line at most as high as its first line, as
+        // the legacy field's `heightForSingleLineField` for `maxLines == 1`: a tall script isn't
+        // cut.
+        let (min_height, max_height) = if self.max_lines == 1 && self.state.is_none() {
+            let line = scope.text_measurer().cursor_rect(paragraph, 0).bottom.ceil() as i32;
+            (line, line)
+        } else {
+            self.line_bounds(scope)
+        };
         let size = constraints.constrain(IntSize::new(
             metrics.size.width + cursor_width,
             metrics.size.height.max(min_height).min(max_height),
         ));
         self.size = size;
+        self.text_width = metrics.size.width as f32;
         self.overflows =
             metrics.size.width + cursor_width > size.width || metrics.size.height > size.height;
         // The text scrolls to keep the cursor in view, as Compose's: sideways on a single line,
@@ -2963,6 +2991,59 @@ impl FocusTargetModifierNode for TextFieldNode {
         }
         context.invalidate_draw();
         self.publish_state_in(EditSource::Other, context);
+    }
+}
+
+impl compose_ui::FocusPropertiesModifierNode for TextFieldNode {
+    /// While it's focused, the field's rect in a focus search, and the one its containers keep in
+    /// view, is its cursor's or its selection's, as Compose's `TextFieldDecoratorModifier`
+    /// (`getFocusRect`); unfocused, all of it (D2002).
+    fn apply_focus_properties(&self, properties: &mut compose_ui::FocusProperties) {
+        if let Some(rect) = self.focus_rect() {
+            properties.focus_rect = rect;
+        }
+    }
+}
+
+impl TextFieldNode {
+    /// The focused field's cursor, as Compose's `calculateCursorRect` (the cursor's width, kept
+    /// in the text and on a whole or half pixel), or the selection's bounds, under its scroll.
+    fn focus_rect(&self) -> Option<Rect> {
+        if !self.focused {
+            return None;
+        }
+        let (density, cursor) = (self.density?, self.cursor_rect?);
+        let rect = if self.anchor == self.cursor {
+            let width = density.to_px(CURSOR_WIDTH).floor().max(1.0);
+            let half = width / 2.0;
+            let center = match self.direction {
+                compose_ui::LayoutDirection::Ltr => cursor.left + half,
+                compose_ui::LayoutDirection::Rtl => cursor.right - half,
+            };
+            // The text's width and the cursor's: the room the field gives them.
+            let end = self.text_width + density.round_to_px(CURSOR_WIDTH) as f32;
+            let center = center.min(end - half).max(half);
+            let center = if width as i32 % 2 == 1 { center.floor() + 0.5 } else { center.round() };
+            Rect::new(center - half, cursor.top, center + half, cursor.bottom)
+        } else {
+            let mut rects = self.selection_rects.iter();
+            let first = *rects.next()?;
+            rects.fold(first, |all, rect| {
+                Rect::new(
+                    all.left.min(rect.left),
+                    all.top.min(rect.top),
+                    all.right.max(rect.right),
+                    all.bottom.max(rect.bottom),
+                )
+            })
+        };
+        let scroll = self.scroll;
+        Some(Rect::new(
+            rect.left - scroll.x,
+            rect.top - scroll.y,
+            rect.right - scroll.x,
+            rect.bottom - scroll.y,
+        ))
     }
 }
 
@@ -3798,6 +3879,14 @@ struct FocusOnTapNode {
 }
 
 impl FocusOnTapNode {
+    /// Forgets the field's focus: detached or reused, it's another field's decoration next.
+    fn forget_focus(&mut self) {
+        self.field_focused = false;
+        self.focused = false;
+    }
+}
+
+impl FocusOnTapNode {
     /// Ends the press told, if any: released, or cancelled.
     fn end_press(&mut self, released: bool) {
         use compose_ui::PressInteraction;
@@ -3841,6 +3930,11 @@ impl ModifierNode for FocusOnTapNode {
 
     fn on_detach(&mut self, _context: &mut compose_ui::NodeContext<'_>) {
         self.end_press(false);
+        self.forget_focus();
+    }
+
+    fn on_reset(&mut self, _context: &mut compose_ui::NodeContext<'_>) {
+        self.forget_focus();
     }
 
     fn as_traversable(&mut self) -> Option<&mut dyn compose_ui::TraversableNode> {
@@ -3857,7 +3951,11 @@ impl compose_ui::TraversableNode for FocusOnTapNode {
 impl compose_ui::FocusEventModifierNode for FocusOnTapNode {
     /// The field gaining the focus (not another target in its decoration) is shown whole, if its
     /// containers can, as Compose's `FocusableNode.onFocusStateChange` (D1145).
-    fn on_focus_event(&mut self, _state: compose_ui::FocusState, context: &mut EventContext<'_>) {
+    fn on_focus_event(&mut self, state: compose_ui::FocusState, context: &mut EventContext<'_>) {
+        // Nothing below focused, the field isn't (it went while focused, or was reused).
+        if !state.has_focus() {
+            self.field_focused = false;
+        }
         let focused = self.field_focused;
         if focused && !self.focused {
             context.bring_into_view();
