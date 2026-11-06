@@ -255,5 +255,24 @@ impl compose_runtime::ComposeArg for ColorFilter {
 
 /// A color filter of the display list a paint, image or layer names it in
 /// (`DisplayList::color_filters`), by index: a paint stays small and `Copy`.
+/// Kept as the index plus one (`NonZeroU32`), so an `Option` of it is 4 bytes and a `Paint`
+/// naming a shader and a filter stays 28.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct ColorFilterIndex(pub u32);
+pub struct ColorFilterIndex(std::num::NonZeroU32);
+
+impl ColorFilterIndex {
+    /// The one naming entry `index`.
+    pub fn new(index: u32) -> ColorFilterIndex {
+        ColorFilterIndex(std::num::NonZeroU32::new(index + 1).expect("an index below u32::MAX"))
+    }
+
+    /// The entry it names.
+    pub fn index(self) -> usize {
+        self.0.get() as usize - 1
+    }
+
+    /// The one naming the entry `by` later: a list's entries copied after another's.
+    pub fn offset(self, by: u32) -> ColorFilterIndex {
+        ColorFilterIndex(self.0.checked_add(by).expect("an index below u32::MAX"))
+    }
+}

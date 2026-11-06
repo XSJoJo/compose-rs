@@ -172,7 +172,7 @@ impl Writer {
     fn paint(&mut self, paint: &Paint, (shaders, filters): Tables<'_>, alpha: f32) {
         let shading = paint
             .shader()
-            .and_then(|index| shaders.get(index.0 as usize))
+            .and_then(|index| shaders.get(index.index()))
             .map_or(Shading::Color, shading);
         let color = match shading {
             Shading::Solid(color, opacity) => {
@@ -181,11 +181,17 @@ impl Writer {
             Shading::Color | Shading::Gradient(_) => paint.color,
         };
         self.color(faded(color, alpha));
-        let filter = paint.color_filter().and_then(|index| filters.get(index.0 as usize));
-        let blended = paint.blend_mode != BlendMode::SrcOver;
-        let blurred = paint.blur_radius() > 0.0;
-        let flags =
-            u8::from(blended) << 1 | u8::from(filter.is_some()) << 2 | u8::from(blurred) << 3;
+        // Most paints are plain: no flag to work out.
+        let (filter, blended, blurred, flags) = if paint.is_plain() {
+            (None, false, false, 0)
+        } else {
+            let filter = paint.color_filter().and_then(|index| filters.get(index.index()));
+            let blended = paint.blend_mode != BlendMode::SrcOver;
+            let blurred = paint.blur_radius() > 0.0;
+            let flags =
+                u8::from(blended) << 1 | u8::from(filter.is_some()) << 2 | u8::from(blurred) << 3;
+            (filter, blended, blurred, flags)
+        };
         match paint.style {
             PaintStyle::Fill => {
                 self.u8(flags);
@@ -1491,7 +1497,7 @@ fn write_op(
     out: &mut Writer,
 ) {
     let filter = |index: &Option<compose_ui::platform::ColorFilterIndex>| {
-        index.and_then(|index| tables.1.get(index.0 as usize))
+        index.and_then(|index| tables.1.get(index.index()))
     };
     match op {
         DrawOp::Save => out.u8(tag::SAVE),

@@ -597,7 +597,7 @@ fn last_shader_index(serialized: &Serialized) -> u32 {
                 _ => None,
             })
             .expect("a gradient")
-            .0
+            .index() as u32
     })
 }
 
@@ -809,6 +809,76 @@ fn a_render_effect_follows_the_layer_entries() {
     list.groups[1].layer = Some(layer(None));
     write_display_list(&list, &mut resources, &mut GroupCache::default(), &mut out);
     assert_eq!(out.bytes[entry(2)], tag::GROUP);
+}
+
+/// Effects among layers without one follow the entries in the entries' order: read as
+/// `Replayer.kt` reads them, a cursor past the entries moving by an effect for each entry
+/// flagging one, each layer finds its own, and the cursor ends where the section does.
+#[test]
+fn interleaved_render_effects_follow_in_the_entries_order() {
+    let effects = [
+        Some(RenderEffect::blur(3.0, 4.0, TileMode::Decal)),
+        None,
+        Some(RenderEffect::blur(5.0, 6.0, TileMode::Clamp)),
+        Some(RenderEffect::blur(7.0, 8.0, TileMode::Mirror)),
+    ];
+    let mut list = DisplayList::default();
+    for (index, effect) in effects.iter().enumerate() {
+        let mut scope = GraphicsLayerScope::default();
+        scope.set_render_effect(*effect);
+        let layer = LayerProperties {
+            alpha: 1.0,
+            pivot: Offset::new(2.0, 2.0),
+            scale: (1.0, 1.0),
+            rotation: 0.0,
+            translation: Offset::ZERO,
+            clip: false,
+            outline: None,
+            shadow_elevation: 0.0,
+            compositing_strategy: CompositingStrategy::Auto,
+            bounds: Rect::new(0.0, 0.0, 4.0, 4.0),
+            density: 1.0,
+            extras: scope.extras.clone(),
+        };
+        let mut content = DisplayList::default();
+        content.push(DrawOp::DrawRect(Rect::new(0.0, 0.0, 4.0, 4.0), Paint::fill(Color::BLACK)));
+        let key = 20 + index as u64;
+        list.boundaries.push(Boundary { at: index, key });
+        list.push(DrawOp::Translate(Offset::new(1.0, 1.0)));
+        list.groups.push(group(key, 1, Some(layer), content));
+    }
+    let (mut resources, mut out) = (Resources::default(), Writer::default());
+    write_display_list(&list, &mut resources, &mut GroupCache::default(), &mut out);
+    let bytes = &out.bytes;
+    let count = u32_at(bytes, 1) as usize;
+    assert_eq!(count, 4);
+    let mut cursor = 5 + count * LAYER_ENTRY_BYTES;
+    for index in 0..count {
+        let entry = 5 + index * LAYER_ENTRY_BYTES;
+        let key = u64_at(bytes, entry);
+        let expected = effects[(key - 20) as usize];
+        let flagged = bytes[entry + 8 + layer_entry::COMPOSITING] & compositing::EFFECT != 0;
+        assert_eq!(flagged, expected.is_some(), "layer {key}");
+        let Some(RenderEffect::Blur { radius_x, radius_y, edge_treatment }) = expected else {
+            continue;
+        };
+        assert_eq!(bytes[cursor + layer_effect::KIND], layer_effect::BLUR);
+        let radii = (
+            f32_at(bytes, cursor + layer_effect::RADII),
+            f32_at(bytes, cursor + layer_effect::RADII + 4),
+        );
+        assert_eq!(radii, (radius_x, radius_y), "layer {key}");
+        let tile = match edge_treatment {
+            TileMode::Clamp => 0,
+            TileMode::Repeated => 1,
+            TileMode::Mirror => 2,
+            TileMode::Decal => 3,
+        };
+        assert_eq!(bytes[cursor + layer_effect::TILE], tile, "layer {key}");
+        cursor += layer_effect::BYTES;
+    }
+    assert_eq!(cursor, layers_section_end(bytes, 0));
+    assert_eq!(bytes[cursor], tag::GROUP, "the records follow");
 }
 
 // ---- Resources -------------------------------------------------------------------------------

@@ -33,7 +33,7 @@ fn skia_paint_with(
 ) -> skia_safe::Paint {
     let (shaders, filters) = tables;
     let mut skia = skia_paint(paint, filters);
-    if let Some(shader) = paint.shader().and_then(|index| shaders.get(index.0 as usize))
+    if let Some(shader) = paint.shader().and_then(|index| shaders.get(index.index()))
         && let Some(skia_shader) = skia_shader(shader, local)
     {
         // The shader paints; the paint's alpha is the brush's.
@@ -157,7 +157,7 @@ fn skia_paint(paint: &Paint, filters: &[ColorFilter]) -> skia_safe::Paint {
     if paint.blend_mode != BlendMode::SrcOver {
         skia.set_blend_mode(skia_blend_mode(paint.blend_mode));
     }
-    if let Some(filter) = paint.color_filter().and_then(|index| filters.get(index.0 as usize)) {
+    if let Some(filter) = paint.color_filter().and_then(|index| filters.get(index.index())) {
         skia.set_color_filter(skia_color_filter(filter));
     }
     if paint.blur_radius() > 0.0 {
@@ -316,7 +316,7 @@ fn draw_op(
     alpha: f32,
 ) {
     let filter = |index: &Option<compose_ui::platform::ColorFilterIndex>| {
-        index.and_then(|index| tables.1.get(index.0 as usize)).and_then(skia_color_filter)
+        index.and_then(|index| tables.1.get(index.index())).and_then(skia_color_filter)
     };
     let skia_paint_with = |paint: &Paint, tables: Tables<'_>, local: Option<&skia_safe::Matrix>| {
         faded(skia_paint_with(paint, tables, local), alpha)

@@ -618,3 +618,57 @@ fn a_layer_drawn_before_a_later_node_records_it_catches_up() {
         drawing_box(&mut ui).assert_pixels(None, |_| Some(Color::GREEN));
     }
 }
+
+/// A recording holding a NaN (a 0/0 fraction's width) is what the layer holds when recorded
+/// again: floats compare bit for bit, so it settles as any other after one more frame.
+#[test]
+fn a_recording_with_a_nan_settles() {
+    let (mut ui, draws) = parent_and_child(
+        |scope, layer| scope.translate(100.0, 0.0, |scope| scope.draw_layer(layer)),
+        |scope, layer| {
+            scope.record_layer(layer, |scope| {
+                let nan = Rect::new(0.0, 0.0, f32::NAN, 10.0);
+                scope.draw_rect(nan, Paint::fill(Color::BLUE));
+                scope.draw_content();
+            });
+            scope.draw_content();
+        },
+    );
+    assert_eq!(draws.get(), 2);
+    ui.wait_for_idle();
+    assert_eq!(draws.get(), 2);
+    ui.on_node_with_tag(TAG).capture_to_image().assert_pixel_color(RED, 150, 50);
+}
+
+/// A property set by another drawing in the pass, after the layer was drawn, draws again what
+/// drew it: the drawing box, in a group of its own the pass doesn't draw, fades.
+#[test]
+fn a_property_set_by_another_drawing_draws_the_layer_again() {
+    set_capture_renderer(compose_skia::raster_colors);
+    let alpha = compose::runtime::mutable_state_of(1.0f32);
+    let read = alpha.handle();
+    let mut ui = ComposeTestRule::sized(IntSize::new(100, 100), move || {
+        let layer = remember_graphics_layer();
+        let (drawn, set) = (layer.clone(), layer.clone());
+        let drawing = Modifier.size(10.dp()).test_tag("drawing").repaint_boundary().draw_behind(
+            move |scope| {
+                fill(scope, Color::WHITE);
+                if drawn.size() == IntSize::ZERO {
+                    drawn.record(scope, full(scope), |scope| fill(scope, RED));
+                }
+                scope.draw_layer(&drawn);
+            },
+        );
+        let setting = Modifier.size(10.dp()).draw_behind(move |_| set.set_alpha(read.get()));
+        Column!({
+            Box!(modifier = drawing.clone());
+            Box!(modifier = setting.clone());
+        });
+    });
+    drawing_box(&mut ui).assert_pixels(None, |_| Some(RED));
+    alpha.set(0.5);
+    ui.wait_for_idle();
+    let pixel = drawing_box(&mut ui).pixel(5, 5);
+    let expected = RED.with_alpha(0.5).composite_over(Color::WHITE);
+    assert!(pixel.green().abs_diff(expected.green()) <= 2, "{pixel:?} against {expected:?}");
+}

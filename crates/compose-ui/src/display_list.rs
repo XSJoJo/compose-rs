@@ -128,6 +128,179 @@ impl DrawOp {
     }
 }
 
+/// Whether two lists of operations draw the same: their floats compared bit for bit, so a NaN
+/// (a 0/0 fraction's) equals itself where `==` says it changed, and a path's data by pointer
+/// before its contents. What a `GraphicsLayer` compares a new recording with.
+pub(crate) fn same_ops(old: &[DrawOp], new: &[DrawOp]) -> bool {
+    old.len() == new.len() && old.iter().zip(new).all(|(old, new)| old.same(new))
+}
+
+/// Equality as `same_ops` needs it.
+trait Same {
+    fn same(&self, other: &Self) -> bool;
+}
+
+impl Same for f32 {
+    fn same(&self, other: &f32) -> bool {
+        self.to_bits() == other.to_bits()
+    }
+}
+
+impl Same for Offset {
+    fn same(&self, other: &Offset) -> bool {
+        self.x.same(&other.x) && self.y.same(&other.y)
+    }
+}
+
+impl Same for Rect {
+    fn same(&self, other: &Rect) -> bool {
+        self.left.same(&other.left)
+            && self.top.same(&other.top)
+            && self.right.same(&other.right)
+            && self.bottom.same(&other.bottom)
+    }
+}
+
+impl<const N: usize> Same for [f32; N] {
+    fn same(&self, other: &[f32; N]) -> bool {
+        self.iter().zip(other).all(|(a, b)| a.same(b))
+    }
+}
+
+impl Same for (f32, f32) {
+    fn same(&self, other: &(f32, f32)) -> bool {
+        self.0.same(&other.0) && self.1.same(&other.1)
+    }
+}
+
+impl Same for Arc<crate::path::PathData> {
+    fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(self, other) || **self == **other
+    }
+}
+
+impl Same for Paint {
+    fn same(&self, other: &Paint) -> bool {
+        let style = match (self.style, other.style) {
+            (crate::graphics::PaintStyle::Fill, crate::graphics::PaintStyle::Fill) => true,
+            (crate::graphics::PaintStyle::Stroke(a), crate::graphics::PaintStyle::Stroke(b)) => {
+                a.same(&b)
+            }
+            _ => false,
+        };
+        style
+            && self.color == other.color
+            && self.cap == other.cap
+            && self.shader == other.shader
+            && self.blend_mode == other.blend_mode
+            && self.color_filter == other.color_filter
+            && self.blur_radius().same(&other.blur_radius())
+    }
+}
+
+impl Same for Outline {
+    fn same(&self, other: &Outline) -> bool {
+        match (self, other) {
+            (Outline::Rectangle(a), Outline::Rectangle(b)) => a.same(b),
+            (Outline::Rounded(a, ra), Outline::Rounded(b, rb)) => a.same(b) && ra.same(rb),
+            (Outline::Generic(a, oa), Outline::Generic(b, ob)) => a.same(b) && oa.same(ob),
+            _ => false,
+        }
+    }
+}
+
+impl Same for DrawOp {
+    fn same(&self, other: &DrawOp) -> bool {
+        use DrawOp as D;
+        match (self, other) {
+            (D::Save, D::Save) | (D::Restore, D::Restore) => true,
+            (D::Translate(a), D::Translate(b)) => a.same(b),
+            (D::ClipRect(a), D::ClipRect(b)) => a.same(b),
+            (D::ClipRoundRect(a, ra), D::ClipRoundRect(b, rb)) => a.same(b) && ra.same(rb),
+            (D::DrawRect(a, pa), D::DrawRect(b, pb)) => a.same(b) && pa.same(pb),
+            (D::DrawRoundRect(a, ra, pa), D::DrawRoundRect(b, rb, pb)) => {
+                a.same(b) && ra.same(rb) && pa.same(pb)
+            }
+            (D::DrawLine(a1, a2, pa), D::DrawLine(b1, b2, pb)) => {
+                a1.same(b1) && a2.same(b2) && pa.same(pb)
+            }
+            (D::DrawParagraph(a, oa), D::DrawParagraph(b, ob)) => a == b && oa.same(ob),
+            (
+                D::SaveLayerAlpha { bounds: a, alpha: aa },
+                D::SaveLayerAlpha { bounds: b, alpha: ab },
+            ) => a.same(b) && aa.same(ab),
+            (
+                D::SaveLayer { bounds: a, alpha: aa, color_filter: fa, blend_mode: ma },
+                D::SaveLayer { bounds: b, alpha: ab, color_filter: fb, blend_mode: mb },
+            ) => a.same(b) && aa.same(ab) && fa == fb && ma == mb,
+            (
+                D::SaveLayerEffect { bounds: a, effect: ea },
+                D::SaveLayerEffect { bounds: b, effect: eb },
+            ) => {
+                let crate::graphics_layer::RenderEffect::Blur {
+                    radius_x: xa,
+                    radius_y: ya,
+                    edge_treatment: ta,
+                } = ea;
+                let crate::graphics_layer::RenderEffect::Blur {
+                    radius_x: xb,
+                    radius_y: yb,
+                    edge_treatment: tb,
+                } = eb;
+                a.same(b) && xa.same(xb) && ya.same(yb) && ta == tb
+            }
+            (
+                D::Transform { pivot: pa, scale: sa, rotation: ra, translation: ta },
+                D::Transform { pivot: pb, scale: sb, rotation: rb, translation: tb },
+            ) => pa.same(pb) && sa.same(sb) && ra.same(rb) && ta.same(tb),
+            (
+                D::DrawImage { image: ia, src: sa, dst: da, alpha: aa, color_filter: fa },
+                D::DrawImage { image: ib, src: sb, dst: db, alpha: ab, color_filter: fb },
+            ) => ia == ib && sa.same(sb) && da.same(db) && aa.same(ab) && fa == fb,
+            (
+                D::DrawShadow {
+                    outline: oa,
+                    elevation: ea,
+                    light: (lxa, lya, lza),
+                    light_radius: ra,
+                    ambient: aa,
+                    spot: sa,
+                    transparent_occluder: ta,
+                },
+                D::DrawShadow {
+                    outline: ob,
+                    elevation: eb,
+                    light: (lxb, lyb, lzb),
+                    light_radius: rb,
+                    ambient: ab,
+                    spot: sb,
+                    transparent_occluder: tb,
+                },
+            ) => {
+                oa.same(ob)
+                    && ea.same(eb)
+                    && [*lxa, *lya, *lza].same(&[*lxb, *lyb, *lzb])
+                    && ra.same(rb)
+                    && aa == ab
+                    && sa == sb
+                    && ta == tb
+            }
+            (
+                D::DrawArc { oval: a, start_angle: sa, sweep_angle: wa, use_center: ca, paint: pa },
+                D::DrawArc { oval: b, start_angle: sb, sweep_angle: wb, use_center: cb, paint: pb },
+            ) => a.same(b) && sa.same(sb) && wa.same(wb) && ca == cb && pa.same(pb),
+            (
+                D::DrawPath { path: a, offset: oa, scale: sa, paint: pa },
+                D::DrawPath { path: b, offset: ob, scale: sb, paint: pb },
+            ) => a.same(b) && oa.same(ob) && sa.same(sb) && pa.same(pb),
+            (D::ClipPath { path: a, offset: oa }, D::ClipPath { path: b, offset: ob }) => {
+                a.same(b) && oa.same(ob)
+            }
+            _ => false,
+        }
+    }
+}
+
 /// Replays display lists onto a surface: Skia on desktop, Android's `Canvas` (docs/07-platforms.md).
 /// Paragraphs are drawn by the text measurer that laid them out, which the renderer receives and
 /// downcasts to its own type.
@@ -273,7 +446,7 @@ impl DisplayList {
     /// Keeps `shader` for this list's paints, returning the index they refer to it by.
     pub fn push_shader(&mut self, shader: crate::brush::Shader) -> crate::brush::ShaderIndex {
         self.shaders.push(shader);
-        crate::brush::ShaderIndex(self.shaders.len() as u32 - 1)
+        crate::brush::ShaderIndex::new(self.shaders.len() as u32 - 1)
     }
 
     /// Keeps `color_filter` for this list's paints, images and layers, returning the index they
@@ -283,12 +456,12 @@ impl DisplayList {
         if self.color_filters.last() != Some(&color_filter) {
             self.color_filters.push(color_filter);
         }
-        ColorFilterIndex(self.color_filters.len() as u32 - 1)
+        ColorFilterIndex::new(self.color_filters.len() as u32 - 1)
     }
 
     /// The color filter `index` names in this list, if any.
     pub fn color_filter(&self, index: Option<ColorFilterIndex>) -> Option<&ColorFilter> {
-        self.color_filters.get(index?.0 as usize)
+        self.color_filters.get(index?.index())
     }
 
     /// The frame with every group's operations in place, its layer's around it: what a
@@ -327,7 +500,7 @@ impl DisplayList {
 impl FlatDisplayList {
     /// The color filter `index` names in this list, if any.
     pub fn color_filter(&self, index: Option<ColorFilterIndex>) -> Option<&ColorFilter> {
-        self.color_filters.get(index?.0 as usize)
+        self.color_filters.get(index?.index())
     }
 
     /// A text dump, one operation per line, indented by save depth: for golden tests.
@@ -342,7 +515,7 @@ impl FlatDisplayList {
             let paint_text = |paint: &Paint| paint_text(paint, &self.shaders, &self.color_filters);
             let filter_text = |index: &Option<ColorFilterIndex>| {
                 index
-                    .and_then(|index| self.color_filters.get(index.0 as usize))
+                    .and_then(|index| self.color_filters.get(index.index()))
                     .map_or(String::new(), filter_text)
             };
             let _ = match op {
@@ -665,14 +838,14 @@ pub(crate) fn extend_shifted(
     if base > 0 {
         for op in &mut target[start..] {
             if let Some(index) = op.paint_mut().and_then(|paint| paint.shader.as_mut()) {
-                index.0 += base;
+                *index = index.offset(base);
             }
         }
     }
     if filter_base > 0 {
         for op in &mut target[start..] {
             if let Some(Some(index)) = op.color_filter_mut() {
-                index.0 += filter_base;
+                *index = index.offset(filter_base);
             }
         }
     }
@@ -683,7 +856,7 @@ fn rect_text(rect: &Rect) -> String {
 }
 
 fn paint_text(paint: &Paint, shaders: &[crate::brush::Shader], filters: &[ColorFilter]) -> String {
-    let color = match paint.shader.and_then(|index| shaders.get(index.0 as usize)) {
+    let color = match paint.shader.and_then(|index| shaders.get(index.index())) {
         Some(shader) => shader_text(shader),
         None => format!("{:?}", paint.color),
     };
@@ -691,7 +864,7 @@ fn paint_text(paint: &Paint, shaders: &[crate::brush::Shader], filters: &[ColorF
         crate::graphics::PaintStyle::Fill => color,
         crate::graphics::PaintStyle::Stroke(width) => format!("{color} stroke {width}"),
     };
-    if let Some(filter) = paint.color_filter.and_then(|index| filters.get(index.0 as usize)) {
+    if let Some(filter) = paint.color_filter.and_then(|index| filters.get(index.index())) {
         text.push_str(&filter_text(filter));
     }
     text.push_str(&blend_text(paint.blend_mode));

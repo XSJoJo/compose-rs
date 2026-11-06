@@ -38,18 +38,45 @@ struct Properties {
 }
 
 impl Properties {
-    /// Whether they're equal, an unspecified pivot (`NaN`) equal to itself.
+    /// Whether they're equal, their floats bit for bit: an unspecified pivot (`NaN`, the
+    /// default) equal to itself, without copying either.
     fn same(&self, other: &Properties) -> bool {
-        let unspecified = |pivot: Offset| pivot.x.is_nan() || pivot.y.is_nan();
-        if unspecified(self.pivot_offset) && unspecified(other.pivot_offset) {
-            let pivotless = |properties: &Properties| Properties {
-                pivot_offset: Offset::ZERO,
-                ..properties.clone()
-            };
-            pivotless(self) == pivotless(other)
-        } else {
-            self == other
-        }
+        let same = |a: f32, b: f32| a.to_bits() == b.to_bits();
+        let Properties {
+            top_left,
+            pivot_offset,
+            alpha,
+            scale_x,
+            scale_y,
+            translation_x,
+            translation_y,
+            rotation_z,
+            shadow_elevation,
+            ambient_shadow_color,
+            spot_shadow_color,
+            blend_mode,
+            color_filter,
+            clip,
+            compositing_strategy,
+            outline,
+        } = self;
+        *top_left == other.top_left
+            && same(pivot_offset.x, other.pivot_offset.x)
+            && same(pivot_offset.y, other.pivot_offset.y)
+            && same(*alpha, other.alpha)
+            && same(*scale_x, other.scale_x)
+            && same(*scale_y, other.scale_y)
+            && same(*translation_x, other.translation_x)
+            && same(*translation_y, other.translation_y)
+            && same(*rotation_z, other.rotation_z)
+            && same(*shadow_elevation, other.shadow_elevation)
+            && *ambient_shadow_color == other.ambient_shadow_color
+            && *spot_shadow_color == other.spot_shadow_color
+            && *blend_mode == other.blend_mode
+            && *color_filter == other.color_filter
+            && *clip == other.clip
+            && *compositing_strategy == other.compositing_strategy
+            && *outline == other.outline
     }
 }
 
@@ -77,9 +104,15 @@ impl Default for Properties {
 }
 
 thread_local! {
-    /// How deep in draw passes this thread is, and the layers changed in them.
-    static DRAW_PASS: RefCell<(u32, Vec<std::rc::Weak<LayerCell>>)> = const { RefCell::new((0, Vec::new())) };
+    /// How deep in draw passes this thread is, with [`CHANGED_IN_PASS`] set once a layer
+    /// changed in them: each pass reads and writes this alone unless one did.
+    static PASS_DEPTH: Cell<u32> = const { Cell::new(0) };
+    /// The layers changed in the current draw pass.
+    static PASS_CHANGES: RefCell<Vec<std::rc::Weak<LayerCell>>> = const { RefCell::new(Vec::new()) };
 }
+
+/// [`PASS_DEPTH`]'s flag: a layer changed in the pass, which its end looks at.
+const CHANGED_IN_PASS: u32 = 1 << 31;
 
 /// A draw pass, as `UiTree::draw` runs one. A layer changed in it (recorded, a property set:
 /// what drawing code does) tells what drew it at the pass's end if it ends other than it
@@ -91,24 +124,38 @@ thread_local! {
 pub(crate) struct DrawPass;
 
 impl DrawPass {
+    #[inline]
     pub(crate) fn enter() -> DrawPass {
-        DRAW_PASS.with(|pass| pass.borrow_mut().0 += 1);
+        PASS_DEPTH.with(|depth| depth.set(depth.get() + 1));
         DrawPass
     }
 }
 
 impl Drop for DrawPass {
+    #[inline]
     fn drop(&mut self) {
-        let changed = DRAW_PASS.with(|pass| {
-            let mut pass = pass.borrow_mut();
-            pass.0 -= 1;
-            if pass.0 == 0 { std::mem::take(&mut pass.1) } else { Vec::new() }
+        let left = PASS_DEPTH.with(|depth| {
+            let left = depth.get() - 1;
+            depth.set(left);
+            left
         });
-        for layer in changed.iter().filter_map(std::rc::Weak::upgrade) {
-            let Some(start) = layer.pass_start.take() else { continue };
-            if !start.is_now(&layer) {
-                layer.version.handle().update(|version| version.wrapping_add(1));
-            }
+        if left == CHANGED_IN_PASS {
+            end_changed_pass();
+        }
+    }
+}
+
+/// The end of the outermost draw pass a layer changed in: what drew one that ends it other
+/// than it started draws again.
+#[cold]
+#[inline(never)]
+fn end_changed_pass() {
+    PASS_DEPTH.with(|depth| depth.set(0));
+    let changed = PASS_CHANGES.with(|changes| std::mem::take(&mut *changes.borrow_mut()));
+    for layer in changed.iter().filter_map(std::rc::Weak::upgrade) {
+        let Some(start) = layer.pass_start.take() else { continue };
+        if !start.is_now(&layer) {
+            layer.version.handle().update(|version| version.wrapping_add(1));
         }
     }
 }
@@ -202,13 +249,14 @@ impl GraphicsLayer {
     /// ([`DrawPass`]); outside one, what drew it draws again. Whether it's in a draw pass.
     fn will_change(&self, properties: impl FnOnce() -> Properties) -> bool {
         let cell = &self.0;
-        if DRAW_PASS.with(|pass| pass.borrow().0 == 0) {
+        if PASS_DEPTH.with(|depth| depth.get() & !CHANGED_IN_PASS == 0) {
             cell.version.handle().update(|version| version.wrapping_add(1));
             return false;
         }
         let mut start = cell.pass_start.borrow_mut();
         if start.is_none() {
-            DRAW_PASS.with(|pass| pass.borrow_mut().1.push(Rc::downgrade(cell)));
+            PASS_CHANGES.with(|changes| changes.borrow_mut().push(Rc::downgrade(cell)));
+            PASS_DEPTH.with(|depth| depth.set(depth.get() | CHANGED_IN_PASS));
             *start = Some(PassStart {
                 recording: None,
                 recorded_origin: cell.recorded_origin.get(),
@@ -384,11 +432,18 @@ impl GraphicsLayer {
 }
 
 /// Whether two recordings draw the same: their operations, the shaders and filters these name,
-/// and the boundaries drawn among them. (Their paragraphs are named by the operations.)
+/// and the boundaries drawn among them. (Their paragraphs are named by the operations.) Floats
+/// compare bit for bit, so a NaN in a recording doesn't make it a change each time
+/// (`same_ops`); a shader or filter unequal by `==` is compared by its printed values, which
+/// a NaN prints the same.
 fn same_recording(old: &DisplayList, new: &DisplayList) -> bool {
-    old.ops == new.ops
-        && old.shaders == new.shaders
-        && old.color_filters == new.color_filters
+    fn same_values<T: PartialEq + std::fmt::Debug>(old: &[T], new: &[T]) -> bool {
+        old.len() == new.len()
+            && old.iter().zip(new).all(|(a, b)| a == b || format!("{a:?}") == format!("{b:?}"))
+    }
+    crate::display_list::same_ops(&old.ops, &new.ops)
+        && same_values(&old.shaders, &new.shaders)
+        && same_values(&old.color_filters, &new.color_filters)
         && old.boundaries == new.boundaries
 }
 
