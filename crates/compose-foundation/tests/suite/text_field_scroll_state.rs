@@ -3,6 +3,7 @@
 #![allow(non_snake_case)]
 
 use compose_foundation::gestures::ScrollableState;
+use compose_foundation::layout::*;
 use compose_foundation::*;
 use compose_runtime::*;
 use compose_test::*;
@@ -327,4 +328,251 @@ fn a_selecting_touch_drag_does_not_scroll() {
     ui.wait_for_idle();
     assert!(!state.selection().collapsed(), "selected: {:?}", state.selection());
     assert_eq!(scroll_state.value(), 0);
+}
+
+// ---- The cursor followed as it's typed (D1140, D1141) --------------------------------------
+
+/// A field over `state` scrolled by `scroll`, as `line_limits` says, its `modifier` tagged.
+fn limited(
+    state: TextFieldState,
+    scroll: ScrollState,
+    line_limits: TextFieldLineLimits,
+    modifier: Modifier,
+) -> ComposeTestRule {
+    let modifier = Box::leak(Box::new(modifier));
+    let modifier: &'static Modifier = modifier;
+    let mut ui = compose_test(move || {
+        BasicTextFieldOfState!(
+            state,
+            modifier = modifier.clone().test_tag("field"),
+            line_limits = line_limits,
+            scroll_state = Some(scroll),
+        );
+    });
+    ui.wait_for_idle();
+    ui
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldScrollTest.kt, textFieldScroll_vertical_scrollable_withLongInput_whenMaxLinesProvided
+#[test]
+fn a_field_of_three_lines_scrolls_a_long_text() {
+    let scroll_state = scroll(0);
+    let three = TextFieldLineLimits::multi_line(1, 3);
+    let _ui = limited(
+        text_state(LONG_TEXT, TextRange::ZERO),
+        scroll_state,
+        three,
+        Modifier.width(100.dp()),
+    );
+    assert!(scroll_state.max_value() > 0 && scroll_state.max_value() < i32::MAX);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldScrollTest.kt, cursorScrolledIntoViewWhenTyping_inHorizontallyScrollableField_whenAtStart
+#[test]
+fn deleting_back_to_the_start_scrolls_to_it() {
+    let state = text_state("baaaaaaaaaa", TextRange::at(11));
+    let scroll_state = scroll(i32::MAX);
+    let narrow = Modifier.required_width(10.dp());
+    let mut ui = limited(state, scroll_state, TextFieldLineLimits::SingleLine, narrow);
+    ui.on_node_with_tag("field").request_focus();
+    state.edit(|buffer| buffer.place_cursor_before_char_at(1));
+    ui.wait_for_idle();
+    let max = scroll_state.max_value();
+    run(&mut ui, async move {
+        let _ = scroll_state.scroll_to(max).await;
+    });
+    ui.wait_for_idle();
+    assert_eq!(scroll_state.value(), scroll_state.max_value());
+    ui.press_key(compose_ui::Key::Backspace);
+    assert_eq!(state.text().as_str(), "aaaaaaaaaa");
+    assert_eq!((scroll_state.value(), state.selection()), (0, TextRange::ZERO));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldScrollTest.kt, cursorScrolledIntoViewWhenTyping_inVerticallyScrollableField_whenAtTop
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldScrollTest.kt, cursorScrolledIntoViewWhenTyping_inVerticallyScrollableField_whenAtBottom
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldScrollTest.kt, cursorScrolledIntoViewWhenTyping_inVerticallyScrollableField_whenMovesBelowViewport
+#[test]
+fn typing_in_a_one_line_high_field_scrolls_to_the_cursor() {
+    let one = TextFieldLineLimits::multi_line(1, 1);
+    let lines = "a\na\na\na\n";
+    // At the top, scrolled to the bottom: typing scrolls up.
+    let (state, scroll_state) = (text_state(lines, TextRange::ZERO), scroll(i32::MAX));
+    let mut ui = limited(state, scroll_state, one, Modifier);
+    assert_eq!(scroll_state.value(), scroll_state.max_value());
+    ui.on_node_with_tag("field").perform_text_input("b");
+    assert_eq!(scroll_state.value(), 0);
+    // At the bottom, scrolled to the top: typing scrolls down.
+    let (state, scroll_state) = (text_state(lines, TextRange::at(lines.len())), scroll(0));
+    let mut ui = limited(state, scroll_state, one, Modifier);
+    assert_eq!(scroll_state.value(), 0);
+    ui.on_node_with_tag("field").perform_text_input("b");
+    assert!(scroll_state.max_value() > 0);
+    assert_eq!(scroll_state.value(), scroll_state.max_value());
+    // At the bottom, a new line below it: still followed.
+    let (state, scroll_state) = (text_state(lines, TextRange::at(lines.len())), scroll(i32::MAX));
+    let mut ui = limited(state, scroll_state, one, Modifier);
+    ui.on_node_with_tag("field").request_focus();
+    assert_eq!(scroll_state.value(), scroll_state.max_value());
+    let before = scroll_state.max_value();
+    ui.on_node_with_tag("field").perform_text_input("\n");
+    assert!(scroll_state.max_value() > before);
+    assert_eq!(scroll_state.value(), scroll_state.max_value());
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldScrollTest.kt, cursorScrolledIntoViewWhenTyping_inVerticallyScrollableContainer_whenFieldExpands
+#[test]
+fn a_field_growing_in_a_scrolling_box_is_followed_by_the_box() {
+    let state = text_state("a", TextRange::at(1));
+    let container_scroll = scroll(0);
+    let height = fixed_height(0.0);
+    let mut ui = compose_test(move || {
+        Box!(
+            Modifier
+                .required_height(height.get().dp())
+                .fill_max_width()
+                .vertical_scroll(container_scroll),
+            {
+                BasicTextFieldOfState!(
+                    state,
+                    modifier = Modifier.test_tag("field"),
+                    line_limits = TextFieldLineLimits::DEFAULT,
+                );
+            }
+        );
+    });
+    ui.on_node_with_tag("field").request_focus();
+    assert_eq!(container_scroll.value(), 0);
+    let field = ui.on_node_with_tag("field").get_unclipped_bounds_in_root();
+    height.set(field.height().0);
+    ui.wait_for_idle();
+    ui.on_node_with_tag("field").perform_text_input("\n");
+    assert!(container_scroll.max_value() > 0);
+    assert_eq!(container_scroll.value(), container_scroll.max_value());
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldScrollTest.kt, cursorScrolledIntoViewWhenTyping_inDecoration_withMaxLineLimit_whenFieldExpands
+#[test]
+fn a_decorated_field_at_its_most_lines_follows_a_new_line() {
+    let state = text_state("", TextRange::ZERO);
+    let scroll_state = scroll(0);
+    let mut ui = compose_test(move || {
+        BasicTextFieldOfState!(
+            state,
+            modifier = Modifier.test_tag("field"),
+            line_limits = TextFieldLineLimits::multi_line(1, 3),
+            scroll_state = Some(scroll_state),
+            decorator = |inner: Callback| {
+                Box!(Modifier.padding(16.dp()), { inner() });
+            },
+        );
+    });
+    ui.on_node_with_tag("field").perform_text_input("a\na\na");
+    // Three lines fill it to a pixel: its height in lines adds the first line's and the next
+    // ones' rounded heights, Compose's older path, where its newer one rounds the three lines'
+    // sum (`isBasicTextFieldHeightInLinesOptimizationEnabled`, D1144).
+    let filled = scroll_state.max_value();
+    assert!(filled <= 1, "{filled}");
+    ui.on_node_with_tag("field").perform_text_input("\n");
+    assert!(scroll_state.max_value() > filled + 1);
+    assert_eq!(scroll_state.value(), scroll_state.max_value());
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldScrollTest.kt, cursorScrolledIntoView_whenWidthChanges_inHorizontallyScrollableField
+#[test]
+fn a_narrowing_field_follows_its_cursor() {
+    let state = text_state(&"a".repeat(11), TextRange::ZERO);
+    let scroll_state = scroll(0);
+    let width = Box::leak(Box::new(mutable_state_of(None::<f32>))).handle();
+    let mut ui = compose_test(move || {
+        let modifier = match width.get() {
+            Some(width) => Modifier.width(width.dp()),
+            None => Modifier,
+        };
+        BasicTextFieldOfState!(
+            state,
+            modifier = modifier.test_tag("field"),
+            line_limits = TextFieldLineLimits::SingleLine,
+            scroll_state = Some(scroll_state),
+        );
+    });
+    ui.on_node_with_tag("field").perform_touch_input(|touch| {
+        let at = touch.center_right();
+        touch.click_at(at - compose_ui::Offset::new(1.0, 0.0));
+    });
+    ui.wait_for_idle();
+    assert_eq!((scroll_state.value(), scroll_state.max_value()), (0, 0));
+    let field = ui.on_node_with_tag("field").get_unclipped_bounds_in_root();
+    width.set(Some(field.width().0 / 2.0));
+    ui.wait_for_idle();
+    assert!(scroll_state.max_value() > 0);
+    assert_eq!(scroll_state.value(), scroll_state.max_value());
+}
+
+/// A swipe up a field inside a scrolling column scrolls the field to its end, then the column
+/// with what's left, as nested scrolling does.
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldScrollTest.kt, textFieldScroll_testNestedScrolling
+#[test]
+fn a_swipe_past_the_fields_end_scrolls_the_column() {
+    let state = text_state("First Line\nSecond Line\nThird Line\nFourth Line", TextRange::ZERO);
+    let (field_scroll, column_scroll) = (scroll(0), scroll(0));
+    let mut ui = compose_test(move || {
+        Column!(modifier = Modifier.size(300.dp()).vertical_scroll(column_scroll), {
+            BasicTextFieldOfState!(
+                state,
+                modifier = Modifier.size((300.dp(), 60.dp())).test_tag("field"),
+                scroll_state = Some(field_scroll),
+            );
+            Box!(Modifier.size(300.dp()));
+            Box!(Modifier.size(300.dp()));
+        });
+    });
+    ui.wait_for_idle();
+    assert_eq!(field_scroll.value(), 0);
+    assert!(field_scroll.max_value() > 0);
+    assert_eq!(column_scroll.value(), 0);
+    let density = ui.density().density;
+    let slop = 8.0 * density;
+    ui.on_node_with_tag("field").perform_touch_input(|touch| {
+        let x = 10.0 * density;
+        let desired = field_scroll.max_value() as f32 + 10.0 * density;
+        let start_y = (desired + slop).min(59.0 * density);
+        touch.swipe(compose_ui::Offset::new(x, start_y), compose_ui::Offset::new(x, 0.0), 200);
+    });
+    ui.wait_for_idle();
+    assert!(field_scroll.value() > 0);
+    assert_eq!(field_scroll.value(), field_scroll.max_value());
+    assert!(column_scroll.value() > 0);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldScrollTest.kt, textFieldDoesNotCrash_inVerticallyScrollableContainer_whenFieldShrinks
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldScrollTest.kt, textFieldDoesNotCrash_whenParentScrollableCollapses
+#[test]
+fn a_shrinking_field_or_container_does_not_crash() {
+    let state = text_state(&"\n".repeat(9), TextRange::at(9));
+    let mut ui = compose_test(move || {
+        BasicTextFieldOfState!(state, modifier = Modifier.test_tag("field"));
+    });
+    ui.on_node_with_tag("field").request_focus();
+    for _ in 0..9 {
+        ui.press_key(compose_ui::Key::Backspace);
+    }
+    assert_eq!(state.text().as_str(), "");
+
+    let size = fixed_height(150.0);
+    let state = text_state("", TextRange::ZERO);
+    let mut ui = compose_test(move || {
+        Box!(
+            Modifier
+                .vertical_scroll(scroll(0))
+                .width_in(0.dp(), size.get().dp())
+                .height_in(0.dp(), size.get().dp()),
+            {
+                BasicTextFieldOfState!(state, modifier = Modifier.test_tag("field"));
+            }
+        );
+    });
+    ui.on_node_with_tag("field").request_focus();
+    size.set(0.0);
+    ui.wait_for_idle();
+    ui.on_node_with_tag("field").assert_exists();
 }
