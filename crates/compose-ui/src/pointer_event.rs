@@ -189,6 +189,8 @@ pub struct PointerInputChange {
     /// What it is, as `type`.
     pub pointer_type: PointerType,
     pub scroll_delta: Offset,
+    /// What a unit of `scroll_delta` is worth, as its event's `wheel_step` (D1450).
+    pub wheel_step: crate::input::WheelStep,
     pub scale_factor: f32,
     pub pan_offset: Offset,
     pub historical: Vec<HistoricalChange>,
@@ -219,6 +221,7 @@ impl PointerInputChange {
             previous_pressed,
             pointer_type: PointerType::Touch,
             scroll_delta: Offset::ZERO,
+            wheel_step: crate::input::WheelStep::Pixels,
             scale_factor: 1.0,
             pan_offset: Offset::ZERO,
             historical: Vec::new(),
@@ -274,6 +277,12 @@ impl PointerInputChange {
 
     pub fn position_changed_ignore_consumed(&self) -> bool {
         self.position_change_ignore_consumed() != Offset::ZERO
+    }
+
+    /// Its `scroll_delta` in pixels, in a node of `bounds`, as the event's `wheel_pixels`.
+    pub fn wheel_pixels(&self, density: f32, bounds: IntSize) -> Offset {
+        let scale = self.wheel_step.pixels_per_unit(density, bounds);
+        Offset::new(self.scroll_delta.x * scale, self.scroll_delta.y * scale)
     }
 
     /// Whether it's outside a node of `size`, as `isOutOfBounds(size)`.

@@ -155,5 +155,7 @@ mod text_field_undo;
 mod text_input;
 mod text_reuse;
 mod text_selection_colors;
+mod transform_gesture_detector;
+mod transformable;
 mod window;
 mod window_insets;

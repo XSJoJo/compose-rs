@@ -57,6 +57,11 @@ pub use gestures::{
     remember_draggable_2d_state, remember_draggable_state, remember_scrollable_state,
     scrollable_state,
 };
+pub use gestures::{
+    DefaultTransformableState, LocalBoxFuture, TransformCalculations, TransformGestureDetector,
+    TransformScope, TransformableModifier, TransformableState, TransformableStateExt,
+    remember_transformable_state, transformable_state,
+};
 pub use image::{ContentScale, Image, PainterImage, VectorImage};
 pub use input_transformation::{InputTransform, InputTransformation, KeyboardActionHandler};
 pub use lazy::pager::{

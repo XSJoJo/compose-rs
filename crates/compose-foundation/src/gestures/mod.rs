@@ -1,6 +1,6 @@
 //! Compose's `foundation.gestures`: `Modifier.draggable` (drags along one axis reported as
 //! deltas to a `DraggableState`), and scrolling (`scrollable`: `ScrollableState`,
-//! `Modifier.scrollable`, flings).
+//! `Modifier.scrollable`, flings), and zooming, panning and rotating (`transformable`).
 
 mod anchored_draggable;
 mod drag_gesture;
@@ -8,6 +8,7 @@ mod draggable;
 mod mouse_wheel;
 mod scrollable;
 mod snapping;
+mod transformable;
 
 pub use anchored_draggable::{
     AnchoredDragScope, AnchoredDraggableDefaults, AnchoredDraggableModifier,
@@ -36,6 +37,11 @@ pub use snapping::{
     remember_list_snap_fling_behavior, remember_snap_fling_behavior, snap_fling_behavior,
 };
 pub(crate) use snapping::{FinalSnappingItem, distance_to_snap_position, final_snapping_item};
+pub use transformable::{
+    DefaultTransformableState, TransformBlock, TransformCalculations, TransformGestureDetector,
+    TransformScope, TransformableModifier, TransformableState, TransformableStateExt,
+    remember_transformable_state, transformable_state,
+};
 
 use compose_runtime::ComposeArg;
 

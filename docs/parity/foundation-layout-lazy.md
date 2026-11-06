@@ -249,7 +249,7 @@ Pager prefetch already uses a cache window in 1.12.1 (`isCacheWindowForPagerEnab
 | compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/SystemGestureExclusionTest.kt | 7 | `systemGestureExclusion` rects | feature:system-gesture-exclusion |
 | compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/TouchScrollable2DTest.kt | 5 | Touch on `scrollable2D`: interaction source, fling scope, velocity | feature:scrollable2d |
 | compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/TrackpadScrollable2DTest.kt | 3 | Trackpad on `scrollable2D` | feature:scrollable2d (+ pointer-input-types) |
-| compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/TransformableTest.kt | 33 | `transformable`: zoom, pan, rotate, locks, `canPan`, in scrollables, trackpad, `animate*By` | feature:transformable |
+| compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/TransformableTest.kt | 33 | `transformable`: zoom, pan, rotate, locks, `canPan`, in scrollables, trackpad, `animate*By` | partial (`transformable.rs`: 26 of 33, D1369; the 7 trackpad tests wait on feature:pointer-input-types) |
 | compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/focus/LazyListFocusableInteractionTest.kt | 1 | Scrolling a column up and down with a focused item doesn't crash | ported (`port_rows.rs`: a focusable item, where its is an `AndroidView`) |
 | compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/anchoredDraggable/AnchoredDraggableDecayAnimationTest.kt | 1 | `animateToWithDecay` | ported (`anchored_draggable.rs`) |
 | compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/anchoredDraggable/AnchoredDraggableGestureTest.kt | 18 | Swipes settle by positional and velocity thresholds, disabled, nested | ported (`anchored_draggable.rs`) |
@@ -261,7 +261,7 @@ Pager prefetch already uses a cache window in 1.12.1 (`isCacheWindowForPagerEnab
 | compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/gestures/DragGestureDetectorWhileMovingUIToPopupTest.kt | 2 | A drag start that moves content into a popup doesn't crash | ported (`port_rows.rs`: the Compose-content case, composed anew in the popup as there's no `movableContentOf`; the `AndroidView` case is n/a) |
 | compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/gestures/ForEachGestureTest.kt | 3 | `forEachGesture` | n/a: `forEachGesture` is `@Deprecated` (AwaitEachGestureTest covers its replacement) |
 | compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/gestures/TapGestureDetectorTest.kt | 27 | `detectTapGestures`: tap, double tap, long press, misses, out and in, consumption, `PressGestureScope` | partial (`detect_tap_gestures` exists: `pointer_input.rs::taps_double_taps_and_long_presses_are_told_apart`, `review_round7.rs`. Missing: `PressGestureScope` (`awaitRelease`, `tryAwaitRelease`), `awaitFirstDown(pass)` (feature:gesture-detectors)) |
-| compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/gestures/TransformGestureDetectorTest.kt | 9 | `detectTransformGestures`: pan, zoom, rotation, lock, slop | feature:transformable |
+| compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/gestures/TransformGestureDetectorTest.kt | 9 | `detectTransformGestures`: pan, zoom, rotation, lock, slop | ported (`transform_gesture_detector.rs`: all 9, each locked and not, D1369) |
 | compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/gestures/snapping/LazyGridSnapFlingBehaviorTest.kt | 8 | Snap fling on grids by velocity and distance | partial (`snapping.rs`: its 5 of velocity and distance, on `FixedSize` cells. Left: the edges' velocity and the remaining offset, as the list's, tested there) |
 | compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/gestures/snapping/LazyGridSnapLayoutInfoProviderTest.kt | 3 | Grid `SnapLayoutInfoProvider.calculateSnapOffset` | ported (`snapping.rs`: all 3, one test) |
 | compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/gestures/snapping/LazyListSnapFlingBehaviorTest.kt | 9 | Snap fling on lists | partial (`snapping.rs`: 8 of 9. Left: `remainingScrollOffset_shouldFollowAnimationOffsets`, covered by `SnapFlingBehaviorTest`'s) |
@@ -360,7 +360,7 @@ From `compose/foundation/foundation-layout/api/current.txt` and `compose/foundat
   - the slop and drag primitives: `awaitTouchSlopOrCancellation` (as public API), `awaitHorizontal/VerticalTouchSlopOrCancellation`, `awaitHorizontal/VerticalPointerSlopOrCancellation`, `awaitDragOrCancellation` (and its horizontal and vertical forms), `drag`, `horizontalDrag`, `verticalDrag`, `awaitLongPressOrCancellation`;
   - `PressGestureScope` (`awaitRelease`, `tryAwaitRelease`) for `onPress`, and `GestureCancellationException`.
   - compose-rs puts its detectors in `compose_ui::PointerInputScope`, where Compose puts them in foundation's `gestures` package. Re-export them from `compose::foundation::gestures`.
-- **transformable:**
+- **transformable:** done (D1369) but for a trackpad's pans and scales (pointer-input-types) and the deprecated centroid-less overloads:
   - `detectTransformGestures`, `calculatePan`, `calculateZoom`, `calculateRotation`, `calculateCentroid`, `calculateCentroidSize`;
   - `Modifier.transformable` (with and without `canPan`), `TransformableState`, `rememberTransformableState`, `TransformScope`;
   - `animateBy`, `animatePanBy`, `animateRotateBy`, `animateZoomBy`, `panBy`, `rotateBy`, `zoomBy`, `stopTransformation`.
@@ -503,7 +503,7 @@ Each entry gives the Compose API, what it does, the test files that need it (by 
     - Tests: FlowRowColumnTest, 2 of LayoutReuseTest.
     - Depends on: intrinsics for 45 tests (done).
     - Size: L. Experimental: no (`fillMaxRowHeight` and the overflow scopes are).
-21. **transformable.**
+21. **transformable.** Done (D1369) but for the trackpad (pointer-input-types).
     - API: `detectTransformGestures`, the `calculate*` helpers, `transformable`, `TransformableState`.
     - Tests: TransformableTest, TransformGestureDetectorTest.
     - Depends on: ui's multi-pointer events and trackpad gestures (pointer-input-types), mutator-mutex.
@@ -590,7 +590,7 @@ Each entry gives the Compose API, what it does, the test files that need it (by 
 6. **lazy-semantics** (M), **keep-focused-in-view** (M), **bring-into-view** (M).
 7. **snapping** (M), then **anchored-draggable** (M–L), then **overscroll** (L).
 8. **intrinsics** (L, done) and **alignment-lines** (L), when the ui work it depends on lands; then **flow-layout** (L, done).
-9. **transformable** (M) and **scrollable2d** (M), after ui's multi-pointer events.
+9. **transformable** (M, done, D1369) and **scrollable2d** (M), after ui's multi-pointer events.
 10. **pinnable** (M), **beyond-bounds-api** (M), **animate-item** (L).
 11. **pager** (XL), then **staggered-grid** (L–XL).
 12. **window-insets** (L, done), **flexbox** (L, done, D1367), **grid-layout** (L–XL, done, D1368), **ruler-fit** (M), **system-gesture-exclusion** (S).

@@ -110,6 +110,7 @@ impl LiveChange {
         change.pressure = event.pressure;
         change.pointer_type = event.pointer_type;
         change.scroll_delta = event.scroll_delta;
+        change.wheel_step = event.wheel_step;
         change.sharing(self.consumed.clone())
     }
 
