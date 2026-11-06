@@ -40,7 +40,9 @@ impl Composition {
         let applier: Rc<RefCell<dyn ErasedApplier>> =
             Rc::new(RefCell::new(crate::applier::SharedApplier::new(applier)));
         let id = with_runtime(|runtime| {
-            runtime.compositions.alloc(CompositionData::new(applier, root_node))
+            runtime.trees = runtime.trees.wrapping_add(1);
+            let data = CompositionData::new(applier, runtime.trees, root_node);
+            runtime.compositions.alloc(data)
         });
         register_exit_guard();
         Composition { id, _not_send: PhantomData }
@@ -57,9 +59,9 @@ impl Composition {
     /// A composition under `parent` using the applier of its composition, its nodes below `root`
     /// (`platform::subcomposition`).
     pub(crate) fn sharing_applier(parent: CompositionContext, root: NodeRef) -> Composition {
-        let applier = crate::context::parent_applier(parent);
+        let (applier, tree) = crate::context::parent_applier(parent);
         let id = with_runtime(|runtime| {
-            let id = runtime.compositions.alloc(CompositionData::new(applier, root));
+            let id = runtime.compositions.alloc(CompositionData::new(applier, tree, root));
             runtime.compositions.register(id, parent);
             id
         });
@@ -766,6 +768,7 @@ impl OuterPass {
             stack_trace_sequence: _,
             // Whole-thread: identities are unique among all compositions.
             key_token_serial: _,
+            trees: _,
         } = runtime;
         active.is_some().then(|| {
             Box::new(OuterPass {

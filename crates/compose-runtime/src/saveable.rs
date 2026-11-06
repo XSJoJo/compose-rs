@@ -605,26 +605,30 @@ impl CompositeKeyToken {
 /// The bit set in the identities given, clear in node groups' folded ones: the two never meet.
 const GIVEN: u32 = 1 << 31;
 
-/// A node group's identity where it is: its node (unique in its tree while it lives), its key and
-/// its composition's generation, mixed and folded to 31 bits. Another node passes for it only if
-/// its bits fold alike, once in 2^31: what 12 bytes rather than 24 cost.
+/// A node group's identity where it is: its node (unique in its tree while it lives), its key, its
+/// composition's generation and its tree (`CompositionData::tree`: every tree's node handles start
+/// alike, so another tree's node at the same handle isn't taken for it), mixed and folded to 31
+/// bits. Another node passes for it only if its bits fold alike, once in 2^31: what 12 bytes rather
+/// than 24 cost.
 #[inline]
-pub(crate) fn node_identity(node: u64, key: u64, generation: u32) -> u32 {
+pub(crate) fn node_identity(node: u64, key: u64, generation: u32, tree: u32) -> u32 {
     const MIX: u64 = 0x9e37_79b9_7f4a_7c15;
-    let mixed =
-        (node.wrapping_mul(MIX) ^ key ^ u64::from(generation).rotate_left(41)).wrapping_mul(MIX);
+    const PLACE: u64 = 0xc2b2_ae3d_27d4_eb4f;
+    let place = (u64::from(tree) << 32 | u64::from(generation)).wrapping_mul(PLACE);
+    let mixed = (node.wrapping_mul(MIX) ^ key ^ place).wrapping_mul(MIX);
     (mixed >> 33) as u32
 }
 
-/// The identity of `group`, a live group of `table` of a composition of `generation`: its named
-/// one, or its node's. `None` for another group that's never been named.
+/// The identity of `group`, a live group of `data`, a composition of `generation`: its named one,
+/// or its node's. `None` for another group that's never been named.
 #[inline]
-fn identity_of(table: &crate::slot_table::SlotTable, group: u32, generation: u32) -> Option<u32> {
+fn identity_of(data: &crate::runtime::CompositionData, group: u32, generation: u32) -> Option<u32> {
+    let table = &data.table;
     let entry = &table[group];
     if entry.flags & crate::slot_table::NAMED != 0 {
         table.movable.identity_of(group)
     } else if entry.kind == GroupKind::Node {
-        Some(node_identity(entry.node.bits(), entry.key, generation))
+        Some(node_identity(entry.node.bits(), entry.key, generation, data.tree))
     } else {
         None
     }
@@ -655,8 +659,9 @@ fn token_here(runtime: &mut crate::runtime::Runtime) -> CompositeKeyToken {
     }
     let generation = runtime.active.expect("composing").composition.generation;
     let crate::runtime::Runtime { compositions, key_token_serial, .. } = runtime;
-    let table = &mut compositions.data_mut(composition).table;
-    let check = identity_of(table, group, generation).unwrap_or_else(|| {
+    let data = compositions.data_mut(composition);
+    let check = identity_of(data, group, generation).unwrap_or_else(|| {
+        let table = &mut data.table;
         *key_token_serial = key_token_serial.wrapping_add(1);
         let identity = *key_token_serial | GIVEN;
         table.movable.name(group, identity);
@@ -681,7 +686,7 @@ pub fn composite_key_hash_of(token: CompositeKeyToken) -> Option<u64> {
             && let Some(data) = compositions.get(id)
             && data.table.groups.get(token.group as usize).is_some_and(|entry| {
                 entry.kind != GroupKind::Free
-                    && identity_of(&data.table, token.group, id.generation) == Some(token.check)
+                    && identity_of(data, token.group, id.generation) == Some(token.check)
             })
         {
             return Some(composite_key_hash_at(compositions, data, token.group));

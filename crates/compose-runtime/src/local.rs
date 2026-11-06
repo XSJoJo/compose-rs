@@ -280,46 +280,71 @@ thread_local! {
     static PLACES: std::cell::RefCell<Places> = std::cell::RefCell::new(Places::default());
 }
 
+/// The cell no provider has: where cells can't be made, at a thread's exit, its entries' anchors
+/// read defaults.
+const NO_PLACE: PlaceId = PlaceId { index: NONE - 1, generation: 0 };
+
 impl Places {
+    /// A cell saying `place`. Once the thread-local is gone (a value dropped by another
+    /// thread-local's destructor), none: what's made then is found nowhere.
     fn make(place: (CompositionId, u32)) -> PlaceId {
-        PLACES.with_borrow_mut(|places| match places.free.pop() {
-            Some(index) => {
-                let cell = &mut places.cells[index as usize];
-                cell.1 = place;
-                PlaceId { index, generation: cell.0 }
-            }
-            None => {
-                let index = u32::try_from(places.cells.len()).expect("too many providers");
-                places.cells.push((0, place));
-                PlaceId { index, generation: 0 }
-            }
-        })
+        PLACES
+            .try_with(|places| {
+                let mut places = places.borrow_mut();
+                match places.free.pop() {
+                    Some(index) => {
+                        let cell = &mut places.cells[index as usize];
+                        cell.1 = place;
+                        PlaceId { index, generation: cell.0 }
+                    }
+                    None => {
+                        let index = u32::try_from(places.cells.len()).expect("too many providers");
+                        places.cells.push((0, place));
+                        PlaceId { index, generation: 0 }
+                    }
+                }
+            })
+            .unwrap_or(NO_PLACE)
     }
 
+    /// `id` is let go: an anchor naming it finds nothing, though another provider takes the cell
+    /// (its generation moves on).
     fn free(id: PlaceId) {
         // At a thread's exit, the cells may be gone first: nothing's left to find them.
         let _ = PLACES.try_with(|places| {
             let mut places = places.borrow_mut();
-            places.cells[id.index as usize].0 = id.generation.wrapping_add(1);
-            places.free.push(id.index);
+            if let Some(cell) = places.cells.get_mut(id.index as usize) {
+                cell.0 = id.generation.wrapping_add(1);
+                places.free.push(id.index);
+            }
         });
     }
 
-    /// Where the provider of `id` is, if it's still there.
+    /// Where the provider of `id` is, if it's still there: not once the thread-local is gone, as
+    /// when a tree dropped by another thread-local's destructor has a node read an anchor.
     fn get(id: PlaceId) -> Option<(CompositionId, u32)> {
-        PLACES.with_borrow(|places| {
-            let (generation, place) = *places.cells.get(id.index as usize)?;
-            (generation == id.generation).then_some(place)
-        })
+        PLACES
+            .try_with(|places| {
+                let (generation, place) = *places.borrow().cells.get(id.index as usize)?;
+                (generation == id.generation).then_some(place)
+            })
+            .ok()
+            .flatten()
     }
 
     fn set(id: PlaceId, place: (CompositionId, u32)) {
-        PLACES.with_borrow_mut(|places| places.cells[id.index as usize].1 = place);
+        let _ = PLACES.try_with(|places| {
+            if let Some(cell) = places.borrow_mut().cells.get_mut(id.index as usize)
+                && cell.0 == id.generation
+            {
+                cell.1 = place;
+            }
+        });
     }
 
     /// How many cells are kept, live or free to reuse.
     fn kept() -> usize {
-        PLACES.with_borrow(|places| places.cells.len())
+        PLACES.try_with(|places| places.borrow().cells.len()).unwrap_or(0)
     }
 }
 
@@ -970,9 +995,7 @@ pub(crate) fn anchor_here(runtime: &Runtime) -> CompositionLocalAnchor {
     match entries_at(&data.table, provider) {
         Some(entries) => CompositionLocalAnchor { place: entries.place, version },
         // A provider whose entries aren't remembered yet: it provides nothing to find.
-        None => {
-            CompositionLocalAnchor { place: PlaceId { index: NONE - 1, generation: 0 }, version }
-        }
+        None => CompositionLocalAnchor { place: NO_PLACE, version },
     }
 }
 
@@ -1222,4 +1245,31 @@ fn start_provider() -> (ReplaceGroup, (CompositionId, u32)) {
     let group = ReplaceGroup::start(PROVIDER_KEY, "compose_runtime::CompositionLocalProvider");
     let place = with_runtime(|runtime| runtime.mark_provider());
     (group, place)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A provider's place cell taken by the next provider made: an anchor of the first names
+    /// nothing there, though the second's version were its own (versions don't repeat on a thread,
+    /// so only the cell's generation tells them apart here).
+    #[test]
+    fn an_anchor_of_a_provider_gone_names_nothing_in_its_cell_taken_again() {
+        let composition = CompositionId { index: 3, generation: 1 };
+        let first = Places::make((composition, 7));
+        let anchor = CompositionLocalAnchor { place: first, version: 5 };
+        assert_eq!(anchor.provider_in(composition), Some((7, 5)));
+        Places::set(first, (composition, 8));
+        assert_eq!(anchor.provider_in(composition), Some((8, 5)), "moved");
+        Places::free(first);
+        let second = Places::make((composition, 9));
+        assert_eq!(second.index, first.index, "the cell taken again");
+        assert_eq!(anchor.provider_in(composition), None);
+        Places::set(first, (composition, 10));
+        let theirs = CompositionLocalAnchor { place: second, version: 5 };
+        assert_eq!(theirs.provider_in(composition), Some((9, 5)), "not moved by the first's");
+        assert_ne!(anchor, theirs);
+        Places::free(second);
+    }
 }

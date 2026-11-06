@@ -544,7 +544,7 @@ fn can_take(table: &SlotTable, identity: u64) -> bool {
     })
 }
 
-/// Moves `old` of `source` (`from`'s table) and what's under it to `target`, as a tree of its own
+/// Moves `old` of `source` (the table of `from`, a composition and its tree) and what's under it to `target`, as a tree of its own
 /// to be linked: its scopes and contexts follow it, and what's nested provides from the new
 /// groups. What handles name it by goes with it, as Compose's anchors move with their groups
 /// (D1511): a provider's entries say where it is now, which is where a `CompositionLocalAnchor`
@@ -558,7 +558,7 @@ fn move_group(
     contexts: &mut crate::context::Contexts,
     target_id: CompositionId,
     moved_contexts: &mut Vec<crate::context::ContextId>,
-    from: CompositionId,
+    from: (CompositionId, u32),
     old: u32,
     parent: u32,
     provider: u32,
@@ -577,7 +577,7 @@ fn move_group(
     let identity = if flags & NAMED != 0 {
         source.movable.unname(old)
     } else if kind == GroupKind::Node {
-        Some(crate::saveable::node_identity(node.bits(), key, from.generation))
+        Some(crate::saveable::node_identity(node.bits(), key, from.0.generation, from.1))
     } else {
         None
     };
@@ -869,6 +869,8 @@ impl Runtime {
         let Runtime { compositions, scopes, .. } = self;
         let mut contexts = std::mem::take(&mut compositions.contexts);
         let mut moved_contexts = Vec::new();
+        // Its tree, which `to` shares.
+        let tree = compositions.get(from).expect("a live composition").tree;
         let (source, target) = compositions.two_tables(from, to);
         let new = move_group(
             source,
@@ -877,7 +879,7 @@ impl Runtime {
             &mut contexts,
             to,
             &mut moved_contexts,
-            from,
+            (from, tree),
             group,
             NONE,
             NONE,

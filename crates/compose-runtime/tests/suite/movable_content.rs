@@ -5621,3 +5621,58 @@ fn a_node_token_of_a_composition_gone_names_none_in_the_next_at_its_index() {
     assert_eq!(composite_key_hash_of(token), None, "another composition at its index");
     second.dispose();
 }
+
+/// 30 node groups, each in a key group of its own, keeping its node's token and hash in `tokens`.
+fn token_nodes(tokens: &Rc<RefCell<Vec<(CompositeKeyToken, u64)>>>) {
+    for index in 0..30 {
+        let tokens = tokens.clone();
+        key(index, move || {
+            let composer = platform::current();
+            composer.start_node(key_of("movable.TokenNode"), view("TokenNode"));
+            let tokens = tokens.clone();
+            remember(move || {
+                let made = (current_node_composite_key_token(), current_composite_key_hash_code());
+                tokens.borrow_mut().push(made);
+            });
+            composer.end_group();
+        });
+    }
+}
+
+/// Two trees on one thread, whose node handles start alike, and compositions alike in index
+/// generations: a node token of the first, its node gone, isn't taken for the second tree's node at
+/// the same handle, which moved with content to a subcomposition and is looked for by its identity
+/// there. A node group's identity folds its tree.
+#[test]
+fn a_node_token_of_one_tree_names_none_in_another_trees_moved_content() {
+    type Tokens = Rc<RefCell<Vec<(CompositeKeyToken, u64)>>>;
+    let (first, second): (Tokens, Tokens) = Default::default();
+    let shown = mutable_state_of(true);
+    let mut one = composition_test();
+    let (s, f) = (shown.handle(), first.clone());
+    one.compose(move || {
+        let f = f.clone();
+        key(s.get(), move || {
+            if s.get() {
+                token_nodes(&f);
+            }
+        });
+    });
+    let t = second.clone();
+    let content = movable_content_of(move || token_nodes(&t));
+    let position = mutable_state_of(0);
+    let mut two = across(content, position.handle(), false);
+    position.set(1);
+    two.expect_changes();
+    shown.set(false);
+    one.expect_changes();
+    assert_eq!(first.borrow().len(), 30);
+    for (index, (token, _)) in first.borrow().iter().enumerate() {
+        assert_eq!(composite_key_hash_of(*token), None, "the first tree's gone node {index}");
+    }
+    for (index, (token, hash)) in second.borrow().iter().enumerate() {
+        assert_eq!(composite_key_hash_of(*token), Some(*hash), "the second tree's node {index}");
+    }
+    one.dispose();
+    two.dispose();
+}
