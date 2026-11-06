@@ -22,3 +22,4 @@ mod skia;
 mod text_brush;
 mod text_painter;
 mod text_reuse;
+mod vectors;

@@ -104,6 +104,7 @@ mod tree;
 #[allow(unsafe_code)]
 mod tree_access;
 mod unit;
+mod vector;
 mod velocity_tracker;
 mod view_configuration;
 mod window;
@@ -284,8 +285,8 @@ pub use paragraph::{Paragraph, TextLayoutInput};
 pub use paragraph_style::ParagraphStyle;
 pub use parent_data::{LayoutIdParentData, ParentDataModifierNode};
 pub use path::{
-    CornerRadius, ImageVector, Matrix, Path, PathCommand, PathData, PathDirection, PathError,
-    PathFillType, PathOperation, PathStep, RoundRect,
+    CornerRadius, Matrix, Path, PathCommand, PathData, PathDirection, PathError, PathFillType,
+    PathOperation, PathStep, RoundRect,
 };
 pub use pinnable::{FocusPin, LOCAL_PINNABLE_CONTAINER, PinnableContainer, PinnedHandle};
 pub use placeholder::{Placeholder, PlaceholderVerticalAlign, Placeholders};
@@ -354,6 +355,10 @@ pub use tree_access::TreeRef;
 pub use unit::{
     Density, Dp, DpOffset, DpRect, DpSize, IntOffset, IntSize, Offset, Rect, Size, TextUnit,
     TextUnitType, UnitExt,
+};
+pub use vector::{
+    ImageVector, ImageVectorBuilder, PathBuilder, PathNode, PathParser, VectorGroup, VectorNode,
+    VectorPainter, VectorPath, add_path_nodes, nodes_to_path, path_data, remember_vector_painter,
 };
 pub use velocity_tracker::{
     Velocity, VelocityTracker, VelocityTracker1D, VelocityTrackingStrategy, poly_fit_least_squares,

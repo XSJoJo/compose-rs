@@ -4,12 +4,11 @@
 #![allow(non_snake_case)]
 
 use std::cell::Cell;
-use std::sync::Arc;
 
 use compose_material3::*;
 use compose_runtime::*;
 use compose_test::*;
-use compose_ui::{Color, ImageVector, Modifier, Paint, Path, Rect, UnitExt, platform::DrawOp};
+use compose_ui::{Color, ImageVector, Modifier, Paint, Rect, UnitExt, platform::DrawOp};
 
 thread_local! {
     static SCHEME: Cell<Option<ColorScheme>> = const { Cell::new(None) };
@@ -235,17 +234,14 @@ fn a_disabled_text_fields_decoration_is_dimmed() {
 #[test]
 fn an_icon_tint_recolors_paths_with_their_own_fill() {
     thread_local! {
-        static VECTOR: ImageVector = ImageVector {
-            name: "review.RedSquare",
-            default_width: 24.dp(),
-            default_height: 24.dp(),
-            viewport_width: 24.0,
-            viewport_height: 24.0,
-            paths: Arc::from(vec![(
-                Path::from_svg("M4,4h16v16h-16z").unwrap().data(),
-                Some(Color::RED),
-            )]),
-        };
+        static VECTOR: ImageVector = ImageVector::builder(24.dp(), 24.dp(), 24.0, 24.0)
+            .name("review.RedSquare")
+            .add_path(compose_ui::VectorPath {
+                path_data: compose_ui::add_path_nodes("M4,4h16v16h-16z"),
+                fill: Some(compose_ui::Brush::solid(Color::RED)),
+                ..Default::default()
+            })
+            .build();
     }
     let mut ui = compose_test(|| {
         CompositionLocalProvider(LOCAL_CONTENT_COLOR.provides(Color::BLUE), || {

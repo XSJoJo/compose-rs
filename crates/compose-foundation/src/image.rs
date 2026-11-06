@@ -72,6 +72,31 @@ pub fn PainterImage(
     );
 }
 
+/// A vector image, as Compose's `Image(imageVector, contentDescription, …)` (named apart,
+/// D181): `PainterImage` of its remembered `VectorPainter`.
+#[composable]
+#[allow(non_snake_case)]
+pub fn VectorImage(
+    image_vector: compose_ui::ImageVector,
+    content_description: Option<impl Into<compose_ui::SharedString>>,
+    #[default(crate::Modifier)] modifier: Modifier,
+    #[default(crate::Alignment::CENTER)] alignment: Alignment,
+    #[default(crate::ContentScale::Fit)] content_scale: ContentScale,
+    #[default(1.0)] alpha: f32,
+    #[default(None)] color_filter: Option<compose_ui::ColorFilter>,
+) {
+    let painter = compose_ui::remember_vector_painter(&image_vector);
+    PainterImage(
+        painter,
+        content_description,
+        modifier,
+        alignment,
+        content_scale,
+        alpha,
+        color_filter,
+    );
+}
+
 struct ImageElement {
     bitmap: ImageBitmap,
     content_description: Option<compose_ui::SharedString>,

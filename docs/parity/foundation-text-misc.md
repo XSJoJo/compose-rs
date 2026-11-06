@@ -444,7 +444,7 @@ From `api/current.txt`, every public, non-deprecated API in this area that compo
 | `ComposeFoundationFlags` *(experimental)* | no flag (the pausable-prefetch one went as the tip's did, D892); this area's flags (`isNewContextMenuEnabled`, `isSmartSelectionEnabled`, `isSelectionAutoScrollEnabled`, `isMouseSelectionBetweenTextEnabled`, `isBasicTextFieldStyledTextEnabled`, `isLinkMinimumTouchTargetSizeZeroEnabled`, `isNewBorderImplementationEnabled`, `isBorderMatchesOutlineBoundsFixEnabled`, `isRoundedRectangleBorderRenderingFixEnabled`, `isInheritedTextStyleEnabled`, `isTextFieldWaitWindowFocusForInputSessionEnabled`, the `isBasicTextField*` optimizations) come with the features they switch | each feature |
 | `Modifier.focusGroup()`, `focusable(enabled, interactionSource)` | partial: `focusable()`, `focusable_with(enabled, interaction_source)`; no focus group | `focusable-parity` |
 | `Modifier.hoverable(interactionSource, enabled)` | present | — |
-| `Image(bitmap, …, colorFilter, filterQuality)`, `Image(painter, …)`, `Image(imageVector, …)` | partial: `Image(bitmap, content_description, modifier, alignment, content_scale, alpha, tint)`, `tint` being a `ColorFilter.tint` (D1560); `PainterImage(painter, content_description, modifier, alignment, content_scale, alpha, color_filter)` is `Image(painter, …)` (D1901). Missing: `colorFilter` on the bitmap overload, `filterQuality`, `Image(imageVector, …)` | `image-painter` |
+| `Image(bitmap, …, colorFilter, filterQuality)`, `Image(painter, …)`, `Image(imageVector, …)` | partial: `Image(bitmap, content_description, modifier, alignment, content_scale, alpha, tint)`, `tint` being a `ColorFilter.tint` (D1560); `PainterImage(painter, content_description, modifier, alignment, content_scale, alpha, color_filter)` is `Image(painter, …)` (D1901). `VectorImage` is `Image(imageVector, …)` (D1902). Missing: `colorFilter` on the bitmap overload, `filterQuality` | `image-painter` |
 | `Indication`, `IndicationNodeFactory`, `Modifier.indication(interactionSource, indication)`, `LocalIndication` | present (D1051): `Indication` (`NONE`, `LOCAL`, `new(factory)`), `IndicationNodeFactory`, `Modifier.indication`, `LOCAL_INDICATION` | — |
 | `Modifier.magnifier(sourceCenter, magnifierCenter, onSizeChanged, zoom, size, cornerRadius, elevation, clip)` | missing | `magnifier` |
 | `MutatorMutex` (`mutate`, `mutateWith`, `tryMutate`), `MutatePriority` | missing | `mutator-mutex` |
@@ -611,7 +611,7 @@ Sizes: S under a day, M a few days, L a week or two, XL multi-week. "Other area"
 - **Size:** M. **Experimental:** no.
 
 ### image-painter
-- **Partly done:** `Image(painter, …)` is `PainterImage` (D1901), with `ColorFilter` (D1900). Left: `Image(imageVector, …)`, `colorFilter` on the bitmap overload, `filterQuality`.
+- **Partly done:** `Image(painter, …)` is `PainterImage` (D1901), with `ColorFilter` (D1900). `Image(imageVector, …)` is `VectorImage` (D1902). Left: `colorFilter` on the bitmap overload, `filterQuality`.
 - **Compose API:** `Image(painter, …)`, `Image(imageVector, …)`, `colorFilter`, `filterQuality` on all overloads.
 - **What:** images from any painter (bitmap subsections, vectors, resources), tinted and filtered.
 - **Tests:** `ImageTest`.
