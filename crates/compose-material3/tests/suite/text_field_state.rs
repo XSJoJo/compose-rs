@@ -5,7 +5,8 @@
 
 use compose_foundation::layout::*;
 use compose_foundation::{
-    InputTransformation, OutputTransformation, TextFieldBuffer, TextFieldLineLimits, TextFieldState,
+    BasicTextFieldOfState, InputTransformation, OutputTransformation, TextFieldBuffer,
+    TextFieldLineLimits, TextFieldState,
 };
 use compose_material3::*;
 use compose_test::*;
@@ -184,4 +185,68 @@ fn a_single_line_is_the_value_fields_size() {
     let (value, state) = (bounds(&mut ui, "value"), bounds(&mut ui, "state"));
     assert_eq!((state.width(), state.height()), (value.width(), value.height()));
     assert_eq!((state.width(), state.height()), (280.0, 56.0));
+}
+
+/// The state decorators decorate a basic field as the Material fields are decorated: as high,
+/// and the label floated by the text as shown.
+#[test]
+fn a_decorator_decorates_a_basic_field_as_the_material_field() {
+    let (decorated, outlined, material) = (state(""), state(""), state(""));
+    let mut ui = compose_test(move || {
+        MaterialTheme!({
+            Column!({
+                let source = compose_runtime::remember(compose_ui::MutableInteractionSource::new);
+                let prefix = OutputTransformation::from_fn(prefixed);
+                let (decorator_source, decorator_prefix) = (source.clone(), prefix.clone());
+                BasicTextFieldOfState!(
+                    decorated,
+                    modifier = Modifier.test_tag("decorated"),
+                    interaction_source = Some(source.clone()),
+                    output_transformation = Some(prefix.clone()),
+                    decorator = move |inner: compose_runtime::Callback| {
+                        TextFieldDecorator!(
+                            decorated,
+                            inner,
+                            true,
+                            TextFieldLineLimits::DEFAULT,
+                            Some(decorator_prefix.clone()),
+                            decorator_source.clone(),
+                            label =
+                                Some(|| Text!("label", modifier = Modifier.test_tag("floated"))),
+                        );
+                    },
+                );
+                let other = compose_runtime::remember(compose_ui::MutableInteractionSource::new);
+                let other_source = other.clone();
+                BasicTextFieldOfState!(
+                    outlined,
+                    modifier = Modifier.test_tag("outlined"),
+                    interaction_source = Some(other.clone()),
+                    decorator = move |inner: compose_runtime::Callback| {
+                        OutlinedTextFieldDecorator!(
+                            outlined,
+                            inner,
+                            true,
+                            TextFieldLineLimits::DEFAULT,
+                            None,
+                            other_source.clone(),
+                        );
+                    },
+                );
+                TextFieldOfState!(
+                    material,
+                    modifier = Modifier.test_tag("material"),
+                    label = Some(|| Text!("label", modifier = Modifier.test_tag("resting"))),
+                );
+            });
+        });
+    });
+    let (decorated, material) = (bounds(&mut ui, "decorated"), bounds(&mut ui, "material"));
+    let outlined = bounds(&mut ui, "outlined");
+    // As high: the minimum width is the Material field's own (`defaultMinSize`), not the
+    // decoration's.
+    assert_eq!(decorated.height(), material.height());
+    assert_eq!(outlined.height(), 56.0);
+    let (floated, resting) = (bounds(&mut ui, "floated"), bounds(&mut ui, "resting"));
+    assert!(floated.top - decorated.top < resting.top - material.top);
 }

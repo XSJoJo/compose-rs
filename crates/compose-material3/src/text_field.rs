@@ -381,6 +381,93 @@ pub fn OutlinedTextFieldDecorationBox(
     );
 }
 
+/// A filled field's decoration around a [`BasicTextFieldOfState`]'s inner field, as Compose's
+/// `TextFieldDefaults.decorator(state, …)`'s `Decoration`: call it from the field's `decorator`
+/// with the field's `state`, `enabled`, `line_limits`, `output_transformation` and
+/// `interaction_source`. The label floats and the placeholder hides by the state's text as it's
+/// shown. Compose's returns a decorator object; here the decoration is composed in place (D1139).
+#[composable]
+#[allow(non_snake_case)]
+pub fn TextFieldDecorator(
+    state: TextFieldState,
+    inner_text_field: impl Fn() + 'static,
+    enabled: bool,
+    line_limits: TextFieldLineLimits,
+    output_transformation: Option<OutputTransformation>,
+    interaction_source: MutableInteractionSource,
+    #[default(false)] is_error: bool,
+    #[default(crate::TextFieldLabelPosition::inside())] label_position: TextFieldLabelPosition,
+    #[default(None)] label: Option<impl Fn() + 'static>,
+    #[default(None)] placeholder: Option<impl Fn() + 'static>,
+    #[default(None)] leading_icon: Option<impl Fn() + 'static>,
+    #[default(None)] trailing_icon: Option<impl Fn() + 'static>,
+    #[default(None)] prefix: Option<impl Fn() + 'static>,
+    #[default(None)] suffix: Option<impl Fn() + 'static>,
+    #[default(None)] supporting_text: Option<impl Fn() + 'static>,
+    #[default(crate::TextFieldDefaults::shape())] shape: Shape,
+    #[default(crate::TextFieldDefaults::colors())] colors: TextFieldColors,
+    #[default(None)] content_padding: Option<PaddingValues>,
+    #[default(None)] container: Option<impl Fn() + 'static>,
+) {
+    let shown = VisualText::OfState(state, output_transformation).read();
+    standing_decoration(
+        Variant::Filled,
+        shown,
+        inner_text_field,
+        (enabled, is_error, line_limits == TextFieldLineLimits::SingleLine),
+        VisualTransformation::NONE,
+        interaction_source,
+        label_position,
+        Slots { label, placeholder, leading_icon, trailing_icon, prefix, suffix, supporting_text },
+        shape,
+        colors,
+        content_padding,
+        container,
+    );
+}
+
+/// An outlined field's decoration around a [`BasicTextFieldOfState`]'s inner field, as Compose's
+/// `OutlinedTextFieldDefaults.decorator(state, …)`'s `Decoration`: see [`TextFieldDecorator`]
+/// (D1139).
+#[composable]
+#[allow(non_snake_case)]
+pub fn OutlinedTextFieldDecorator(
+    state: TextFieldState,
+    inner_text_field: impl Fn() + 'static,
+    enabled: bool,
+    line_limits: TextFieldLineLimits,
+    output_transformation: Option<OutputTransformation>,
+    interaction_source: MutableInteractionSource,
+    #[default(false)] is_error: bool,
+    #[default(crate::TextFieldLabelPosition::cutout())] label_position: TextFieldLabelPosition,
+    #[default(None)] label: Option<impl Fn() + 'static>,
+    #[default(None)] placeholder: Option<impl Fn() + 'static>,
+    #[default(None)] leading_icon: Option<impl Fn() + 'static>,
+    #[default(None)] trailing_icon: Option<impl Fn() + 'static>,
+    #[default(None)] prefix: Option<impl Fn() + 'static>,
+    #[default(None)] suffix: Option<impl Fn() + 'static>,
+    #[default(None)] supporting_text: Option<impl Fn() + 'static>,
+    #[default(crate::OutlinedTextFieldDefaults::colors())] colors: TextFieldColors,
+    #[default(None)] content_padding: Option<PaddingValues>,
+    #[default(None)] container: Option<impl Fn() + 'static>,
+) {
+    let shown = VisualText::OfState(state, output_transformation).read();
+    standing_decoration(
+        Variant::Outlined,
+        shown,
+        inner_text_field,
+        (enabled, is_error, line_limits == TextFieldLineLimits::SingleLine),
+        VisualTransformation::NONE,
+        interaction_source,
+        label_position,
+        Slots { label, placeholder, leading_icon, trailing_icon, prefix, suffix, supporting_text },
+        OutlinedTextFieldDefaults::shape(),
+        colors,
+        content_padding,
+        container,
+    );
+}
+
 /// What the two decoration boxes have in common, as `CommonDecorationBox`: focused by the source.
 #[allow(clippy::too_many_arguments)]
 fn standing_decoration(
@@ -937,7 +1024,7 @@ pub fn OutlinedTextField(
 /// overload's decoration (label, placeholder, icons, prefix, suffix, supporting text, error) around
 /// [`BasicTextFieldOfState`](compose_foundation::BasicTextFieldOfState), whose
 /// `input_transformation`, `output_transformation`, `on_keyboard_action` and `line_limits` it
-/// takes, and `on_text_layout`. The label floats and the placeholder hides by the text as it's
+/// takes, `on_text_layout` and `scroll_state`. The label floats and the placeholder hides by the text as it's
 /// shown (the output transformation's). Rust has no overloads, so it has a name of its own (D1136).
 #[composable]
 #[allow(non_snake_case)]
@@ -962,6 +1049,7 @@ pub fn TextFieldOfState(
     #[default(None)] on_keyboard_action: Option<KeyboardActionHandler>,
     #[default(crate::TextFieldLineLimits::DEFAULT)] line_limits: TextFieldLineLimits,
     #[default(None)] on_text_layout: Option<impl Fn(compose_ui::TextLayoutResult) + 'static>,
+    #[default(None)] scroll_state: Option<crate::ScrollState>,
     #[default(crate::TextFieldDefaults::shape())] shape: Shape,
     #[default(crate::TextFieldDefaults::colors())] colors: TextFieldColors,
     #[default(None)] content_padding: Option<PaddingValues>,
@@ -976,6 +1064,7 @@ pub fn TextFieldOfState(
             on_keyboard_action,
             line_limits,
             on_text_layout: on_text_layout.map(compose_runtime::callback),
+            scroll_state,
         },
         modifier,
         enabled,
@@ -1025,6 +1114,7 @@ pub fn OutlinedTextFieldOfState(
     #[default(None)] on_keyboard_action: Option<KeyboardActionHandler>,
     #[default(crate::TextFieldLineLimits::DEFAULT)] line_limits: TextFieldLineLimits,
     #[default(None)] on_text_layout: Option<impl Fn(compose_ui::TextLayoutResult) + 'static>,
+    #[default(None)] scroll_state: Option<crate::ScrollState>,
     #[default(crate::OutlinedTextFieldDefaults::shape())] shape: Shape,
     #[default(crate::OutlinedTextFieldDefaults::colors())] colors: TextFieldColors,
     #[default(None)] content_padding: Option<PaddingValues>,
@@ -1039,6 +1129,7 @@ pub fn OutlinedTextFieldOfState(
             on_keyboard_action,
             line_limits,
             on_text_layout: on_text_layout.map(compose_runtime::callback),
+            scroll_state,
         },
         modifier,
         enabled,
@@ -1081,6 +1172,7 @@ enum FieldInput {
         on_keyboard_action: Option<KeyboardActionHandler>,
         line_limits: TextFieldLineLimits,
         on_text_layout: Option<Callback<dyn Fn(compose_ui::TextLayoutResult)>>,
+        scroll_state: Option<crate::ScrollState>,
     },
 }
 
@@ -1607,6 +1699,7 @@ fn decorated_field(
                 on_keyboard_action,
                 line_limits,
                 on_text_layout,
+                scroll_state,
             } => BasicTextFieldOfState(
                 state,
                 modifier,
@@ -1622,6 +1715,7 @@ fn decorated_field(
                 output_transformation,
                 compose_runtime::callback(decoration),
                 on_text_layout,
+                scroll_state,
             ),
         },
     );

@@ -127,6 +127,29 @@ impl ScrollState {
         }
     }
 
+    /// A text field's layout of what it scrolls: the largest value (the value coerced into it),
+    /// the viewport's length and the content's, as Compose's text field sets them (D1138).
+    pub(crate) fn set_layout(&self, max: i32, viewport: i32, content: i32) {
+        self.set_max_value(max);
+        if self.viewport_size() != viewport {
+            self.write(self.viewport, viewport);
+        }
+        if let Some(states) = self.object.try_get()
+            && states.content_size.try_get() != Some(content)
+        {
+            let _ = states.content_size.try_set(content);
+        }
+    }
+
+    /// Sets the value at once, kept in `[0, max_value]`: a text field bringing its cursor into
+    /// view (D1138).
+    pub(crate) fn set_value(&self, value: i32) {
+        let value = value.clamp(0, self.max_value().max(0));
+        if self.value.try_get() != Some(value) {
+            self.write(self.value, value);
+        }
+    }
+
     /// The viewport's length along the scroll's axis, in pixels, as `viewportSize` (a state
     /// read; 0 until laid out).
     pub fn viewport_size(&self) -> i32 {

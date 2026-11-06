@@ -421,7 +421,15 @@ pub trait EditCommand {
 /// The new cursor after inserting `inserted` with the cursor at `cursor`, as Android's
 /// `newCursorPosition`: after the text plus `position - 1` when positive, before it plus
 /// `position` otherwise, kept in the text.
-fn cursor_after_insert(buffer: &EditingBuffer, position: isize, inserted: usize) -> usize {
+fn cursor_after_insert(
+    buffer: &EditingBuffer,
+    position: isize,
+    inserted: usize,
+    in_utf16: bool,
+) -> usize {
+    if in_utf16 {
+        return cursor_after_insert_in_utf16(buffer, position, inserted);
+    }
     let cursor = buffer.cursor().unwrap_or(buffer.selection_start()) as isize;
     let target = if position > 0 {
         cursor.saturating_add(position - 1)
@@ -429,6 +437,35 @@ fn cursor_after_insert(buffer: &EditingBuffer, position: isize, inserted: usize)
         cursor.saturating_add(position).saturating_sub(inserted as isize)
     };
     floor_char_boundary(buffer.as_str(), target.clamp(0, buffer.len() as isize) as usize)
+}
+
+/// `cursor_after_insert` with `position` in UTF-16 units of the buffer's text around what was
+/// inserted, as Android gives it and Compose counts it in its buffer's (the state's text, not
+/// what a transformation shows): a unit inside a character doesn't reach past it going forward,
+/// and takes all of it going back.
+fn cursor_after_insert_in_utf16(buffer: &EditingBuffer, position: isize, inserted: usize) -> usize {
+    let end = buffer.cursor().unwrap_or(buffer.selection_start());
+    let text = buffer.as_str();
+    let bytes_of = |chars: &mut dyn Iterator<Item = char>, units: usize, widen: bool| {
+        let (mut bytes, mut left) = (0, units);
+        for c in chars {
+            if left == 0 || (c.len_utf16() > left && !widen) {
+                break;
+            }
+            bytes += c.len_utf8();
+            left = left.saturating_sub(c.len_utf16());
+        }
+        bytes
+    };
+    let target = if position > 0 {
+        let units = (position - 1) as usize;
+        end + bytes_of(&mut text[end..].chars(), units, false)
+    } else {
+        let start = end.saturating_sub(inserted);
+        let units = position.unsigned_abs();
+        start - bytes_of(&mut text[..start].chars().rev(), units, true)
+    };
+    floor_char_boundary(text, target.min(buffer.len()))
 }
 
 /// Commits text: replaces the composition (or the selection) with it, ending the composition,
@@ -439,11 +476,20 @@ fn cursor_after_insert(buffer: &EditingBuffer, position: isize, inserted: usize)
 pub struct CommitTextCommand {
     pub annotated_string: AnnotatedString,
     pub new_cursor_position: isize,
+    /// `new_cursor_position` counts UTF-16 units of the text around, as Android's does (D1135);
+    /// bytes otherwise.
+    pub in_utf16: bool,
 }
 
 impl CommitTextCommand {
     pub fn new(text: impl Into<AnnotatedString>, new_cursor_position: isize) -> CommitTextCommand {
-        CommitTextCommand { annotated_string: text.into(), new_cursor_position }
+        CommitTextCommand { annotated_string: text.into(), new_cursor_position, in_utf16: false }
+    }
+
+    /// With `new_cursor_position` in UTF-16 units of the field's own text, as a platform's input
+    /// method gives it: counted where the command applies, as Compose's (D1135).
+    pub fn in_utf16(text: impl Into<AnnotatedString>, new_cursor_position: isize) -> Self {
+        CommitTextCommand { in_utf16: true, ..CommitTextCommand::new(text, new_cursor_position) }
     }
 
     pub fn text(&self) -> &str {
@@ -454,7 +500,9 @@ impl CommitTextCommand {
 /// Equal when the texts and positions are, as Compose's (the text's styles aside).
 impl PartialEq for CommitTextCommand {
     fn eq(&self, other: &Self) -> bool {
-        self.text() == other.text() && self.new_cursor_position == other.new_cursor_position
+        self.text() == other.text()
+            && self.new_cursor_position == other.new_cursor_position
+            && self.in_utf16 == other.in_utf16
     }
 }
 
@@ -464,6 +512,7 @@ impl std::hash::Hash for CommitTextCommand {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.text().hash(state);
         self.new_cursor_position.hash(state);
+        self.in_utf16.hash(state);
     }
 }
 
@@ -474,7 +523,8 @@ impl EditCommand for CommitTextCommand {
             Some((start, end)) => buffer.replace(start, end, text),
             None => buffer.replace(buffer.selection_start(), buffer.selection_end(), text),
         }
-        let cursor = cursor_after_insert(buffer, self.new_cursor_position, text.len());
+        let cursor =
+            cursor_after_insert(buffer, self.new_cursor_position, text.len(), self.in_utf16);
         buffer.set_cursor(cursor);
     }
 
@@ -567,6 +617,9 @@ impl fmt::Display for SetComposingRegionCommand {
 pub struct SetComposingTextCommand {
     pub annotated_string: AnnotatedString,
     pub new_cursor_position: isize,
+    /// `new_cursor_position` counts UTF-16 units of the text around, as Android's does (D1135);
+    /// bytes otherwise.
+    pub in_utf16: bool,
 }
 
 impl SetComposingTextCommand {
@@ -574,7 +627,19 @@ impl SetComposingTextCommand {
         text: impl Into<AnnotatedString>,
         new_cursor_position: isize,
     ) -> SetComposingTextCommand {
-        SetComposingTextCommand { annotated_string: text.into(), new_cursor_position }
+        SetComposingTextCommand {
+            annotated_string: text.into(),
+            new_cursor_position,
+            in_utf16: false,
+        }
+    }
+
+    /// With `new_cursor_position` in UTF-16 units, as [`CommitTextCommand::in_utf16`].
+    pub fn in_utf16(text: impl Into<AnnotatedString>, new_cursor_position: isize) -> Self {
+        SetComposingTextCommand {
+            in_utf16: true,
+            ..SetComposingTextCommand::new(text, new_cursor_position)
+        }
     }
 
     pub fn text(&self) -> &str {
@@ -585,7 +650,9 @@ impl SetComposingTextCommand {
 /// Equal when the texts and positions are, as Compose's (the text's styles aside).
 impl PartialEq for SetComposingTextCommand {
     fn eq(&self, other: &Self) -> bool {
-        self.text() == other.text() && self.new_cursor_position == other.new_cursor_position
+        self.text() == other.text()
+            && self.new_cursor_position == other.new_cursor_position
+            && self.in_utf16 == other.in_utf16
     }
 }
 
@@ -595,6 +662,7 @@ impl std::hash::Hash for SetComposingTextCommand {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.text().hash(state);
         self.new_cursor_position.hash(state);
+        self.in_utf16.hash(state);
     }
 }
 
@@ -607,7 +675,8 @@ impl EditCommand for SetComposingTextCommand {
         if !text.is_empty() {
             buffer.set_composition(start, start + text.len());
         }
-        let cursor = cursor_after_insert(buffer, self.new_cursor_position, text.len());
+        let cursor =
+            cursor_after_insert(buffer, self.new_cursor_position, text.len(), self.in_utf16);
         buffer.set_cursor(cursor);
     }
 

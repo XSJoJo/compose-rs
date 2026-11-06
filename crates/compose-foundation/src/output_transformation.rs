@@ -993,4 +993,22 @@ mod tests {
         assert_eq!((text.as_str(), mapping.operations.len()), ("\u{2022}\u{2022}", 2));
         assert_eq!(mapping.map_from_source(1), TextRange::at(3));
     }
+
+    /// A character for two as long ("ß" upper-cased "SS") is mapped: an offset between the two
+    /// isn't the state's.
+    #[test]
+    fn one_character_for_two_as_long_is_mapped() {
+        let upper = |buffer: &mut TextFieldBuffer| {
+            let text = buffer.as_str().to_string();
+            let mut at = 0;
+            for c in text.chars() {
+                let upper: String = c.to_uppercase().collect();
+                buffer.replace(at, at + c.len_utf8(), &upper);
+                at += upper.len();
+            }
+        };
+        let (text, mapping) = shown("a\u{df}b", upper);
+        assert_eq!((text.as_str(), mapping.operations.len()), ("ASSB", 1));
+        assert_eq!(mapping.map_from_destination(2), TextRange::new(1, 3));
+    }
 }
