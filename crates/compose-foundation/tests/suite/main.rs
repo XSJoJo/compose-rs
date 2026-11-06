@@ -84,6 +84,7 @@ mod prefetch;
 mod prefetch_parity;
 mod prefetch_pausable;
 mod progress_canvas_parity;
+mod rect_list_integration;
 mod review_api_d;
 mod review_d470;
 mod review_d475;

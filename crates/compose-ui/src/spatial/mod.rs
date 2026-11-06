@@ -269,6 +269,31 @@ impl UiTree {
         manager.scheduled = Some((deadline, job));
     }
 
+    /// The rect the layout-rect callbacks compute for `node` (`None` if it's not placed): what
+    /// Compose's tests read in its rect list. For tests.
+    #[doc(hidden)]
+    pub fn layout_rect_for_test(&self, node: NodeId) -> Option<IntRect> {
+        self.rect_of_layout_node(node)
+    }
+
+    /// How many of `node` and the layout nodes under it have a rect (are placed). For tests.
+    #[doc(hidden)]
+    pub fn placed_rects_under_for_test(&self, node: NodeId) -> usize {
+        let mut count = 0;
+        let mut stack = vec![node];
+        while let Some(node) = stack.pop() {
+            if self.rect_of_layout_node(node).is_some() {
+                count += 1;
+            }
+            stack.extend(
+                self.get(node)
+                    .into_iter()
+                    .flat_map(|value| value.children.iter().map(|it| it.node)),
+            );
+        }
+        count
+    }
+
     /// How many ancestors `node` has (0 if it's gone).
     fn depth_of(&self, node: NodeId) -> usize {
         let mut depth = 0;
