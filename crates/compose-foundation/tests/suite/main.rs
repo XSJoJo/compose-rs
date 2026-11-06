@@ -5,6 +5,7 @@ extern crate compose_runtime as compose;
 
 mod alignment_line;
 mod anchored_draggable;
+mod bring_into_view;
 mod clickable_parity;
 mod combined_clickable_parity;
 mod draggable;

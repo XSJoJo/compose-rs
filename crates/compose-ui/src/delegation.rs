@@ -294,15 +294,16 @@ pub(crate) fn bring_into_view_of(
     node: &mut dyn ModifierNode,
     rect: crate::unit::Rect,
     viewport: crate::unit::IntSize,
+    locals: compose_runtime::CompositionLocalAnchor,
 ) -> Option<crate::unit::Rect> {
-    if let Some(moved) = node.bring_into_view(rect, viewport) {
+    if let Some(moved) = node.bring_into_view_in(rect, viewport, locals) {
         return Some(moved);
     }
     let delegates = node.delegates()?;
     delegates
         .entries
         .iter_mut()
-        .find_map(|entry| bring_into_view_of(&mut *entry.node, rect, viewport))
+        .find_map(|entry| bring_into_view_of(&mut *entry.node, rect, viewport, locals))
 }
 
 /// `node` if it's selectable, or its first delegate that is, for `as_selectable`.

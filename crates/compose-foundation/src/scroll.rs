@@ -719,13 +719,21 @@ impl ModifierNode for ScrollNode {
     fn hit_clip(&self) -> Option<compose_ui::Shape> {
         Some(compose_ui::Shape::Rectangle)
     }
-    /// Scrolls the least that shows `rect` (its start, if it's longer than the viewport).
-    fn bring_into_view(&mut self, rect: Rect, viewport: IntSize) -> Option<Rect> {
+    /// Scrolls as far as `LOCAL_BRING_INTO_VIEW_SPEC` where it's composed says to show `rect`
+    /// (by default, nothing if it's in view or spans the viewport, else the least that brings
+    /// its nearer edge in), as Compose's `ContentInViewNode` with `bringIntoViewSpec`.
+    fn bring_into_view_in(
+        &mut self,
+        rect: Rect,
+        viewport: IntSize,
+        locals: compose_runtime::CompositionLocalAnchor,
+    ) -> Option<Rect> {
         let mirrored = self.mirrored(self.rtl);
         let (start, end, length) = scroll_axis(rect, viewport, self.vertical, mirrored);
         // Where it will be once the scrolling asked for (not yet laid out) is.
         let pending = (self.state.value() - self.laid_out.get()) as f32;
-        let delta = bring_into_view_delta(start - pending, end - pending, length);
+        let spec = locals.get(&crate::relocation::LOCAL_BRING_INTO_VIEW_SPEC);
+        let delta = spec.calculate_scroll_distance(start - pending, end - start, length);
         let used = if delta == 0.0 { 0.0 } else { self.state.dispatch_raw_delta(delta) };
         Some(scrolled_rect(rect, used, self.vertical, mirrored))
     }
@@ -758,16 +766,11 @@ pub(crate) fn scrolled_rect(rect: Rect, used: f32, vertical: bool, reversed: boo
     }
 }
 
-/// How far to scroll so `[start, end)` shows in `[0, length)`: none if it does, else the least,
-/// its start first if it's longer.
+/// How far to scroll so `[start, end)` shows in `[0, length)`, as Compose's default
+/// `calculateScrollDistance`: none if it does or it spans the viewport, else the least that brings
+/// its nearer edge in.
 pub(crate) fn bring_into_view_delta(start: f32, end: f32, length: f32) -> f32 {
-    if start >= 0.0 && end <= length {
-        0.0
-    } else if start < 0.0 || end - start > length {
-        start
-    } else {
-        end - length
-    }
+    crate::relocation::default_scroll_distance(start, end - start, length)
 }
 
 impl LayoutModifierNode for ScrollNode {

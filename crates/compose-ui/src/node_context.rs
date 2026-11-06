@@ -588,6 +588,29 @@ impl NodeHandle {
         }
     }
 
+    /// Asks the scrolling and responding nodes around this one (those before it in its chain,
+    /// then its ancestors') to show `rect`, in the coordinates of the layout it's in (`None`: all
+    /// of it), at once, as `DelegatableNode.bringIntoView`: `false` if the node isn't attached
+    /// and placed, or its tree is busy (a frame later may do).
+    pub fn bring_into_view(&self, rect: Option<crate::unit::Rect>) -> bool {
+        if !self.is_attached() {
+            return false;
+        }
+        let mut shown = false;
+        let (node, owner) = (self.node, self.owner);
+        with_free_tree(self.tree, &mut |tree| {
+            let Some(index) = tree.node(node).chain.iter().position(|entry| entry.id == owner)
+            else {
+                return;
+            };
+            if tree.is_laid_out(node) {
+                tree.bring_into_view_from(node, Some(index), rect);
+                shown = true;
+            }
+        });
+        shown
+    }
+
     /// As `DrawModifierNode.invalidateDraw`.
     pub fn invalidate_draw(&self) {
         self.request(Invalidation::Draw);
