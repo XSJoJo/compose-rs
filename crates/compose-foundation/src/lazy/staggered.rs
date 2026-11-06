@@ -2685,12 +2685,8 @@ impl ItemsMeasurePolicy for StaggeredLayout {
             (first, (last + 1).min(count))
         });
         let limits = prefetch.target(wanted, (composed_start, composed_end), window, None);
-        let covers = composed_start <= wanted.0 && composed_end >= wanted.1;
-        let past_limits = composed_start < limits.0 || composed_end > limits.1;
-        let search_ended = beyond_ended && past_limits;
         // What stays composed, as a list's: those of it not measured stay if they were composed.
-        let composed =
-            if !covers || search_ended { limits } else { (composed_start, composed_end) };
+        let composed = limits;
         state.composed.set(composed);
         prefetch.node.set(Some(node));
         prefetch.count.set(count);

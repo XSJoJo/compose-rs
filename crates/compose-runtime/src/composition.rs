@@ -260,6 +260,21 @@ impl Composition {
         f(applier)
     }
 
+    /// [`with_applier`](Self::with_applier), or `None` while the applier's busy (a layout holds
+    /// it): for what can wait until it's free.
+    pub fn try_with_applier<A: Applier, R>(&self, f: impl FnOnce(&mut A) -> R) -> Option<R> {
+        let applier = with_runtime(|runtime| {
+            let data = runtime.compositions.get(self.id)?;
+            Some(crate::context::resolve_applier(&runtime.lent, &data.applier))
+        })?;
+        let mut applier = applier.try_borrow_mut().ok()?;
+        let applier = applier
+            .as_any_mut()
+            .downcast_mut::<A>()
+            .unwrap_or_else(|| misuse(ComposeError::WrongApplierType));
+        Some(f(applier))
+    }
+
     /// A weak reference to the applier, as type `A`, that reaches it from outside this
     /// composition's borrows (a modifier node's handle, used from a task between frames): it
     /// doesn't keep the applier alive.

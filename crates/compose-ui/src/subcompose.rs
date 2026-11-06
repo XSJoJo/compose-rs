@@ -176,6 +176,9 @@ struct Subcompositions {
     current_index: usize,
     reusable_count: usize,
     precomposed_count: usize,
+    /// Precomposed slots let go while the tree was busy (a layout measuring): let go at the
+    /// layout's next measurement, which has the tree.
+    deferred: Vec<SlotKey>,
 }
 
 thread_local! {
@@ -624,8 +627,25 @@ impl SubcompositionsState {
     }
 
     /// A slot precomposed goes out of use, for the policy to keep or dispose, as
-    /// `disposePrecomposedSlot`.
+    /// `disposePrecomposedSlot`. With the tree busy (a layout measuring, which may be this one's),
+    /// it waits for this layout's next measurement.
     fn dispose_precomposed(&self, key: &SlotKey) {
+        if self.precomposed_at(key).is_none() {
+            return;
+        }
+        let Some(handle) = self.inner.borrow().handle.clone() else { return };
+        if handle.try_with_applier(|_: &mut UiTree| ()).is_none() {
+            let mut inner = self.inner.borrow_mut();
+            if !inner.deferred.iter().any(|other| other.same_slot(&**key)) {
+                inner.deferred.push(key.clone());
+            }
+            return;
+        }
+        self.dispose_precomposed_with(key, None);
+    }
+
+    /// `dispose_precomposed`, through `tree` if a measurement holds it.
+    fn dispose_precomposed_with(&self, key: &SlotKey, mut tree: Option<&mut UiTree>) {
         let Some(at) = self.precomposed_at(key) else { return };
         let (handle, root, start) = {
             let mut inner = self.inner.borrow_mut();
@@ -634,20 +654,31 @@ impl SubcompositionsState {
             let start = inner.slots.len() - inner.precomposed_count - inner.reusable_count;
             (inner.handle.clone().expect("it's precomposed"), inner.root.expect("too"), start)
         };
-        self.cancel_paused_if_any(at);
-        with_the_tree(&handle, root, None, || {
-            handle.with_applier(|tree: &mut UiTree| {
+        if self.inner.borrow().slots[at].paused.is_some() {
+            self.cancel_paused(at, tree.as_deref_mut());
+        }
+        match tree.as_deref_mut() {
+            Some(tree) => {
                 let host = tree.id_of(root);
                 let mut inner = self.inner.borrow_mut();
                 move_slot(&mut inner, tree, host, at, start);
-            });
-        });
-        self.dispose_or_reuse_from(start, None);
+            }
+            None => with_the_tree(&handle, root, None, || {
+                handle.with_applier(|tree: &mut UiTree| {
+                    let host = tree.id_of(root);
+                    let mut inner = self.inner.borrow_mut();
+                    move_slot(&mut inner, tree, host, at, start);
+                });
+            }),
+        }
+        self.dispose_or_reuse_from(start, tree);
     }
 
-    fn cancel_paused_if_any(&self, at: usize) {
-        if self.inner.borrow().slots[at].paused.is_some() {
-            self.cancel_paused(at, None);
+    /// What was let go while the tree was busy, let go now that a measurement has it.
+    fn dispose_deferred(&self, tree: &mut UiTree) {
+        let deferred = std::mem::take(&mut self.inner.borrow_mut().deferred);
+        for key in deferred {
+            self.dispose_precomposed_with(&key, Some(&mut *tree));
         }
     }
 
@@ -882,8 +913,7 @@ impl PrecomposedSlotHandle {
         handle.with_applier(|tree: &mut UiTree| {
             let count = tree.node(node).children.len();
             assert!(index < count, "Index ({index}) is out of bound of [0, {count})");
-            let child = tree.node(node).children[index].node;
-            tree.measure_node(child, constraints);
+            tree.premeasure(node, index, constraints);
         });
     }
 
@@ -1025,6 +1055,7 @@ impl MeasurePolicy for Adapter {
         let start = self.state.inner.borrow().current_index;
         let mut tree = scope.base.tree.enter();
         self.state.dispose_or_reuse_from(start, Some(&mut tree));
+        self.state.dispose_deferred(&mut tree);
         self.state.check_consistent(&tree);
         result
     }

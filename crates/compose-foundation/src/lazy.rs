@@ -2713,7 +2713,6 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
         } else {
             state.asked.set(0);
         }
-        let covers = composed_start <= wanted_start && composed_end >= wanted_end;
         let prefetch = &state.prefetch;
         prefetch.policy.set(policy);
         prefetch.vertical.set(info.vertical);
@@ -2815,16 +2814,11 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
             limits,
             header_apart.is_some(),
         );
-        // After a focus search that laid items out beyond the bounds, those it composed go
-        // too, but the ones next to those wanted, as after a scroll (D482).
-        let past_limits = composed_start < limits.0 || composed_end > limits.1;
-        let search_ended = beyond_ended && past_limits;
         // What stays composed: the limits, once the measurement wants items the range lacks or
         // a search is over; those of it this measurement doesn't measure stay if they were
         // composed (below), and the others leave, deactivated and kept for reuse, as Compose's
         // measurement lets go of what it doesn't compose.
-        let composed =
-            if !covers || search_ended { limits } else { (composed_start, composed_end) };
+        let composed = limits;
         state.composed.set(composed);
         // What prefetching works from.
         prefetch.node.set(Some(node));

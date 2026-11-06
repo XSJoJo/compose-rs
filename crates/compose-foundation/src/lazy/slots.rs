@@ -99,7 +99,19 @@ impl ItemFactory {
         }
         let (state, items, holder, stacking) =
             (self.state, self.items.clone(), self.holder, self.stacking);
-        let content = Callback::new(move || LazyItem(index, state, items.clone(), holder, stacking));
+        // Its item found by its key if the items moved since, as Compose's `CachedItemContent`:
+        // its slot is its key's.
+        let content = Callback::new(move || {
+            let items_now = &items.0;
+            let found = if items_now.key(index) == key {
+                Some(index)
+            } else {
+                items_now.index_of(key, index)
+            };
+            if let Some(found) = found {
+                LazyItem(found, state, items.clone(), holder, stacking);
+            }
+        });
         contents.insert(key, (index, content.clone()));
         content
     }
