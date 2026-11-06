@@ -408,6 +408,16 @@ impl UiTree {
                 _ => event,
             };
             let position = event.position;
+            let mut previous = previous;
+            // A pan or pinch starting while a button is held ends that press first: what it
+            // pressed is cancelled, as Compose's fake fingers take the pointer over (a host
+            // releases the buttons first; this is for one that doesn't).
+            if matches!(event.kind, PointerEventType::PanStart | PointerEventType::ScaleStart)
+                && previous.is_some_and(|it| it.pressed)
+            {
+                self.cancel_pointer(event.pointer);
+                previous = None;
+            }
             let captured = self.captures.iter().position(|(pointer, _)| *pointer == event.pointer);
             // Another of a mouse's buttons: it stays with what the first one pressed.
             let already_down = event.pointer_type == crate::input::PointerType::Mouse
@@ -1163,7 +1173,12 @@ impl UiTree {
         event: &crate::indirect_pointer::IndirectPointerEvent,
     ) -> (bool, Vec<Action>) {
         let (mut actions, mut requests) = (Vec::new(), Requests::default());
-        let path = self.indirect_path_of(self.focus.active);
+        // Not while the focus system has invalidations to resolve, as Compose's (b/379289347):
+        // the detector still hears it, unconsumed.
+        let pending = self.focus.recheck_active
+            || !self.focus.invalidated_events.is_empty()
+            || !self.focus.target_flips.is_empty();
+        let path = if pending { Vec::new() } else { self.indirect_path_of(self.focus.active) };
         // A node's delegates together.
         let mut groups: Vec<std::ops::Range<usize>> = Vec::new();
         for (at, entry) in path.iter().enumerate() {
@@ -1187,9 +1202,11 @@ impl UiTree {
                 }
             }
         }
-        self.indirect_focus_path = path;
+        if !pending {
+            self.indirect_focus_path = path;
+        }
         self.apply_requests(requests, &mut actions);
-        let consumed = event.is_consumed();
+        let consumed = !pending && event.is_consumed();
         let configuration = self.view_configuration();
         let direction = self
             .indirect_navigation
@@ -1197,8 +1214,9 @@ impl UiTree {
             .on_indirect_pointer_event(event, consumed, &configuration);
         if let Some(direction) = direction {
             self.move_focus_with(direction, false);
-            actions.append(&mut self.pending_actions);
         }
+        // What a focus change queued (a cancel's, the focus's events), with or without a fling.
+        actions.append(&mut self.pending_actions);
         (consumed, actions)
     }
 

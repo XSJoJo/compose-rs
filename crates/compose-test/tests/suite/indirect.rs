@@ -428,7 +428,6 @@ fn detect(
     let configuration = configuration();
     let mut position = Offset::new(100.0, 100.0);
     let mut time = 1000;
-    let mut found = None;
     let mut feed = |kind, position, time, consumed| {
         let event = IndirectPointerEvent::new(
             vec![IndirectPointerInputChange::new(
@@ -444,26 +443,22 @@ fn detect(
             kind,
             axis,
         );
-        if let Some(direction) =
-            detector.on_indirect_pointer_event(&event, consumed, &configuration)
-        {
-            found = Some(direction);
-        }
+        detector.on_indirect_pointer_event(&event, consumed, &configuration)
     };
-    feed(Press, position, time, consumed[0]);
-    for _ in 0..2 {
+    // Nothing before the release, as Kotlin's asserts after each event.
+    assert_eq!(feed(Press, position, time, consumed[0]), None, "the press");
+    for at in 0..2 {
         position = position + delta;
         time += 20;
-        feed(Move, position, time, consumed[1]);
+        assert_eq!(feed(Move, position, time, consumed[1]), None, "move {at}");
     }
     if extra_down {
         time += 20;
-        feed(Press, position, time, false);
+        assert_eq!(feed(Press, position, time, false), None, "the second press");
     }
     position = position + delta;
     time += 20;
-    feed(Release, position, time, consumed[2]);
-    found
+    feed(Release, position, time, consumed[2])
 }
 
 const FREE: [bool; 3] = [false; 3];
@@ -1250,4 +1245,70 @@ fn pointers_lift_in_any_order() {
             vec![(1, false)],
         ]
     );
+}
+
+/// Moves the focus to the next target when it hears a press (its main pass).
+#[derive(Clone)]
+struct MoverElement;
+
+struct MoverNode;
+
+impl ModifierNodeElement for MoverElement {
+    type Node = MoverNode;
+    fn create(&self) -> MoverNode {
+        MoverNode
+    }
+    fn update(&self, _node: &mut MoverNode) {}
+    fn same(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl ModifierNode for MoverNode {
+    fn as_indirect_pointer_input(&mut self) -> Option<&mut dyn IndirectPointerInputModifierNode> {
+        Some(self)
+    }
+}
+
+impl IndirectPointerInputModifierNode for MoverNode {
+    fn on_indirect_pointer_event(
+        &mut self,
+        event: &IndirectPointerEvent,
+        pass: PointerEventPass,
+        context: &mut EventContext<'_>,
+    ) {
+        if pass == PointerEventPass::Main && event.kind == Press {
+            context.move_focus(true);
+        }
+    }
+    fn on_cancel_indirect_pointer_input(&mut self) {}
+}
+
+// Compose: compose/ui/ui/src/commonMain/kotlin/androidx/compose/ui/focus/FocusOwnerImpl.kt, dispatchIndirectPointerEvent (a node moving the focus as it hears an event; no test of its own)
+/// A node moving the focus as it hears the event: the focus moves and the focus callbacks run,
+/// with no fling.
+#[test]
+fn a_node_can_move_the_focus_as_it_hears_an_event() {
+    let told: Rc<RefCell<Vec<(&'static str, bool)>>> = Rc::default();
+    let seen = told.clone();
+    let mut ui = compose_test(move || {
+        let seen = seen.clone();
+        Column!({
+            for (at, tag) in ["first", "second"].into_iter().enumerate() {
+                let seen = seen.clone();
+                let modifier = Modifier.test_tag(tag).size(10.dp()).on_focus_changed(
+                    move |state: compose_ui::FocusState| {
+                        seen.borrow_mut().push((tag, state.is_focused()))
+                    },
+                );
+                let modifier = if at == 0 { modifier.then_custom(MoverElement) } else { modifier };
+                Box!(modifier = modifier.focusable());
+            }
+        });
+    });
+    ui.on_node_with_tag("first").request_focus();
+    told.borrow_mut().clear();
+    send(&mut ui, event_at(Press, Offset::ZERO, 0));
+    ui.on_node_with_tag("second").assert_is_focused();
+    assert_eq!(*told.borrow(), [("first", false), ("second", true)]);
 }

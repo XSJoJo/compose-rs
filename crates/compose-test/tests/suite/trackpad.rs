@@ -998,3 +998,71 @@ fn a_pan_comes_over_nothing_new() {
     let positions: Vec<Offset> = moved.borrow().iter().map(|event| event.position).collect();
     assert_eq!(positions[3], cursor - Offset::new(60.0, 60.0), "the move where it's now");
 }
+
+/// Hears changes one at a time and its cancels.
+struct PressElement(Rc<RefCell<Vec<String>>>);
+
+struct PressNode(Rc<RefCell<Vec<String>>>);
+
+impl ModifierNodeElement for PressElement {
+    type Node = PressNode;
+    fn create(&self) -> PressNode {
+        PressNode(self.0.clone())
+    }
+    fn update(&self, _node: &mut PressNode) {}
+    fn same(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl ModifierNode for PressNode {
+    fn as_pointer_input(&mut self) -> Option<&mut dyn PointerInputModifierNode> {
+        Some(self)
+    }
+}
+
+impl PointerInputModifierNode for PressNode {
+    fn on_pointer_event(
+        &mut self,
+        event: &mut compose_ui::PointerEvent,
+        pass: PointerEventPass,
+        _bounds: IntSize,
+        _context: &mut EventContext<'_>,
+    ) {
+        if pass == PointerEventPass::Main {
+            self.0.borrow_mut().push(format!("{:?} {}", event.kind, event.pressed));
+        }
+    }
+    fn on_cancel_pointer_input(&mut self) {
+        self.0.borrow_mut().push("cancel".to_string());
+    }
+}
+
+// Compose: compose/ui/ui/src/androidMain/kotlin/androidx/compose/ui/input/pointer/MotionEventAdapter.android.kt, the trackpad's fake fingers taking the pointer over (no test of its own)
+/// A pan or a pinch starting while a button is held (from a host that didn't release it first)
+/// ends that press: what it pressed is cancelled, not released, even with the cursor gone from it.
+#[test]
+fn a_pan_or_pinch_cancels_a_held_press() {
+    for start in [PanStart, ScaleStart] {
+        let heard: Rc<RefCell<Vec<String>>> = Rc::default();
+        let recorder = heard.clone();
+        let mut ui = ComposeTestRule::sized(IntSize::new(300, 300), move || {
+            Box!(modifier = Modifier.size(50.dp()).then_custom(PressElement(recorder.clone())));
+        });
+        let mouse =
+            |event: compose_ui::PointerEvent| event.with_pointer(PointerId(0), PointerType::Mouse);
+        let (inside, outside) = (Offset::new(10.0, 10.0), Offset::new(150.0, 150.0));
+        ui.host().send_pointer(mouse(compose_ui::PointerEvent::press(inside)));
+        ui.host().send_pointer(mouse(compose_ui::PointerEvent::moved(outside, true)));
+        let gesture = if start == PanStart {
+            compose_ui::PointerEvent::pan(PanStart, outside, Offset::ZERO)
+        } else {
+            compose_ui::PointerEvent::scale(ScaleStart, outside, 1.0)
+        };
+        ui.host().send_pointer(mouse(gesture));
+        ui.wait_for_idle();
+        let heard = heard.borrow().clone();
+        assert!(heard.contains(&"cancel".to_string()), "{start:?}: {heard:?}");
+        assert!(!heard.iter().any(|it| it.starts_with("Release")), "{start:?}: {heard:?}");
+    }
+}
