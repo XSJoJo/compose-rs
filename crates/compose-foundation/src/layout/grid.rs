@@ -701,13 +701,21 @@ fn track_sizes(
     let mut total_flex = 0.0f32;
     let mut autos = Vec::new();
     let mut auto_max = vec![0; count];
+    // The children by the track they start in, as Kotlin's `itemsByColumn` and `itemsByRow`, so
+    // that a track's content isn't a scan of every child.
+    let mut by_track: Vec<Vec<&Item>> = vec![Vec::new(); count];
+    for item in items {
+        let at = if rows { item.row } else { item.column };
+        if let Some(track) = by_track.get_mut(at) {
+            track.push(item);
+        }
+    }
     // The largest min and max intrinsic sizes of a track's single-span children.
     let content = |scope: &mut MeasureScope<'_>, index: usize, min: bool, max: bool| {
         let (mut largest_min, mut largest_max) = (0, 0);
-        for item in items {
-            let (at, span) =
-                if rows { (item.row, item.row_span) } else { (item.column, item.column_span) };
-            if at != index || span != 1 {
+        for item in &by_track[index] {
+            let span = if rows { item.row_span } else { item.column_span };
+            if span != 1 {
                 continue;
             }
             if rows {
