@@ -18,7 +18,7 @@ The log is split by area into the files below, one table each, rows in number or
 | File | Covers | Rows |
 |---|---|---|
 | [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 182 |
-| [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 412 |
+| [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 414 |
 | [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 96 |
 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md) | Lazy lists and grids, item reuse, the policy of composing only what is in view, prefetch. | 109 |
 | [android-drawing](decisions/android-drawing.md) | The display list and its replayer, render nodes and repaint boundaries, paths, shadows, layers. | 32 |
@@ -916,7 +916,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1469 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1469) | superseded by [D1312](decisions/lazy-and-prefetch.md#d1312) |
 | D1470 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1470) | revised by [D1312](decisions/lazy-and-prefetch.md#d1312), [D1316](decisions/lazy-and-prefetch.md#d1316) |
 | D1471 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1471) | current |
-| D1472 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1472) | current |
+| D1472 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1472) | revised by [D1910](decisions/ui-and-layout.md#d1910) |
 | D1473 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1473) | current |
 | D1474 | [ui-and-layout](decisions/ui-and-layout.md#d1474) | current |
 | D1475 | [android-drawing](decisions/android-drawing.md#d1475) | current |
@@ -989,12 +989,14 @@ The log is split by area into the files below, one table each, rows in number or
 | D1900 | [android-drawing](decisions/android-drawing.md#d1900) | current |
 | D1901 | [ui-and-layout](decisions/ui-and-layout.md#d1901) | current |
 | D1902 | [ui-and-layout](decisions/ui-and-layout.md#d1902) | current |
-| D1903 | [ui-and-layout](decisions/ui-and-layout.md#d1903) | current |
+| D1903 | [ui-and-layout](decisions/ui-and-layout.md#d1903) | revised by [D1909](decisions/ui-and-layout.md#d1909) |
 | D1904 | [android-drawing](decisions/android-drawing.md#d1904) | current |
 | D1905 | [android-drawing](decisions/android-drawing.md#d1905) | current |
 | D1906 | [ui-and-layout](decisions/ui-and-layout.md#d1906) | current |
 | D1907 | [api-and-tooling](decisions/api-and-tooling.md#d1907) | current |
 | D1908 | [ui-and-layout](decisions/ui-and-layout.md#d1908) | current |
+| D1909 | [ui-and-layout](decisions/ui-and-layout.md#d1909) | current |
+| D1910 | [ui-and-layout](decisions/ui-and-layout.md#d1910) | current |
 | D1950 | [runtime](decisions/runtime.md#d1950) | current |
 | D1951 | [runtime](decisions/runtime.md#d1951) | current |
 | D2000 | [text](decisions/text.md#d2000) | current |
