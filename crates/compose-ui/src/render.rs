@@ -638,7 +638,7 @@ impl UiTree {
                 None => self.node(node).layer_of(entry),
             };
             if placement.is_some() {
-                self.draw_placed_layer(node, entry, layer, &origins, &mut unused, observer);
+                self.draw_placed_layer(node, entry, &origins, &mut unused, observer);
             } else {
                 self.draw_inner_layer(node, entry, layer, &origins, &mut unused, observer);
             }
@@ -775,22 +775,38 @@ impl UiTree {
         true
     }
 
+    /// The first chain entry from `from` on where a layer a layout modifier placed with one
+    /// starts, but the one whose content is being recorded (`usize::MAX` for none).
+    #[cold]
+    #[inline(never)]
+    fn placed_group_at(&self, node: NodeId, from: usize) -> usize {
+        let recording = self.recording_placed;
+        (self.node(node).inner_layers.iter())
+            .filter(|inner| inner.placement.is_some())
+            .map(|inner| inner.entry as usize)
+            .find(|&entry| entry >= from && recording != Some((node, entry)))
+            .unwrap_or(usize::MAX)
+    }
+
     /// Draws the layer `layer` of `node` a layout modifier placed with a layer, if it starts at
     /// chain entry `start` (D1909): what follows the modifier and the children, into its inner
     /// layer's recording, which `list` draws by reference where it is. Returns whether it did.
+    #[inline(never)]
     fn draw_placed_layer(
         &mut self,
         node: NodeId,
         start: usize,
-        layer: usize,
         origins: &[Offset],
         list: &mut DisplayList,
         observer: Option<&compose_runtime::platform::ReadObserver>,
     ) -> bool {
         let value = self.node(node);
-        let Some(slot) = value.inner_layers.iter().position(|inner| {
-            inner.placement == Some(layer as u16) && inner.entry as usize == start
-        }) else {
+        let Some((slot, layer)) =
+            value.inner_layers.iter().enumerate().find_map(|(slot, inner)| {
+                let layer = inner.placement.filter(|_| inner.entry as usize == start)?;
+                Some((slot, layer as usize))
+            })
+        else {
             return false;
         };
         let density = value.density;
@@ -824,7 +840,9 @@ impl UiTree {
                     Arc::get_mut(&mut inner.recording).map(mem::take).unwrap_or_default();
                 recording.clear();
                 tree.semantics_changed |= transparency_changed;
-                tree.draw_chain_in(node, start, layer, origins, &mut recording, observer, true);
+                let outer = tree.recording_placed.replace((node, start));
+                tree.draw_chain(node, start, layer, origins, &mut recording, observer);
+                tree.recording_placed = outer;
                 let inner = &mut tree.node_mut(node).inner_layers[slot];
                 match Arc::get_mut(&mut inner.recording) {
                     Some(kept) => *kept = recording,
@@ -849,8 +867,8 @@ impl UiTree {
     /// `node`'s group layer drawn with `properties`: a service hears of its alpha coming to or
     /// leaving none, which hides what's under it or shows it (D1293).
     fn note_layer_transparency(&mut self, node: NodeId, properties: &LayerProperties) {
-        let graphics = self.node(node).group_graphics();
-        if graphics.is_some_and(|(graphics, _)| graphics.note_transparency(properties)) {
+        let graphics = self.node(node).group_graphics_node();
+        if graphics.is_some_and(|graphics| graphics.note_transparency(properties)) {
             self.semantics_changed = true;
         }
     }
@@ -900,23 +918,10 @@ impl UiTree {
     /// `draw_after`s of the entries drawn here. An entry drawing its content
     /// (`draw_with_content`) draws the rest of the chain and the children where it asks. A
     /// boundary's graphics layer whose properties are its group's isn't drawn here.
+    ///
+    /// A layer a layout modifier placed with one is a group of its own from its first entry,
+    /// opened where the drawing reaches it (D1909).
     fn draw_chain(
-        &mut self,
-        node: NodeId,
-        from: usize,
-        layer: usize,
-        origins: &[Offset],
-        list: &mut DisplayList,
-        observer: Option<&compose_runtime::platform::ReadObserver>,
-    ) {
-        self.draw_chain_in(node, from, layer, origins, list, observer, false);
-    }
-
-    /// `draw_chain`, inside the layer placed with one that starts at `from` with `in_placed`
-    /// (its group's content), else opening it there: a layer a layout modifier placed with a
-    /// layer is a group of its own from its first entry (D1909).
-    #[allow(clippy::too_many_arguments)]
-    fn draw_chain_in(
         &mut self,
         node: NodeId,
         from: usize,
@@ -924,25 +929,21 @@ impl UiTree {
         origins: &[Offset],
         list: &mut DisplayList,
         observer: Option<&compose_runtime::platform::ReadObserver>,
-        in_placed: bool,
     ) {
-        let density = self.node(node).density;
-        let locals = self.node(node).locals;
+        // All it reads of the node before the loop, in one look: a call (`placed_group_at`) would
+        // make the next look again.
+        let value = self.node(node);
+        let (density, locals, length) = (value.density, value.locals, value.chain.len());
+        let draws = value.kinds.any(NodeKinds::DRAW);
+        let lifted = value.retained.as_ref().and_then(|retained| retained.layer_entry);
+        let placed = value.has_placed_layers();
         let mut after: SmallVec<[(u16, u16); 4]> = SmallVec::new();
-        let length = self.node(node).chain.len();
-        // A layer a layout modifier placed with one opens a group where it starts.
-        let placed = !self.node(node).placement_layers.is_empty();
-        if self.node(node).kinds.any(NodeKinds::DRAW) || placed {
-            let lifted =
-                self.node(node).retained.as_ref().and_then(|retained| retained.layer_entry);
+        // The chain up to where a layer a layout modifier placed with one starts, if any: that
+        // layer opens a group of its own there, after the loop (D1909).
+        let group_at = if placed { self.placed_group_at(node, from) } else { usize::MAX };
+        let length = length.min(group_at);
+        if draws {
             for index in from..length {
-                if placed
-                    && (index != from || !in_placed)
-                    && self.draw_placed_layer(node, index, layer, origins, list, observer)
-                {
-                    self.draw_afters(node, &after, origins, list);
-                    return;
-                }
                 let value = self.node_mut(node);
                 let bits = value.chain[index].kinds;
                 if bits.any(NodeKinds::DRAW) && lifted != Some(index as u16) {
@@ -1032,10 +1033,7 @@ impl UiTree {
                 }
             }
         }
-        // The last layout modifier placed its content (the children) with a layer.
-        if placed
-            && (length != from || !in_placed)
-            && self.draw_placed_layer(node, length, layer, origins, list, observer)
+        if group_at != usize::MAX && self.draw_placed_layer(node, group_at, origins, list, observer)
         {
             self.draw_afters(node, &after, origins, list);
             return;

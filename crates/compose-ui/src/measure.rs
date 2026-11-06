@@ -739,14 +739,21 @@ impl UiTree {
         motion: bool,
     ) {
         // Placed without a layer, it loses one it had (the lookahead pass places none).
-        if !self.node(node).placement_layers.is_empty() && !self.in_lookahead {
-            let old = self.update_placement_layer(node, layer, None);
-            // What the block captured is application code's, dropped with the window open.
-            let open = self.focus_requests.window.open_to_read(self);
-            drop(old);
-            drop(open);
+        if self.place_unchanged_layer(node, layer, position, run, motion) && !self.in_lookahead {
+            self.place_without_layer(node, layer);
         }
-        self.place_unchanged_layer(node, layer, position, run, motion);
+    }
+
+    /// Layer `layer` of `node`, which has layers placed with one, was placed without one: it
+    /// loses one it had (D1909).
+    #[cold]
+    #[inline(never)]
+    fn place_without_layer(&mut self, node: NodeId, layer: usize) {
+        let old = self.update_placement_layer(node, layer, None);
+        // What the block captured is application code's, dropped with the window open.
+        let open = self.focus_requests.window.open_to_read(self);
+        drop(old);
+        drop(open);
     }
 
     /// `place_in_run` with a layer, as `placeWithLayer` (D1909): the lookahead pass ignores it,
@@ -770,7 +777,8 @@ impl UiTree {
         old
     }
 
-    /// `place_in_run`, its layer as it is.
+    /// `place_in_run`, its layer as it is. Returns whether a layer of the node was placed with a
+    /// layer (checked in the one look at the node most placements take).
     fn place_unchanged_layer(
         &mut self,
         node: NodeId,
@@ -778,8 +786,9 @@ impl UiTree {
         position: IntOffset,
         run: u64,
         motion: bool,
-    ) {
+    ) -> bool {
         let value = self.node_mut(node);
+        let had_layers = value.has_placed_layers();
         if (motion | (value.motion_layers != 0)) && value.placed_in_motion(layer) != motion {
             value.note_motion(layer, motion);
         }
@@ -815,6 +824,7 @@ impl UiTree {
         if waiting {
             self.placed_with_blocks_waiting(node);
         }
+        had_layers
     }
 }
 

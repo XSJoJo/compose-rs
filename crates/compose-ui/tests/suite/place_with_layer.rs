@@ -407,3 +407,41 @@ fn placing_relatively_with_a_layer_mirrors_right_to_left() {
     // 100 - 10 - 10.
     assert!(list.dump().contains("translate 80 0"), "{}", list.dump());
 }
+
+/// Between two coordinates, the way goes through a placement's layer too, both ways
+/// (`localPositionOf`), and its clip bounds what's under it (`boundsInRoot`).
+#[test]
+fn local_positions_and_bounds_go_through_the_placement_s_layer() {
+    let parent: Rc<std::cell::RefCell<Option<LayoutCoordinates>>> = Rc::default();
+    let child: Rc<std::cell::RefCell<Option<LayoutCoordinates>>> = Rc::default();
+    let (p, c) = (parent.clone(), child.clone());
+    let measures = Count::default();
+    let block = LayerBlock::new(|layer| {
+        layer.scale_x = 2.0;
+        layer.scale_y = 2.0;
+        layer.clip = true;
+    });
+    let policy = placing(&measures, || (10, 10), move || Some(block.clone()));
+    let mut host = host(move || {
+        let (p, c) = (p.clone(), c.clone());
+        Layout(
+            Modifier.on_globally_positioned(move |coordinates: LayoutCoordinates| {
+                *p.borrow_mut() = Some(coordinates)
+            }),
+            policy.clone(),
+            callback(move || {
+                let c = c.clone();
+                Leaf(Modifier.size(10.dp()).then(Modifier.on_globally_positioned(
+                    move |coordinates: LayoutCoordinates| *c.borrow_mut() = Some(coordinates),
+                )));
+            }),
+        )
+    });
+    host.frame();
+    let (parent, child) = (parent.borrow().unwrap(), child.borrow().unwrap());
+    // The 10 px child at (10, 10), scaled twice around its center: from 5 to 25.
+    assert_eq!(parent.local_position_of(&child, Offset::ZERO), Offset::new(5.0, 5.0));
+    assert_eq!(child.local_position_of(&parent, Offset::new(5.0, 5.0)), Offset::ZERO);
+    let bounds = child.bounds_in_root();
+    assert_eq!((bounds.left, bounds.top, bounds.right, bounds.bottom), (5.0, 5.0, 25.0, 25.0));
+}

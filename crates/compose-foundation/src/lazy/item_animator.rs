@@ -5,14 +5,15 @@
 //! How it fits this host, where items compose in rounds at frame boundaries rather than in the
 //! measurement (D1472):
 //!
-//! - The modifier gives its node's parent data, a layer and, with a fade out, a capture of what
-//!   it draws. An item's node reads its children's parent data when measured ([`ItemChildren`]);
-//!   a list none of whose items has the modifier stays [idle](ItemAnimator::idle), and pays that
-//!   branch and the one asking whether it is.
+//! - The modifier gives its node's parent data and, with a fade out, a capture of what it draws.
+//!   An item's node reads its children's parent data when measured ([`ItemChildren`]), and places
+//!   each child that has the modifier with the animation's layer ([`place_child`], D1910), so the
+//!   whole child moves and fades, as Compose's; a list none of whose items has the modifier stays
+//!   [idle](ItemAnimator::idle), and pays that branch and the one asking whether it is.
 //! - The measurement calls [`ItemAnimator::on_measured`] once it settled: a round lacking items
 //!   isn't one, it only adds up the scroll it consumed. A move out of the viewport to an item not
 //!   composed asks for it ([`ItemAnimator::kept`]), and the next round of the frame finds it.
-//! - A placement's delta and a fade's alpha are state the item's layer reads while drawing, not
+//! - A placement's delta and a fade's alpha are state the child's layer reads while drawing, not
 //!   a placement as Compose's: animating, an item is neither composed nor measured again, and the
 //!   list only when an animation that it read ends.
 //! - An item removed from the data goes at once, as Compose's: what fades out is what it last

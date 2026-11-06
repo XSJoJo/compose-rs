@@ -26,6 +26,21 @@ pub(crate) struct PlacementLayer {
 }
 
 impl LayoutNode {
+    /// The layers it was placed with, by layer: none for most nodes.
+    #[inline]
+    pub(crate) fn placed_layers(&self) -> &[PlacementLayer] {
+        match &self.placement_layers {
+            Some(layers) => layers,
+            None => &[],
+        }
+    }
+
+    /// Whether a layer of it was placed with one.
+    #[inline]
+    pub(crate) fn has_placed_layers(&self) -> bool {
+        self.placement_layers.is_some()
+    }
+
     /// The first chain entry of layer `layer`: after the layout modifier measuring it.
     pub(crate) fn start_of_layer(&self, layer: usize) -> usize {
         match layer {
@@ -37,10 +52,7 @@ impl LayoutNode {
     /// The graphics layer layer `layer` was placed with, if it was.
     #[inline]
     pub(crate) fn placed_layer(&self, layer: usize) -> Option<&GraphicsLayerNode> {
-        if self.placement_layers.is_empty() {
-            return None;
-        }
-        (self.placement_layers.iter())
+        (self.placed_layers().iter())
             .find(|placed| placed.layer as usize == layer)
             .map(|placed| &placed.graphics)
     }
@@ -55,14 +67,46 @@ impl LayoutNode {
         index: usize,
         max_layer: usize,
     ) -> Option<(&GraphicsLayerNode, usize)> {
-        if self.placement_layers.is_empty() {
-            return None;
-        }
-        self.placement_layers.iter().find_map(|placed| {
+        self.placed_layers().iter().find_map(|placed| {
             let layer = placed.layer as usize;
             (layer <= max_layer && layer < self.layers.len() && self.start_of_layer(layer) == index)
                 .then_some((&placed.graphics, layer))
         })
+    }
+
+    /// The graphics layers a point of layer `layer` before chain entry `end` goes out through to
+    /// the node's outside, innermost first, each with the layer it's in and whether a placement
+    /// gave it: the chain's, and those layers were placed with, interleaved (D1909). For a node
+    /// with layers placed with one: the walks keep their loops over the chain for the others.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn layers_out_with_placed(
+        &self,
+        layer: usize,
+        end: usize,
+    ) -> SmallVec<[(&GraphicsLayerNode, usize, bool); 4]> {
+        let mut out = SmallVec::new();
+        if let Some((graphics, at)) = self.placed_layer_at(end, layer) {
+            out.push((graphics, at, true));
+        }
+        for index in (0..end).rev() {
+            if let Some(graphics) = self.chain[index].node.downcast_ref::<GraphicsLayerNode>() {
+                out.push((graphics, self.layer_of(index), false));
+            }
+            if let Some((graphics, at)) = self.placed_layer_at(index, layer) {
+                out.push((graphics, at, true));
+            }
+        }
+        out
+    }
+
+    /// The graphics layer whose properties are its group's (`group_graphics`, without its layer).
+    pub(crate) fn group_graphics_node(&self) -> Option<&GraphicsLayerNode> {
+        let retained = self.retained.as_ref()?;
+        if retained.placed_layer {
+            return self.placed_layer(0);
+        }
+        self.chain[retained.layer_entry? as usize].node.downcast_ref::<GraphicsLayerNode>()
     }
 
     /// The graphics layer whose properties are its group's, with the layer it's in: the one its
@@ -83,6 +127,7 @@ impl UiTree {
     /// `updateLayerBlock`: a new block computes the layer's properties again, the same one
     /// changes nothing, none drops a layer it had. Returns what it replaced, to drop outside the
     /// tree (application code's captures).
+    #[inline(never)]
     pub(crate) fn update_placement_layer(
         &mut self,
         node: NodeId,
@@ -90,11 +135,12 @@ impl UiTree {
         block: Option<LayerBlock>,
     ) -> Option<Replaced> {
         let value = self.node_mut(node);
-        let slot = value.placement_layers.iter().position(|placed| placed.layer as usize == layer);
+        let slot = value.placed_layers().iter().position(|placed| placed.layer as usize == layer);
         match (slot, block) {
             (None, None) => None,
             (Some(slot), Some(block)) => {
-                let graphics = &mut value.placement_layers[slot].graphics;
+                let graphics =
+                    &mut value.placement_layers.as_mut().expect("its layers")[slot].graphics;
                 if graphics.runs(&block) {
                     return None;
                 }
@@ -103,16 +149,24 @@ impl UiTree {
                 old.map(Replaced::Block)
             }
             (None, Some(block)) => {
-                let at = (value.placement_layers.iter())
+                let first = value.placement_layers.is_none();
+                let layers = value.placement_layers.get_or_insert_with(Default::default);
+                let at = (layers.iter())
                     .position(|placed| placed.layer as usize > layer)
-                    .unwrap_or(value.placement_layers.len());
+                    .unwrap_or(layers.len());
                 let graphics = GraphicsLayerNode::placed(block);
-                value.placement_layers.insert(at, PlacementLayer { layer: layer as u16, graphics });
+                layers.insert(at, PlacementLayer { layer: layer as u16, graphics });
+                self.placed_layer_nodes += u32::from(first);
                 self.placement_layers_changed(node, layer);
                 None
             }
             (Some(slot), None) => {
-                let old = value.placement_layers.remove(slot);
+                let layers = value.placement_layers.as_mut().expect("its layers");
+                let old = layers.remove(slot);
+                if layers.is_empty() {
+                    value.placement_layers = None;
+                    self.placed_layer_nodes -= 1;
+                }
                 self.placement_layers_changed(node, layer);
                 Some(Replaced::Layer(Box::new(old.graphics)))
             }
@@ -177,15 +231,21 @@ impl UiTree {
         let value = self.node_mut(node);
         // Those of layers the chain no longer has go.
         let layers = value.layout_indices.len() + 1;
-        let gone: SmallVec<[PlacementLayer; 1]> = if value.placement_layers.is_empty() {
-            SmallVec::new()
-        } else {
-            let (kept, gone) = std::mem::take(&mut value.placement_layers)
-                .into_iter()
-                .partition::<Vec<_>, _>(|placed| (placed.layer as usize) < layers);
-            value.placement_layers = kept;
-            gone.into_iter().collect()
+        let gone: Vec<PlacementLayer> = match value.placement_layers.take() {
+            None => Vec::new(),
+            Some(placed) => {
+                let (kept, gone) = placed
+                    .into_iter()
+                    .partition::<Vec<_>, _>(|placed| (placed.layer as usize) < layers);
+                value.placement_layers = (!kept.is_empty()).then(|| Box::new(kept));
+                gone
+            }
         };
+        // Its last went.
+        if !gone.is_empty() && !value.has_placed_layers() {
+            self.placed_layer_nodes -= 1;
+        }
+        let value = self.node_mut(node);
         let placed_layer = value.placed_layer(0).is_some();
         let is_layer = |entry: &ChainEntry| entry.kinds.any(NodeKinds::GRAPHICS_LAYER);
         let layer_entry = if value.kinds.any(NodeKinds::GRAPHICS_LAYER) && !placed_layer {
@@ -214,7 +274,7 @@ impl UiTree {
         } else {
             SmallVec::new()
         };
-        for placed in &value.placement_layers {
+        for placed in value.placed_layers() {
             if placed.layer > 0 {
                 let start = value.start_of_layer(placed.layer as usize) as u16;
                 inner.push((start, Some(placed.layer)));
@@ -267,7 +327,6 @@ impl UiTree {
                 retained.placed_layer = placed_layer;
                 retained.dirty = true;
                 retained.layer_dirty = true;
-                retained.layer_ahead = None;
             }
             _ if boundary => {
                 value.retained = Some(Box::new(RetainedDrawing::new(layer_entry, placed_layer)))

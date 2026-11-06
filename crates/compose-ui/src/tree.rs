@@ -208,8 +208,10 @@ pub struct LayoutNode {
     /// Its graphics layers that aren't its first drawing modifier, each a group of its own
     /// inside its drawing (render.rs), by chain index.
     pub(crate) inner_layers: Vec<crate::render::InnerLayer>,
-    /// The layers placed with a layer (`place_with_layer`), by layer: most nodes have none.
-    pub(crate) placement_layers: Vec<crate::placement_layer::PlacementLayer>,
+    /// The layers placed with a layer (`place_with_layer`), by layer: most nodes have none, and
+    /// pay a pointer for it (a `Vec` would be three words in every node).
+    #[allow(clippy::box_collection)]
+    pub(crate) placement_layers: Option<Box<Vec<crate::placement_layer::PlacementLayer>>>,
     /// The sum of its `z_index` modifiers: siblings are drawn, and hit, in its order.
     pub(crate) z_index: f32,
     /// It's ordered among its siblings by its children's largest `z_index` instead (D1452).
@@ -287,7 +289,7 @@ impl LayoutNode {
             place_order: 0,
             retained: None,
             inner_layers: Vec::new(),
-            placement_layers: Vec::new(),
+            placement_layers: None,
             z_index: 0.0,
             z_index_of_children: false,
             deactivated: false,
@@ -524,6 +526,12 @@ pub struct UiTree {
     pub(crate) inner_layer_owners: std::collections::HashMap<u64, NodeId>,
     /// The last inner layer's key, without its flag.
     pub(crate) next_inner_layer: u64,
+    /// The node and first entry of the layer placed with one whose group's content is being
+    /// recorded (render.rs, D1909): its drawing doesn't open it again.
+    pub(crate) recording_placed: Option<(NodeId, usize)>,
+    /// How many nodes have layers placed with one: while none has, the walks through a node's
+    /// layers take the code they had before (D1909).
+    pub(crate) placed_layer_nodes: u32,
     /// The tree's key in the thread's registry of trees, which its nodes' handles name it by.
     pub(crate) key: u32,
     /// A `SubcomposeLayout` composing its slots while it's measured: what they change of its
@@ -689,6 +697,8 @@ impl UiTree {
             optimizations: crate::optimizations::Optimizations::defaults(),
             inner_layer_owners: std::collections::HashMap::new(),
             next_inner_layer: 0,
+            recording_placed: None,
+            placed_layer_nodes: 0,
             key,
             lifecycle: Vec::new(),
             semantics_changed: false,
@@ -1959,6 +1969,9 @@ impl UiTree {
             }
             for layer in &value.inner_layers {
                 self.inner_layer_owners.remove(&layer.key);
+            }
+            if value.placement_layers.is_some() {
+                self.placed_layer_nodes -= 1;
             }
             if !self.ruler_readers.is_empty() {
                 self.ruler_readers.retain(|(_, reader, _), _| *reader != id);

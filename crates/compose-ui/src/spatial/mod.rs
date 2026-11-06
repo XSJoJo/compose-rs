@@ -416,29 +416,58 @@ impl UiTree {
         before_entry: usize,
         point: Offset,
     ) -> Offset {
+        if self.placed_layer_nodes != 0 {
+            return self.map_within_node_placed(node, layer, before_entry, point);
+        }
         let value = self.node(node);
         let mut point = point + layer_origin(value, layer);
-        // A layer placed with one after the chain's in it (D1909); not layer 0's, which the
-        // outer layer is in.
-        let placed = |index: usize, point: Offset| match value.placed_layer_at(index, layer) {
-            Some((graphics, at)) if at > 0 => {
+        for index in (0..before_entry).rev() {
+            let Some(graphics) = value.chain[index].node.downcast_ref::<GraphicsLayerNode>() else {
+                continue;
+            };
+            let layer = value.layer_of(index);
+            let map =
+                graphics.layer_map(layer_origin(value, layer), value.layers[layer].measured.into());
+            graphics.note_transform(&map, self.position_listeners);
+            point = map.map(point);
+        }
+        point
+    }
+
+    /// `map_within_node` while a node has layers placed with one (D1909).
+    #[cold]
+    #[inline(never)]
+    fn map_within_node_placed(
+        &self,
+        node: NodeId,
+        layer: usize,
+        before_entry: usize,
+        point: Offset,
+    ) -> Offset {
+        let value = self.node(node);
+        let mut point = point + layer_origin(value, layer);
+        // With layers placed with one, those too (D1909), but layer 0's: the outer layer is in it.
+        if value.has_placed_layers() {
+            for (graphics, at, placed) in value.layers_out_with_placed(layer, before_entry) {
+                if placed && at == 0 {
+                    continue;
+                }
                 let map =
                     graphics.layer_map(layer_origin(value, at), value.layers[at].measured.into());
                 graphics.note_transform(&map, self.position_listeners);
-                map.map(point)
-            }
-            _ => point,
-        };
-        point = placed(before_entry, point);
-        for index in (0..before_entry).rev() {
-            if let Some(graphics) = value.chain[index].node.downcast_ref::<GraphicsLayerNode>() {
-                let layer = value.layer_of(index);
-                let map = graphics
-                    .layer_map(layer_origin(value, layer), value.layers[layer].measured.into());
-                graphics.note_transform(&map, self.position_listeners);
                 point = map.map(point);
             }
-            point = placed(index, point);
+            return point;
+        }
+        for index in (0..before_entry).rev() {
+            let Some(graphics) = value.chain[index].node.downcast_ref::<GraphicsLayerNode>() else {
+                continue;
+            };
+            let layer = value.layer_of(index);
+            let map =
+                graphics.layer_map(layer_origin(value, layer), value.layers[layer].measured.into());
+            graphics.note_transform(&map, self.position_listeners);
+            point = map.map(point);
         }
         point
     }
