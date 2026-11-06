@@ -2151,6 +2151,8 @@ impl Applier for UiTree {
         if value.deactivated {
             return;
         }
+        self.focus_subtree_deactivating(node);
+        let Some(value) = self.get_mut(node) else { return };
         value.placed = false;
         value.subtree_needs_measure = false;
         self.tell_unplaced_going(node);

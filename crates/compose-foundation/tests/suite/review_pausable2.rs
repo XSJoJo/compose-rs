@@ -53,7 +53,8 @@ fn PartsRow(index: usize) {
 
 /// Writes `state` when it runs, as any request (or effect run in an idle time) writing state
 /// the frame hasn't composed yet.
-struct WriteRequest(OwnedState<u32>);
+/// Writes the state; the test keeps its owner, so the frame after reads it.
+struct WriteRequest(MutableState<u32>);
 
 impl compose_ui::PrefetchRequest for WriteRequest {
     fn execute(&self, _scope: &mut compose_ui::PrefetchRequestScope<'_>) -> bool {
@@ -112,7 +113,7 @@ fn review2_another_lists_items_composed_in_a_requests_first_pass_show_at_once() 
     ui.wait_for_idle();
     // A write first in the idle time: the other list's keys change.
     let scheduler = SCHEDULER.with(|s| s.borrow().clone()).expect("a scheduler");
-    scheduler.schedule_prefetch_first(Rc::new(WriteRequest(generation)));
+    scheduler.schedule_prefetch_first(Rc::new(WriteRequest(generation.handle())));
     assert!(ui.host().prefetch(within(6)), "work left: row 7 paused");
     let parts = ROW_PARTS.with(|parts| parts.borrow().get(&7).copied().unwrap_or(0));
     assert!(parts > 0 && parts < 4, "row 7 paused after {parts} parts");
