@@ -405,6 +405,72 @@ type LocalRect = Rc<dyn Fn() -> Option<Rect>>;
 /// What a fake responder does when asked: given what to show, a future.
 type OnBringIntoView = Rc<dyn Fn(Rc<dyn Fn() -> Option<Rect>>) -> LocalBoxFuture<'static, ()>>;
 
+/// A spec that always goes `distance`, counting how often it's asked.
+struct Fixed {
+    distance: f32,
+    asked: Rc<Cell<u32>>,
+}
+
+impl BringIntoViewSpec for Fixed {
+    fn calculate_scroll_distance(&self, _: f32, _: f32, _: f32) -> f32 {
+        self.asked.set(self.asked.get() + 1);
+        self.distance
+    }
+}
+
+// A lazy list reads the spec where it's composed too, as Compose's lazy layouts' wrap
+// `LocalBringIntoViewSpec` (`rememberLazyLayoutBringIntoViewSpec`): a custom one says how far it
+// goes; its item asks half out of the viewport.
+#[test]
+fn a_lazy_list_asks_the_spec_where_it_is_composed_how_far_to_go() {
+    for dir in DIRS {
+        let requester = BringIntoViewRequester::new();
+        let given = requester.clone();
+        let asked = Rc::new(Cell::new(0));
+        let spec: Rc<dyn BringIntoViewSpec> =
+            Rc::new(Fixed { distance: 30.0, asked: asked.clone() });
+        let owner = LazyListState::new(0, 0);
+        let state = *owner;
+        let mut ui = window(move || {
+            let _ = &owner;
+            let given = given.clone();
+            CompositionLocalProvider(
+                LOCAL_BRING_INTO_VIEW_SPEC.provides(spec.clone()),
+                move || {
+                    let given = given.clone();
+                    let content = move |scope: LazyListScope| {
+                        let given = given.clone();
+                        scope.items(10, move |index| {
+                            let ask = if index == 3 {
+                                Modifier.bring_into_view_requester(given.clone())
+                            } else {
+                                Modifier
+                            };
+                            Box!(modifier = dir.size(60.0, 50.0).then(ask));
+                        });
+                    };
+                    match dir {
+                        Dir::Vertical => LazyColumn!(
+                            modifier = Modifier.size(200.dp()),
+                            state = state,
+                            move |scope: LazyListScope| content(scope)
+                        ),
+                        Dir::Horizontal => LazyRow!(
+                            modifier = Modifier.size(200.dp()),
+                            state = state,
+                            move |scope: LazyListScope| content(scope)
+                        ),
+                    }
+                },
+            );
+        });
+        bring(&mut ui, &requester, None);
+        ui.wait_for_idle();
+        let first = (state.first_visible_item_index(), state.first_visible_item_scroll_offset());
+        assert_eq!((asked.get(), first), (1, (0, 30)));
+    }
+}
+
 /// As the tests' `fakeScrollable`: a responder offsetting the rect for its parents by `offset`,
 /// handling a request with `on_bring_into_view`.
 struct Fake {

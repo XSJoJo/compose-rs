@@ -195,9 +195,8 @@ fn items_leaving_go_while_a_request_is_paused() {
     assert!(live(1), "by the window's bound before the scroll (D894)");
     state.force_remeasure();
     ui.wait_for_idle();
-    assert!(live(1), "kept until the next idle time (D575)");
+    assert!(!live(1), "let go by the measurement, as Compose's (D1312)");
     ui.host().prefetch(within(1));
-    assert!(!live(1), "let go in the idle time");
     ui.host().composition().validate();
     while ui.host().prefetch(later()) {}
     assert_eq!(parts(7), 4);

@@ -16,18 +16,18 @@ use std::rc::Rc;
 
 use compose_runtime::{ComposeArg, ImmutableList, ObjectHandle, Owned, composable};
 use compose_ui::{
-    Constraints, Density, Dp, IntOffset, IntSize, Layout, Measurable, MeasurePolicy, MeasureResult,
-    MeasureScope, Modifier, PaddingValues, Placeable, PrefetchScheduler,
+    Constraints, Density, Dp, IntOffset, IntSize, Measurable, MeasureResult, Modifier,
+    PaddingValues, Placeable, PrefetchScheduler,
 };
 
 use super::grid::{CrossAxisCells, GridItemSpan, Slots};
 use super::item_animator;
 use super::layout_info::{LaidItem, LaidViewport};
 use super::prefetch::{Laid, LanesLaid, Policy, Units};
+use super::slots::{ItemComposer, ItemsMeasurePolicy};
 use super::{
-    FIRST_STEP, Interval, ItemStacking, Items, ItemsRef, LazyItems, LazyListInner, LazyListState,
-    LazyScrollElement, ListObserver, MOST_IN_A_ROUND, MOST_MISSING, composed_range,
-    content_type_of,
+    FIRST_STEP, Interval, ItemStacking, Items, ItemsRef, LazyListInner, LazyListState,
+    LazyScrollElement, ListObserver, MOST_IN_A_ROUND, MOST_MISSING, content_type_of,
 };
 use crate::OverscrollModifier;
 use crate::gestures::{
@@ -35,6 +35,7 @@ use crate::gestures::{
 };
 use crate::layout::{HorizontalArrangement, MainAxisArrangement, VerticalArrangement};
 use crate::mutator::{MutatePriority, MutationInterrupted};
+use compose_ui::subcompose::SubcomposeMeasureScope;
 
 /// No spacing: what the defaults of a lazy layout's parameters name, whatever the caller imports.
 #[doc(hidden)]
@@ -1370,7 +1371,7 @@ fn LazyStaggeredGrid(
                 scheduler,
                 slots: RefCell::new(None),
                 told: RefCell::new(None),
-            }) as Rc<dyn MeasurePolicy>
+            }) as Rc<dyn ItemsMeasurePolicy>
         })
     };
     let modifier = modifier
@@ -1407,13 +1408,7 @@ fn LazyStaggeredGrid(
     });
     let stacking =
         if reverse { ItemStacking::AtTheEnd { vertical } } else { ItemStacking::AtTheOrigin };
-    Layout(
-        modifier,
-        policy,
-        compose_runtime::callback(move || {
-            LazyItems(list, items.clone(), holder, fallback, stacking)
-        }),
-    );
+    super::slots::LazyItemsLayout(modifier, list, items, holder, fallback, stacking, policy);
 }
 
 /// A staggered grid's units for its window: items, with their lanes as `LazyStaggeredGridLaneInfo`
@@ -1501,21 +1496,15 @@ struct MeasuredItem {
 struct Missing;
 
 /// What's needed to work out, as `LazyStaggeredGridMeasureContext`.
-struct Context<'a, 'scope> {
-    scope: &'a mut MeasureScope<'scope>,
-    measurables: &'a [Measurable],
-    children: &'a [usize],
-    composed_start: usize,
-    /// The children out of the range, there may be many (a jump's, D1470): each one's child.
-    apart_children: std::collections::HashMap<usize, usize>,
-    /// Each child's placeable, as Compose's `getPlaceables` keeps those measured.
-    placeables: Vec<Option<Placeable>>,
+struct Context<'a, 's, 'scope> {
+    scope: &'a mut SubcomposeMeasureScope<'s, 'scope>,
+    /// What composes the items as the measurement reaches them.
+    composer: &'a mut ItemComposer,
+    /// Each item's placeable, as Compose's `getPlaceables` keeps those measured.
+    placeables: super::slots::ItemMap<Placeable>,
     lane_info: &'a mut LazyStaggeredGridLaneInfo,
     slots: &'a Slots,
     items: &'a Items,
-    prefetch: &'a super::prefetch::Prefetch,
-    unready: Option<u64>,
-    lacked_unready: bool,
     sizes: &'a mut super::Sizes,
     vertical: bool,
     count: i32,
@@ -1531,7 +1520,7 @@ struct Context<'a, 'scope> {
     lacked_room: usize,
 }
 
-impl Context<'_, '_> {
+impl Context<'_, '_, '_> {
     /// `MeasuredItem.place`.
     fn place(&mut self, placed: &Placed, placeable: &Placeable, main: i32, cross: i32) {
         let size = if self.vertical { placeable.height } else { placeable.width };
@@ -1604,7 +1593,7 @@ fn index_of_max_value(values: &[i32]) -> usize {
     result
 }
 
-impl Context<'_, '_> {
+impl Context<'_, '_, '_> {
     fn span_range(&self, item: i32, lane: usize) -> SpanRange {
         if self.items.is_full_span(item as usize) { (0, self.lanes) } else { (lane, 1) }
     }
@@ -1614,31 +1603,23 @@ impl Context<'_, '_> {
         if size != 1 { LazyStaggeredGridLaneInfo::LANE_FULL_SPAN } else { start as i32 }
     }
 
-    fn child_of(&mut self, item: usize) -> Option<usize> {
-        if self.unready.is_some_and(|key| key == self.items.key(item)) {
-            self.prefetch.complete_pending();
-            self.lacked_unready = true;
-            return None;
-        }
-        let child = match item.checked_sub(self.composed_start) {
-            Some(position) if self.children.get(position) == Some(&item) => Some(position),
-            _ => self.apart_children.get(&item).copied(),
-        };
-        child.filter(|child| *child < self.measurables.len())
+    /// Item `item`'s layout, composed as the measurement reaches it; `None` past the items.
+    fn child_of(&mut self, item: usize) -> Option<Measurable> {
+        self.composer.measurable(self.scope, item)
     }
 
     /// Item `item` in those lanes, as `getAndMeasure`, if it's composed.
     fn try_measure(&mut self, item: i32, span: SpanRange) -> Option<MeasuredItem> {
-        let child = self.child_of(item as usize)?;
         let start = span.0.min(self.lanes - 1);
         let size = span.1.min(self.lanes - start);
         let (_, cross) = self.slots.of(start, size);
-        let placeable = match self.placeables[child] {
-            Some(placeable) => placeable,
+        let placeable = match self.placeables.get(&(item as usize)) {
+            Some(placeable) => *placeable,
             None => {
+                let child = self.child_of(item as usize)?;
                 let constraints = super::grid::cell_constraints(self.vertical, cross);
-                let placeable = self.scope.measure(self.measurables[child], constraints);
-                self.placeables[child] = Some(placeable);
+                let placeable = self.scope.measure(child, constraints);
+                self.placeables.insert(item as usize, placeable);
                 placeable
             }
         };
@@ -2135,7 +2116,7 @@ impl StaggeredLayout {
     /// frame whose rounds end here, at the size it had (as small as allowed before any).
     fn show_last(
         &self,
-        c: &mut Context<'_, '_>,
+        c: &mut Context<'_, '_, '_>,
         staggered: &StaggeredInner,
         vertical: bool,
         constraints: Constraints,
@@ -2189,11 +2170,11 @@ impl StaggeredLayout {
     }
 }
 
-impl MeasurePolicy for StaggeredLayout {
+impl ItemsMeasurePolicy for StaggeredLayout {
     fn measure(
         &self,
-        scope: &mut MeasureScope<'_>,
-        measurables: &[Measurable],
+        scope: &mut SubcomposeMeasureScope<'_, '_>,
+        composer: &mut ItemComposer,
         constraints: Constraints,
     ) -> MeasureResult {
         let state = &self.list;
@@ -2282,8 +2263,12 @@ impl MeasurePolicy for StaggeredLayout {
         let min_width = constraints.constrain_width(horizontal_padding);
         let min_height = constraints.constrain_height(vertical_padding);
         let count = info.items.count;
+        // Those the last measurement composed: those it kept that stay in the window stay.
         let children = state.children.borrow().clone();
-        let (composed_start, composed_end) = composed_range(&children, count);
+        let (composed_start, composed_end) = {
+            let (start, end) = state.composed.get();
+            (start.min(count), end.min(count).max(start.min(count)))
+        };
         let viewport = |size: IntSize| LaidViewport {
             start: -before,
             end: available + after,
@@ -2364,6 +2349,9 @@ impl MeasurePolicy for StaggeredLayout {
             return scope.layout(min_width, min_height);
         };
         let mut lane_info = staggered.lane_info.borrow_mut();
+        // From here what the pass writes of the lanes is journaled, `fill_indices` too (moving the
+        // window's anchor), so the pass that's now leaves them as the pass ahead did (D1226).
+        lane_info.begin_pass();
         let mut sizes = state.sizes.borrow_mut();
         // The position, after a first item that moved: `updateScrollPositionIfTheFirstItemWasMoved`.
         let (mut indices, offsets) = staggered.position.borrow().clone();
@@ -2384,10 +2372,12 @@ impl MeasurePolicy for StaggeredLayout {
                     self.state.fill_indices(&staggered, state, found as i32, indices.len());
                 lane_info = staggered.lane_info.borrow_mut();
                 indices = filled.clone();
-                staggered.position.borrow_mut().0 = filled;
+                // Kept state: only the pass that tells writes it.
+                if tells {
+                    staggered.position.borrow_mut().0 = filled;
+                }
             }
         }
-        lane_info.begin_pass();
         let initial_indices = if indices.len() == lanes {
             indices
         } else {
@@ -2424,28 +2414,21 @@ impl MeasurePolicy for StaggeredLayout {
         let pending = state.pending.get();
         const MOST_DELTA: f32 = 1.0e9;
         let pending = if pending.is_nan() { 0.0 } else { pending.clamp(-MOST_DELTA, MOST_DELTA) };
-        let unready = state.prefetch.layout_started();
+        state.prefetch.layout_started();
         // Out of its cell for the pass: the window's scope reads it after it, in this measurement.
         let mut taken_lanes = std::mem::take(&mut *lane_info);
         drop(lane_info);
         let mut context = Context {
             scope,
-            measurables,
-            children: &children,
-            composed_start,
-            apart_children: children
-                .iter()
-                .enumerate()
-                .skip(composed_end - composed_start)
-                .map(|(child, item)| (*item, child))
-                .collect(),
-            placeables: vec![None; measurables.len()],
+            composer,
+            placeables: {
+                let mut placeables = super::slots::ItemMap::default();
+                placeables.reserve(children.len() + 8);
+                placeables
+            },
             lane_info: &mut taken_lanes,
             slots: &slots,
             items: &info.items,
-            prefetch: &state.prefetch,
-            unready,
-            lacked_unready: false,
             sizes: &mut sizes,
             vertical,
             count: count as i32,
@@ -2748,27 +2731,21 @@ impl MeasurePolicy for StaggeredLayout {
             let (low, high) = prefetch.limits.get();
             (low.min(wanted.0), high.max(wanted.1))
         };
-        let covers = composed_start <= wanted.0 && composed_end >= wanted.1;
-        let past_limits = composed_start < limits.0 || composed_end > limits.1;
-        let search_ended = beyond_ended && past_limits;
-        if search_ended {
-            state.dispose_leaving.set(true);
-        }
-        let mut composed = (composed_start, composed_end);
-        let composed_more = state.composed_more.take();
-        if !covers || search_ended || c.lacked_unready || (tells && prefetch.take_cancelled()) {
-            composed = limits;
-            state.compose(composed);
-        } else if composed_more {
-            state.composed.set(composed);
-        }
+        // What stays composed, as a list's: those of it not measured stay if they were composed;
+        // ahead, in a scope, what the pass that's now wanted last too.
+        let composed = match state.wanted_now.get().filter(|_| looking_ahead) {
+            Some((start, end)) if start < end => {
+                (limits.0.min(start.min(count)), limits.1.max(end.min(count)))
+            }
+            _ => limits,
+        };
+        state.composed.set(composed);
         let mut post_scroll: Option<Box<dyn FnOnce()>> = None;
         if tells {
             prefetch.node.set(Some(node));
             prefetch.count.set(count);
             prefetch.wanted.set(wanted);
             prefetch.limits.set(limits);
-            prefetch.trim_between_frames(state, self.scheduler.as_ref(), composed);
             // `applyMeasureResult`: the position, what's left of the scroll and how far it can go.
             let first_offset = first_visible_offset(&done.first_indices, &done.first_offsets);
             let first_key = visible
@@ -2822,10 +2799,11 @@ impl MeasurePolicy for StaggeredLayout {
                 state.layout_info.set(layout_info);
             }
         } else {
-            // What either pass wants stays composed, and trimming lets go of neither's.
+            // What either pass wants stays composed, and what's kept precomposed is in either.
             let (start, end) = prefetch.wanted.get();
             prefetch.wanted.set((start.min(wanted.0), end.max(wanted.1)));
             prefetch.limits.set(limits);
+            state.wanted_now.set(Some(wanted));
         }
         if c.sizes.len() > 4 * MOST_MISSING * lanes {
             let near = MOST_MISSING * lanes;
@@ -2846,7 +2824,7 @@ impl MeasurePolicy for StaggeredLayout {
             // Now, after the pass ahead: each animated item where it is ahead, as a list's
             // (Compose's `lookaheadOffset`), those moving away too.
             for place in state.lookahead_places.borrow().iter() {
-                let found = c.child_of(place.index).and_then(|child| c.placeables[child]);
+                let found = c.placeables.get(&place.index).copied();
                 let placeable = match found {
                     Some(placeable) => placeable,
                     None => {
@@ -2910,8 +2888,7 @@ impl MeasurePolicy for StaggeredLayout {
             });
             let mut before_ahead = 0;
             for away in moved {
-                let Some(child) = c.child_of(away.index) else { continue };
-                let Some(placeable) = c.placeables[child] else { continue };
+                let Some(placeable) = c.placeables.get(&away.index).copied() else { continue };
                 // Placed once, here.
                 positioned.retain(|(other, _, _)| *other != placeable);
                 if away.to_start {
@@ -3005,47 +2982,8 @@ impl MeasurePolicy for StaggeredLayout {
         if let Some(post_scroll) = post_scroll {
             c.scope.run_after_layout(post_scroll);
         }
+        let apart = state.items_apart(&info.items);
+        state.keep_composed(c.scope, c.composer, &children, composed, &apart, None);
         c.scope.layout(width, height)
-    }
-
-    fn debug_name(&self) -> &'static str {
-        "LazyStaggeredGrid"
-    }
-
-    // As Compose's `SubcomposeLayout`: it composes while measuring, so it has no intrinsics.
-    fn min_intrinsic_width(
-        &self,
-        _: &mut compose_ui::IntrinsicMeasureScope<'_>,
-        _: &[compose_ui::IntrinsicMeasurable],
-        _: i32,
-    ) -> i32 {
-        panic!("{}", compose_ui::platform::NO_INTRINSICS_MESSAGE)
-    }
-
-    fn min_intrinsic_height(
-        &self,
-        _: &mut compose_ui::IntrinsicMeasureScope<'_>,
-        _: &[compose_ui::IntrinsicMeasurable],
-        _: i32,
-    ) -> i32 {
-        panic!("{}", compose_ui::platform::NO_INTRINSICS_MESSAGE)
-    }
-
-    fn max_intrinsic_width(
-        &self,
-        _: &mut compose_ui::IntrinsicMeasureScope<'_>,
-        _: &[compose_ui::IntrinsicMeasurable],
-        _: i32,
-    ) -> i32 {
-        panic!("{}", compose_ui::platform::NO_INTRINSICS_MESSAGE)
-    }
-
-    fn max_intrinsic_height(
-        &self,
-        _: &mut compose_ui::IntrinsicMeasureScope<'_>,
-        _: &[compose_ui::IntrinsicMeasurable],
-        _: i32,
-    ) -> i32 {
-        panic!("{}", compose_ui::platform::NO_INTRINSICS_MESSAGE)
     }
 }

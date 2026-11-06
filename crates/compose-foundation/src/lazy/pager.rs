@@ -227,6 +227,10 @@ impl super::ListObserver for Observer {
         }
     }
 
+    fn item_main_size(&self) -> Option<i32> {
+        self.0.inner().map(|inner| peek(&inner.page_size).max(0))
+    }
+
     fn after_measure(&self) {
         if let Some(inner) = self.0.inner() {
             inner.after_measure();
@@ -273,7 +277,10 @@ impl PagerInner {
             self.page_size.set(size);
         }
         let laid = (viewport, before, after, size, spacing);
-        let changed = self.laid.replace(laid) != laid || self.relayout.replace(false);
+        // Both taken: a new size's flag goes with the measurement that saw it, which with no
+        // rounds may be the only one.
+        let relayout = self.relayout.replace(false);
+        let changed = self.laid.replace(laid) != laid || relayout;
         // The position is the page's, whatever else goes on: not the first visible item's.
         list.first_key.set(None);
         // As `matchPageWithKey`: the current page's key may have moved.
@@ -638,6 +645,13 @@ impl PagerState {
     /// Goes to `page` at the next layout, from a scroll: as `snapToItem`.
     fn snap_to_page(&self, page: usize, fraction: f32) {
         let Some(inner) = self.inner() else { return };
+        // Elsewhere, the window's requests are cancelled and the next scroll refills it, as
+        // `snapToItem`'s `resetStrategy`.
+        if (peek(&inner.current_page) != page || peek(&inner.current_fraction) != fraction)
+            && let Some(list) = inner.list.inner()
+        {
+            list.prefetch.reset_window();
+        }
         inner.requested.set(Some((page, fraction)));
         inner.current_page.set(page);
         inner.current_fraction.set(fraction);
@@ -1266,8 +1280,13 @@ impl MeasurePolicy for PageLayout {
         measurables: &[Measurable],
         constraints: Constraints,
     ) -> MeasureResult {
-        // Observed: a new page size measures the page again.
-        let size = self.state.inner().map_or(0, |inner| inner.page_size.get());
+        // Its size along the pager, as its constraints carry it (Compose's child constraints).
+        let along = if self.vertical { constraints.max_height } else { constraints.max_width };
+        let size = if along == Constraints::INFINITY {
+            self.state.inner().map_or(0, |inner| inner.page_size.get())
+        } else {
+            along
+        };
         let child = if self.vertical {
             Constraints::new(0, constraints.max_width, 0, size)
         } else {

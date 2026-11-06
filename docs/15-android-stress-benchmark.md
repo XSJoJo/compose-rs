@@ -2,6 +2,8 @@
 
 [12](12-android-performance.md) compares the two on a light social feed. This document compares them on two much heavier screens, built the same way in both apps (D400): a list of rich, heterogeneous items, and a screen running hundreds of animations at once. It measures jank, frame durations on both threads, work, memory and startup with the same tools as [12](12-android-performance.md) (D401).
 
+**Lazy items compose per item now, as Compose's (C8: D1312, D1316).** compose-rs composes each lazy item in a subcomposition of its own while its list, grid or staggered grid is measured, as Compose's `LazyLayout` does over `SubcomposeLayout`. Before C8 it composed them in rounds, within the list's own composition between measurements of a frame (D460, D482, D492, D575), so the comparisons of lazy scrolling below, every round up to and including round 16, weren't like for like: compose-rs did that work in another way than Compose. Measured on the Pixel 8 Pro, C8 adds no jank and gives better worst frames, at +3 to 13 % main-thread frame time, which the user accepted; later rounds compare the same model on both sides.
+
 **Short answer** (Pixel 8 Pro, Android 16; round 15 of [12](12-android-performance.md), compose-rs at f120c63, after pausable composition, against Compose 1.12.1; medians of 3 runs, startup of 15; round 14's compose-rs figures in parentheses). At **parity**, compose-rs does the work Compose does by default and none of its own optimizations, its hint session included ("Parity mode"):
 
 - **Scrolling the stress list**, no frame of compose-rs's missed the app's deadline (none in round 14 either); Compose missed 4 in 3 runs, most building a newly revealed item inside the frame.

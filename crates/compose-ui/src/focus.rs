@@ -1489,6 +1489,23 @@ impl UiTree {
 
     /// `node` is being reset (reused or deactivated): the active target on it loses the focus, as
     /// `FocusTargetNode.onReset`.
+    /// `node`'s content is deactivated, outer nodes first: the focus, if it's anywhere in it,
+    /// goes now, while what's above it is still there to be told, as Compose's
+    /// `deactivatedActiveParentFocusNodeSendsFocusEvent`.
+    pub(crate) fn focus_subtree_deactivating(&mut self, node: NodeId) {
+        self.in_each_window(|tree| {
+            let Some(active) = tree.focus.active else { return };
+            let mut at = Some(active.node);
+            while let Some(current) = at {
+                if current == node {
+                    tree.clear_active_target(true, true);
+                    return;
+                }
+                at = tree.parent_of(current);
+            }
+        });
+    }
+
     pub(crate) fn focus_node_resetting(&mut self, node: NodeId) {
         self.in_each_window(|tree| {
             if tree.focus.active.is_some_and(|active| active.node == node) {
