@@ -978,6 +978,57 @@ impl SubcomposeMeasureScope<'_, '_> {
         tree.first_virtual_measurable(node)
     }
 
+    /// [`subcompose_first`](Self::subcompose_first) for a caller whose content for an id is always
+    /// the same in effect (a lazy layout's item, its content by key): a slot already composed at
+    /// this measurement's next place, equal to `probe`, with nothing to compose, is taken without
+    /// asking for its id or content; otherwise `make` gives them.
+    pub fn subcompose_first_with<T: PartialEq + 'static>(
+        &mut self,
+        probe: &T,
+        make: impl FnOnce() -> (T, Callback),
+    ) -> Option<Measurable> {
+        let node = match self.take_in_place(probe, None) {
+            Some(node) => node,
+            None => {
+                let (slot_id, content) = make();
+                self.compose_into_slot(slot_id, content)
+            }
+        };
+        let tree = self.scope.base.tree.enter();
+        tree.first_virtual_measurable(node)
+    }
+
+    /// The slot at this measurement's next place, if it's `slot_id`'s and nothing's to compose
+    /// in it (its content `content`, if given): taken as it is, its virtual node.
+    fn take_in_place(
+        &mut self,
+        slot_id: &dyn SlotId,
+        content: Option<&Callback>,
+    ) -> Option<NodeId> {
+        let (composition, node) = {
+            let inner = self.state.inner.borrow();
+            let current = inner.current_index;
+            let active_end = inner.slots.len() - inner.precomposed_count - inner.reusable_count;
+            let slot = inner.slots.get(current).filter(|_| current < active_end)?;
+            let same = !slot.force_recompose
+                && slot.paused.is_none()
+                && slot
+                    .content
+                    .as_ref()
+                    .is_some_and(|last| content.is_none_or(|it| last.ptr_eq(it)))
+                && slot.key.same_slot(slot_id);
+            if !same {
+                return None;
+            }
+            (slot.composition.clone()?, slot.node)
+        };
+        if composition.has_invalidations() {
+            return None;
+        }
+        self.state.inner.borrow_mut().current_index += 1;
+        Some(node)
+    }
+
     /// The slot of `slot_id` at this measurement's next place, its content composed if it has to
     /// be: its virtual node.
     fn compose_into_slot(
@@ -987,23 +1038,7 @@ impl SubcomposeMeasureScope<'_, '_> {
     ) -> NodeId {
         // The common case, a measurement asking for what the last one did in the same order: the
         // slot at `current`, its content the same and nothing to compose, is taken as it is.
-        let clean = {
-            let inner = self.state.inner.borrow();
-            let current = inner.current_index;
-            let active_end = inner.slots.len() - inner.precomposed_count - inner.reusable_count;
-            inner.slots.get(current).filter(|_| current < active_end).and_then(|slot| {
-                let same = !slot.force_recompose
-                    && slot.paused.is_none()
-                    && slot.content.as_ref().is_some_and(|last| last.ptr_eq(&content))
-                    && slot.key.same_slot(&slot_id);
-                same.then(|| (slot.composition.clone(), slot.node))
-                    .and_then(|(it, node)| Some((it?, node)))
-            })
-        };
-        if let Some((composition, node)) = clean
-            && !composition.has_invalidations()
-        {
-            self.state.inner.borrow_mut().current_index += 1;
+        if let Some(node) = self.take_in_place(&slot_id, Some(&content)) {
             return node;
         }
         let state = self.state.clone();

@@ -218,17 +218,23 @@ impl ItemComposer {
         if index >= self.factory.count() {
             return None;
         }
-        let slot = self.factory.slot(index);
+        let key = self.factory.items.0.key(index);
         // Two items of one key would share a slot: Compose's lazy layouts panic, and so does this.
         #[cfg(debug_assertions)]
         {
-            if let Some(&other) = self.keys.get(&slot.key) {
+            if let Some(&other) = self.keys.get(&key) {
                 self.factory.items.0.check_keys(&[other, index]);
             }
-            self.keys.insert(slot.key, index);
+            self.keys.insert(key, index);
         }
-        let content = self.factory.content_of(index, slot.key);
-        let measurable = scope.subcompose_first(slot, content);
+        // An item's content is the same for its key while it's there (`ItemContents`): the slot
+        // composed in place needs neither its content type nor its content.
+        let probe = LazySlot { key, content_type: None };
+        let factory = &self.factory;
+        let measurable = scope.subcompose_first_with(&probe, || {
+            let slot = LazySlot { key, content_type: factory.items.0.content_type(index) };
+            (slot, factory.content_of(index, key))
+        });
         self.composed.insert(index, measurable);
         self.order.push(index);
         measurable
