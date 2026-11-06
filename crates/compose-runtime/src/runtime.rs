@@ -121,6 +121,8 @@ pub(crate) struct ActivePass {
     /// The pass is composing (not applying its end-of-pass changes): the composer may be used,
     /// and state writes are a misuse.
     pub composing: bool,
+    /// Its composition has an observer (`tooling`), as it began: its scopes are logged.
+    pub observed: bool,
 }
 
 impl Runtime {
@@ -324,7 +326,7 @@ impl PassFrames<'_> {
     /// The composing pass's frames, if one is composing.
     pub fn of(active: Option<ActivePass>, frames: &mut [Frame]) -> Option<PassFrames<'_>> {
         match active {
-            Some(ActivePass { composition, composing: true }) => {
+            Some(ActivePass { composition, composing: true, .. }) => {
                 Some(PassFrames { composition: composition.index, frames })
             }
             _ => None,

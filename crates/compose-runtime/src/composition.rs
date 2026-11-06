@@ -823,11 +823,13 @@ impl Pass {
                 return None;
             }
             crate::snapshots::PassSnapshot::check_can_begin(&runtime.snapshots);
-            // Its observer is the one there as it begins (`tooling`).
-            let observer = match runtime.scopes.log {
-                Some(_) => crate::tooling::observer_of(&runtime.compositions, id.index),
-                None => None,
+            // Its observer is the one there as it begins (`tooling`): with none on the thread, one
+            // test, and the pass logs nothing.
+            let observer = match runtime.scopes.observing() {
+                true => crate::tooling::observer_of(&runtime.compositions, id.index),
+                false => None,
             };
+            let observed = observer.is_some();
             if let Some(observer) = &observer
                 && let Some(data) = runtime.compositions.get_mut(id)
             {
@@ -863,7 +865,7 @@ impl Pass {
             }
             // What it writes of what's made before is a change, what it makes isn't (D756).
             let snapshot = crate::snapshots::PassSnapshot::begin(snapshots);
-            *active = Some(ActivePass { composition: id, composing: true });
+            *active = Some(ActivePass { composition: id, composing: true, observed });
             *abandoned_groups = false;
             *reusing = 0;
             // The sentinel's depth: to the end of the pass.

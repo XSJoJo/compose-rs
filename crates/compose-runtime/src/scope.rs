@@ -116,9 +116,15 @@ impl Scopes {
         }
     }
 
+    /// Whether any composition has an observer.
+    #[inline]
+    pub fn observing(&self) -> bool {
+        self.observed != 0
+    }
+
     #[cold]
     #[inline(never)]
-    fn log_observed(
+    pub fn log_observed(
         &mut self,
         composition: u32,
         scope: ScopeId,
