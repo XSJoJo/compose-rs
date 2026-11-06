@@ -918,3 +918,25 @@ fn an_anchor_reads_the_locals_where_it_was_made() {
     assert_ne!(again, inside);
     assert_eq!(again.get(&LOCAL_SOME_STATIC_INT), 51);
 }
+
+// compose-rs's own: a frame-end callback scheduled through an anchor runs at the end of a frame of
+// its composition's tree, not another host's (a node's animation waiting for its own layout).
+#[test]
+fn an_anchors_frame_end_callback_waits_for_its_own_trees_frame() {
+    let anchor: Rc<Cell<Option<CompositionLocalAnchor>>> = Rc::default();
+    let into = anchor.clone();
+    let own = Composition::new(compose_runtime::platform::NodeTree::<()>::new());
+    own.set_content(move || into.set(Some(current_composition_local_anchor())));
+    let other = Composition::new(compose_runtime::platform::NodeTree::<()>::new());
+    other.set_content(|| {});
+    let ran = Rc::new(Cell::new(false));
+    let told = ran.clone();
+    let anchor = anchor.get().expect("composed");
+    assert!(anchor.schedule_frame_end_callback(move || told.set(true)).is_some());
+    compose_runtime::platform::run_frame_end_callbacks_of(&other);
+    assert!(!ran.get(), "another host's frame");
+    compose_runtime::platform::run_frame_end_callbacks_of(&own);
+    assert!(ran.get(), "its own");
+    own.dispose();
+    other.dispose();
+}

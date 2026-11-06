@@ -1173,3 +1173,311 @@ fn a_scrollable_stops_once_its_spec_says_zero_and_animates_along_its_spec() {
         assert_eq!(animations.get(), 1);
     }
 }
+
+// ---- Follow-ups: re-entry, disposal, flings, the queue's timing, the last frame -----------------
+
+/// A responder reading, from its `calculate_rect_for_parent`, what the responder inside it was
+/// asked to show: a read of the tree from inside a read of it.
+struct ReadingInside {
+    inside: Rc<RefCell<Option<LocalRect>>>,
+    seen: Rc<RefCell<Vec<Option<Rect>>>>,
+}
+
+impl BringIntoViewResponder for ReadingInside {
+    fn calculate_rect_for_parent(&self, local_rect: Rect) -> Rect {
+        let read = self.inside.borrow().clone();
+        if let Some(read) = read {
+            self.seen.borrow_mut().push(read());
+        }
+        local_rect
+    }
+
+    fn bring_child_into_view(&self, _: LocalRect) -> LocalBoxFuture<'_, ()> {
+        Box::pin(async {})
+    }
+}
+
+// compose-rs's own: application code reading the tree from inside a read of it (a responder's
+// `calculate_rect_for_parent`, as the scroll reads its request) finds the requester still there,
+// and the scroll goes on to show it.
+#[test]
+fn a_read_from_inside_a_read_finds_the_requester_still_there() {
+    for dir in DIRS {
+        let requester = BringIntoViewRequester::new();
+        let given = requester.clone();
+        let inside: Rc<RefCell<Option<LocalRect>>> = Rc::default();
+        let seen: Rc<RefCell<Vec<Option<Rect>>>> = Rc::default();
+        let outer: Rc<dyn BringIntoViewResponder> =
+            Rc::new(ReadingInside { inside: inside.clone(), seen: seen.clone() });
+        let into = inside.clone();
+        let inner = fake_scrollable(Offset::ZERO, move |local_rect| {
+            // Read once where nothing else reads the tree.
+            local_rect();
+            *into.borrow_mut() = Some(local_rect);
+            Box::pin(std::future::pending())
+        });
+        let scroll = ScrollState::new(0);
+        let state = *scroll;
+        let mut ui = window(move || {
+            let _owner = &scroll;
+            let (given, outer, inner) = (given.clone(), outer.clone(), inner.clone());
+            Box!(modifier = dir.size(100.0, 100.0).then(dir.scroll(state)), {
+                let (given, outer, inner) = (given.clone(), outer.clone(), inner.clone());
+                Box!(modifier = dir.size(400.0, 100.0), {
+                    Box!(
+                        modifier = dir
+                            .offset(300.0)
+                            .bring_into_view_responder(outer.clone())
+                            .then(inner.clone())
+                            .size(50.dp())
+                            .bring_into_view_requester(given.clone())
+                    );
+                });
+            });
+        });
+        request(&requester, None);
+        ui.wait_for_idle();
+        assert!(!seen.borrow().is_empty());
+        assert!(seen.borrow().iter().all(Option::is_some), "{:?}", seen.borrow());
+        assert_eq!(state.value(), 250);
+    }
+}
+
+// compose-rs's own: the composition disposed while the scroll animates, the executor running on,
+// the requests end (cancelled) rather than wait forever.
+#[test]
+fn a_composition_disposed_mid_animation_ends_its_requests() {
+    for dir in DIRS {
+        let scrolls = mutable_state_of(true);
+        let (mut ui, requester, _state) = animated_child(dir, 300.0, scrolls.handle());
+        ui.set_auto_advance(false);
+        let (_, done) = request(&requester, None);
+        for _ in 0..4 {
+            ui.advance_time_by_frame();
+        }
+        assert!(!done.get());
+        drop(ui);
+        for _ in 0..10 {
+            compose_runtime::platform::run_ready();
+        }
+        assert!(done.get());
+    }
+}
+
+// compose-rs's own, as Compose's mutator: a request coming during a fling, with room left to
+// scroll, interrupts it (the same priority, the newer wins) and is shown; the fling doesn't go on.
+#[test]
+fn a_request_during_a_fling_interrupts_it_and_is_shown() {
+    for dir in DIRS {
+        let requester = BringIntoViewRequester::new();
+        let given = requester.clone();
+        let scroll = ScrollState::new(0);
+        let state = *scroll;
+        let mut ui = window(move || {
+            let _owner = &scroll;
+            let given = given.clone();
+            Box!(modifier = dir.size(100.0, 100.0).then(dir.scroll(state)), {
+                let given = given.clone();
+                Box!(modifier = dir.size(5000.0, 100.0), {
+                    Box!(
+                        modifier = dir
+                            .offset(600.0)
+                            .size(50.dp())
+                            .bring_into_view_requester(given.clone())
+                    );
+                });
+            });
+        });
+        ui.set_auto_advance(false);
+        let along = |by: f32| match dir {
+            Dir::Horizontal => Offset::new(by, 0.0),
+            Dir::Vertical => Offset::new(0.0, by),
+        };
+        let mut finger = Touch::down(&mut ui, Offset::new(50.0, 50.0));
+        for _ in 0..4 {
+            finger.advance_event_time(&mut ui, 10);
+            finger.move_by(&mut ui, along(-20.0));
+        }
+        finger.up(&mut ui);
+        for _ in 0..2 {
+            ui.advance_time_by_frame();
+        }
+        let flinging = state.value();
+        // Still before the child, and still moving.
+        ui.advance_time_by_frame();
+        assert!(state.value() > flinging && state.value() < 550, "{flinging} {}", state.value());
+        let (_, done) = request(&requester, None);
+        ui.set_auto_advance(true);
+        ui.wait_for_idle();
+        assert!(done.get());
+        // The child's trailing edge at the viewport's end: the fling stopped there.
+        assert_eq!(state.value(), 550);
+    }
+}
+
+// compose-rs's own (D1377): a request beside one being shown but inside the one around it cancels
+// it at once and keeps those it contains. Compose's queue keeps the one beside until the
+// animation ends (its loop cancels an item only when it's the last), so there it returns later.
+#[test]
+fn a_request_beside_another_inside_the_same_cancels_it_at_once() {
+    for dir in DIRS {
+        let [large, medium, small, between] = [(); 4].map(|_| BringIntoViewRequester::new());
+        let given = [large.clone(), medium.clone(), small.clone(), between.clone()];
+        let scroll = ScrollState::new(0);
+        let state = *scroll;
+        let mut ui = window(move || {
+            let _owner = &scroll;
+            let given = given.clone();
+            Box!(modifier = dir.size(100.0, 100.0).then(dir.scroll(state)), {
+                let given = given.clone();
+                Box!(modifier = dir.size(400.0, 100.0), {
+                    let given = given.clone();
+                    Box!(
+                        modifier = dir
+                            .offset(200.0)
+                            .size(100.dp())
+                            .bring_into_view_requester(given[0].clone()),
+                        {
+                            let given = given.clone();
+                            let small = given[2].clone();
+                            Box!(
+                                modifier = Modifier
+                                    .size(50.dp())
+                                    .bring_into_view_requester(given[1].clone()),
+                                {
+                                    Box!(
+                                        modifier = Modifier
+                                            .size(10.dp())
+                                            .bring_into_view_requester(small.clone())
+                                    );
+                                }
+                            );
+                            // Contains `small`, beside `medium`, inside `large`.
+                            Box!(
+                                modifier = Modifier
+                                    .size((60.dp(), 10.dp()))
+                                    .bring_into_view_requester(given[3].clone())
+                            );
+                        }
+                    );
+                });
+            });
+        });
+        ui.set_auto_advance(false);
+        let done = [&large, &medium, &small].map(|requester| request(requester, None).1);
+        ui.wait_for_idle();
+        let (_, between_done) = request(&between, None);
+        ui.wait_for_idle();
+        let now = |done: &[Rc<Cell<bool>>; 3]| done.each_ref().map(|it| it.get());
+        assert_eq!((now(&done), between_done.get()), ([false, true, false], false));
+        ui.set_auto_advance(true);
+        ui.wait_for_idle();
+        assert_eq!((now(&done), between_done.get()), ([true; 3], true));
+        assert_eq!(state.value(), 200);
+    }
+}
+
+/// A spec scrolling a request of 20 px or more to `target` from where `scrolled` is (the
+/// state's pixels run against the content's: `scrolled` goes negative as the content moves back),
+/// and never showing a smaller one.
+struct ToTarget {
+    target: f32,
+    scrolled: Rc<Cell<f32>>,
+}
+
+impl BringIntoViewSpec for ToTarget {
+    fn calculate_scroll_distance(&self, _: f32, size: f32, _: f32) -> f32 {
+        if size < 20.0 { 1000.0 } else { self.target + self.scrolled.get() }
+    }
+}
+
+// compose-rs's own, as `UpdatableAnimationState`'s last frame: a target under the visibility
+// threshold whose request isn't done yet (a smaller one inside it, never shown, holds the queue)
+// is scrolled to the end, so the scroll stops exactly there, not a hundredth of a pixel short.
+#[test]
+fn a_scroll_ends_exactly_on_its_target() {
+    for dir in DIRS {
+        let [outer, inner] = [(); 2].map(|_| BringIntoViewRequester::new());
+        let given = [outer.clone(), inner.clone()];
+        let scrolled = Rc::new(Cell::new(0.0f32));
+        let into = scrolled.clone();
+        let state = scrollable_state(move |delta| {
+            into.set(into.get() + delta);
+            delta
+        });
+        let spec: Rc<dyn BringIntoViewSpec> =
+            Rc::new(ToTarget { target: 300.0, scrolled: scrolled.clone() });
+        let mut ui = window(move || {
+            let given = given.clone();
+            let scrollable = Modifier.scrollable_overscroll(
+                state.clone(),
+                orientation(dir),
+                None,
+                true,
+                false,
+                None,
+                None,
+                Some(spec.clone()),
+            );
+            Box!(modifier = Modifier.size(100.dp()).then(scrollable), {
+                let given = given.clone();
+                Box!(
+                    modifier = Modifier.size(50.dp()).bring_into_view_requester(given[0].clone()),
+                    {
+                        Box!(
+                            modifier =
+                                Modifier.size(10.dp()).bring_into_view_requester(given[1].clone())
+                        );
+                    }
+                );
+            });
+        });
+        let done = [&outer, &inner].map(|requester| request(requester, None).1);
+        ui.wait_for_idle();
+        assert_eq!(done.each_ref().map(|it| it.get()), [true; 2]);
+        assert_eq!(scrolled.get(), -300.0);
+    }
+}
+
+// compose-rs's own: `Modifier.scrollable` keeps its focused child in view when its viewport
+// shrinks, as `vertical_scroll` does (ScrollFocusableInteractionTest's first case).
+#[test]
+fn a_scrollable_keeps_its_focused_child_in_view_when_it_shrinks() {
+    for dir in DIRS {
+        let size = mutable_state_of(100.0);
+        let viewport = size.handle();
+        let scroll = ScrollState::new(0);
+        let state = *scroll;
+        let mut ui = window(move || {
+            let _owner = &scroll;
+            // As `vertical_scroll`: the state's pixels run with the content's scroll.
+            let scrollable = Modifier.scrollable_overscroll(
+                state,
+                orientation(dir),
+                None,
+                true,
+                true,
+                None,
+                None,
+                None,
+            );
+            let size = viewport.get();
+            Box!(
+                modifier =
+                    dir.size(size, 100.0).then(scrollable).then(scrolling_layout(state, dir)),
+                {
+                    Box!(modifier = dir.size(400.0, 100.0), {
+                        Box!(modifier = dir.offset(90.0).size(10.dp()).test_tag(CHILD).focusable());
+                    });
+                }
+            );
+        });
+        ui.on_node_with_tag(CHILD).request_focus();
+        ui.wait_for_idle();
+        assert_eq!(state.value(), 0);
+        size.set(50.0);
+        ui.wait_for_idle();
+        // Its trailing edge at the viewport's end.
+        assert_eq!(state.value(), 50, "vertical: {}", dir == Dir::Vertical);
+    }
+}

@@ -329,6 +329,11 @@ impl IntrinsicMeasureScope<'_> {
         self.node
     }
 
+    /// Where the layout node reads composition locals, as `NodeContext::composition_locals`.
+    pub fn composition_locals(&self) -> compose_runtime::CompositionLocalAnchor {
+        self.tree.node(self.node).locals
+    }
+
     /// The window's (the root's) size: what popups and dialogs are measured within.
     pub fn window_size(&self) -> IntSize {
         self.tree.window
@@ -663,6 +668,19 @@ impl<'a> MeasureScope<'a> {
             drop(earlier);
         }
         result
+    }
+
+    /// A handle on the layout modifier measuring here, as `NodeContext::handle` (registered, so
+    /// it's told when the entry is detached): `None` for a layout node's own measure policy, or in
+    /// an intrinsic measurement. Registering costs a little: ask for it when it's needed.
+    pub fn handle(&mut self) -> Option<crate::node_context::NodeHandle> {
+        if self.intrinsic.is_some() {
+            return None;
+        }
+        let (node, layer) = (self.base.node, self.layer);
+        let mut tree = self.base.tree.enter();
+        let index = *tree.node(node).layout_indices.get(layer)? as usize;
+        Some(crate::node_context::entry_handle(&mut tree, node, index))
     }
 
     /// Gives what's returned next alignment lines, as `layout(width, height, alignmentLines)`.
