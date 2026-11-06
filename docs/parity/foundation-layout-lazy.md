@@ -562,7 +562,7 @@ Each entry gives the Compose API, what it does, the test files that need it (by 
 32. **lazy-layout-public.**
     - API: `LazyLayout` and its provider, measure scope and prefetch-state API, `MutableIntervalList`.
     - Tests: LazyLayoutTest, MutableIntervalListTest.
-    - Depends on: a public `LazyLayout` on the lazy layouts' subcomposition (D1312, C8's stage 4).
+    - Depends on: a public `LazyLayout` on the lazy layouts' subcomposition (D1312, C8's stage 4). Design, steps and tests: [lazy-layout-api.md](design/lazy-layout-api.md) (proposed, not built).
     - Size: XL. Experimental: partly (`NestedPrefetchScope`, the `onNestedPrefetch` constructor).
 33. **system-gesture-exclusion.**
     - API: `Modifier.systemGestureExclusion`.
