@@ -37,6 +37,22 @@ struct Properties {
     outline: Option<Outline>,
 }
 
+impl Properties {
+    /// Whether they're equal, an unspecified pivot (`NaN`) equal to itself.
+    fn same(&self, other: &Properties) -> bool {
+        let unspecified = |pivot: Offset| pivot.x.is_nan() || pivot.y.is_nan();
+        if unspecified(self.pivot_offset) && unspecified(other.pivot_offset) {
+            let pivotless = |properties: &Properties| Properties {
+                pivot_offset: Offset::ZERO,
+                ..properties.clone()
+            };
+            pivotless(self) == pivotless(other)
+        } else {
+            self == other
+        }
+    }
+}
+
 impl Default for Properties {
     fn default() -> Self {
         Properties {
@@ -65,11 +81,13 @@ thread_local! {
     static DRAW_PASS: RefCell<(u32, Vec<std::rc::Weak<LayerCell>>)> = const { RefCell::new((0, Vec::new())) };
 }
 
-/// A draw pass, as `UiTree::draw` runs one: a layer changed in it (recorded, a property set:
-/// what drawing code does) tells what drew it at the pass's end, only if it changed after it
-/// was last drawn, so a drawing recording then drawing a layer each pass doesn't draw itself
-/// again forever, and one drawing a layer another drawing records later in the pass draws
-/// again in the next frame.
+/// A draw pass, as `UiTree::draw` runs one. A layer changed in it (recorded, a property set:
+/// what drawing code does) tells what drew it at the pass's end if it ends other than it
+/// started: what a drawing the pass didn't draw again shows, and what one drawing it before
+/// another drawing records it later in the pass shows. They draw again in the next frame. So a
+/// drawing recording a layer (twice, even) and then drawing it doesn't draw itself again, nor
+/// does one recording what the layer holds already ([`GraphicsLayer::store`]); a drawing
+/// drawing it between two changes undoing each other keeps what it drew.
 pub(crate) struct DrawPass;
 
 impl DrawPass {
@@ -87,17 +105,41 @@ impl Drop for DrawPass {
             if pass.0 == 0 { std::mem::take(&mut pass.1) } else { Vec::new() }
         });
         for layer in changed.iter().filter_map(std::rc::Weak::upgrade) {
-            if layer.generation.get() != layer.drawn_generation.get() {
+            let Some(start) = layer.pass_start.take() else { continue };
+            if !start.is_now(&layer) {
                 layer.version.handle().update(|version| version.wrapping_add(1));
             }
         }
     }
 }
 
+/// A layer as a draw pass found it, kept at its first change in the pass.
+struct PassStart {
+    /// The recording it had, once replaced in the pass.
+    recording: Option<DisplayList>,
+    recorded_origin: Offset,
+    size: IntSize,
+    density: f32,
+    released: bool,
+    properties: Properties,
+}
+
+impl PassStart {
+    /// Whether `layer` is as it was.
+    fn is_now(&self, layer: &LayerCell) -> bool {
+        self.released == layer.released.get()
+            && self.recorded_origin == layer.recorded_origin.get()
+            && self.size == layer.size.get()
+            && self.density == layer.density.get()
+            && self.properties.same(&layer.properties.borrow())
+            && self
+                .recording
+                .as_ref()
+                .is_none_or(|recording| same_recording(recording, &layer.recording.borrow()))
+    }
+}
+
 struct LayerCell {
-    /// Counts its changes; `drawn_generation` is the count it was last drawn at.
-    generation: Cell<u64>,
-    drawn_generation: Cell<u64>,
     recording: RefCell<DisplayList>,
     /// Where the recording's (0, 0) is in it: a content recorded where its node draws.
     recorded_origin: Cell<Offset>,
@@ -105,6 +147,8 @@ struct LayerCell {
     density: Cell<f32>,
     properties: RefCell<Properties>,
     released: Cell<bool>,
+    /// What it was when the current draw pass first changed it.
+    pass_start: RefCell<Option<PassStart>>,
     /// Read where it's drawn and bumped when it changes, so what draws it draws again.
     version: compose_runtime::OwnedState<u64>,
 }
@@ -142,47 +186,60 @@ impl GraphicsLayer {
     /// An empty layer, as `GraphicsContext.createGraphicsLayer()`.
     pub fn new() -> GraphicsLayer {
         GraphicsLayer(Rc::new(LayerCell {
-            generation: Cell::new(0),
-            drawn_generation: Cell::new(0),
             recording: RefCell::default(),
             recorded_origin: Cell::new(Offset::ZERO),
             size: Cell::new(IntSize::ZERO),
             density: Cell::new(1.0),
             properties: RefCell::default(),
             released: Cell::new(false),
+            pass_start: RefCell::new(None),
             version: compose_runtime::mutable_state_of(0),
         }))
     }
 
-    /// It changed: what drew it draws again, now outside a draw pass, at its end inside one
-    /// ([`DrawPass`]).
-    fn changed(&self) {
+    /// It's about to change, `properties` giving its properties until then: in a draw pass,
+    /// what it was when the pass started is kept the first time, for the pass's end
+    /// ([`DrawPass`]); outside one, what drew it draws again. Whether it's in a draw pass.
+    fn will_change(&self, properties: impl FnOnce() -> Properties) -> bool {
         let cell = &self.0;
-        cell.generation.set(cell.generation.get().wrapping_add(1));
-        let deferred = DRAW_PASS.with(|pass| {
-            let mut pass = pass.borrow_mut();
-            if pass.0 == 0 {
-                return false;
-            }
-            if !pass.1.iter().any(|kept| std::ptr::eq(kept.as_ptr(), Rc::as_ptr(cell))) {
-                pass.1.push(Rc::downgrade(cell));
-            }
-            true
-        });
-        if !deferred {
+        if DRAW_PASS.with(|pass| pass.borrow().0 == 0) {
             cell.version.handle().update(|version| version.wrapping_add(1));
+            return false;
+        }
+        let mut start = cell.pass_start.borrow_mut();
+        if start.is_none() {
+            DRAW_PASS.with(|pass| pass.borrow_mut().1.push(Rc::downgrade(cell)));
+            *start = Some(PassStart {
+                recording: None,
+                recorded_origin: cell.recorded_origin.get(),
+                size: cell.size.get(),
+                density: cell.density.get(),
+                released: cell.released.get(),
+                properties: properties(),
+            });
+        }
+        true
+    }
+
+    /// Replaces its recording: in a draw pass, the one it started with is kept for its end.
+    fn replace_recording(&self, recording: DisplayList, in_pass: bool) {
+        let old = self.0.recording.replace(recording);
+        if in_pass {
+            let mut start = self.0.pass_start.borrow_mut();
+            if let Some(start) = start.as_mut().filter(|start| start.recording.is_none()) {
+                start.recording = Some(old);
+            }
         }
     }
 
     fn update(&self, change: impl FnOnce(&mut Properties)) {
-        let mut properties = self.0.properties.borrow_mut();
-        let before = properties.clone();
-        change(&mut properties);
-        let changed = *properties != before;
-        drop(properties);
-        if changed {
-            self.changed();
+        let mut next = self.0.properties.borrow().clone();
+        change(&mut next);
+        if next.same(&self.0.properties.borrow()) {
+            return;
         }
+        let before = self.0.properties.replace(next);
+        self.will_change(|| before);
     }
 
     /// Records `block` at `size`, in the layer's coordinates, with `scope`'s density and
@@ -221,12 +278,12 @@ impl GraphicsLayer {
         if same {
             return;
         }
-        *cell.recording.borrow_mut() = recording;
+        let in_pass = self.will_change(|| cell.properties.borrow().clone());
+        self.replace_recording(recording, in_pass);
         cell.recorded_origin.set(origin);
         cell.size.set(size);
         cell.density.set(density);
         cell.released.set(false);
-        self.changed();
     }
 
     /// Its size: what it was last recorded at, as `size`.
@@ -312,9 +369,12 @@ impl GraphicsLayer {
     /// Drops its recording: it draws nothing until recorded again, as
     /// `GraphicsContext.releaseGraphicsLayer`.
     pub fn release(&self) {
-        self.0.recording.borrow_mut().clear();
+        if self.0.released.get() {
+            return;
+        }
+        let in_pass = self.will_change(|| self.0.properties.borrow().clone());
+        self.replace_recording(DisplayList::default(), in_pass);
         self.0.released.set(true);
-        self.changed();
     }
 
     /// Whether `other` is this layer.
@@ -389,7 +449,6 @@ impl DrawScope<'_> {
     pub fn draw_layer(&mut self, layer: &GraphicsLayer) {
         let cell = &layer.0;
         cell.version.get();
-        cell.drawn_generation.set(cell.generation.get());
         if cell.released.get() {
             return;
         }

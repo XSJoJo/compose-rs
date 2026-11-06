@@ -564,3 +564,57 @@ fn a_layer_drawn_then_recorded_by_the_same_drawing_settles_after_one_more_frame(
     image.assert_pixel_color(RED, 50, 50);
     image.assert_pixel_color(RED, 150, 50);
 }
+
+/// A box of `color()` recorded into `layer`, the layer not drawn: what records a layer for
+/// another node to draw.
+#[composable]
+fn RecordingBox(layer: GraphicsLayer, color: Rc<dyn Fn() -> Color>) {
+    Box!(
+        modifier = Modifier
+            .size(10.dp())
+            .test_tag("colored")
+            .draw_with_content(move |scope| {
+                scope.record_layer(&layer, |scope| scope.draw_content());
+                scope.draw_content();
+            })
+            .draw_behind(move |scope| fill(scope, color()))
+    );
+}
+
+/// The drawing box above a box recording the layer in `color` (and drawing it too if
+/// `draws_too`), in one column: the drawing box draws the layer before it's recorded in a pass
+/// drawing both.
+fn drawing_above(draws_too: bool, color: compose::runtime::MutableState<Color>) -> ComposeTestRule {
+    set_capture_renderer(compose_skia::raster_colors);
+    ComposeTestRule::sized(IntSize::new(100, 100), move || {
+        let layer = remember_graphics_layer();
+        let color: Rc<dyn Fn() -> Color> = Rc::new(move || color.get());
+        Column!({
+            // In a group of its own, which a capture draws as the last frame drew it.
+            let drawn = layer.clone();
+            Box!(modifier = Modifier.repaint_boundary(), { LayerDrawingBox(drawn.clone()) });
+            if draws_too {
+                ColoredBox(layer.clone(), color.clone());
+            } else {
+                RecordingBox(layer.clone(), color.clone());
+            }
+        });
+    })
+}
+
+/// A node drawing a layer that a node after it records catches up a frame later when the
+/// recording changes: the change, made in the pass after the layer was drawn, draws it again
+/// at the pass's end, whether or not the recording node draws the layer too.
+#[test]
+fn a_layer_drawn_before_a_later_node_records_it_catches_up() {
+    for draws_too in [false, true] {
+        let color = compose::runtime::mutable_state_of(Color::BLUE);
+        let mut ui = drawing_above(draws_too, color.handle());
+        drawing_box(&mut ui).assert_pixels(None, |_| Some(Color::BLUE));
+        color.set(Color::GREEN);
+        ui.wait_for_idle();
+        let recorded = ui.on_node_with_tag("colored").capture_to_image();
+        recorded.assert_pixels(None, |_| Some(Color::GREEN));
+        drawing_box(&mut ui).assert_pixels(None, |_| Some(Color::GREEN));
+    }
+}
