@@ -12,7 +12,10 @@ use compose_ui::platform::{ParagraphHandle, TextMeasurer};
 use compose_ui::{EventContext, Offset, PointerEvent, PointerType, Rect, ResolvedTextDirection};
 
 use super::TextFieldNode;
-use crate::selection_handles::{Handle, HandlePositions, ShownHandles, TouchHandles};
+use crate::selection_handles::{
+    Handle, HandlePositions, ShownHandles, TouchHandles, previous_char,
+    selection_handle_coordinates,
+};
 
 /// What a field's node keeps for touch selection.
 pub(crate) struct Touch {
@@ -266,14 +269,18 @@ impl TextFieldNode {
                         self.word_selection(start, end)
                     }
                 };
+                // Begun past the text, the drag goes on from where its first selection started,
+                // before it's put in order (Compose's `newSelection.start`): from the end of the
+                // last word when it went back.
+                let begun = anchor;
                 // Never reversed, as Compose's.
                 let (anchor, cursor) = (anchor.min(cursor), anchor.max(cursor));
                 if self.anchor == self.cursor || anchor != cursor {
                     self.anchor = anchor;
                     self.cursor = cursor;
                 }
-                if long.begin.is_none() && self.anchor != self.cursor {
-                    long.begin = Some(self.anchor);
+                if long.begin.is_none() && anchor != cursor {
+                    long.begin = Some(begun);
                     self.touch.long = Some(long);
                 }
             }
@@ -479,18 +486,16 @@ impl TextFieldNode {
             {
                 let start = handle == Handle::SelectionStart;
                 let offset = self.shown(offset);
-                let line = layout.get_line_for_offset(offset);
-                if line >= layout.line_count() {
+                let size = compose_ui::Size::new(layout.width(), layout.height());
+                let Some(point) = selection_handle_coordinates(
+                    &*layout,
+                    self.shown_str(),
+                    offset,
+                    (start, crossed),
+                    size,
+                ) else {
                     continue;
-                }
-                // As Compose's `getSelectionHandleCoordinates`.
-                let checked =
-                    if start != crossed { offset } else { previous_char(self.shown_str(), offset) };
-                let primary = layout.get_bidi_run_direction(checked)
-                    == layout.get_paragraph_direction(offset);
-                let x = layout.get_horizontal_position(offset, primary).clamp(0.0, layout.width());
-                let y = layout.get_line_bottom(line).clamp(0.0, layout.height());
-                let point = Offset::new(x, y);
+                };
                 if dragging != Some(handle) && !in_view(point) {
                     continue;
                 }
@@ -517,9 +522,4 @@ impl TextFieldNode {
             handles.positions.set(positions);
         }
     }
-}
-
-/// The character boundary before `offset` in `text`, or 0.
-fn previous_char(text: &str, offset: usize) -> usize {
-    text[..offset.min(text.len())].char_indices().next_back().map_or(0, |(index, _)| index)
 }

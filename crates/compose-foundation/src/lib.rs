@@ -116,7 +116,8 @@ pub use secure_text_field::{
     PasswordInputTransformation, PasswordVisibility, PerGlyph, TextObfuscationMode,
 };
 pub use selection_handles::{
-    Handle, SELECTION_HANDLE_INFO_KEY, SelectionHandleAnchor, SelectionHandleInfo,
+    Handle, SELECTION_HANDLE_INFO_KEY, SelectionHandle, SelectionHandleAnchor, SelectionHandleIcon,
+    SelectionHandleInfo, is_handle_ltr_direction, is_left_selection_handle,
 };
 pub use shape::{
     AbsoluteCutCornerShape, AbsoluteRoundedCornerShape, CIRCLE_SHAPE, CornerSize, CornerSizes,

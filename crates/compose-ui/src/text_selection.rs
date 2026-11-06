@@ -7,7 +7,11 @@
 //! The texts are `Selectable` modifier nodes (foundation's `BasicText`); the tree finds them
 //! below the container when a gesture asks, as it does focus targets.
 
+use std::cell::Cell;
 use std::ops::Range;
+use std::rc::Rc;
+
+use compose_runtime::OwnedState;
 
 use crate::input::{
     EventContext, Key, KeyEvent, KeyEventType, PointerEvent, PointerEventPass, PointerEventType,
@@ -18,8 +22,9 @@ use crate::modifier::{
 };
 use crate::node_chain::NodeKinds;
 use crate::text::{SharedString, SharedTextMeasurer};
+use crate::text_attributes::ResolvedTextDirection;
 use crate::tree::{NodeId, UiTree};
-use crate::unit::{IntSize, Offset};
+use crate::unit::{IntSize, Offset, Rect};
 
 /// A text a `SelectionContainer` can select in, as Compose's `Selectable`: a modifier node
 /// returning itself from `ModifierNode::as_selectable`. Offsets are byte offsets at character
@@ -39,6 +44,51 @@ pub trait Selectable {
     /// Shows `range` selected (highlighted), or nothing. Returns whether that changed.
     fn set_selection(&mut self, range: Option<Range<usize>>, measurer: &SharedTextMeasurer)
     -> bool;
+    /// Where a selection handle at `offset` points, in the node's coordinates, as Compose's
+    /// `Selectable.getHandlePosition`: the start handle (`start`) or the end's, the selection
+    /// reversed or not (`crossed`). `None` before it's laid out.
+    fn handle_position(
+        &self,
+        _offset: usize,
+        _start: bool,
+        _crossed: bool,
+        _measurer: &SharedTextMeasurer,
+    ) -> Option<Offset> {
+        None
+    }
+    /// The direction of the text at `offset`, as `getBidiRunDirection`: what a selection's
+    /// anchor there says (`Selection.AnchorInfo.direction`).
+    fn direction_at(
+        &self,
+        _offset: usize,
+        _measurer: &SharedTextMeasurer,
+    ) -> ResolvedTextDirection {
+        ResolvedTextDirection::Ltr
+    }
+    /// Character `offset`'s box, as `getBoundingBox`: the offset kept within the text (past it,
+    /// its last character's); empty for an empty text or before it's laid out.
+    fn bounding_box(&self, _offset: usize, _measurer: &SharedTextMeasurer) -> Rect {
+        Rect::ZERO
+    }
+    /// The line around `offset`, as `getRangeOfLineContaining`: from its start to its visible
+    /// end, the offset kept to what's shown; empty for an empty text.
+    fn range_of_line_containing(
+        &self,
+        _offset: usize,
+        _measurer: &SharedTextMeasurer,
+    ) -> Range<usize> {
+        0..0
+    }
+    /// The end of what's shown, as `getLastVisibleOffset`: the last line shown's visible end
+    /// (the most lines, or the height, cut the rest).
+    fn last_visible_offset(&self, _measurer: &SharedTextMeasurer) -> usize {
+        0
+    }
+    /// The height of the line at `offset`, as `getLineHeight`: none past the lines shown or an
+    /// empty text.
+    fn line_height(&self, _offset: usize, _measurer: &SharedTextMeasurer) -> f32 {
+        0.0
+    }
 }
 
 /// What a press selects, and a drag after it extends.
@@ -73,6 +123,110 @@ pub(crate) enum SelectionRequest {
     Clear {
         container: NodeId,
     },
+    /// A finger's long press at `position` (in the root) selects the word of the text under it,
+    /// as Compose's `SelectionController`'s `longPressDragObserver`.
+    LongPress {
+        container: NodeId,
+        position: Offset,
+    },
+    /// The container's focus or touch mode changed: its handles follow.
+    RefreshHandles {
+        container: NodeId,
+    },
+    /// A selection handle of the container is dragged: the finger's movement since the drag
+    /// passed the touch slop, or `None` once it ends.
+    DragHandle {
+        container: NodeId,
+        start: bool,
+        moved: Option<Offset>,
+    },
+}
+
+/// Which selection handles a container shows, as the condition Compose's `SelectionContainer`
+/// composes them under (touch mode, focus, a selection not trivially collapsed): the direction
+/// at each end (`Selection.AnchorInfo.direction`) and whether they're crossed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ContainerHandlesShown {
+    pub start_direction: ResolvedTextDirection,
+    pub end_direction: ResolvedTextDirection,
+    pub crossed: bool,
+}
+
+/// What a `SelectionContainer`'s handles share with the tree that holds its selection, as
+/// Compose's `SelectionManager`'s `startHandlePosition` and `endHandlePosition`: which show (read
+/// by composition), where each points in the container's coordinates (`None`: hidden, as
+/// `Offset.Unspecified`), and the drag under way. Foundation's `SelectionContainer` makes one
+/// and composes the handles; the tree writes it after each selection change and layout.
+#[doc(hidden)]
+pub struct ContainerHandles {
+    shown: OwnedState<Option<ContainerHandlesShown>>,
+    positions: OwnedState<[Option<Offset>; 2]>,
+    /// The container's node, once its handles were first refreshed.
+    container: Cell<Option<NodeId>>,
+    /// The handle dragged (the start's?) and where its drag began, in the container's
+    /// coordinates, as `handleDragObserver`'s `dragBeginPosition`.
+    drag: Cell<Option<(bool, Offset)>>,
+    /// What a selection's change vibrates with in touch mode (`LocalHapticFeedback`'s where the
+    /// container is composed), as `SelectionManager.hapticFeedBack`.
+    haptics: std::cell::RefCell<Option<Rc<dyn crate::platform_services::HapticFeedback>>>,
+}
+
+impl ContainerHandles {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> ContainerHandles {
+        ContainerHandles {
+            shown: compose_runtime::mutable_state_of(None),
+            positions: compose_runtime::mutable_state_of([None, None]),
+            container: Cell::new(None),
+            drag: Cell::new(None),
+            haptics: std::cell::RefCell::new(None),
+        }
+    }
+
+    /// What its selection's changes vibrate with in touch mode, as the container composed reads
+    /// `LocalHapticFeedback`.
+    pub fn set_haptic_feedback(&self, haptics: Rc<dyn crate::platform_services::HapticFeedback>) {
+        let mut slot = self.haptics.borrow_mut();
+        if !slot.as_ref().is_some_and(|old| Rc::ptr_eq(old, &haptics)) {
+            *slot = Some(haptics);
+        }
+    }
+
+    /// Which handles show (a read of its state).
+    pub fn shown(&self) -> Option<ContainerHandlesShown> {
+        self.shown.get()
+    }
+
+    /// Where the start handle (`start`) or the end's points, in the container's coordinates, or
+    /// `None` when it's hidden (a read of its state).
+    pub fn position(&self, start: bool) -> Option<Offset> {
+        self.positions.with(|positions| positions[if start { 0 } else { 1 }])
+    }
+
+    /// A handle's drag: the finger's movement since it passed the touch slop, as
+    /// `handleDragObserver`'s `onDrag`.
+    pub fn drag(&self, context: &mut EventContext<'_>, start: bool, moved: Offset) {
+        let Some(container) = self.container.get() else { return };
+        let moved = Some(moved);
+        context.requests.selection.push(SelectionRequest::DragHandle { container, start, moved });
+    }
+
+    /// The handle's drag ended (lifted, cancelled, or its node gone), as `onStop`: its next drag
+    /// begins anew where it points.
+    pub fn end_drag(&self) {
+        self.drag.set(None);
+    }
+
+    /// The handle dragged, if any (`SelectionManager.draggingHandle`).
+    pub fn dragging(&self) -> Option<bool> {
+        self.drag.get().map(|(start, _)| start)
+    }
+}
+
+impl compose_runtime::ComposeArg for ContainerHandles {
+    fn same(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
 }
 
 /// A point in a container's texts: a text (its node, the chain index of its selectable, and
@@ -238,8 +392,40 @@ impl UiTree {
         entries.iter().position(|entry| entry.holds(point)).map(|order| (order, point.offset))
     }
 
-    /// Handles a selection gesture or command.
+    /// Handles a selection gesture or command; the handles of the containers it touched follow.
     pub(crate) fn handle_selection(&mut self, request: SelectionRequest) {
+        let before = self.text_selection;
+        let container = request.container();
+        self.apply_selection_request(request);
+        self.after_selection_change(container, before);
+        if let Some(old) =
+            before.map(|selection| selection.container).filter(|old| *old != container)
+        {
+            self.after_selection_change(old, before);
+        }
+    }
+
+    /// `container`'s handles follow its selection, and a change of it vibrates in touch mode, as
+    /// Compose's `TextHandleMove` feedback when a gesture changes the selection or `onRelease`
+    /// clears it.
+    fn after_selection_change(&mut self, container: NodeId, before: Option<TextSelection>) {
+        let of = |selection: Option<TextSelection>| {
+            selection
+                .filter(|selection| selection.container == container)
+                .map(|selection| (selection.anchor, selection.focus))
+        };
+        if of(before) != of(self.text_selection)
+            && let Some(found) = self.container_handles(container).filter(|found| found.touch)
+            && let Some(haptics) = found.handles.haptics.borrow().clone()
+        {
+            haptics.perform_haptic_feedback(
+                crate::platform_services::HapticFeedbackType::TextHandleMove,
+            );
+        }
+        self.refresh_handles(container);
+    }
+
+    fn apply_selection_request(&mut self, request: SelectionRequest) {
         match request {
             SelectionRequest::Start { container, position, unit } => {
                 let entries = self.selectables(container);
@@ -333,6 +519,160 @@ impl UiTree {
                     self.show_selection(&entries);
                 }
             }
+            SelectionRequest::LongPress { container, position } => {
+                // On a text only: Compose's long press is each text's (`SelectionController`).
+                let entries = self.selectables(container);
+                let on_text = entries.iter().any(|entry| {
+                    let local = position - entry.origin;
+                    local.x >= 0.0
+                        && local.y >= 0.0
+                        && local.x < entry.size.width as f32
+                        && local.y < entry.size.height as f32
+                });
+                if on_text {
+                    let unit = Unit::Word;
+                    self.apply_selection_request(SelectionRequest::Start {
+                        container,
+                        position,
+                        unit,
+                    });
+                }
+            }
+            SelectionRequest::RefreshHandles { .. } => {}
+            SelectionRequest::DragHandle { container, start, moved } => {
+                self.drag_handle(container, start, moved)
+            }
+        }
+    }
+
+    /// A handle of `container` dragged by `moved` since its drag began (`None`: it ended), as
+    /// Compose's `handleDragObserver`: the drag begins where the handle points, a pixel up
+    /// (`getAdjustedCoordinates`), and its end goes to the point under the finger, by characters,
+    /// never collapsing the selection.
+    fn drag_handle(&mut self, container: NodeId, start: bool, moved: Option<Offset>) {
+        let Some(found) = self.container_handles(container) else { return };
+        let handles = found.handles;
+        let Some(moved) = moved else {
+            handles.drag.set(None);
+            return;
+        };
+        let Some(mut selection) =
+            self.text_selection.filter(|selection| selection.container == container)
+        else {
+            return;
+        };
+        let begin = match handles.drag.get() {
+            Some((dragged, begin)) if dragged == start => begin,
+            _ => {
+                let pointed =
+                    compose_runtime::snapshots::Snapshot::without_read_observation(|| {
+                        handles.position(start)
+                    });
+                // A hidden handle isn't dragged, as Compose's `onDown`.
+                let Some(pointed) = pointed else { return };
+                Offset::new(pointed.x, pointed.y - 1.0)
+            }
+        };
+        handles.drag.set(Some((start, begin)));
+        let origin = self.layer_origin(container, found.layer);
+        let entries = self.selectables(container);
+        let Some(point) = self.point_at(&entries, origin + begin + moved) else { return };
+        if start {
+            if point != selection.focus {
+                selection.anchor = point;
+            }
+        } else if point != selection.anchor {
+            selection.focus = point;
+        }
+        selection.initial = (selection.anchor, selection.focus);
+        selection.unit = Unit::Character;
+        self.text_selection = Some(selection);
+        self.show_selection(&entries);
+    }
+
+    /// `container`'s node, if it has handles: they, its touch mode and focus, its chain index
+    /// and layer.
+    fn container_handles(&mut self, container: NodeId) -> Option<FoundHandles> {
+        let value = self.get(container)?;
+        let mut layer = 0;
+        for (index, entry) in value.chain.iter().enumerate() {
+            if let Some(node) = entry.node.downcast_ref::<SelectionContainerNode>() {
+                let handles = node.handles.clone()?;
+                let touch = node.touch.unwrap_or_else(|| {
+                    self.input_mode.input_mode() == crate::input_mode::InputMode::Touch
+                });
+                return Some(FoundHandles { handles, touch, focused: node.focused, index, layer });
+            }
+            if entry.kinds.any(NodeKinds::LAYOUT) {
+                layer += 1;
+            }
+        }
+        None
+    }
+
+    /// Tells `container`'s handles which show and where, as Compose's `SelectionContainer`'s
+    /// condition and `SelectionManager.updateHandleOffsets`: in touch mode, with the focus, over
+    /// a selection not trivially collapsed; each where its text says (`getHandlePosition`), in
+    /// the container's coordinates, hidden outside its visible bounds unless it's dragged.
+    /// Nothing for a container without handles.
+    pub(crate) fn refresh_handles(&mut self, container: NodeId) {
+        let Some(found) = self.container_handles(container) else { return };
+        let handles = found.handles.clone();
+        handles.container.set(Some(container));
+        let selection = self.text_selection.filter(|selection| {
+            selection.container == container && selection.anchor != selection.focus
+        });
+        let mut shown = None;
+        let mut positions = [None, None];
+        if let Some(selection) = selection.filter(|_| found.touch && found.focused) {
+            let entries = self.selectables(container);
+            if let (Some(anchor), Some(focus)) = (
+                Self::order_of(&entries, &selection.anchor),
+                Self::order_of(&entries, &selection.focus),
+            ) {
+                let crossed = anchor > focus;
+                let origin = self.layer_origin(container, found.layer);
+                let clipped = self.coordinate_values(container, found.layer, found.index);
+                let visible = clipped.clipped_bounds.translate(-origin);
+                let dragging = handles.dragging();
+                let mut directions = [ResolvedTextDirection::Ltr; 2];
+                for (slot, (point, start)) in
+                    [(selection.anchor, true), (selection.focus, false)].into_iter().enumerate()
+                {
+                    let Some(entry) = entries.iter().find(|entry| entry.holds(&point)) else {
+                        continue;
+                    };
+                    let asked =
+                        self.node_and_measurer(entry.node).and_then(|(value, (measurer, _))| {
+                            let text = value.chain[entry.index].selectable()?;
+                            let position =
+                                text.handle_position(point.offset, start, crossed, measurer);
+                            Some((position, text.direction_at(point.offset, measurer)))
+                        });
+                    let Some((position, direction)) = asked else { continue };
+                    directions[slot] = direction;
+                    let Some(position) = position else { continue };
+                    let position = position + entry.origin - origin;
+                    if dragging == Some(start) || contains_inclusive(visible, position) {
+                        positions[slot] = Some(position);
+                    }
+                }
+                shown = Some(ContainerHandlesShown {
+                    start_direction: directions[0],
+                    end_direction: directions[1],
+                    crossed,
+                });
+            }
+        }
+        let (was_shown, was_at) =
+            compose_runtime::snapshots::Snapshot::without_read_observation(|| {
+                (handles.shown.get(), handles.positions.get())
+            });
+        if was_shown != shown {
+            handles.shown.set(shown);
+        }
+        if was_at != positions {
+            handles.positions.set(positions);
         }
     }
 
@@ -372,6 +712,78 @@ impl UiTree {
         }
     }
 
+    /// The bounds of what's selected in `container`, in its coordinates, as Compose's
+    /// `getSelectedRegionRect` (where the text toolbar goes): for each text the selection covers
+    /// a part of, its first and last selected characters' boxes, all together. `None` without a
+    /// selection there, or with a collapsed one.
+    #[doc(hidden)]
+    pub fn selected_region_rect(&mut self, container: NodeId) -> Option<Rect> {
+        let selection = self.text_selection.filter(|selection| selection.container == container)?;
+        let mut layer = 0;
+        for entry in self.get(container)?.chain.iter() {
+            if entry.node.downcast_ref::<SelectionContainerNode>().is_some() {
+                break;
+            }
+            if entry.kinds.any(NodeKinds::LAYOUT) {
+                layer += 1;
+            }
+        }
+        let origin = self.layer_origin(container, layer);
+        let entries = self.selectables(container);
+        let span = Self::span(&selection, &entries)?;
+        let mut region: Option<Rect> = None;
+        for (order, entry) in entries.iter().enumerate() {
+            let Some(range) = range_of(span, order) else { continue };
+            let text = self.selectable_text(entry.node, entry.index);
+            let range = clamp(&text, range);
+            if range.is_empty() {
+                continue;
+            }
+            let last = text[..range.end].char_indices().next_back().map_or(0, |(at, _)| at);
+            let Some((value, (measurer, _))) = self.node_and_measurer(entry.node) else { continue };
+            let Some(selectable) = value.chain[entry.index].selectable() else { continue };
+            for offset in [range.start, last] {
+                let found =
+                    selectable.bounding_box(offset, measurer).translate(entry.origin - origin);
+                region = Some(match region {
+                    Some(region) => Rect::new(
+                        region.left.min(found.left),
+                        region.top.min(found.top),
+                        region.right.max(found.right),
+                        region.bottom.max(found.bottom),
+                    ),
+                    None => found,
+                });
+            }
+        }
+        region
+    }
+
+    /// Runs `ask` with the `Selectable` of `node` (its first), if it has one. For tests.
+    #[doc(hidden)]
+    pub fn with_selectable(
+        &mut self,
+        node: NodeId,
+        ask: &mut dyn FnMut(&mut dyn Selectable, &SharedTextMeasurer),
+    ) {
+        let Some((value, (measurer, _))) = self.node_and_measurer(node) else { return };
+        for entry in value.chain.iter_mut() {
+            if let Some(selectable) = entry.selectable() {
+                ask(selectable, measurer);
+                return;
+            }
+        }
+    }
+
+    /// Where the selection starts and ends: each end's text node and offset, its start handle's
+    /// first, as Compose's `Selection.start` and `end` (`None` without a selection). For tests.
+    #[doc(hidden)]
+    pub fn selection_anchors(&self) -> Option<((NodeId, usize), (NodeId, usize))> {
+        let selection = self.text_selection?;
+        let (anchor, focus) = (selection.anchor, selection.focus);
+        Some(((anchor.node, anchor.offset), (focus.node, focus.offset)))
+    }
+
     /// The text selected in a container, if any (what Cmd+C copies there): `None` when nothing
     /// is, or a text it ends in is gone or changed.
     pub fn selected_text(&mut self) -> Option<String> {
@@ -391,6 +803,35 @@ impl UiTree {
             }
         }
         Some(parts.join("\n"))
+    }
+}
+
+/// A container's handles, as `container_handles` finds them.
+struct FoundHandles {
+    handles: Rc<ContainerHandles>,
+    touch: bool,
+    focused: bool,
+    index: usize,
+    layer: usize,
+}
+
+/// `rect` holds `point`, its edges included, as Compose's `containsInclusive`.
+fn contains_inclusive(rect: Rect, point: Offset) -> bool {
+    point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom
+}
+
+impl SelectionRequest {
+    fn container(&self) -> NodeId {
+        match *self {
+            SelectionRequest::Start { container, .. }
+            | SelectionRequest::Extend { container, .. }
+            | SelectionRequest::SelectAll { container }
+            | SelectionRequest::Copy { container }
+            | SelectionRequest::Clear { container }
+            | SelectionRequest::LongPress { container, .. }
+            | SelectionRequest::RefreshHandles { container }
+            | SelectionRequest::DragHandle { container, .. } => container,
+        }
     }
 }
 
@@ -423,26 +864,63 @@ fn clamp(text: &str, range: Range<usize>) -> Range<usize> {
 const MULTI_CLICK_NANOS: u64 = 500_000_000;
 const MULTI_CLICK_DISTANCE: f32 = 8.0;
 
-struct SelectionContainerElement;
+#[derive(Clone)]
+struct SelectionContainerElement(Option<Rc<ContainerHandles>>);
 
 /// `SelectionContainer`'s node: it turns presses, drags and keys into selection requests, and
-/// takes the focus a press gives it (Cmd+C reaches it).
+/// takes the focus a press gives it (Cmd+C reaches it). A mouse selects as it presses and drags;
+/// a finger's long press selects a word and its drag extends by words, a finger's tap clears
+/// the selection (Compose's `SelectionController` and `onClearSelectionRequested`).
 pub(crate) struct SelectionContainerNode {
     /// A press is selecting.
     dragging: bool,
     focused: bool,
     /// When and where the last press was, and how many came in a row.
     last_press: Option<(u64, Offset, u32)>,
+    /// The handles foundation's `SelectionContainer` composes, if any.
+    handles: Option<Rc<ContainerHandles>>,
+    /// The last pointer was a finger's (or a stylus'), as `SelectionManager.isInTouchMode`
+    /// (`updateSelectionTouchMode`); the host's input mode until a pointer comes.
+    touch: Option<bool>,
+    /// A finger's press: where it went down, its long-press timer, whether it became one.
+    finger: Option<FingerPress>,
+}
+
+struct FingerPress {
+    at: Offset,
+    job: Option<compose_runtime::Job>,
+    long: bool,
+}
+
+impl SelectionContainerNode {
+    fn end_finger(&mut self) {
+        if let Some(job) = self.finger.take().and_then(|finger| finger.job) {
+            job.cancel();
+        }
+    }
 }
 
 impl ModifierNodeElement for SelectionContainerElement {
     type Node = SelectionContainerNode;
     fn create(&self) -> SelectionContainerNode {
-        SelectionContainerNode { dragging: false, focused: false, last_press: None }
+        SelectionContainerNode {
+            dragging: false,
+            focused: false,
+            last_press: None,
+            handles: self.0.clone(),
+            touch: None,
+            finger: None,
+        }
     }
-    fn update(&self, _node: &mut SelectionContainerNode) {}
-    fn same(&self, _other: &Self) -> bool {
-        true
+    fn update(&self, node: &mut SelectionContainerNode) {
+        node.handles = self.0.clone();
+    }
+    fn same(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        }
     }
     fn name(&self) -> &'static str {
         "selection_container"
@@ -455,6 +933,11 @@ impl ModifierNode for SelectionContainerNode {
         self.dragging = false;
         self.focused = false;
         self.last_press = None;
+        self.touch = None;
+        self.end_finger();
+    }
+    fn on_detach(&mut self, _context: &mut crate::node_context::NodeContext<'_>) {
+        self.end_finger();
     }
     fn as_pointer_input(&mut self) -> Option<&mut dyn PointerInputModifierNode> {
         Some(self)
@@ -480,6 +963,18 @@ impl PointerInputModifierNode for SelectionContainerNode {
         }
         let container = context.node;
         let Some(position) = context.pointer_position() else { return };
+        // As Compose's `updateSelectionTouchMode`: each event says whether it's a finger's.
+        let touch = event.pointer_type != crate::input::PointerType::Mouse;
+        if self.touch != Some(touch) {
+            self.touch = Some(touch);
+            if self.handles.is_some() {
+                context.requests.selection.push(SelectionRequest::RefreshHandles { container });
+            }
+        }
+        if touch {
+            self.on_finger_event(event, position, context);
+            return;
+        }
         match event.kind {
             PointerEventType::Press => {
                 if event.consumed {
@@ -523,6 +1018,100 @@ impl PointerInputModifierNode for SelectionContainerNode {
 
     fn on_cancel_pointer_input(&mut self) {
         self.dragging = false;
+        self.end_finger();
+    }
+}
+
+impl SelectionContainerNode {
+    /// A finger's event, as Compose's `touchSelectionFirstPress` over the texts and the
+    /// container's `onClearSelectionRequested`: held past the long-press timeout without moving
+    /// past the touch slop, it selects the word under it and its drag extends by words; lifted
+    /// before, it's a tap, which clears the selection.
+    fn on_finger_event(
+        &mut self,
+        event: &mut PointerEvent,
+        position: Offset,
+        context: &mut EventContext<'_>,
+    ) {
+        let container = context.node;
+        match event.kind {
+            PointerEventType::Press => {
+                self.end_finger();
+                self.dragging = false;
+                if event.consumed {
+                    context.requests.selection.push(SelectionRequest::Clear { container });
+                    return;
+                }
+                let handle = context.handle();
+                let job = handle.coroutine_scope().map(|scope| {
+                    let timeout = context.view_configuration().long_press_timeout_millis;
+                    scope.launch(async move {
+                        compose_runtime::delay(std::time::Duration::from_millis(timeout)).await;
+                        let key = handle.tree_key();
+                        crate::node_context::with_free_tree(key, &mut |tree| {
+                            tree.container_long_pressed(container);
+                        });
+                    })
+                });
+                self.finger = Some(FingerPress { at: position, job, long: false });
+            }
+            PointerEventType::Move if event.pressed => {
+                let Some(finger) = &mut self.finger else { return };
+                if finger.long {
+                    if !event.consumed {
+                        event.consume();
+                        let request = SelectionRequest::Extend { container, position };
+                        context.requests.selection.push(request);
+                    }
+                } else {
+                    let moved = position - finger.at;
+                    let slop = context.view_configuration().touch_slop;
+                    if event.consumed || moved.x.hypot(moved.y) > slop {
+                        self.end_finger();
+                    }
+                }
+            }
+            PointerEventType::Release => {
+                let Some(finger) = self.finger.take() else { return };
+                if let Some(job) = finger.job {
+                    job.cancel();
+                }
+                if finger.long {
+                    // The long press's up is its, as Compose's drag consumes it.
+                    event.consume();
+                } else if !event.consumed {
+                    context.requests.selection.push(SelectionRequest::Clear { container });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl UiTree {
+    /// A finger held still on `container` past the long-press timeout: its press becomes a long
+    /// press, selecting the word under it.
+    fn container_long_pressed(&mut self, container: NodeId) {
+        let Some(value) = self.get_mut(container) else { return };
+        let mut at = None;
+        for entry in value.chain.iter_mut() {
+            if let Some(node) = entry.node.downcast_mut::<SelectionContainerNode>() {
+                if let Some(finger) = node.finger.as_mut().filter(|finger| !finger.long) {
+                    finger.long = true;
+                    finger.job = None;
+                    at = Some(finger.at);
+                }
+                break;
+            }
+        }
+        if let Some(position) = at {
+            self.handle_selection(SelectionRequest::LongPress { container, position });
+            // The container takes the focus as its selection starts (`startSelection`).
+            if self.text_selection.is_some_and(|selection| selection.container == container) {
+                let direction = crate::focus_manager::FocusDirection::Enter;
+                self.request_focus_at_or_below(container, direction);
+            }
+        }
     }
 }
 
@@ -533,9 +1122,12 @@ impl FocusTargetModifierNode for SelectionContainerNode {
         current: crate::focus::FocusState,
         context: &mut EventContext<'_>,
     ) {
-        let focused = current.is_focused();
+        let focused = current.has_focus();
         if self.focused && !focused {
             context.requests.selection.push(SelectionRequest::Clear { container: context.node });
+        } else if !self.focused && focused && self.handles.is_some() {
+            let container = context.node;
+            context.requests.selection.push(SelectionRequest::RefreshHandles { container });
         }
         self.focused = focused;
     }
@@ -587,7 +1179,14 @@ impl ModifierNode for DisableSelectionNode {}
 impl Modifier {
     /// Makes this node's texts selectable, as `SelectionContainer` does for its content.
     pub fn selection_container(self) -> Modifier {
-        self.then_custom(SelectionContainerElement)
+        self.then_custom(SelectionContainerElement(None))
+    }
+
+    /// A selection container whose handles foundation's `SelectionContainer` composes, told
+    /// through `handles` (`SelectionManager`'s handle states).
+    #[doc(hidden)]
+    pub fn selection_container_with_handles(self, handles: Rc<ContainerHandles>) -> Modifier {
+        self.then_custom(SelectionContainerElement(Some(handles)))
     }
 
     /// Leaves this node's texts out of a selection container, as `DisableSelection`.

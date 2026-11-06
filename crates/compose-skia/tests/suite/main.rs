@@ -21,6 +21,7 @@ mod review_rtl;
 mod review_skia;
 mod review_text;
 mod sample_font;
+mod selection_handles;
 mod shadows;
 mod skia;
 mod text_brush;

@@ -38,7 +38,11 @@ Both fields are one node, so the gestures, the handles' visibility and their pos
 
 ## The container
 
-`SelectionContainerNode` gains the same long press (a word of the text under the finger, `Unit::Word`) and the container composes its own `TouchHandles` popups, start and end, positioned by the tree's `TextSelection` through the `Selectable`s' handle positions (a new `Selectable::handle_position`, Compose's `getHandlePosition`). The container's handles come after the field's: the field's tests are most of the feature's.
+`SelectionContainerNode` gains the same long press (a word of the text under the finger, `Unit::Word`; on a text only, as Compose's long press is each text's), its drag by words, and a finger's tap clearing the selection; a mouse selects as before (D2013). It keeps Compose's `isInTouchMode`, set by each pointer event's type.
+
+**Its handles.** Foundation's `SelectionContainer` remembers a `ContainerHandles` (compose-ui's: the tree holds the selection) and composes the start and end handles after its content while it says they show (touch mode, the focus within, a selection not trivially collapsed). The tree writes which show and where after each selection change, and after each layout while a selection exists (`take_layout_callbacks`: nothing without one): each end's text says where (`Selectable::handle_position`, Compose's `getHandlePosition`), in the container's coordinates, hidden (`None`, Compose's `Offset.Unspecified`) outside the container's clipped bounds unless it's dragged. A hidden handle stays composed, not drawn, its semantics not visible. Its drag pushes a selection request the tree resolves with the container's texts. The popups are the field's, asking a `HandleSource` (a field's `TouchHandles`, a container's handles, or an offset provider for Compose's `SelectionHandle` in tests) where they point; a container's are 25 dp, a field's 40 (Compose's `minTouchTargetSize` only for fields).
+
+**Haptics.** A change of the selection in touch mode, its clearing included, performs `TextHandleMove`, with the `LOCAL_HAPTIC_FEEDBACK` read where the container is composed, as Compose's `SelectionManager`.
 
 ## Hooks left for the toolbar and the magnifier
 
@@ -48,7 +52,7 @@ Both fields are one node, so the gestures, the handles' visibility and their pos
 ## Costs
 
 - A field: one `remember` and one state read in composition, and an empty group for the handles; a branch at the end of its measurement. No state written, no popup, no allocation past the first composition, unless a finger touches it or it's focused in touch mode.
-- A text outside a container: nothing. A container: its handles' composable, read once.
+- A text outside a container: nothing. A container: its handles' composable and the haptics' composition local, read once; after each layout, a check that no selection exists.
 - Checked with `compare_instructions.py`: `field_keystroke`, `field_keystroke_direct` and `field_focus` within their spread.
 
 ## Steps
@@ -56,4 +60,4 @@ Both fields are one node, so the gestures, the handles' visibility and their pos
 1. The handles' infrastructure, the cursor handle of a field (`TextFieldCursorHandleTest`).
 2. The selection handles of a field, long press and drags (`TextFieldSelectionHandlesTest`, `TextFieldLongPressTest`, `TextFieldScrolledSelectionGestureTest`, the handle cases of `TextFieldDoubleTapTest`).
 3. The container's long press and handles (`SelectionHandlesTest`, `SelectionHandlePopupPositionTest`, the touch parts of `SelectionContainerTest` and `SelectionContainerFocusTest`).
-4. `MultiWidgetSelectionDelegateTest` and `SelectionManagerGetSelectedRegionRectTest`, through the `Selectable`'s handle positions and bounds.
+4. `MultiWidgetSelectionDelegateTest` and `SelectionManagerGetSelectedRegionRectTest`, through the `Selectable`'s handle positions and bounds: `Selectable` answers what Compose's `MultiWidgetSelectionDelegate` does (boxes, lines, the last visible offset, line heights), and the tree gives the selected region's bounds for the toolbar (D2014).

@@ -295,12 +295,18 @@ impl UiTree {
         if self.rects.is_some() {
             self.dispatch_rects(laid_out || !self.layers_moved.is_empty());
         }
-        if !self.layers_moved.is_empty() {
+        let moved = !self.layers_moved.is_empty();
+        if moved {
             for node in mem::take(&mut self.layers_moved) {
                 if let Some(value) = self.get_mut(node) {
                     value.layer_moved = false;
                 }
             }
+        }
+        // A selection's handles follow its texts, as Compose's `updateHandleOffsets` at each
+        // position change.
+        if let Some(selection) = self.text_selection.filter(|_| laid_out || moved) {
+            self.refresh_handles(selection.container());
         }
         mem::take(&mut self.layout_callbacks)
     }
@@ -884,7 +890,12 @@ impl UiTree {
 
     /// Layer `layer` of `node`, for its chain entry `entry`: its bounds clipped by the clipping
     /// modifiers around it (its own before the entry, and its ancestors').
-    fn coordinate_values(&self, node: NodeId, layer: usize, entry: usize) -> CoordinatesValues {
+    pub(crate) fn coordinate_values(
+        &self,
+        node: NodeId,
+        layer: usize,
+        entry: usize,
+    ) -> CoordinatesValues {
         let size = self.node(node).layers[layer].size;
         let origin = self.map_to_root(node, layer, Some(entry), Offset::ZERO);
         let mut bounds = self.rect_in_root(node, layer, Some(entry), size);
