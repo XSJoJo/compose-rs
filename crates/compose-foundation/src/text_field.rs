@@ -16,7 +16,7 @@ use compose_runtime::{Callback, ComposeArg, composable};
 use crate::output_transformation::{
     IndexTransformationType, OffsetMappingCalculator, SelectionWedgeAffinity, ShownToInputMethod,
     WedgeAffinity, index_transformation_type, map_from_transformed, map_to_transformed,
-    next_cursor_position, transformed_text,
+    next_cursor_position, shows_as, transformed_text,
 };
 use crate::text_field_buffer::TextFieldCharSequence;
 use crate::text_undo::TextFieldEditUndoBehavior;
@@ -81,7 +81,9 @@ pub fn BasicTextField(
         crate::text::validate_min_max_lines(min_lines, max_lines);
     }
     let interaction_source_for_press = if enabled { interaction_source.clone() } else { None };
+    let field_focused = compose_runtime::remember(FieldFocused::default);
     let element: Rc<dyn AnyModifierNodeElement> = Rc::new(TextFieldElement {
+        field_focused: field_focused.clone(),
         value,
         on_value_change,
         enabled,
@@ -111,7 +113,7 @@ pub fn BasicTextField(
         // An I-beam over the field, as Compose Desktop's text fields.
         modifier
             .semantics_with(true, |_| {})
-            .then_custom(FocusOnTap { interaction_source: press_source })
+            .then_custom(FocusOnTap { interaction_source: press_source, field_focused })
             .pointer_hover_icon(compose_ui::PointerIcon::Text),
         crate::Alignment::TOP_START,
         // The decoration's size is the field's: a field given a size passes it on.
@@ -174,7 +176,9 @@ pub fn BasicTextFieldOfState(
         keyboard_options.fill_unspecified_values_with(transformation_options.as_ref());
     let text_style = phone_direction(text_style, keyboard_options);
     let interaction_source_for_press = if enabled { interaction_source.clone() } else { None };
+    let field_focused = compose_runtime::remember(FieldFocused::default);
     let element: Rc<dyn AnyModifierNodeElement> = Rc::new(StateTextFieldElement {
+        field_focused: field_focused.clone(),
         state,
         enabled,
         read_only,
@@ -229,7 +233,7 @@ pub fn BasicTextFieldOfState(
     crate::layout::Box(
         modifier
             .semantics_with(true, |_| {})
-            .then_custom(FocusOnTap { interaction_source: press_source })
+            .then_custom(FocusOnTap { interaction_source: press_source, field_focused })
             .pointer_hover_icon(compose_ui::PointerIcon::Text),
         crate::Alignment::TOP_START,
         true,
@@ -264,6 +268,8 @@ fn phone_direction(style: TextStyle, options: KeyboardOptions) -> TextStyle {
 
 /// The state-based field's element: the value-based field's node, tied to `state` (D1130).
 pub(crate) struct StateTextFieldElement {
+    /// Whether the field has the focus, for its decoration's node (D1145).
+    pub field_focused: FieldFocused,
     pub state: TextFieldState,
     pub enabled: bool,
     pub read_only: bool,
@@ -315,6 +321,7 @@ impl ModifierNodeElement for StateTextFieldElement {
         let (single_line, min_lines, max_lines) = self.line_limits.lines();
         let (cursor_color, cursor_brush) = self.cursor();
         let mut node = TextFieldElement {
+            field_focused: self.field_focused.clone(),
             value: String::new(),
             on_value_change: Callback::new(|_: String| {}),
             enabled: self.enabled,
@@ -348,6 +355,7 @@ impl ModifierNodeElement for StateTextFieldElement {
     fn update(&self, node: &mut TextFieldNode) {
         let (single_line, min_lines, max_lines) = self.line_limits.lines();
         let (cursor_color, cursor_brush) = self.cursor();
+        node.field_focused = self.field_focused.clone();
         let link = node.state.as_mut().expect("a state-based field's node");
         if link.state != self.state {
             // Another state: its value is taken at the next measurement, which this update asks.
@@ -422,6 +430,7 @@ impl ModifierNodeElement for StateTextFieldElement {
 
     fn same(&self, other: &Self) -> bool {
         other.state == self.state
+            && Rc::ptr_eq(&other.field_focused, &self.field_focused)
             && other.enabled == self.enabled
             && other.read_only == self.read_only
             && other.style == self.style
@@ -657,6 +666,8 @@ impl StateLink {
 }
 
 pub(crate) struct TextFieldElement {
+    /// Whether the field has the focus, for its decoration's node (D1145).
+    pub field_focused: FieldFocused,
     pub value: String,
     pub on_value_change: Callback<dyn Fn(String)>,
     pub enabled: bool,
@@ -680,6 +691,7 @@ impl ModifierNodeElement for TextFieldElement {
     type Node = TextFieldNode;
     fn create(&self) -> TextFieldNode {
         TextFieldNode {
+            field_focused: self.field_focused.clone(),
             window: None,
             pin: Default::default(),
             is_focus_target: self.enabled,
@@ -737,6 +749,7 @@ impl ModifierNodeElement for TextFieldElement {
     }
 
     fn update(&self, node: &mut TextFieldNode) {
+        node.field_focused = self.field_focused.clone();
         if node.value != self.value {
             node.value = self.value.clone();
             node.awaiting_value = false;
@@ -791,6 +804,7 @@ impl ModifierNodeElement for TextFieldElement {
 
     fn same(&self, other: &Self) -> bool {
         other.value == self.value
+            && Rc::ptr_eq(&other.field_focused, &self.field_focused)
             && other.on_value_change.ptr_eq(&self.on_value_change)
             && other.enabled == self.enabled
             && other.read_only == self.read_only
@@ -982,7 +996,12 @@ pub(crate) struct TextFieldNode {
     shown_text: Option<String>,
     /// A state-based field's state (`BasicTextFieldOfState`); `None` for a value-based field.
     state: Option<Box<StateLink>>,
+    /// Whether it has the focus, for its decoration's node, which then shows it whole (D1145).
+    field_focused: FieldFocused,
 }
+
+/// Whether a field's node has the focus, shared with its decoration's `FocusOnTapNode`.
+pub(crate) type FieldFocused = Rc<Cell<bool>>;
 
 impl TextFieldNode {
     /// What the field laid out, as its text layout result: what's shown, at the text's
@@ -1059,7 +1078,8 @@ impl TextFieldNode {
         text: IntSize,
         size: IntSize,
         cursor_width: i32,
-    ) {
+    ) -> bool {
+        let mut short = false;
         let mirrored = self.single_line && self.direction == compose_ui::LayoutDirection::Rtl;
         let (visible, length) = if self.single_line {
             ((size.width - cursor_width).max(0), text.width)
@@ -1102,6 +1122,7 @@ impl TextFieldNode {
                 };
                 let difference = offset_to_follow(value, start, end, visible as f32);
                 let to = (value + round_to_next(difference)).clamp(0.0, max as f32);
+                short = (round_to_next(difference) - (to - value)).abs() >= 1.0;
                 if to != value {
                     scroll_state.set_value(to as i32);
                     value = to;
@@ -1121,6 +1142,7 @@ impl TextFieldNode {
             (true, false) => Offset::new(value, 0.0),
             (false, _) => Offset::new(0.0, value),
         };
+        short
     }
 
     /// Its text is a password's: never copied nor cut.
@@ -1134,8 +1156,9 @@ impl TextFieldNode {
     /// Compose's `updateScrollState` brings it into view (D1141): typing a new line at the bottom of
     /// a field in a scrolling column scrolls the column.
     #[inline(never)]
-    fn reveal_cursor(&mut self, scope: &mut MeasureScope<'_>, text: IntSize) {
+    fn reveal_cursor(&mut self, scope: &mut MeasureScope<'_>, text: IntSize, short: bool) {
         let Some(cursor) = self.cursor_rect else { return };
+        let collapsed = self.anchor == self.cursor;
         if !(self.focused && self.enabled && !self.read_only) {
             return;
         }
@@ -1149,6 +1172,7 @@ impl TextFieldNode {
         }
         link.revealed = Some((cursor, text));
         let Some(handle) = link.handle else { return };
+        let cursor = cursor_to_reveal(cursor, collapsed, short);
         let rect = Rect::new(
             cursor.left - scroll.x,
             cursor.top - scroll.y,
@@ -1203,10 +1227,17 @@ impl TextFieldNode {
         // What's shown may read states of its own (a secure field's revealed character, its
         // mask): read here, observed, so a change measures it again, and shown anew (D1142).
         if self.paragraph.is_some()
-            && self.state.as_ref().is_some_and(|link| link.shown_transformation.is_some())
+            && let Some(link) = self.state.as_ref()
+            && let Some(transformation) = &link.shown_transformation
         {
-            let shown = self.transform_shown(&self.text).map(|(shown, _)| shown);
-            if shown != self.shown_text {
+            // The text compared, not mapped (D1145); the state's own text when it's the node's,
+            // not copied.
+            let text = match &link.seen {
+                Some(seen) if *seen.text == *self.text => seen.text.clone(),
+                _ => Rc::from(self.text.as_str()),
+            };
+            let value = TextFieldCharSequence::new(text, TextRange::ZERO, None);
+            if !shows_as(&value, transformation, self.shown_text.as_deref()) {
                 self.invalidate_paragraph();
             }
         }
@@ -2025,7 +2056,8 @@ impl TextFieldNode {
     }
 
     fn insert(&mut self, inserted: &str, typing: bool, context: &mut EventContext<'_>) {
-        let inserted: String = if self.single_line {
+        // A state-based single line keeps a new line, shown as a space (D1146), as Compose's.
+        let inserted: String = if self.single_line && self.state.is_none() {
             inserted.chars().filter(|c| *c != '\n').collect()
         } else {
             inserted.to_string()
@@ -2254,6 +2286,17 @@ fn round_to_next(value: f32) -> f32 {
     if value > 0.0 { value.ceil() } else { value.floor() }
 }
 
+/// The cursor a state-based field asks its containers to show: a collapsed cursor with no width,
+/// one pixel wide where the field's scroll fell short of it, as Compose's `updateScrollState`
+/// (D1145).
+fn cursor_to_reveal(cursor: Rect, collapsed: bool, short: bool) -> Rect {
+    if collapsed && cursor.right - cursor.left <= 0.0 && short {
+        Rect::new(cursor.left, cursor.top, cursor.right + 1.0, cursor.bottom)
+    } else {
+        cursor
+    }
+}
+
 /// Moves `scroll` (along one axis) so `[start, end)` is inside `[0, visible)`, within
 /// `[0, max]`.
 fn scroll_into_view(scroll: f32, start: f32, end: f32, visible: f32, max: f32) -> f32 {
@@ -2387,25 +2430,40 @@ impl LayoutModifierNode for TextFieldNode {
         // The text scrolls to keep the cursor in view, as Compose's: sideways on a single line,
         // down in a multi-line field.
         let rect = self.cursor_rect.unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
+        // Whether the scroll fell short of showing the cursor (D1145).
+        let short;
         if let Some(scroll_state) = self.state.as_ref().and_then(|link| link.scroll_state) {
-            self.scroll_by_state(scope, scroll_state, paragraph, metrics.size, size, cursor_width);
+            short = self.scroll_by_state(
+                scope,
+                scroll_state,
+                paragraph,
+                metrics.size,
+                size,
+                cursor_width,
+            );
         } else if self.single_line {
             let visible = (size.width - cursor_width).max(0) as f32;
             let max = metrics.size.width as f32 - visible;
-            self.scroll = Offset::new(
-                scroll_into_view(self.scroll.x, rect.left, rect.left, visible, max),
-                0.0,
-            );
+            let scrolled = scroll_into_view(self.scroll.x, rect.left, rect.left, visible, max);
+            short = self.state.is_some()
+                && (scroll_into_view(self.scroll.x, rect.left, rect.left, visible, f32::MAX)
+                    - scrolled)
+                    .abs()
+                    >= 1.0;
+            self.scroll = Offset::new(scrolled, 0.0);
         } else {
             let visible = size.height as f32;
             let max = metrics.size.height as f32 - visible;
-            self.scroll = Offset::new(
-                0.0,
-                scroll_into_view(self.scroll.y, rect.top, rect.bottom, visible, max),
-            );
+            let scrolled = scroll_into_view(self.scroll.y, rect.top, rect.bottom, visible, max);
+            short = self.state.is_some()
+                && (scroll_into_view(self.scroll.y, rect.top, rect.bottom, visible, f32::MAX)
+                    - scrolled)
+                    .abs()
+                    >= 1.0;
+            self.scroll = Offset::new(0.0, scrolled);
         }
         if self.state.is_some() {
-            self.reveal_cursor(scope, metrics.size);
+            self.reveal_cursor(scope, metrics.size, short);
         }
         self.tell_text_layout(scope, paragraph);
         let placeable = scope.measure(content, Constraints::fixed(size.width, size.height));
@@ -2820,21 +2878,21 @@ impl FocusTargetModifierNode for TextFieldNode {
             return;
         }
         self.focused = focused;
+        self.field_focused.set(focused);
         self.tell_focus(focused);
         if focused {
-            // Its cursor, as Compose's `bringSelectionEndIntoView`: a field taller than what
-            // scrolls it shows where it's typed in (all of it before it's laid out).
-            match self.cursor_rect {
-                Some(rect) => {
-                    let scroll = self.scroll;
-                    context.bring_rect_into_view(Rect::new(
-                        rect.left - scroll.x,
-                        rect.top - scroll.y,
-                        rect.right - scroll.x,
-                        rect.bottom - scroll.y,
-                    ));
-                }
-                None => context.bring_into_view(),
+            // Its cursor, as Compose's `bringSelectionEndIntoView`, beside the whole field its
+            // decoration's node asks for, as Compose's `FocusableNode` (D1145): a container shows
+            // the whole if it fits, else where it's typed in (D1141). All of it before it's laid
+            // out.
+            if let Some(rect) = self.cursor_rect {
+                let scroll = self.scroll;
+                context.bring_rect_into_view(Rect::new(
+                    rect.left - scroll.x,
+                    rect.top - scroll.y,
+                    rect.right - scroll.x,
+                    rect.bottom - scroll.y,
+                ));
             }
             // As Compose's `StartInput`, which always asks for the keyboard: going from one field
             // to another with it hidden (`Done`, back) shows it at the first tap.
@@ -3633,8 +3691,12 @@ impl TextFieldNode {
 
 /// Focuses the focus target below it on a tap (a release after a press, inside), and tells
 /// `interaction_source` of presses anywhere in the field, as `tapPressTextFieldModifier`.
+///
+/// It also asks the containers around to show the whole field when the field gains the focus, as
+/// the `FocusableNode` of Compose's `TextFieldDecoratorModifier` (D1145).
 struct FocusOnTap {
     interaction_source: Option<compose_ui::MutableInteractionSource>,
+    field_focused: FieldFocused,
 }
 
 #[derive(Default)]
@@ -3642,6 +3704,9 @@ struct FocusOnTapNode {
     pressed: bool,
     interaction_source: Option<compose_ui::MutableInteractionSource>,
     press: Option<compose_ui::Press>,
+    field_focused: FieldFocused,
+    /// The field's focus when it was last told: shown when it's gained.
+    focused: bool,
 }
 
 impl FocusOnTapNode {
@@ -3661,9 +3726,14 @@ impl FocusOnTapNode {
 impl ModifierNodeElement for FocusOnTap {
     type Node = FocusOnTapNode;
     fn create(&self) -> FocusOnTapNode {
-        FocusOnTapNode { interaction_source: self.interaction_source.clone(), ..Default::default() }
+        FocusOnTapNode {
+            interaction_source: self.interaction_source.clone(),
+            field_focused: self.field_focused.clone(),
+            ..Default::default()
+        }
     }
     fn update(&self, node: &mut Self::Node) {
+        node.field_focused = self.field_focused.clone();
         if node.interaction_source != self.interaction_source {
             node.end_press(false);
             node.interaction_source = self.interaction_source.clone();
@@ -3671,6 +3741,7 @@ impl ModifierNodeElement for FocusOnTap {
     }
     fn same(&self, other: &Self) -> bool {
         self.interaction_source == other.interaction_source
+            && Rc::ptr_eq(&self.field_focused, &other.field_focused)
     }
     fn name(&self) -> &'static str {
         "focus_on_tap"
@@ -3682,8 +3753,24 @@ impl ModifierNode for FocusOnTapNode {
         Some(self)
     }
 
+    fn as_focus_event(&mut self) -> Option<&mut dyn compose_ui::FocusEventModifierNode> {
+        Some(self)
+    }
+
     fn on_detach(&mut self, _context: &mut compose_ui::NodeContext<'_>) {
         self.end_press(false);
+    }
+}
+
+impl compose_ui::FocusEventModifierNode for FocusOnTapNode {
+    /// The field gaining the focus (not another target in its decoration) is shown whole, if its
+    /// containers can, as Compose's `FocusableNode.onFocusStateChange` (D1145).
+    fn on_focus_event(&mut self, _state: compose_ui::FocusState, context: &mut EventContext<'_>) {
+        let focused = self.field_focused.get();
+        if focused && !self.focused {
+            context.bring_into_view();
+        }
+        self.focused = focused;
     }
 }
 
@@ -3745,5 +3832,21 @@ impl compose_ui::PointerInputModifierNode for FocusOnTapNode {
     fn on_cancel_pointer_input(&mut self) {
         self.pressed = false;
         self.end_press(false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Compose: compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/text/input/internal/TextFieldCoreModifier.kt, updateScrollState's bringIntoViewRect (no test of its own)
+    #[test]
+    fn a_cursor_the_scroll_fell_short_of_is_widened_by_a_pixel() {
+        let cursor = Rect::new(10.0, 0.0, 10.0, 20.0);
+        assert_eq!(cursor_to_reveal(cursor, true, true), Rect::new(10.0, 0.0, 11.0, 20.0));
+        assert_eq!(cursor_to_reveal(cursor, true, false), cursor);
+        assert_eq!(cursor_to_reveal(cursor, false, true), cursor);
+        let wide = Rect::new(10.0, 0.0, 12.0, 20.0);
+        assert_eq!(cursor_to_reveal(wide, true, true), wide);
     }
 }

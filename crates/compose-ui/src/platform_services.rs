@@ -182,6 +182,31 @@ pub static LOCAL_HAPTIC_FEEDBACK: CompositionLocal<Rc<dyn HapticFeedback>> =
             .unwrap_or_else(|| Rc::new(NoHapticFeedback))
     });
 
+/// Reads the platform's "Show passwords": for a screen's keyboard, and for a physical one.
+type ShowPasswordSource = fn() -> (bool, bool);
+
+thread_local! {
+    /// Where the platform's "Show passwords" setting is read: a host's (Android's).
+    static SHOW_PASSWORD_SOURCE: std::cell::Cell<Option<ShowPasswordSource>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Has the platform's "Show passwords" setting read with `source` each time a password field asks
+/// for it, on this thread: whether a password's last typed character shows for a moment when
+/// typed on a screen's keyboard, and on a physical one (Android's `ShowSecretsSetting` from API
+/// 37, `Settings.System.TEXT_SHOW_PASSWORD` for both before). `None` forgets it. A host reads the
+/// setting, never writes it (D1146).
+pub fn set_show_password_source(source: Option<fn() -> (bool, bool)>) {
+    SHOW_PASSWORD_SOURCE.with(|kept| kept.set(source));
+}
+
+/// The platform's "Show passwords" setting, for a screen's keyboard and a physical one. `None`
+/// where the host has none (desktop, tests), as Compose reads it on Android only
+/// (`BasicSecureTextField.android.kt`).
+pub fn platform_show_password() -> Option<(bool, bool)> {
+    SHOW_PASSWORD_SOURCE.with(std::cell::Cell::get).map(|read| read())
+}
+
 /// `f` of the tree composing now: `None` outside a `UiTree`'s composition.
 pub(crate) fn of_composing_tree<R>(f: impl FnOnce(&mut UiTree) -> R) -> Option<R> {
     if !compose_runtime::is_composing() {

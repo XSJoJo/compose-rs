@@ -55,12 +55,16 @@ impl ComposeArg for PasswordVisibility {
 }
 
 /// What the platform says of revealing a password's last typed character, read by
-/// [`TextObfuscationMode::System`]: a host provides its setting; by default, shown for a
-/// screen's keyboard and hidden for a physical one, as Android's defaults (D1142).
+/// [`TextObfuscationMode::System`]: by default, the host's "Show passwords" setting
+/// (`compose_ui::platform_show_password`, Android's, read as Compose's `PasswordVisibilitySetting`,
+/// D1146); where the host has none, shown for a screen's keyboard and hidden for a physical one,
+/// as Android's defaults (D1142).
 pub static LOCAL_PASSWORD_VISIBILITY: compose_runtime::CompositionLocal<PasswordVisibility> =
-    compose_runtime::CompositionLocal::new("LocalPasswordVisibility", || PasswordVisibility {
-        touch: true,
-        physical: false,
+    compose_runtime::CompositionLocal::new("LocalPasswordVisibility", || {
+        match compose_ui::platform_show_password() {
+            Some((touch, physical)) => PasswordVisibility { touch, physical },
+            None => PasswordVisibility { touch: true, physical: false },
+        }
     });
 
 /// How long the last typed character shows, as Android's `PasswordTransformationMethod`.

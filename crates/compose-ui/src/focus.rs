@@ -121,6 +121,9 @@ pub(crate) struct FocusOwner {
     /// The tree itself moves the focus (an overlay taking it as it opens, inside a layout):
     /// nothing scrolls.
     pub(crate) moved_by_tree: bool,
+    /// While a target and its event nodes are told of a change: the requests to bring nodes into
+    /// view they make, shown together when it ends (D1145).
+    pub(crate) bring_into_view_batch: Option<Vec<crate::input::BringIntoViewRequest>>,
     /// The windows that lost the keys to one opened over them, until the pass ends.
     pub(crate) windows_losing_keys: SmallVec<[Option<NodeId>; 1]>,
     /// The overlay whose window `active` and `captured` are of: `None`, the main one's. What
@@ -942,6 +945,12 @@ impl UiTree {
         current: FocusState,
     ) {
         let active_before = self.focus.active;
+        // What they ask to show is shown together once they're all told (a text field's cursor
+        // and its decoration, D1145).
+        let outermost = self.focus.bring_into_view_batch.is_none();
+        if outermost {
+            self.focus.bring_into_view_batch = Some(Vec::new());
+        }
         if previous != current {
             let call = FocusCall::Changed(previous, current);
             self.run_focus_call(target.node, target.entry, target.delegate, call);
@@ -950,6 +959,12 @@ impl UiTree {
         }
         if let Some(index) = self.target_index(target) {
             self.dispatch_focus_events(target.node, index, true, current, active_before);
+        }
+        if outermost
+            && let Some(batch) = self.focus.bring_into_view_batch.take()
+            && !batch.is_empty()
+        {
+            self.bring_focused_into_view(batch);
         }
     }
 
@@ -1869,22 +1884,33 @@ impl UiTree {
         self.focus.moved_by_tree = moving;
     }
 
-    /// What `EventContext::bring_into_view` asked of `node` (a focused node in a scrolling
+    /// What `EventContext::bring_into_view` asked of each node (a focused node in a scrolling
     /// container is scrolled into view, as Compose's `FocusableNode`; one not placed yet, a lazy
-    /// item composed ahead, once the next layout places it).
-    /// `rect`, a rect in a chain entry's layer, is what of it to show.
-    pub(crate) fn bring_focused_into_view(&mut self, node: NodeId, rect: Option<(usize, Rect)>) {
+    /// item composed ahead, once the next layout places it), shown together (D1145).
+    /// A rect in a chain entry's layer is what of it to show; `None`, all of it.
+    pub(crate) fn bring_focused_into_view(
+        &mut self,
+        requests: Vec<crate::input::BringIntoViewRequest>,
+    ) {
         if self.focus.moved_by_tree {
             return;
         }
-        if self.is_laid_out(node) {
-            match rect {
-                Some((entry, rect)) => self.bring_into_view_from(node, Some(entry), Some(rect)),
-                None => self.bring_into_view(node),
+        let mut starts: SmallVec<[(NodeId, usize, Rect); 2]> = SmallVec::new();
+        for (node, what) in requests {
+            if self.get(node).is_none() {
+                continue;
             }
-        } else {
-            self.bring_into_view_after_layout = Some(node);
+            if self.is_laid_out(node) {
+                let (entry, rect) = match what {
+                    Some((entry, rect)) => (Some(entry), Some(rect)),
+                    None => (None, None),
+                };
+                starts.push(self.bring_into_view_start(node, entry, rect));
+            } else {
+                self.bring_into_view_after_layout = Some(node);
+            }
         }
+        self.bring_all_into_view(starts);
     }
 
     /// Whether `node` and its ancestors are placed: its bounds are where it shows.
@@ -1922,6 +1948,18 @@ impl UiTree {
         entry: Option<usize>,
         rect: Option<Rect>,
     ) {
+        let start = self.bring_into_view_start(node, entry, rect);
+        self.bring_all_into_view(smallvec::smallvec![start]);
+    }
+
+    /// Where a request to show `rect` of chain entry `entry` of `node` starts: the node, the
+    /// entries before which it's asked, and the rect in the root.
+    fn bring_into_view_start(
+        &self,
+        node: NodeId,
+        entry: Option<usize>,
+        rect: Option<Rect>,
+    ) -> (NodeId, usize, Rect) {
         let (origin, size, first) = match entry {
             Some(index) => {
                 let value = self.node(node);
@@ -1936,13 +1974,47 @@ impl UiTree {
             }
         };
         let local = rect.unwrap_or(Rect::new(0.0, 0.0, size.width as f32, size.height as f32));
-        let mut rect = Rect::new(
+        let rect = Rect::new(
             origin.x + local.left,
             origin.y + local.top,
             origin.x + local.right,
             origin.y + local.bottom,
         );
-        let mut current = Some((node, first));
+        (node, first, rect)
+    }
+
+    /// Shows `requests` (each a node, the chain entries before which it's asked, and a rect in
+    /// the root): the entries before the innermost's in its own chain, then each ancestor's,
+    /// innermost first, each asked once with every request it's on the way of, as Compose's
+    /// `ContentInViewNode` queues them (D1145); a request joins at the entries before its own.
+    /// Requests not on one line of ancestors are shown one after the other.
+    fn bring_all_into_view(&mut self, mut requests: SmallVec<[(NodeId, usize, Rect); 2]>) {
+        if requests.len() > 1 {
+            let depth = |tree: &Self, node: NodeId| {
+                let mut depth = 0usize;
+                let mut current = tree.node(node).parent;
+                while let Some(id) = current {
+                    depth += 1;
+                    current = tree.node(id).parent;
+                }
+                depth
+            };
+            requests.sort_by_key(|(node, first, _)| {
+                (std::cmp::Reverse(depth(self, *node)), std::cmp::Reverse(*first))
+            });
+            let on_one_line =
+                requests.windows(2).all(|pair| self.is_at_or_below(pair[0].0, pair[1].0));
+            if !on_one_line {
+                for request in requests {
+                    self.bring_all_into_view(smallvec::smallvec![request]);
+                }
+                return;
+            }
+        }
+        let Some(&(first_node, first_end, _)) = requests.first() else { return };
+        let mut live: SmallVec<[Rect; 2]> = SmallVec::new();
+        let mut waiting = requests.into_iter().peekable();
+        let mut current = Some((first_node, first_end));
         while let Some((id, end)) = current {
             // The layer of each entry, counted down from the end's.
             let mut layer = self.node(id).layer_of(end);
@@ -1950,7 +2022,20 @@ impl UiTree {
                 if self.node(id).chain[index].kinds.any(NodeKinds::LAYOUT) {
                     layer -= 1;
                 }
-                self.ask_to_bring_into_view(id, index, layer, &mut rect);
+                while let Some(&(_, _, rect)) =
+                    waiting.peek().filter(|(node, first, _)| *node == id && *first > index)
+                {
+                    live.push(rect);
+                    waiting.next();
+                }
+                if !live.is_empty() {
+                    self.ask_to_bring_into_view(id, index, layer, &mut live);
+                }
+            }
+            // A request about a node's bounds is its ancestors'.
+            while let Some(&(_, _, rect)) = waiting.peek().filter(|(node, ..)| *node == id) {
+                live.push(rect);
+                waiting.next();
             }
             // An overlay's containers are its own: the ones around its host don't show it.
             current = match self.node(id).parent {
@@ -1962,28 +2047,44 @@ impl UiTree {
         }
     }
 
-    /// Asks chain entry `index` of `id`, in `layer`, to show `rect` (in the root), which becomes
-    /// where it will then be.
-    fn ask_to_bring_into_view(&mut self, id: NodeId, index: usize, layer: usize, rect: &mut Rect) {
+    /// Asks chain entry `index` of `id`, in `layer`, to show one of `rects` (in the root): the
+    /// largest that fits its viewport, else the smallest, as Compose's `ContentInViewNode`'s
+    /// `findBringIntoViewRequest` (D1145). Each becomes where it will then be.
+    fn ask_to_bring_into_view(
+        &mut self,
+        id: NodeId,
+        index: usize,
+        layer: usize,
+        rects: &mut [Rect],
+    ) {
         let layer = layer.min(self.node(id).layers.len() - 1);
         let origin = self.layer_origin(id, layer);
         let viewport = self.node(id).layers[layer].measured;
         let locals = self.node(id).locals;
+        let chosen = choose_rect_to_show(rects, viewport);
+        let shown = rects[chosen];
         let local = Rect::new(
-            rect.left - origin.x,
-            rect.top - origin.y,
-            rect.right - origin.x,
-            rect.bottom - origin.y,
+            shown.left - origin.x,
+            shown.top - origin.y,
+            shown.right - origin.x,
+            shown.bottom - origin.y,
         );
         if let Some(value) = self.get_mut(id)
             && let Some(moved) = value.chain[index].bring_into_view(local, viewport, locals)
         {
-            *rect = Rect::new(
-                moved.left + origin.x,
-                moved.top + origin.y,
-                moved.right + origin.x,
-                moved.bottom + origin.y,
-            );
+            let (dx, dy) = (moved.left - local.left, moved.top - local.top);
+            for (each, rect) in rects.iter_mut().enumerate() {
+                *rect = if each == chosen {
+                    Rect::new(
+                        moved.left + origin.x,
+                        moved.top + origin.y,
+                        moved.right + origin.x,
+                        moved.bottom + origin.y,
+                    )
+                } else {
+                    Rect::new(rect.left + dx, rect.top + dy, rect.right + dx, rect.bottom + dy)
+                };
+            }
         }
     }
 
@@ -2159,3 +2260,25 @@ pub(crate) struct BeyondSearch {
 /// The generation of the focus: a focus change queued for application code is dropped if the
 /// focus moved since, as Compose's transactions stop telling when a callback moves the focus.
 pub(crate) type FocusGeneration = Rc<Cell<u64>>;
+
+/// Which of `rects` a container of `viewport` shows: from the smallest, the largest that fits, or
+/// the smallest if none does, as `ContentInViewNode.findBringIntoViewRequest` (D1145). Compose
+/// compares along the container's axis only; both axes here, the tree not knowing it.
+fn choose_rect_to_show(rects: &[Rect], viewport: crate::unit::IntSize) -> usize {
+    if rects.len() == 1 {
+        return 0;
+    }
+    let area = |rect: &Rect| rect.width() * rect.height();
+    let mut order: SmallVec<[usize; 2]> = (0..rects.len()).collect();
+    order.sort_by(|a, b| area(&rects[*a]).total_cmp(&area(&rects[*b])));
+    let mut chosen = None;
+    for each in order {
+        let rect = rects[each];
+        if rect.width() <= viewport.width as f32 && rect.height() <= viewport.height as f32 {
+            chosen = Some(each);
+        } else {
+            return chosen.unwrap_or(each);
+        }
+    }
+    chosen.unwrap_or(0)
+}

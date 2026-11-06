@@ -222,6 +222,29 @@ fn a_shrinking_field_follows_its_cursor() {
     assert_eq!(scroll_state.value(), scroll_state.max_value());
 }
 
+/// A selection whose start moves off screen, its end staying, is followed to its start, as
+/// Compose's `updateScrollState` follows the offset that changed: here the anchor, set through
+/// semantics (D1140).
+// Compose: compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/text/input/internal/TextFieldCoreModifier.kt, updateScrollState's offsetToFollow (no test of its own)
+#[test]
+fn a_selections_start_moved_off_screen_is_followed() {
+    let state = text_state(LONG_TEXT, TextRange::at(LONG_TEXT.len()));
+    let scroll_state = scroll(0);
+    let mut ui = scrollable(state, fixed(scroll_state), true, 50.0);
+    ui.on_node_with_tag("field").request_focus();
+    ui.wait_for_idle();
+    assert!(scroll_state.value() > 0);
+    assert_eq!(scroll_state.value(), scroll_state.max_value(), "the end, followed");
+    let end = LONG_TEXT.len() as i32;
+    ui.on_node_with_tag("field")
+        .perform_semantics_action_with(&compose_ui::SemanticsActions::SET_SELECTION, |set| {
+            assert!(set(0, end, false))
+        });
+    ui.wait_for_idle();
+    assert_eq!(state.selection(), TextRange::new(0, LONG_TEXT.len()));
+    assert_eq!(scroll_state.value(), 0, "the start, followed");
+}
+
 /// A cursor moved while the field isn't focused is followed once it is, as Compose's: nothing is
 /// followed while the cursor doesn't show.
 #[test]

@@ -944,8 +944,12 @@ impl UiTree {
                 self.tell_focus_tap(node, tap);
             }
         }
-        if let Some(node) = requests.bring_into_view {
-            self.bring_focused_into_view(node, requests.bring_into_view_rect);
+        if !requests.bring_into_view.is_empty() {
+            match self.focus.bring_into_view_batch.as_mut() {
+                // Inside a focus change: shown with the other nodes' requests, at its end.
+                Some(batch) => batch.extend(requests.bring_into_view),
+                None => self.bring_focused_into_view(requests.bring_into_view),
+            }
         }
         actions.append(&mut self.pending_actions);
     }
