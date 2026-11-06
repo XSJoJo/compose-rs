@@ -20,6 +20,7 @@ mod computed_snapshot_state;
 mod derive_saveable;
 mod derived_snapshot_state;
 mod effects;
+mod error_traces;
 mod flows;
 mod frame_clocks;
 mod holders;

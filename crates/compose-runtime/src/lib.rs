@@ -55,6 +55,7 @@ mod saveable_state_holder;
 mod scope;
 mod slot_table;
 pub mod snapshots;
+pub mod stack_trace;
 mod state;
 #[cfg(feature = "composition-observer")]
 pub mod tooling;
