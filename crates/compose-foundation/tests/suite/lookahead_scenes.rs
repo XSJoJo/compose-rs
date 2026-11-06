@@ -434,3 +434,65 @@ fn children_reordered_in_a_scope_are_measured_and_placed_again_in_both_passes() 
     ui.wait_for_idle();
     assert_eq!((boxed.0.get(), row.0.get()), ([2, 2, 2, 2], [2, 2, 2, 2]));
 }
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/LookaheadScopeTest.kt, testLookaheadAndApproachCoordinatesAreConsistentOnFirstPass_usingOffset
+#[test]
+fn both_passes_see_the_same_lookahead_position_at_once() {
+    type Seen = Rc<Cell<Option<compose_ui::Offset>>>;
+    let (ahead, now): (Seen, Seen) = (Rc::default(), Rc::default());
+    let (a, n) = (ahead.clone(), now.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(400, 400), move || {
+        let (a, n) = (a.clone(), n.clone());
+        Box!(modifier = Modifier.size(dp(300)), {
+            let (a, n) = (a.clone(), n.clone());
+            in_a_scope(move |lookahead| {
+                let (a, n) = (a.clone(), n.clone());
+                let moved =
+                    Modifier.offset_with(|_| compose_ui::IntOffset::new(0, 100)).fill_max_width();
+                Box!(modifier = moved, {
+                    let (a, n) = (a.clone(), n.clone());
+                    let on_lookahead = Modifier.layout(move |scope, measurable, constraints| {
+                        let placeable = scope.measure(measurable, constraints);
+                        let a = a.clone();
+                        scope.layout_with(placeable.width, placeable.height, move |placement| {
+                            if placement.is_looking_ahead()
+                                && let (Some(frame), Some(own)) = (
+                                    lookahead.lookahead_scope_coordinates(placement),
+                                    placement.coordinates(),
+                                )
+                            {
+                                a.set(Some(
+                                    frame.local_position_of(&own, compose_ui::Offset::ZERO),
+                                ));
+                            }
+                            placement.place(&placeable, 0, 0);
+                        })
+                    });
+                    let on_approach = Modifier.approach_layout(
+                        |_| false,
+                        move |placement, coordinates| {
+                            if let Some(frame) = lookahead.lookahead_scope_coordinates(placement) {
+                                n.set(Some(
+                                    lookahead
+                                        .to_lookahead_coordinates(frame)
+                                        .local_position_of(coordinates, compose_ui::Offset::ZERO),
+                                ));
+                            }
+                            false
+                        },
+                        |scope, content, constraints| {
+                            let placeable = scope.measure(content, constraints);
+                            scope.layout_with(placeable.width, placeable.height, move |placement| {
+                                placement.place(&placeable, 0, 0);
+                            })
+                        },
+                    );
+                    Box!(modifier = on_lookahead.then(on_approach), {});
+                });
+            });
+        });
+    });
+    ui.wait_for_idle();
+    let expected = Some(compose_ui::Offset::new(0.0, 100.0));
+    assert_eq!((ahead.get(), now.get()), (expected, expected));
+}
