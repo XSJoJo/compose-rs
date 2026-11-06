@@ -974,6 +974,8 @@ impl Prefetch {
         if state.children.borrow().contains(&item) {
             return Some(Composed::Already);
         }
+        // Kept precomposed since its last request: this one's now.
+        self.kept_slots.borrow_mut().retain(|(kept, _)| *kept != item);
         let paused = layout.create_paused_precomposition(factory.slot(item), factory.content(item));
         Some(Composed::Paused(Rc::new(paused)))
     }
