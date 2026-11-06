@@ -23,15 +23,27 @@ fn size_of(ui: &mut ComposeTestRule) -> (f32, f32) {
 
 /// What's drawn: where, and in what tint.
 fn drawn(ui: &mut ComposeTestRule) -> (Rect, Option<Color>) {
-    ui.host()
-        .display_list()
-        .ops
+    let list = ui.host().display_list();
+    list.ops
         .iter()
         .find_map(|op| match op {
-            DrawOp::DrawImage { dst, tint, .. } => Some((*dst, *tint)),
+            DrawOp::DrawImage { dst, color_filter, .. } => {
+                Some((*dst, tint_of(&list, color_filter)))
+            }
             _ => None,
         })
         .expect("an image")
+}
+
+/// The color of the tint `color_filter` names in `list`, if it names one.
+fn tint_of(
+    list: &compose_ui::platform::FlatDisplayList,
+    color_filter: &Option<compose_ui::platform::ColorFilterIndex>,
+) -> Option<Color> {
+    match list.color_filter(*color_filter) {
+        Some(compose_ui::ColorFilter::BlendMode { color, .. }) => Some(*color),
+        _ => None,
+    }
 }
 
 // Compose: compose/material3/material3/src/androidDeviceTest/kotlin/androidx/compose/material3/IconTest.kt, image_noIntrinsicSize_dimensions
@@ -164,8 +176,9 @@ fn a_tint_that_changes_is_drawn() {
     });
     ui.wait_for_idle();
     let tint = |ui: &mut ComposeTestRule| {
-        ui.host().display_list().ops.iter().find_map(|op| match op {
-            DrawOp::DrawImage { tint, .. } => *tint,
+        let list = ui.host().display_list();
+        list.ops.iter().find_map(|op| match op {
+            DrawOp::DrawImage { color_filter, .. } => tint_of(&list, color_filter),
             _ => None,
         })
     };

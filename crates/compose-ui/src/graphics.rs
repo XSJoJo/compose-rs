@@ -496,11 +496,38 @@ pub struct Paint {
     pub cap: StrokeCap,
     /// The shader, in the display list it's recorded in (`DisplayList::shaders`).
     pub(crate) shader: Option<crate::brush::ShaderIndex>,
+    /// How it blends with what's under it, as `Paint.blendMode`.
+    pub blend_mode: crate::color_filter::BlendMode,
+    /// Its color filter, in the display list it's recorded in (`DisplayList::color_filters`),
+    /// as `Paint.colorFilter`: `DrawScope::paint_with_color_filter` sets it.
+    pub(crate) color_filter: Option<crate::color_filter::ColorFilterIndex>,
 }
 
 impl Paint {
     pub fn fill(color: Color) -> Paint {
-        Paint { color, style: PaintStyle::Fill, cap: StrokeCap::Butt, shader: None }
+        Paint { style: PaintStyle::Fill, ..Paint::stroke(color, 0.0) }
+    }
+
+    /// The same paint blending with `blend_mode`, as `Paint.blendMode`.
+    pub fn with_blend_mode(self, blend_mode: crate::color_filter::BlendMode) -> Paint {
+        Paint { blend_mode, ..self }
+    }
+
+    /// The color filter a paint names, in the display list it's recorded in
+    /// (`DisplayList::color_filters`): for hosts.
+    pub fn color_filter(&self) -> Option<crate::color_filter::ColorFilterIndex> {
+        self.color_filter
+    }
+
+    /// This paint naming `color_filter` of the display list it goes in (a platform's index:
+    /// `DrawScope::paint_with_color_filter` is the app-facing way).
+    pub fn with_color_filter(self, color_filter: crate::color_filter::ColorFilterIndex) -> Paint {
+        Paint { color_filter: Some(color_filter), ..self }
+    }
+
+    /// Whether it draws as plain color over what's under it: blending `SrcOver`, unfiltered.
+    pub fn is_plain(&self) -> bool {
+        self.blend_mode == crate::color_filter::BlendMode::SrcOver && self.color_filter.is_none()
     }
 
     /// A stroke `width` pixels wide, its ends flat, as `Stroke(width)`.
@@ -510,7 +537,14 @@ impl Paint {
 
     /// A stroke with `cap` ends, as `Stroke(width, cap = …)`.
     pub fn stroke_with(color: Color, width: f32, cap: StrokeCap) -> Paint {
-        Paint { color, style: PaintStyle::Stroke(width), cap, shader: None }
+        Paint {
+            color,
+            style: PaintStyle::Stroke(width),
+            cap,
+            shader: None,
+            blend_mode: crate::color_filter::BlendMode::SrcOver,
+            color_filter: None,
+        }
     }
 
     /// The same paint at `alpha` (0 to 1) of its opacity, as `Paint.alpha` and the draw calls'

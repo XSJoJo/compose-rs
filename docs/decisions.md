@@ -18,10 +18,10 @@ The log is split by area into the files below, one table each, rows in number or
 | File | Covers | Rows |
 |---|---|---|
 | [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 172 |
-| [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 383 |
+| [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 384 |
 | [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 66 |
 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md) | Lazy lists and grids, item reuse, the policy of composing only what is in view, prefetch. | 103 |
-| [android-drawing](decisions/android-drawing.md) | The display list and its replayer, render nodes and repaint boundaries, paths, shadows, layers. | 28 |
+| [android-drawing](decisions/android-drawing.md) | The display list and its replayer, render nodes and repaint boundaries, paths, shadows, layers. | 29 |
 | [android-host-and-performance](decisions/android-host-and-performance.md) | The view and activity glue, the frame loop, the hint session, jank, startup, memory, and the optimization flags. | 31 |
 | [desktop](decisions/desktop.md) | The desktop host: window, Skia rendering, input and events. | 6 |
 | [benchmarks](decisions/benchmarks.md) | The benchmark apps, protocols and rounds, and how results are read. | 35 |
@@ -891,7 +891,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1557 | [ui-and-layout](decisions/ui-and-layout.md#d1557) | current |
 | D1558 | [ui-and-layout](decisions/ui-and-layout.md#d1558) | current |
 | D1559 | [ui-and-layout](decisions/ui-and-layout.md#d1559) | revised by [D1568](decisions/ui-and-layout.md#d1568) |
-| D1560 | [ui-and-layout](decisions/ui-and-layout.md#d1560) | current |
+| D1560 | [ui-and-layout](decisions/ui-and-layout.md#d1560) | revised by D1900 |
 | D1561 | [ui-and-layout](decisions/ui-and-layout.md#d1561) | current |
 | D1562 | [ui-and-layout](decisions/ui-and-layout.md#d1562) | current |
 | D1563 | [ui-and-layout](decisions/ui-and-layout.md#d1563) | current |
@@ -925,3 +925,5 @@ The log is split by area into the files below, one table each, rows in number or
 | D1671 | [text](decisions/text.md#d1671) | current |
 | D1672 | [ui-and-layout](decisions/ui-and-layout.md#d1672) | current |
 | D1673 | [text](decisions/text.md#d1673) | current |
+| D1900 | [android-drawing](decisions/android-drawing.md#d1900) | current |
+| D1901 | [ui-and-layout](decisions/ui-and-layout.md#d1901) | current |

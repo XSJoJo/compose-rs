@@ -60,6 +60,75 @@ pub fn BitmapIcon(
     );
 }
 
+/// What `painter` paints as an icon, as Compose's `Icon(painter, …)` (named apart, D181): its
+/// intrinsic size, or 24 dp without one, fitted (`ContentScale::Fit`), drawn through
+/// `ColorFilter.tint(tint)` (by default the content color), or in its own colors with
+/// `Color::UNSPECIFIED`.
+#[composable]
+#[allow(non_snake_case)]
+pub fn PainterIcon(
+    painter: compose_ui::Painter,
+    content_description: Option<impl Into<compose_ui::SharedString>>,
+    #[default(crate::Modifier)] modifier: Modifier,
+    #[default(crate::LOCAL_CONTENT_COLOR.current())] tint: Color,
+) {
+    let color_filter = tint.is_specified().then(|| compose_ui::ColorFilter::tint(tint));
+    let modifier = default_size_for(modifier, &painter).paint_with(
+        painter,
+        true,
+        Alignment::CENTER,
+        compose_ui::ContentScale::Fit,
+        1.0,
+        color_filter,
+    );
+    let modifier = match content_description {
+        Some(description) => modifier.semantics(move |config| {
+            config.set_content_description(description.clone());
+            config.set_role(Role::Image);
+        }),
+        None => modifier,
+    };
+    Box!(modifier = modifier);
+}
+
+/// What `painter` paints as an icon, tinted by the color `tint` gives when it's drawn, as
+/// Compose's `Icon(painter, tint: ColorProducer?, …)`: a state `tint` reads draws the icon
+/// again, without composing it again. `None` draws it in its own colors.
+#[composable]
+#[allow(non_snake_case)]
+pub fn PainterIconWithTintProducer(
+    painter: compose_ui::Painter,
+    tint: Option<compose_ui::ColorProducer>,
+    content_description: Option<impl Into<compose_ui::SharedString>>,
+    #[default(crate::Modifier)] modifier: Modifier,
+) {
+    // Drawn in a layer filtered by the tint, as Compose's (a graphics layer's `colorFilter`).
+    let modifier = modifier.draw_with_content(move |scope| {
+        let Some(tint) = &tint else {
+            scope.draw_content();
+            return;
+        };
+        let filter = compose_ui::ColorFilter::tint((tint.0)());
+        let bounds = scope.bounds();
+        scope.save_layer(bounds, 1.0, Some(&filter), compose_ui::BlendMode::SrcOver);
+        scope.draw_content();
+        scope.restore();
+    });
+    PainterIcon(painter, content_description, modifier, Color::UNSPECIFIED);
+}
+
+/// `modifier` sized to an icon's default 24 dp when `painter` has no intrinsic size (or an
+/// infinite one), as Compose's `defaultSizeFor`.
+fn default_size_for(modifier: Modifier, painter: &compose_ui::Painter) -> Modifier {
+    let size = painter.intrinsic_size();
+    let unspecified = size.width.is_nan() && size.height.is_nan();
+    if unspecified || (size.width.is_infinite() && size.height.is_infinite()) {
+        modifier.size(24.dp())
+    } else {
+        modifier
+    }
+}
+
 struct IconElement {
     image_vector: ImageVector,
     tint: Color,

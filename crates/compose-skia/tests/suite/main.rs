@@ -4,7 +4,9 @@
 mod border_shapes;
 mod brush;
 mod capture;
+mod color_filters;
 mod line_height;
+mod painter;
 mod paragraph;
 mod path_semantics;
 mod path_steps;

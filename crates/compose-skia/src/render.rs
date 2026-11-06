@@ -1,7 +1,8 @@
 //! Replaying display lists onto a Skia canvas (docs/07-platforms.md, "The rendering interface").
 
 use compose_ui::{
-    Color, CompositingStrategy, Paint, PaintStyle, PathCommand, PathFillType, PathOperation, Rect,
+    BlendMode, Color, ColorFilter, CompositingStrategy, Paint, PaintStyle, PathCommand,
+    PathFillType, PathOperation, Rect,
     platform::{
         Boundary, DisplayList, DrawGroup, DrawOp, Optimization, Optimizations, Renderer,
         TextMeasurer, fits_in, single_drawing_extent,
@@ -10,6 +11,9 @@ use compose_ui::{
 use skia_safe::{Canvas, ClipOp, EncodedImageFormat, Point, RRect, Surface, Vector, paint};
 
 use crate::text::SkiaTextMeasurer;
+
+/// A recording's shaders and color filters, which its paints, images and layers name by index.
+type Tables<'a> = (&'a [compose_ui::platform::Shader], &'a [ColorFilter]);
 
 fn rect(rect: &Rect) -> skia_safe::Rect {
     skia_safe::Rect::new(rect.left, rect.top, rect.right, rect.bottom)
@@ -24,10 +28,11 @@ fn round_rect(bounds: &Rect, radii: &[f32; 4]) -> RRect {
 /// the operation applies before drawing, so the gradient stays in the list's coordinates).
 fn skia_paint_with(
     paint: &Paint,
-    shaders: &[compose_ui::platform::Shader],
+    tables: Tables<'_>,
     local: Option<&skia_safe::Matrix>,
 ) -> skia_safe::Paint {
-    let mut skia = skia_paint(paint);
+    let (shaders, filters) = tables;
+    let mut skia = skia_paint(paint, filters);
     if let Some(shader) = paint.shader().and_then(|index| shaders.get(index.0 as usize))
         && let Some(skia_shader) = skia_shader(shader, local)
     {
@@ -87,10 +92,74 @@ pub(crate) fn skia_shader(
     }
 }
 
-fn skia_paint(paint: &Paint) -> skia_safe::Paint {
+/// Skia's blend mode for `mode`: the same modes in the same order.
+pub(crate) fn skia_blend_mode(mode: BlendMode) -> skia_safe::BlendMode {
+    use skia_safe::BlendMode as Skia;
+    const MODES: [Skia; 29] = [
+        Skia::Clear,
+        Skia::Src,
+        Skia::Dst,
+        Skia::SrcOver,
+        Skia::DstOver,
+        Skia::SrcIn,
+        Skia::DstIn,
+        Skia::SrcOut,
+        Skia::DstOut,
+        Skia::SrcATop,
+        Skia::DstATop,
+        Skia::Xor,
+        Skia::Plus,
+        Skia::Modulate,
+        Skia::Screen,
+        Skia::Overlay,
+        Skia::Darken,
+        Skia::Lighten,
+        Skia::ColorDodge,
+        Skia::ColorBurn,
+        Skia::HardLight,
+        Skia::SoftLight,
+        Skia::Difference,
+        Skia::Exclusion,
+        Skia::Multiply,
+        Skia::Hue,
+        Skia::Saturation,
+        Skia::Color,
+        Skia::Luminosity,
+    ];
+    MODES[mode as usize]
+}
+
+/// Skia's color filter for `filter`. A matrix's offsets are in 0 to 255, as Android's
+/// `ColorMatrix` and Compose's; Skia's are in 0 to 1, as HWUI divides them.
+pub(crate) fn skia_color_filter(filter: &ColorFilter) -> Option<skia_safe::ColorFilter> {
+    let color = |color: Color| skia_safe::Color::new(color.argb());
+    match filter {
+        ColorFilter::BlendMode { color: tint, blend_mode } => {
+            skia_safe::color_filters::blend(color(*tint), skia_blend_mode(*blend_mode))
+        }
+        ColorFilter::Lighting { multiply, add } => {
+            skia_safe::color_filters::lighting(color(*multiply), color(*add))
+        }
+        ColorFilter::ColorMatrix(matrix) => {
+            let mut values = matrix.values;
+            for row in 0..4 {
+                values[row * 5 + 4] /= 255.0;
+            }
+            Some(skia_safe::color_filters::matrix_row_major(&values, None))
+        }
+    }
+}
+
+fn skia_paint(paint: &Paint, filters: &[ColorFilter]) -> skia_safe::Paint {
     let mut skia = skia_safe::Paint::default();
     skia.set_anti_alias(true);
     skia.set_color(skia_safe::Color::new(paint.color.argb()));
+    if paint.blend_mode != BlendMode::SrcOver {
+        skia.set_blend_mode(skia_blend_mode(paint.blend_mode));
+    }
+    if let Some(filter) = paint.color_filter().and_then(|index| filters.get(index.0 as usize)) {
+        skia.set_color_filter(skia_color_filter(filter));
+    }
     match paint.style {
         PaintStyle::Fill => {
             skia.set_style(paint::Style::Fill);
@@ -155,7 +224,8 @@ impl Walk<'_> {
             while let Some(boundary) = boundaries.next_if(|boundary| boundary.at <= index) {
                 self.group(boundary);
             }
-            draw_op(self.canvas, op, &recording.shaders, self.measurer, start, self.alpha);
+            let tables = (&recording.shaders[..], &recording.color_filters[..]);
+            draw_op(self.canvas, op, tables, self.measurer, start, self.alpha);
         }
         for boundary in boundaries {
             self.group(boundary);
@@ -203,7 +273,7 @@ impl Walk<'_> {
                         self.canvas.save_layer_alpha_f(rect(&bounds), alpha);
                         self.alpha = 1.0;
                     }
-                    op => draw_op(self.canvas, &op, &[], self.measurer, start, self.alpha),
+                    op => draw_op(self.canvas, &op, (&[], &[]), self.measurer, start, self.alpha),
                 }
             }
             if let Some(alpha) = layer.modulated_alpha() {
@@ -226,21 +296,23 @@ fn faded(mut paint: skia_safe::Paint, alpha: f32) -> skia_safe::Paint {
     paint
 }
 
-/// Draws `op` onto `canvas`, its paint's shader from `shaders`, its alpha multiplied by
-/// `alpha` (a drawing a paint's alpha doesn't reach, text and shadows, in a layer of that
-/// alpha); a restore below `start` (the save count its recording started at) is ignored.
+/// Draws `op` onto `canvas`, its paint's shader and color filter from `tables`, its alpha
+/// multiplied by `alpha` (a drawing a paint's alpha doesn't reach, text and shadows, in a
+/// layer of that alpha); a restore below `start` (the save count its recording started at) is
+/// ignored.
 fn draw_op(
     canvas: &Canvas,
     op: &DrawOp,
-    shaders: &[compose_ui::platform::Shader],
+    tables: Tables<'_>,
     measurer: Option<&SkiaTextMeasurer>,
     start: usize,
     alpha: f32,
 ) {
-    let skia_paint_with = |paint: &Paint,
-                           shaders: &[compose_ui::platform::Shader],
-                           local: Option<&skia_safe::Matrix>| {
-        faded(skia_paint_with(paint, shaders, local), alpha)
+    let filter = |index: &Option<compose_ui::platform::ColorFilterIndex>| {
+        index.and_then(|index| tables.1.get(index.0 as usize)).and_then(skia_color_filter)
+    };
+    let skia_paint_with = |paint: &Paint, tables: Tables<'_>, local: Option<&skia_safe::Matrix>| {
+        faded(skia_paint_with(paint, tables, local), alpha)
     };
     let own_layer =
         alpha < 1.0 && matches!(op, DrawOp::DrawParagraph(..) | DrawOp::DrawShadow { .. });
@@ -266,16 +338,16 @@ fn draw_op(
             canvas.clip_rrect(round_rect(bounds, radii), ClipOp::Intersect, true);
         }
         DrawOp::DrawRect(bounds, paint) => {
-            canvas.draw_rect(rect(bounds), &skia_paint_with(paint, shaders, None));
+            canvas.draw_rect(rect(bounds), &skia_paint_with(paint, tables, None));
         }
         DrawOp::DrawRoundRect(bounds, radii, paint) => {
-            canvas.draw_rrect(round_rect(bounds, radii), &skia_paint_with(paint, shaders, None));
+            canvas.draw_rrect(round_rect(bounds, radii), &skia_paint_with(paint, tables, None));
         }
         DrawOp::DrawLine(from, to, paint) => {
             canvas.draw_line(
                 Point::new(from.x, from.y),
                 Point::new(to.x, to.y),
-                &skia_paint_with(paint, shaders, None),
+                &skia_paint_with(paint, tables, None),
             );
         }
         DrawOp::DrawParagraph(handle, offset) => {
@@ -300,24 +372,19 @@ fn draw_op(
                 local.pre_translate((-offset.x, -offset.y));
                 local
             });
-            canvas.draw_path(&skia, &skia_paint_with(paint, shaders, local.as_ref()));
+            canvas.draw_path(&skia, &skia_paint_with(paint, tables, local.as_ref()));
             canvas.restore();
         }
         DrawOp::ClipPath { path, offset } => {
             let skia = skia_path(path).make_offset((offset.x, offset.y));
             canvas.clip_path(&skia, ClipOp::Intersect, true);
         }
-        DrawOp::DrawImage { image, src, dst, alpha: image_alpha, tint } => {
+        DrawOp::DrawImage { image, src, dst, alpha: image_alpha, color_filter } => {
             let (alpha, outer_alpha) = (*image_alpha, alpha);
             if let Some(skia) = skia_image(image) {
                 let mut paint = skia_safe::Paint::default();
                 paint.set_alpha_f(alpha.clamp(0.0, 1.0) * outer_alpha);
-                if let Some(tint) = tint {
-                    paint.set_color_filter(skia_safe::color_filters::blend(
-                        skia_safe::Color::new(tint.argb()),
-                        skia_safe::BlendMode::SrcIn,
-                    ));
-                }
+                paint.set_color_filter(filter(color_filter));
                 let sampling = skia_safe::SamplingOptions::new(
                     skia_safe::FilterMode::Linear,
                     skia_safe::MipmapMode::None,
@@ -337,7 +404,7 @@ fn draw_op(
                 *start_angle,
                 *sweep_angle,
                 *use_center,
-                &skia_paint_with(paint, shaders, None),
+                &skia_paint_with(paint, tables, None),
             );
         }
         DrawOp::DrawShadow {
@@ -384,6 +451,16 @@ fn draw_op(
         }
         DrawOp::SaveLayerAlpha { bounds, alpha } => {
             canvas.save_layer_alpha_f(rect(bounds), alpha.clamp(0.0, 1.0));
+        }
+        DrawOp::SaveLayer { bounds, alpha, color_filter, blend_mode } => {
+            let mut paint = skia_safe::Paint::default();
+            paint.set_alpha_f(alpha.clamp(0.0, 1.0));
+            paint.set_color_filter(filter(color_filter));
+            paint.set_blend_mode(skia_blend_mode(*blend_mode));
+            let bounds = rect(bounds);
+            canvas.save_layer(
+                &skia_safe::canvas::SaveLayerRec::default().bounds(&bounds).paint(&paint),
+            );
         }
         DrawOp::Transform { pivot, scale, rotation, translation } => {
             canvas.translate((pivot.x + translation.x, pivot.y + translation.y));

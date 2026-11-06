@@ -4,6 +4,7 @@
 use std::fmt::Write as _;
 use std::sync::Arc;
 
+use crate::color_filter::{BlendMode, ColorFilter, ColorFilterIndex};
 use crate::graphics::{Outline, Paint};
 use crate::text::ParagraphHandle;
 use crate::unit::{Offset, Rect};
@@ -30,6 +31,16 @@ pub enum DrawOp {
         bounds: Rect,
         alpha: f32,
     },
+    /// `SaveLayerAlpha` whose layer is also composited through `color_filter` (of the list's
+    /// `color_filters`) and with `blend_mode`, as `Canvas.saveLayer(bounds, paint)` with such a
+    /// paint: a painter's layer, an icon's tint producer. A layer with neither is a
+    /// `SaveLayerAlpha`.
+    SaveLayer {
+        bounds: Rect,
+        alpha: f32,
+        color_filter: Option<ColorFilterIndex>,
+        blend_mode: BlendMode,
+    },
     /// Transforms what follows (until the matching restore of an earlier save): scaled by
     /// `scale` and rotated by `rotation` degrees (clockwise) around `pivot`, then moved by
     /// `translation`, as a graphics layer.
@@ -39,14 +50,14 @@ pub enum DrawOp {
         rotation: f32,
         translation: Offset,
     },
-    /// The part `src` of a bitmap (in its pixels) drawn into `dst`, at `alpha`, its pixels all in
-    /// `tint` if any, as `ColorFilter.tint` (`SrcIn`).
+    /// The part `src` of a bitmap (in its pixels) drawn into `dst`, at `alpha`, through
+    /// `color_filter` (of the list's `color_filters`) if any, as `drawImage(…, colorFilter)`.
     DrawImage {
         image: crate::image::ImageBitmap,
         src: Rect,
         dst: Rect,
         alpha: f32,
-        tint: Option<crate::graphics::Color>,
+        color_filter: Option<ColorFilterIndex>,
     },
     /// The shadows of `outline` raised by `elevation` pixels, lit from `light` (x, y, z in the
     /// window's pixels, not moved by transforms) of `light_radius`: an ambient shadow in
@@ -98,6 +109,16 @@ impl DrawOp {
             _ => None,
         }
     }
+
+    /// The color filter a drawing operation or a layer names, if it can name one.
+    pub fn color_filter_mut(&mut self) -> Option<&mut Option<ColorFilterIndex>> {
+        match self {
+            DrawOp::DrawImage { color_filter, .. } | DrawOp::SaveLayer { color_filter, .. } => {
+                Some(color_filter)
+            }
+            op => op.paint_mut().map(|paint| &mut paint.color_filter),
+        }
+    }
 }
 
 /// Replays display lists onto a surface: Skia on desktop, Android's `Canvas` (docs/07-platforms.md).
@@ -131,6 +152,9 @@ pub struct DisplayList {
     /// The shaders its paints refer to (`Paint::shader`), by index: each recording's own, so a
     /// group's content is drawn with its content's shaders.
     pub shaders: Vec<crate::brush::Shader>,
+    /// The color filters its paints, images and layers refer to (`Paint::color_filter`), by
+    /// index, as `shaders`.
+    pub color_filters: Vec<ColorFilter>,
     /// The repaint boundaries drawn inside it, by reference, in drawing order: each before the
     /// operation at its `at`. Their groups are the frame's (`groups`), in the same order.
     pub boundaries: Vec<Boundary>,
@@ -201,6 +225,8 @@ pub struct FlatDisplayList {
     /// The shaders the paints refer to, by index: every recording's, their paints' indices
     /// shifted to them.
     pub shaders: Vec<crate::brush::Shader>,
+    /// The color filters they refer to, by index, as `shaders`.
+    pub color_filters: Vec<ColorFilter>,
 }
 
 /// A group in a flattened list: its content `ops[start..end]`, in its node's coordinates, keyed
@@ -229,6 +255,7 @@ impl DisplayList {
         self.merge_floor = 0;
         self.boundaries.clear();
         self.shaders.clear();
+        self.color_filters.clear();
         self.laid_out_paragraphs.clear();
     }
 
@@ -240,6 +267,21 @@ impl DisplayList {
     pub fn push_shader(&mut self, shader: crate::brush::Shader) -> crate::brush::ShaderIndex {
         self.shaders.push(shader);
         crate::brush::ShaderIndex(self.shaders.len() as u32 - 1)
+    }
+
+    /// Keeps `color_filter` for this list's paints, images and layers, returning the index they
+    /// refer to it by: the last one's if it's the same (a filter drawn again and again is kept
+    /// once).
+    pub fn push_color_filter(&mut self, color_filter: ColorFilter) -> ColorFilterIndex {
+        if self.color_filters.last() != Some(&color_filter) {
+            self.color_filters.push(color_filter);
+        }
+        ColorFilterIndex(self.color_filters.len() as u32 - 1)
+    }
+
+    /// The color filter `index` names in this list, if any.
+    pub fn color_filter(&self, index: Option<ColorFilterIndex>) -> Option<&ColorFilter> {
+        self.color_filters.get(index?.0 as usize)
     }
 
     /// The frame with every group's operations in place, its layer's around it: what a
@@ -276,6 +318,11 @@ impl DisplayList {
 }
 
 impl FlatDisplayList {
+    /// The color filter `index` names in this list, if any.
+    pub fn color_filter(&self, index: Option<ColorFilterIndex>) -> Option<&ColorFilter> {
+        self.color_filters.get(index?.0 as usize)
+    }
+
     /// A text dump, one operation per line, indented by save depth: for golden tests.
     pub fn dump(&self) -> String {
         let mut out = String::new();
@@ -285,7 +332,12 @@ impl FlatDisplayList {
                 depth = depth.saturating_sub(1);
             }
             let _ = write!(out, "{}", "  ".repeat(depth));
-            let paint_text = |paint: &Paint| paint_text(paint, &self.shaders);
+            let paint_text = |paint: &Paint| paint_text(paint, &self.shaders, &self.color_filters);
+            let filter_text = |index: &Option<ColorFilterIndex>| {
+                index
+                    .and_then(|index| self.color_filters.get(index.0 as usize))
+                    .map_or(String::new(), filter_text)
+            };
             let _ = match op {
                 DrawOp::Save => writeln!(out, "save"),
                 DrawOp::Restore => writeln!(out, "restore"),
@@ -321,14 +373,20 @@ impl FlatDisplayList {
                     writeln!(out, "paragraph {} at {} {}", handle.0, offset.x, offset.y)
                 }
                 DrawOp::SaveLayerAlpha { alpha, .. } => writeln!(out, "save layer alpha {alpha}"),
-                DrawOp::DrawImage { image, src, dst, alpha, tint } => writeln!(
+                DrawOp::SaveLayer { alpha, color_filter, blend_mode, .. } => writeln!(
+                    out,
+                    "save layer alpha {alpha}{}{}",
+                    filter_text(color_filter),
+                    blend_text(*blend_mode)
+                ),
+                DrawOp::DrawImage { image, src, dst, alpha, color_filter } => writeln!(
                     out,
                     "image {}x{} {} into {} alpha {alpha}{}",
                     image.width(),
                     image.height(),
                     rect_text(src),
                     rect_text(dst),
-                    tint.map_or(String::new(), |tint| format!(" tint {tint:?}")),
+                    filter_text(color_filter),
                 ),
                 DrawOp::DrawPath { path, offset, scale, paint } => writeln!(
                     out,
@@ -373,7 +431,8 @@ impl FlatDisplayList {
                     offset.y
                 ),
             };
-            if matches!(op, DrawOp::Save | DrawOp::SaveLayerAlpha { .. }) {
+            if matches!(op, DrawOp::Save | DrawOp::SaveLayerAlpha { .. } | DrawOp::SaveLayer { .. })
+            {
                 depth += 1;
             }
         }
@@ -392,7 +451,7 @@ pub fn single_drawing(ops: &[DrawOp]) -> Option<usize> {
     let mut drawings = 0;
     for (index, op) in ops.iter().enumerate() {
         match op {
-            DrawOp::SaveLayerAlpha { .. } => return None,
+            DrawOp::SaveLayerAlpha { .. } | DrawOp::SaveLayer { .. } => return None,
             DrawOp::Save => depth += 1,
             DrawOp::Restore if depth == 0 => return (drawings == 1).then_some(index),
             DrawOp::Restore => depth -= 1,
@@ -473,7 +532,10 @@ pub fn fits_in(extent: Rect, bounds: Rect) -> bool {
 /// What `op`, a drawing with a fill paint, can touch ([`single_drawing_extent`]); `None` for a
 /// stroke (a line is always one).
 fn fill_extent(op: &DrawOp) -> Option<Rect> {
-    let fill = |paint: &Paint| matches!(paint.style, crate::graphics::PaintStyle::Fill);
+    // A filter or a blend mode doesn't commute with a layer's alpha.
+    let fill = |paint: &Paint| {
+        matches!(paint.style, crate::graphics::PaintStyle::Fill) && paint.is_plain()
+    };
     let sorted = |rect: Rect| {
         Rect::new(
             rect.left.min(rect.right),
@@ -523,14 +585,18 @@ fn flatten_into(
     // Its shaders become the list's, its paints' indices shifted to them.
     let base = if recording.shaders.is_empty() { 0 } else { flat.shaders.len() as u32 };
     flat.shaders.extend_from_slice(&recording.shaders);
+    let filter_base =
+        if recording.color_filters.is_empty() { 0 } else { flat.color_filters.len() as u32 };
+    flat.color_filters.extend_from_slice(&recording.color_filters);
+    let bases = (base, filter_base);
     let mut from = 0;
     for boundary in &recording.boundaries {
         let at = boundary.at.clamp(from, recording.ops.len());
-        extend_shifted(&mut flat.ops, &recording.ops[from..at], base);
+        extend_shifted(&mut flat.ops, &recording.ops[from..at], bases);
         flatten_group(boundary, groups, next, flat);
         from = at;
     }
-    extend_shifted(&mut flat.ops, &recording.ops[from..], base);
+    extend_shifted(&mut flat.ops, &recording.ops[from..], bases);
 }
 
 /// Appends the group at `next` (and the ones nested in it) to `flat`: its layer's operations
@@ -573,8 +639,12 @@ fn flatten_group(
     });
 }
 
-/// Appends `ops`, from a list whose shaders are the target's from `base` on.
-fn extend_shifted(target: &mut Vec<DrawOp>, ops: &[DrawOp], base: u32) {
+/// Appends `ops`, from a list whose shaders and color filters are the target's from `bases` on.
+pub(crate) fn extend_shifted(
+    target: &mut Vec<DrawOp>,
+    ops: &[DrawOp],
+    (base, filter_base): (u32, u32),
+) {
     let start = target.len();
     target.extend_from_slice(ops);
     if base > 0 {
@@ -584,21 +654,50 @@ fn extend_shifted(target: &mut Vec<DrawOp>, ops: &[DrawOp], base: u32) {
             }
         }
     }
+    if filter_base > 0 {
+        for op in &mut target[start..] {
+            if let Some(Some(index)) = op.color_filter_mut() {
+                index.0 += filter_base;
+            }
+        }
+    }
 }
 
 fn rect_text(rect: &Rect) -> String {
     format!("{},{} {}x{}", rect.left, rect.top, rect.width(), rect.height())
 }
 
-fn paint_text(paint: &Paint, shaders: &[crate::brush::Shader]) -> String {
+fn paint_text(paint: &Paint, shaders: &[crate::brush::Shader], filters: &[ColorFilter]) -> String {
     let color = match paint.shader.and_then(|index| shaders.get(index.0 as usize)) {
         Some(shader) => shader_text(shader),
         None => format!("{:?}", paint.color),
     };
-    match paint.style {
+    let mut text = match paint.style {
         crate::graphics::PaintStyle::Fill => color,
         crate::graphics::PaintStyle::Stroke(width) => format!("{color} stroke {width}"),
+    };
+    if let Some(filter) = paint.color_filter.and_then(|index| filters.get(index.0 as usize)) {
+        text.push_str(&filter_text(filter));
     }
+    text.push_str(&blend_text(paint.blend_mode));
+    text
+}
+
+/// A color filter in a dump, after a space: a `SrcIn` tint as `tint`.
+fn filter_text(filter: &ColorFilter) -> String {
+    match filter {
+        ColorFilter::BlendMode { color, blend_mode: BlendMode::SrcIn } => {
+            format!(" tint {color:?}")
+        }
+        ColorFilter::BlendMode { color, blend_mode } => format!(" tint {color:?} {blend_mode:?}"),
+        ColorFilter::Lighting { multiply, add } => format!(" lighting {multiply:?} {add:?}"),
+        ColorFilter::ColorMatrix(matrix) => format!(" color matrix {:?}", matrix.values),
+    }
+}
+
+/// A blend mode in a dump, after a space: nothing for `SrcOver`.
+fn blend_text(blend_mode: BlendMode) -> String {
+    if blend_mode == BlendMode::SrcOver { String::new() } else { format!(" blend {blend_mode:?}") }
 }
 
 fn shader_text(shader: &crate::brush::Shader) -> String {

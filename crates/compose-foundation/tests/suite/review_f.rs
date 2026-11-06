@@ -181,7 +181,9 @@ fn painted(
     };
     for op in &list.ops {
         match op {
-            DrawOp::Save | DrawOp::SaveLayerAlpha { .. } => saved.push(clip),
+            DrawOp::Save | DrawOp::SaveLayerAlpha { .. } | DrawOp::SaveLayer { .. } => {
+                saved.push(clip)
+            }
             DrawOp::Restore => clip = saved.pop().unwrap_or(everything),
             DrawOp::Translate(offset) => {
                 x += offset.x;

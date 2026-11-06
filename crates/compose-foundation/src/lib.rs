@@ -53,7 +53,7 @@ pub use gestures::{
     remember_draggable_2d_state, remember_draggable_state, remember_scrollable_state,
     scrollable_state,
 };
-pub use image::{ContentScale, Image};
+pub use image::{ContentScale, Image, PainterImage};
 pub use lazy::pager::{
     HorizontalPager, PageInfo, PageSize, PagerDefaults, PagerLayoutInfo, PagerScope,
     PagerSnapDistance, PagerState, VerticalPager, pager_key, pager_snap_distance_at_most,

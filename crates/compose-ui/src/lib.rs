@@ -20,6 +20,7 @@ mod border;
 mod brush;
 mod clickable;
 mod clipboard;
+mod color_filter;
 mod configuration;
 mod constraints;
 mod content_scale;
@@ -65,6 +66,7 @@ mod nodes;
 mod observer_node;
 mod optimizations;
 mod overlay;
+mod painter;
 mod paragraph;
 mod paragraph_style;
 mod parent_data;
@@ -114,6 +116,7 @@ mod word_boundary;
 pub mod platform {
     pub use crate::brush::{Gradient, Shader, ShaderIndex};
     pub use crate::clipboard::MemoryClipboard;
+    pub use crate::color_filter::ColorFilterIndex;
     pub use crate::configuration::{
         Insets, InsetsType, InsetsVisibility, LOCAL_WINDOW_INSETS_SOURCE, PlatformWindowInsets,
         WindowInsetsSource,
@@ -191,6 +194,7 @@ pub use border::{BorderRenderer, BorderStroke};
 pub use brush::{Brush, ColorStops, TileMode};
 pub use clickable::TAP_INDICATION_DELAY;
 pub use clipboard::{ClipboardManager, LOCAL_CLIPBOARD_MANAGER};
+pub use color_filter::{BlendMode, ColorFilter, ColorMatrix};
 pub use configuration::{
     Configuration, HostEvents, HostProps, LOCAL_CONFIGURATION, LOCAL_HOST_EVENTS, LOCAL_HOST_PROPS,
     PropValue, ScreenOrientation,
@@ -275,6 +279,7 @@ pub use nested_scroll::{
 pub use node_context::{NodeContext, NodeHandle};
 pub use observer_node::ObserverModifierNode;
 pub use overlay::{PopupPositionProvider, WindowPosition};
+pub use painter::{BitmapPainter, ColorPainter, CustomPainter, Painter};
 pub use paragraph::{Paragraph, TextLayoutInput};
 pub use paragraph_style::ParagraphStyle;
 pub use parent_data::{LayoutIdParentData, ParentDataModifierNode};
