@@ -149,6 +149,7 @@ mod snapping;
 mod subcompose_layout;
 mod text_field_semantics;
 mod text_field_state;
+mod text_field_transformation;
 mod text_field_undo;
 mod text_input;
 mod text_reuse;

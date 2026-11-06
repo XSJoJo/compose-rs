@@ -15,7 +15,7 @@ use compose_runtime::{Callback, ComposeArg, composable};
 
 use crate::text_field_buffer::TextFieldCharSequence;
 use crate::text_undo::TextFieldEditUndoBehavior;
-use crate::{TextFieldLineLimits, TextFieldState};
+use crate::{InputTransformation, KeyboardActionHandler, TextFieldLineLimits, TextFieldState};
 
 use crate::text_input::{
     ImeAction, KeyboardActions, KeyboardOptions, OffsetMapping, VisualTransformation,
@@ -129,23 +129,34 @@ pub fn inner_text_field_only(inner_text_field: Callback) {
 /// a single line's Enter do Compose's default actions: `Next` and `Previous` move the focus,
 /// `Done` hides the on-screen keyboard.
 ///
-/// Not yet Compose's (docs/parity/design/text-field-state.md): `input_transformation`,
-/// `on_keyboard_action`, `on_text_layout`, `output_transformation`, `scroll_state`; a single line
-/// draws a new line as it is (D1131). Undo and redo are the state's history (D1132).
+/// `input_transformation` changes or rejects each of the user's edits before it reaches the state,
+/// its keyboard options filling what `keyboard_options` doesn't say; `on_keyboard_action` hears the
+/// action key with the default action, to call or not (D1133). Undo and redo are the state's
+/// history (D1132).
+///
+/// Not yet Compose's (docs/parity/design/text-field-state.md): `on_text_layout`,
+/// `output_transformation`, `scroll_state`; a single line draws a new line as it is (D1131).
 #[composable]
 pub fn BasicTextFieldOfState(
     state: TextFieldState,
     #[default(crate::Modifier)] modifier: Modifier,
     #[default(true)] enabled: bool,
     #[default(false)] read_only: bool,
+    #[default(None)] input_transformation: Option<InputTransformation>,
     #[default(crate::TextStyle::DEFAULT)] text_style: TextStyle,
     #[default(crate::KeyboardOptions::DEFAULT)] keyboard_options: KeyboardOptions,
+    #[default(None)] on_keyboard_action: Option<KeyboardActionHandler>,
     #[default(crate::TextFieldLineLimits::DEFAULT)] line_limits: TextFieldLineLimits,
     #[default(None)] interaction_source: Option<compose_ui::MutableInteractionSource>,
     #[default(crate::Brush::solid(crate::Color::BLACK))] cursor_brush: compose_ui::Brush,
     #[default(crate::inner_text_field_only)] decorator: impl Fn(Callback) + 'static,
 ) {
     line_limits.validate();
+    // What the field's options don't say, its transformation's say, as Compose's
+    // `fillUnspecifiedValuesWith`, read in composition.
+    let transformation_options = input_transformation.as_ref().and_then(|it| it.keyboard_options());
+    let keyboard_options =
+        keyboard_options.fill_unspecified_values_with(transformation_options.as_ref());
     let interaction_source_for_press = if enabled { interaction_source.clone() } else { None };
     let element: Rc<dyn AnyModifierNodeElement> = Rc::new(StateTextFieldElement {
         state,
@@ -157,6 +168,16 @@ pub fn BasicTextFieldOfState(
         selection_color: crate::LOCAL_TEXT_SELECTION_COLORS.current().background_color,
         keyboard_options,
         interaction_source,
+        input_transformation,
+        // What its default action uses, read where it's composed, as Compose's node's
+        // `currentValueOf`: only for a handler, which calls it outside the event.
+        default_action: on_keyboard_action.as_ref().map(|_| {
+            (
+                compose_ui::LOCAL_FOCUS_MANAGER.current(),
+                compose_ui::LOCAL_SOFTWARE_KEYBOARD_CONTROLLER.current(),
+            )
+        }),
+        on_keyboard_action,
     });
     let press_source = interaction_source_for_press;
     let inner_text_field = Callback::new(move || {
@@ -188,7 +209,15 @@ pub(crate) struct StateTextFieldElement {
     pub selection_color: Color,
     pub keyboard_options: KeyboardOptions,
     pub interaction_source: Option<compose_ui::MutableInteractionSource>,
+    pub input_transformation: Option<InputTransformation>,
+    pub on_keyboard_action: Option<KeyboardActionHandler>,
+    pub default_action: Option<DefaultActionTargets>,
 }
+
+/// What a keyboard action handler's default action moves the focus with and hides the keyboard
+/// with.
+pub(crate) type DefaultActionTargets =
+    (compose_ui::FocusManager, Option<compose_ui::SoftwareKeyboardController>);
 
 impl StateTextFieldElement {
     /// The cursor's color, and its brush when it isn't one color.
@@ -222,7 +251,11 @@ impl ModifierNodeElement for StateTextFieldElement {
             interaction_source: self.interaction_source.clone(),
         }
         .create();
-        node.state = Some(Box::new(StateLink::new(self.state, cursor_brush)));
+        let mut link = StateLink::new(self.state, cursor_brush);
+        link.input_transformation = self.input_transformation.clone();
+        link.on_keyboard_action = self.on_keyboard_action.clone();
+        link.default_action = self.default_action.clone();
+        node.state = Some(Box::new(link));
         // What the state holds, read without observing it: composition isn't to recompose on it.
         RuntimeSnapshot::without_read_observation(|| node.adopt_state());
         node
@@ -240,6 +273,9 @@ impl ModifierNodeElement for StateTextFieldElement {
             link.seen = None;
         }
         link.cursor_brush = cursor_brush;
+        link.input_transformation = self.input_transformation.clone();
+        link.on_keyboard_action = self.on_keyboard_action.clone();
+        link.default_action = self.default_action.clone();
         if node.style != self.style || node.single_line != single_line {
             if node.style != self.style {
                 node.line_bounds = None;
@@ -281,6 +317,24 @@ impl ModifierNodeElement for StateTextFieldElement {
             && other.selection_color == self.selection_color
             && other.keyboard_options == self.keyboard_options
             && other.interaction_source == self.interaction_source
+            && other.input_transformation == self.input_transformation
+            && match (&other.on_keyboard_action, &self.on_keyboard_action) {
+                (Some(a), Some(b)) => a.same(b),
+                (None, None) => true,
+                _ => false,
+            }
+            && match (&other.default_action, &self.default_action) {
+                (Some((a, x)), Some((b, y))) => {
+                    a.same(b)
+                        && match (x, y) {
+                            (Some(x), Some(y)) => x.same(y),
+                            (None, None) => true,
+                            _ => false,
+                        }
+                }
+                (None, None) => true,
+                _ => false,
+            }
     }
 
     fn name(&self) -> &'static str {
@@ -331,6 +385,12 @@ pub(crate) struct StateLink {
     listener: u64,
     /// The cursor's brush, when it isn't one color.
     cursor_brush: Option<compose_ui::Brush>,
+    /// What the user's edits go through before the state (D1133).
+    input_transformation: Option<InputTransformation>,
+    /// What the keyboard's action key does (D1133).
+    on_keyboard_action: Option<KeyboardActionHandler>,
+    /// What the handler's default action uses.
+    default_action: Option<DefaultActionTargets>,
 }
 
 impl StateLink {
@@ -348,6 +408,9 @@ impl StateLink {
             restart,
             listener,
             cursor_brush,
+            input_transformation: None,
+            on_keyboard_action: None,
+            default_action: None,
         }
     }
 
@@ -755,9 +818,10 @@ impl TextFieldNode {
         }
     }
 
+    /// Returns whether the state took something else than the node proposed.
     #[inline(never)]
-    fn publish_state_now(&mut self, source: EditSource) {
-        let Some(link) = self.state.as_mut() else { return };
+    fn publish_state_now(&mut self, source: EditSource) -> bool {
+        let Some(link) = self.state.as_mut() else { return false };
         let selection = TextRange::new(self.anchor, self.cursor);
         let composition =
             self.composition.clone().map(|range| TextRange::new(range.start, range.end));
@@ -768,7 +832,7 @@ impl TextFieldNode {
         if link.edits.is_empty() && unchanged {
             // A cut or paste that changed nothing leaves the next edit to merge.
             link.never_merge = false;
-            return;
+            return false;
         }
         let edits = std::mem::take(&mut link.edits);
         let undo_behavior = if std::mem::take(&mut link.never_merge) {
@@ -779,27 +843,63 @@ impl TextFieldNode {
         let text = &self.text;
         let restart = matches!(source, EditSource::HardwareKey | EditSource::Other);
         let hardware = source == EditSource::HardwareKey;
-        link.state.edit_as_user(restart, undo_behavior, |buffer| {
-            // Each edit where it was made, as Compose's field edits its state's buffer.
-            for (range, inserted) in &edits {
-                buffer.replace_part(range.start, range.end, inserted, 0, inserted.len(), hardware);
-            }
-            // The state holds what the node started from, so its edits make the node's text; if
-            // not (nothing known breaks it), the difference.
-            if buffer.as_str() != text.as_str() {
-                debug_assert!(false, "a field's edits didn't make its text");
-                buffer.set_text_if_changed(text);
-            }
-            buffer.set_selection_coerced(selection);
-            match composition {
-                Some(range) if !range.collapsed() => {
-                    buffer.set_composition(range.min(), range.max())
+        let transformation = link.input_transformation.clone();
+        link.state.edit_as_user_transformed(
+            transformation.as_ref(),
+            restart,
+            undo_behavior,
+            |buffer| {
+                // Each edit where it was made, as Compose's field edits its state's buffer.
+                for (range, inserted) in &edits {
+                    buffer.replace_part(
+                        range.start,
+                        range.end,
+                        inserted,
+                        0,
+                        inserted.len(),
+                        hardware,
+                    );
                 }
-                _ => buffer.commit_composition(),
-            }
+                // The state holds what the node started from, so its edits make the node's text; if
+                // not (nothing known breaks it), the difference.
+                if buffer.as_str() != text.as_str() {
+                    debug_assert!(false, "a field's edits didn't make its text");
+                    buffer.set_text_if_changed(text);
+                }
+                buffer.set_selection_coerced(selection);
+                match composition {
+                    Some(range) if !range.collapsed() => {
+                        buffer.set_composition(range.min(), range.max())
+                    }
+                    _ => buffer.commit_composition(),
+                }
+            },
+        );
+        // As the state holds it: an equal value it kept is the one to compare with; one a
+        // transformation changed is taken in.
+        let value = link.state.current_untracked();
+        let differs = value.as_ref().is_some_and(|value| {
+            *value.text != *self.text
+                || value.selection != selection
+                || value.composition != composition
         });
-        // As the state holds it: an equal value it kept is the one to compare with.
-        link.seen = link.state.current_untracked();
+        link.seen = value;
+        if differs {
+            link.seen = None;
+            self.adopt_state_now();
+        }
+        differs
+    }
+
+    /// `publish_state` in an event: what a transformation changed is measured, drawn and told
+    /// again.
+    #[inline]
+    fn publish_state_in(&mut self, source: EditSource, context: &mut EventContext<'_>) {
+        if self.state.is_some() && self.publish_state_now(source) {
+            context.invalidate_measure();
+            context.invalidate_semantics();
+            context.invalidate_draw();
+        }
     }
 
     /// An edit the input method didn't make (a cut, a paste) restarts it, as Compose's
@@ -1349,6 +1449,20 @@ impl TextFieldNode {
     /// Compose's default (`Next` and `Previous` move the focus, `Done` hides the on-screen
     /// keyboard). Returns whether something was done.
     fn perform_ime_action(&mut self, action: ImeAction, context: &mut EventContext<'_>) -> bool {
+        // A state-based field's handler, given the default action, as Compose's
+        // `onImeActionPerformed`; `None` and `Default` are never its.
+        if let Some(link) = &self.state
+            && let (Some(handler), Some((focus_manager, keyboard))) =
+                (link.on_keyboard_action.clone(), link.default_action.clone())
+            && !matches!(action, ImeAction::None | ImeAction::Default | ImeAction::Unspecified)
+        {
+            context.run(move || {
+                handler.on_keyboard_action(&|| {
+                    default_keyboard_action(action, &focus_manager, keyboard.as_ref());
+                })
+            });
+            return true;
+        }
         match (self.keyboard_actions.action(action), action) {
             (Some(callback), _) => context.call(callback),
             (None, ImeAction::Next) => context.move_focus(true),
@@ -1357,6 +1471,31 @@ impl TextFieldNode {
             _ => return false,
         }
         true
+    }
+}
+
+/// Compose's default for `action`, outside an event (a keyboard action handler's): `Next` and
+/// `Previous` move the focus, `Done` hides the on-screen keyboard, as
+/// `defaultKeyboardActionWithResult`.
+fn default_keyboard_action(
+    action: ImeAction,
+    focus_manager: &compose_ui::FocusManager,
+    keyboard: Option<&compose_ui::SoftwareKeyboardController>,
+) {
+    use compose_ui::FocusDirection;
+    match action {
+        ImeAction::Next => {
+            focus_manager.move_focus(FocusDirection::Next);
+        }
+        ImeAction::Previous => {
+            focus_manager.move_focus(FocusDirection::Previous);
+        }
+        ImeAction::Done => {
+            if let Some(keyboard) = keyboard {
+                keyboard.hide();
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1852,7 +1991,7 @@ impl PointerInputModifierNode for TextFieldNode {
         if selection != (self.anchor, self.cursor) {
             context.invalidate_semantics();
         }
-        self.publish_state(EditSource::Other);
+        self.publish_state_in(EditSource::Other, context);
     }
 
     fn on_cancel_pointer_input(&mut self) {
@@ -1887,7 +2026,7 @@ impl FocusTargetModifierNode for TextFieldNode {
             None => self.pending_tap = Some(position),
         }
         context.invalidate_measure();
-        self.publish_state(EditSource::Other);
+        self.publish_state_in(EditSource::Other, context);
     }
 
     fn on_focus_changed(
@@ -1935,7 +2074,7 @@ impl FocusTargetModifierNode for TextFieldNode {
             context.invalidate_semantics();
         }
         context.invalidate_draw();
-        self.publish_state(EditSource::Other);
+        self.publish_state_in(EditSource::Other, context);
     }
 }
 
@@ -2138,7 +2277,8 @@ impl TextFieldNode {
             }
             // A single line's Enter performs its action, as Compose's `onImeActionPerformed`.
             Key::Enter | Key::NumPadEnter if self.single_line => {
-                self.perform_ime_action(self.keyboard_options.ime_action, context)
+                let action = self.keyboard_options.to_ime_options(true).ime_action;
+                self.perform_ime_action(action, context)
             }
             _ => false,
         }
@@ -2160,7 +2300,7 @@ impl KeyInputModifierNode for TextFieldNode {
         }
         // An on-screen keyboard's key is its own edit: it doesn't restart it, as Compose's key
         // handler (`restartImeIfContentChanges = !isFromSoftKeyboard`).
-        self.publish_state(source);
+        self.publish_state_in(source, context);
         consumed
     }
 
@@ -2178,7 +2318,7 @@ impl KeyInputModifierNode for TextFieldNode {
         // The text of an on-screen keyboard's key is its own edit, as the key is.
         let source = self.state.as_mut().and_then(|link| link.typed_by.take());
         // Without a key, the platform's input method committed it.
-        self.publish_state(source.unwrap_or(EditSource::InputMethod));
+        self.publish_state_in(source.unwrap_or(EditSource::InputMethod), context);
         true
     }
 
@@ -2193,7 +2333,7 @@ impl KeyInputModifierNode for TextFieldNode {
             context.invalidate_draw();
             context.reset_input_method();
         }
-        self.publish_state(EditSource::InputMethod);
+        self.publish_state_in(EditSource::InputMethod, context);
     }
 
     fn on_preedit(
@@ -2221,7 +2361,7 @@ impl KeyInputModifierNode for TextFieldNode {
             None => self.apply_input_method_commands(&[&composing], context),
         }
         self.preedit = self.composition.is_some();
-        self.publish_state(EditSource::InputMethod);
+        self.publish_state_in(EditSource::InputMethod, context);
         true
     }
 
@@ -2253,7 +2393,7 @@ impl KeyInputModifierNode for TextFieldNode {
         self.preferred_x = None;
         self.preedit = false;
         self.apply_input_method_commands(commands, context);
-        self.publish_state(EditSource::InputMethod);
+        self.publish_state_in(EditSource::InputMethod, context);
         true
     }
 
@@ -2398,7 +2538,7 @@ impl KeyInputModifierNode for TextFieldNode {
             action => action,
         };
         let performed = self.perform_ime_action(action, context);
-        self.publish_state(EditSource::InputMethod);
+        self.publish_state_in(EditSource::InputMethod, context);
         performed
     }
 
@@ -2473,6 +2613,12 @@ impl SemanticsModifierNode for TextFieldNode {
         if editable {
             config.paste_text_of_node();
         }
+        // What a state-based field's transformation says (its longest text).
+        if let Some(transformation) =
+            self.state.as_ref().and_then(|link| link.input_transformation.as_ref())
+        {
+            transformation.apply_semantics(config);
+        }
     }
 
     fn perform_text_action(
@@ -2482,7 +2628,7 @@ impl SemanticsModifierNode for TextFieldNode {
     ) -> bool {
         self.adopt_state_in(context);
         let performed = self.perform_text_action_here(action, context);
-        self.publish_state(EditSource::Other);
+        self.publish_state_in(EditSource::Other, context);
         performed
     }
 

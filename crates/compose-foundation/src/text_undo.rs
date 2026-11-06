@@ -972,3 +972,57 @@ mod tests {
         assert_eq!(count.get(), 0);
     }
 }
+
+#[cfg(test)]
+mod transformation_tests {
+    use compose_ui::{Locale, TextRange};
+
+    use super::*;
+    use crate::InputTransformation;
+
+    const MERGE: TextFieldEditUndoBehavior = TextFieldEditUndoBehavior::MergeIfPossible;
+
+    // Compose: compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/input/internal/undo/TextUndoTest.kt, undoHistoryIncludesInputTransformation
+    #[test]
+    fn the_history_is_of_what_the_transformation_left() {
+        let state = TextFieldState::with_selection("abc", TextRange::at(3));
+        let all_caps = InputTransformation::all_caps(Locale::new("en"));
+        for appended in ["d", "e"] {
+            state.edit_as_user_transformed(Some(&all_caps), true, MERGE, |buffer| {
+                buffer.commit_composition();
+                buffer.append(appended);
+            });
+        }
+        assert_eq!(state.text().as_str(), "abcDE");
+        state.undo_state().undo();
+        assert_eq!(state.text().as_str(), "abc");
+        state.undo_state().redo();
+        assert_eq!(state.text().as_str(), "abcDE");
+    }
+
+    // Compose: compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/input/internal/undo/TextUndoTest.kt, replaceAll_withLongerAutofillTextAndFilter_undoRestoresOriginalText
+    #[test]
+    fn undo_of_a_filtered_replacement_brings_the_text_back() {
+        let state = TextFieldState::with_selection("1234", TextRange::at(2));
+        let filter = InputTransformation::from_fn(|buffer| {
+            if buffer.length() > 4 {
+                buffer.replace(0, 4, "5678");
+                buffer.delete(4, buffer.length());
+            }
+        });
+        let undo = state.undo_state();
+        assert!(!undo.can_undo() && !undo.can_redo());
+        state.edit_as_user_transformed(Some(&filter), true, MERGE, |buffer| {
+            buffer.delete(0, buffer.length());
+            buffer.append("1234567890123456");
+        });
+        assert_eq!(state.text().as_str(), "5678");
+        assert!(undo.can_undo() && !undo.can_redo());
+        undo.undo();
+        assert_eq!((state.text().as_str(), state.selection()), ("1234", TextRange::at(2)));
+        assert!(!undo.can_undo() && undo.can_redo());
+        undo.redo();
+        assert_eq!(state.text().as_str(), "5678");
+        assert!(undo.can_undo() && !undo.can_redo());
+    }
+}

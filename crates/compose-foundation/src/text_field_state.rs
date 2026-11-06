@@ -12,7 +12,8 @@ use compose_runtime::{
 };
 use compose_ui::{SharedString, TextRange};
 
-use crate::text_field_buffer::{TextFieldBuffer, TextFieldCharSequence};
+use crate::InputTransformation;
+use crate::text_field_buffer::{ChangeList, TextFieldBuffer, TextFieldCharSequence};
 use crate::text_undo::{TextFieldEditUndoBehavior, TextUndoManager, UndoState};
 
 /// Told of each new value, as Compose's `NotifyImeListener`: the value before, the value now, and
@@ -183,13 +184,27 @@ impl TextFieldState {
         self.update_value_and_notify(&before, after, true);
     }
 
-    /// Edits for the user (keys, the pointer, an input method, semantics), as Compose's
-    /// `editAsUser` without an input transformation: `block` edits a buffer of the value, whose
-    /// change, composition included, is taken as it is. The input method starts over only if the
-    /// text changed under a composition and `restart_ime_if_content_changes` (false for its own
-    /// edits). The edit enters the history by `undo_behavior`.
+    /// [`edit_as_user_transformed`](Self::edit_as_user_transformed) without a transformation.
+    #[cfg(test)]
     pub(crate) fn edit_as_user(
         &self,
+        restart_ime_if_content_changes: bool,
+        undo_behavior: TextFieldEditUndoBehavior,
+        block: impl FnOnce(&mut TextFieldBuffer),
+    ) {
+        self.edit_as_user_transformed(None, restart_ime_if_content_changes, undo_behavior, block);
+    }
+
+    /// Edits for the user (keys, the pointer, an input method, semantics), as Compose's
+    /// `editAsUser` and `commitEditAsUser`: `block` edits a buffer of the value, whose change,
+    /// composition included, is proposed to `input_transformation`, which sees the edit's changes
+    /// and may change or reject them. A change of the text or selection alone runs it, a
+    /// composition alone doesn't. The input method starts over only if the text changed under a
+    /// composition and `restart_ime_if_content_changes` (false for its own edits), or when the
+    /// transformation changed what it proposed. The edit enters the history by `undo_behavior`.
+    pub(crate) fn edit_as_user_transformed(
+        &self,
+        input_transformation: Option<&InputTransformation>,
         restart_ime_if_content_changes: bool,
         undo_behavior: TextFieldEditUndoBehavior,
         block: impl FnOnce(&mut TextFieldBuffer),
@@ -211,19 +226,52 @@ impl TextFieldState {
         }
         let text = if changes > 0 { Rc::from(buffer.as_str()) } else { before.text.clone() };
         let after = TextFieldCharSequence::new(text, buffer.selection(), buffer.composition());
-        self.update_value_and_notify(
-            &before,
-            after.clone(),
-            changes > 0 && restart_ime_if_content_changes,
-        );
-        self.with_undo(|undo| match undo_behavior {
-            TextFieldEditUndoBehavior::MergeIfPossible => {
-                undo.record_changes(&before, &after, buffer.changes(), true)
-            }
-            TextFieldEditUndoBehavior::NeverMerge => {
-                undo.record_changes(&before, &after, buffer.changes(), false)
-            }
-        });
+        let Some(transformation) = input_transformation else {
+            self.update_value_and_notify(
+                &before,
+                after.clone(),
+                changes > 0 && restart_ime_if_content_changes,
+            );
+            self.record(&before, &after, buffer.changes(), undo_behavior);
+            return;
+        };
+        // The transformation's buffer: the edit made, from the value before it.
+        let mut transformed =
+            TextFieldBuffer::with_original(after.clone(), before.clone(), Some(buffer.changes()));
+        transformation.transform_input(&mut transformed);
+        let text_changed = transformed.as_str() != &*after.text;
+        let selection_changed = transformed.selection() != after.selection;
+        let value = if text_changed || selection_changed {
+            // What the input method proposed was changed: it composes again, told of it, as
+            // Compose's `syncMainBufferToTemporaryBuffer`.
+            let text =
+                if text_changed { Rc::from(transformed.as_str()) } else { after.text.clone() };
+            let value = TextFieldCharSequence::new(text, transformed.selection(), None);
+            self.update_value_and_notify(&after, value.clone(), true);
+            value
+        } else {
+            // Taken as proposed: the composition stays.
+            let value = TextFieldCharSequence::new(
+                after.text.clone(),
+                transformed.selection(),
+                after.composition,
+            );
+            self.update_value_and_notify(&before, value.clone(), restart_ime_if_content_changes);
+            value
+        };
+        self.record(&before, &value, transformed.changes(), undo_behavior);
+    }
+
+    /// Records the change from `pre` to `post` in the history, by `undo_behavior`.
+    fn record(
+        &self,
+        pre: &TextFieldCharSequence,
+        post: &TextFieldCharSequence,
+        changes: &ChangeList,
+        undo_behavior: TextFieldEditUndoBehavior,
+    ) {
+        let allow_merge = undo_behavior == TextFieldEditUndoBehavior::MergeIfPossible;
+        self.with_undo(|undo| undo.record_changes(pre, post, changes, allow_merge));
     }
 
     /// Sets the value and tells the listeners, as Compose's `updateValueAndNotifyListeners`.
@@ -612,5 +660,48 @@ mod tests {
         assert_eq!(state.text().as_str(), "");
         state.edit(|_| panic!("not run"));
         assert_eq!(state.to_string(), "TextFieldState(freed)");
+    }
+}
+
+#[cfg(test)]
+mod transformation_tests {
+    use super::*;
+
+    // Compose: compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/input/TextFieldStateTest.kt, inputTransformationRejectsChanges_removesComposition
+    #[test]
+    fn a_rejected_composition_leaves_nothing_composed() {
+        let state = TextFieldState::new("");
+        let reject = InputTransformation::from_fn(TextFieldBuffer::revert_all_changes);
+        state.edit_as_user_transformed(
+            Some(&reject),
+            false,
+            TextFieldEditUndoBehavior::MergeIfPossible,
+            |buffer| {
+                buffer.replace(0, 0, "hello");
+                buffer.set_composition(0, 5);
+            },
+        );
+        assert_eq!(state.text().as_str(), "");
+        assert_eq!(state.selection(), TextRange::ZERO);
+        assert_eq!(state.composition(), None);
+    }
+
+    /// A transformation sees a change of the selection alone, and not of the composition alone,
+    /// as Compose's `commitEditAsUser`.
+    #[test]
+    fn a_transformation_runs_for_a_selection_not_for_a_composition() {
+        let state = TextFieldState::new("hello");
+        let runs = std::rc::Rc::new(Cell::new(0));
+        let counted = runs.clone();
+        let count = InputTransformation::from_fn(move |_| counted.set(counted.get() + 1));
+        let behavior = TextFieldEditUndoBehavior::MergeIfPossible;
+        state.edit_as_user_transformed(Some(&count), true, behavior, |buffer| {
+            buffer.set_composition(0, 5)
+        });
+        assert_eq!((runs.get(), state.composition()), (0, Some(TextRange::new(0, 5))));
+        state.edit_as_user_transformed(Some(&count), true, behavior, |buffer| {
+            buffer.set_selection(TextRange::at(1))
+        });
+        assert_eq!(runs.get(), 1);
     }
 }
