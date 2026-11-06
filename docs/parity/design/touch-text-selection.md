@@ -22,6 +22,8 @@ The node writes them at the end of its measurement, where its cursor and selecti
 
 **A frame behind.** The node writes the states during a measurement, so a handle comes or goes in the frame after the measurement that decides it: its popup is composed by the next recomposition, as Compose's handles follow a `derivedStateOf` the measurement's writes invalidate. Its position is read by the popup's position provider after the layout that wrote it, so a handle already shown moves in the same frame.
 
+**Scrolling.** A state-based field scrolls by a remembered `ScrollState` unless given one, as Compose's `rememberScrollState()` default: its scroll follows the selection only while the cursor shows, so a tap or a long press lands under the scroll the user sees, and the viewport is the whole field, the text the content (D2017).
+
 **Visible bounds.** A handle hides when its point leaves the field's bounds clipped by its ancestors (Compose's `visibleBounds()`): while handles may show, a node of no size in the inner field follows those bounds after each layout and measures the field again when they change, a frame behind as Compose's (D2011). **Its node made anew.** `TouchHandles` is the composable's and outlives a node its decoration makes anew: a node detached or reset takes back what it told (D2011).
 
 ## Gestures: in the existing nodes

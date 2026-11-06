@@ -940,6 +940,23 @@ impl UiTree {
         self.rect_in_root(top, 0, Some(0), size)
     }
 
+    /// The bounds in the root of the popup `node` is in, if it's in one: its window, as Compose's
+    /// popup is a window of its own (D1374), what the test harness's `isDisplayed` checks a node
+    /// in a popup against (D2017).
+    #[doc(hidden)]
+    pub fn popup_window_of(&self, node: NodeId) -> Option<Rect> {
+        self.get(node)?;
+        let window = self.window_bounds_of(node);
+        let mut top = node;
+        while let Some(value) = self.get(top) {
+            if value.overlay {
+                return Some(window);
+            }
+            top = value.parent?;
+        }
+        None
+    }
+
     /// `bounds` clipped by the clipping modifiers of `id`, those before chain entry `before_entry`
     /// if it's given.
     fn clip_by_node(&self, id: NodeId, before_entry: Option<usize>, bounds: &mut Rect) {

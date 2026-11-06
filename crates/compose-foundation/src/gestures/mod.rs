@@ -33,7 +33,7 @@ pub use scrollable::{
     ScrollScope, ScrollableDefaults, ScrollableModifier, ScrollableState, ScrollableStateExt,
     remember_scrollable_state, scrollable_state,
 };
-pub(crate) use scrollable::{DragSession, ScrollCore};
+pub(crate) use scrollable::{DragSession, ScrollCore, field_scrollable};
 pub use scrollable_2d::{
     DefaultScrollable2DState, Scroll2DBlock, Scroll2DScope, Scrollable2DModifier,
     Scrollable2DState, Scrollable2DStateExt, remember_scrollable_2d_state, scrollable_2d_state,

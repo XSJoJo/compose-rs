@@ -698,9 +698,9 @@ The log is split by area into the files below, one table each, rows in number or
 | D1135 | [text](decisions/text.md#d1135) | current |
 | D1136 | [text](decisions/text.md#d1136) | current |
 | D1137 | [text](decisions/text.md#d1137) | revised by [D1140](decisions/text.md#d1140) |
-| D1138 | [text](decisions/text.md#d1138) | revised by [D1140](decisions/text.md#d1140) |
+| D1138 | [text](decisions/text.md#d1138) | revised by [D1140](decisions/text.md#d1140), [D2017](decisions/text.md#d2017) |
 | D1139 | [text](decisions/text.md#d1139) | current |
-| D1140 | [text](decisions/text.md#d1140) | current |
+| D1140 | [text](decisions/text.md#d1140) | revised by [D2017](decisions/text.md#d2017) |
 | D1141 | [text](decisions/text.md#d1141) | revised by [D1145](decisions/text.md#d1145) |
 | D1142 | [text](decisions/text.md#d1142) | revised by [D1146](decisions/text.md#d1146) |
 | D1143 | [text](decisions/text.md#d1143) | current |
@@ -1024,3 +1024,4 @@ The log is split by area into the files below, one table each, rows in number or
 | D2014 | [text](decisions/text.md#d2014) | revised by [D2016](decisions/text.md#d2016) |
 | D2015 | [text](decisions/text.md#d2015) | current |
 | D2016 | [text](decisions/text.md#d2016) | current |
+| D2017 | [text](decisions/text.md#d2017) | current |

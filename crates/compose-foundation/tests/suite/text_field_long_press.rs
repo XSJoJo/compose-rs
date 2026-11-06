@@ -122,6 +122,35 @@ fn a_long_press_on_a_space_selects_a_word_not_the_space() {
     assert!(!state.selection().collapsed());
 }
 
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldLongPressTest.kt, longPressOnScrolledTextField_selectsWord
+#[test]
+fn a_long_press_on_a_scrolled_field_selects_the_word_under_it() {
+    let state = state_of("abc def ghi abc def ghi");
+    let scroll = **Box::leak(Box::new(ScrollState::new(0)));
+    let mut ui = touch_rule(move || {
+        BasicTextFieldOfState!(
+            state,
+            modifier = Modifier.test_tag(TAG).width(30.dp()),
+            text_style = style(),
+            line_limits = TextFieldLineLimits::SingleLine,
+            scroll_state = Some(scroll),
+        );
+    });
+    ui.wait_for_idle();
+    assert!(scroll.max_value() > 0);
+    crate::scroll_support::run(&mut ui, async move {
+        let _ = scroll.scroll_to(scroll.max_value()).await;
+    });
+    ui.on_node_with_tag(TAG).perform_touch_input(|touch| {
+        let duration = touch.view_configuration().long_press_timeout_millis + 100;
+        let at = Offset::new(touch.right(), touch.center_y());
+        touch.long_click_at(at, duration);
+    });
+    ui.wait_for_idle();
+    assert_selection_handles_shown(&mut ui);
+    assert_eq!(state.selection(), TextRange::new(20, 23));
+}
+
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldLongPressTest.kt, longPressOnDecoratedTextField_selectsWord
 #[test]
 fn a_long_press_in_a_decorated_field_selects_the_word_under_it() {
@@ -459,4 +488,91 @@ fn a_long_press_dragged_right_then_slightly_back_hides_the_start_handle() {
     assert_handles(&mut ui, false, false);
     lift_after(&mut ui, Offset::new(-FONT, 0.0));
     assert_handles(&mut ui, false, true);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldLongPressTest.kt, longPress_startDraggingToScrollDown_startHandleDoesNotShow_ltr
+#[test]
+fn a_long_press_dragged_down_until_the_field_scrolls_hides_the_start_handle() {
+    let mut ui = scrolling_field(false);
+    long_press_and_hold(&mut ui, near_start, Offset::new(0.0, FONT * 30.0));
+    lift_after(&mut ui, Offset::ZERO);
+    assert_handles(&mut ui, false, true);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldLongPressTest.kt, longPress_startDraggingToScrollDownThenSlightlyBack_startHandleDoesNotShow_ltr
+#[test]
+fn a_long_press_dragged_down_then_slightly_back_hides_the_start_handle() {
+    let mut ui = scrolling_field(false);
+    long_press_and_hold(&mut ui, near_start, Offset::new(0.0, FONT * 30.0));
+    assert_handles(&mut ui, false, false);
+    lift_after(&mut ui, Offset::new(0.0, -FONT));
+    assert_handles(&mut ui, false, true);
+}
+
+/// `scrolling_field` swiped to its end: on one line to its right (a swipe left), else to its
+/// bottom (a swipe up), as far as it goes.
+/// Compose's test injects its events into the field's window, past the cursor handle the tap
+/// shows (a popup, a window of its own); here a popup over the field takes them, so the swipe up
+/// goes along the field's left side, beside the handle under the middle.
+fn field_scrolled_to_its_end(single_line: bool) -> ComposeTestRule {
+    let mut ui = scrolling_field(single_line);
+    ui.on_node_with_tag(TAG).perform_touch_input(|touch| {
+        let wait = touch.view_configuration().double_tap_timeout_millis * 2;
+        touch.advance_event_time(wait);
+        if single_line {
+            let right = touch.right();
+            touch.swipe_left_with(right, -10000.0, 200);
+        } else {
+            let bottom = touch.bottom();
+            touch.swipe(Offset::new(1.0, bottom), Offset::new(1.0, -10000.0), 200);
+        }
+    });
+    ui.wait_for_idle();
+    ui
+}
+
+fn near_right(touch: &TouchInjectionScope<'_>) -> Offset {
+    Offset::new(touch.right() - 1.0, touch.center_y())
+}
+
+fn near_bottom(touch: &TouchInjectionScope<'_>) -> Offset {
+    Offset::new(touch.center_x(), touch.bottom() - 1.0)
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldLongPressTest.kt, longPress_startDraggingToScrollLeft_endHandleDoesNotShow_ltr
+#[test]
+fn a_long_press_dragged_left_until_the_field_scrolls_hides_the_end_handle() {
+    let mut ui = field_scrolled_to_its_end(true);
+    long_press_and_hold(&mut ui, near_right, Offset::new(-FONT * 30.0, 0.0));
+    lift_after(&mut ui, Offset::ZERO);
+    assert_handles(&mut ui, true, false);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldLongPressTest.kt, longPress_startDraggingToScrollLeftThenSlightlyForward_endHandleDoesNotShow_ltr
+#[test]
+fn a_long_press_dragged_left_then_slightly_forward_hides_the_end_handle() {
+    let mut ui = field_scrolled_to_its_end(true);
+    long_press_and_hold(&mut ui, near_right, Offset::new(-FONT * 30.0, 0.0));
+    assert_handles(&mut ui, false, false);
+    lift_after(&mut ui, Offset::new(FONT, 0.0));
+    assert_handles(&mut ui, true, false);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldLongPressTest.kt, longPress_startDraggingToScrollUp_endHandleDoesNotShow_ltr
+#[test]
+fn a_long_press_dragged_up_until_the_field_scrolls_hides_the_end_handle() {
+    let mut ui = field_scrolled_to_its_end(false);
+    long_press_and_hold(&mut ui, near_bottom, Offset::new(0.0, -FONT * 30.0));
+    lift_after(&mut ui, Offset::ZERO);
+    assert_handles(&mut ui, true, false);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldLongPressTest.kt, longPress_startDraggingToScrollUpThenSlightlyForward_endHandleDoesNotShow_ltr
+#[test]
+fn a_long_press_dragged_up_then_slightly_forward_hides_the_end_handle() {
+    let mut ui = field_scrolled_to_its_end(false);
+    long_press_and_hold(&mut ui, near_bottom, Offset::new(0.0, -FONT * 30.0));
+    assert_handles(&mut ui, false, false);
+    lift_after(&mut ui, Offset::new(0.0, FONT));
+    assert_handles(&mut ui, true, false);
 }

@@ -215,6 +215,9 @@ pub fn BasicTextFieldOfState(
     #[default(None)] password: Option<bool>,
 ) {
     line_limits.validate();
+    // Compose's default, `rememberScrollState()` (D2017).
+    let remembered_scroll = crate::remember_scroll_state(0);
+    let scroll_state = Some(scroll_state.unwrap_or(remembered_scroll));
     // What the field's options don't say, its transformation's say, as Compose's
     // `fillUnspecifiedValuesWith`, read in composition.
     let transformation_options = input_transformation.as_ref().and_then(|it| it.keyboard_options());
@@ -256,7 +259,6 @@ pub fn BasicTextFieldOfState(
     // `scrollable(scrollState, …, reverseDirection)` (D1138).
     let modifier = match scroll_state {
         Some(scroll_state) => {
-            use crate::gestures::ScrollableModifier;
             let horizontal = line_limits == TextFieldLineLimits::SingleLine;
             let orientation = if horizontal {
                 crate::Orientation::Horizontal
@@ -267,7 +269,14 @@ pub fn BasicTextFieldOfState(
                 compose_ui::LOCAL_LAYOUT_DIRECTION.current() == compose_ui::LayoutDirection::Rtl;
             let reverse = !(horizontal && right_to_left);
             let source = press_source.clone();
-            modifier.scrollable_with(scroll_state, orientation, enabled, reverse, None, source)
+            crate::gestures::field_scrollable(
+                modifier,
+                scroll_state,
+                orientation,
+                enabled,
+                reverse,
+                source,
+            )
         }
         None => modifier,
     };
@@ -1075,7 +1084,14 @@ impl TextFieldNode {
         let least = self.least_lines_height().clamp(constraints.min_height, constraints.max_height);
         let height = text.height.max(least);
         let height = if self.single_line { height.min(constraints.max_height) } else { height };
-        let size = IntSize::new(constraints.constrain(text).width, height);
+        // A single line is laid out as wide as its text, as Compose's under its horizontal scroll
+        // (no most width), what scrolls in the field (D2017).
+        let width = if self.single_line {
+            text.width.max(constraints.min_width)
+        } else {
+            constraints.constrain(text).width
+        };
+        let size = IntSize::new(width, height);
         Some(compose_ui::TextLayoutResult::new(input, measurer.paragraph(paragraph), size))
     }
 
@@ -1137,11 +1153,11 @@ impl TextFieldNode {
     ) -> bool {
         let mut short = false;
         let mirrored = self.single_line && self.direction == compose_ui::LayoutDirection::Rtl;
-        let (visible, length) = if self.single_line {
-            ((size.width - cursor_width).max(0), text.width)
-        } else {
-            (size.height, text.height)
-        };
+        // The whole field is the viewport, the text the content, as Compose's: the cursor's room
+        // past the text's end is no content (`getCursorRectInScroller` keeps the cursor in the
+        // text, D2017).
+        let (visible, length) =
+            if self.single_line { (size.width, text.width) } else { (size.height, text.height) };
         let max = (length - visible).max(0);
         compose_runtime::snapshots::Snapshot::without_read_observation(|| {
             scroll_state.set_layout(max, visible, length);
@@ -1164,8 +1180,9 @@ impl TextFieldNode {
         if let Some(offset) = to_follow.filter(|_| show_cursor) {
             let raw = scope.text_measurer().cursor_rect(paragraph, offset);
             // From the scroller's start: a right-to-left line's right.
-            let left = if mirrored { length as f32 - raw.left } else { raw.left };
-            let cursor = Rect::new(left, raw.top, left, raw.bottom);
+            let left = if mirrored { length as f32 - raw.right } else { raw.left };
+            let right = (left + cursor_width as f32).min(length as f32);
+            let cursor = Rect::new(left, raw.top, right, raw.bottom);
             let moved = followed
                 .cursor
                 .is_none_or(|previous| previous.left != cursor.left || previous.top != cursor.top)
@@ -2832,7 +2849,13 @@ impl DrawModifierNode for TextFieldNode {
         {
             // The cursor: drawn where the measurer that laid the paragraph out puts it.
             let width = scope.density().to_px(CURSOR_WIDTH);
-            let rect = shift(self.cursor_rect.unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0)));
+            let mut rect = shift(self.cursor_rect.unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0)));
+            // A state-based field's viewport has no room past the text (D2017): at its end, the
+            // cursor is kept inside, as Compose's `drawCursor` keeps it in the text.
+            if self.state.is_some() && self.single_line {
+                let room = (self.size.width as f32 - width).max(0.0);
+                rect = Rect::new(rect.left.min(room), rect.top, rect.right, rect.bottom);
+            }
             let paint = match self.state.as_ref().and_then(|link| link.cursor_brush.as_ref()) {
                 Some(brush) => scope.brush_paint(brush, 1.0, compose_ui::PaintStyle::Fill),
                 None => Paint::fill(self.cursor_color),
