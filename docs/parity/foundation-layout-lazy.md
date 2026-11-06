@@ -139,7 +139,7 @@ The table's suite references (`lazy_api.rs`, `fling.rs`, …) are files in `crat
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/grid/LazyGridHeadersTest.kt | 14 | `LazyGridScope.stickyHeader` | partial (`lazy_grid_headers.rs`: 13 of 14, the focus tests without their pinning, on an item in view. Left: `lazyVerticalGridwithPinnedItem`: feature:pinnable) |
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/grid/LazyGridItemAppearanceAnimationTest.kt | 10 | Grid `animateItem` fade-in | partial (`lazy_animate_grid.rs`: the 3 that differ from a list's in cells; the rest run through the same animator, `lazy_animate_item.rs`) |
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/grid/LazyGridItemDisappearanceAnimationTest.kt | 13 | Grid `animateItem` fade-out | partial (`lazy_animate_grid.rs`: 3, as above; left: reversed, RTL and padded ones, and re-adding) |
-| compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/grid/LazyGridItemPlacementAnimationTest.kt | 51 | Grid `animateItem` placement | partial (`lazy_animate_grid.rs`: 17, each orientation, reversed or not; left: those the list's file ports the same way through the same animator, the `_differentSpans*` scrolls, lookahead) |
+| compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/grid/LazyGridItemPlacementAnimationTest.kt | 51 | Grid `animateItem` placement | partial (`lazy_animate_grid.rs`: 17, each orientation, reversed or not; left: those the list's file ports the same way through the same animator, the `_differentSpans*` scrolls, its lookahead configuration (the feature is in, D1226)) |
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/grid/LazyGridLayoutInfoTest.kt | 17 | Grid `layoutInfo` (rows/columns/spans, viewport) | ported (`lazy_grid_layout_info.rs`: all 17, the four configurations) |
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/grid/LazyGridNestedPrefetchingTest.kt | 6 | Nested prefetch from grid items | ported (`lazy_nested_prefetch.rs` for 4, D1461; `overridingNestedPrefetchCountIsRespected` and `nestedPrefetchIsMeasuredWithProvidedConstraints` need a strategy of your own: n/a at the tip's window. As the list's: the rest of those in view compose in a pass after the measurement short of them, where Compose's measurement composes them) |
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/grid/LazyGridPinnableContainerTest.kt | 13 | Pinning grid items | feature:pinnable |
@@ -180,7 +180,7 @@ The grid is there, with its cache window (D1469, D1470).
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/staggeredgrid/LazyStaggeredGridCacheWindowTest.kt | 15 | Per-lane cache window | ported (`lazy_staggered_grid_window.rs`) |
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/staggeredgrid/LazyStaggeredGridContentPaddingTest.kt | 11 | Content padding | ported (`lazy_staggered_grid.rs`, `lazy_staggered_grid_pins.rs`) |
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/staggeredgrid/LazyStaggeredGridCustomKeysTest.kt | 21 | Keys keep state | ported (`lazy_staggered_grid_keys.rs`) |
-| compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/staggeredgrid/LazyStaggeredGridInLookaheadTest.kt | 13 | Positions under lookahead | feature:ui-lookahead |
+| compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/staggeredgrid/LazyStaggeredGridInLookaheadTest.kt | 13 | Positions under lookahead | to port: the feature is in (D1226), and `lazy_grids_in_a_scope.rs` has scenes of its own |
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/staggeredgrid/LazyStaggeredGridItemAppearanceAnimationTest.kt | 10 | `animateItem` fade-in | partial (`lazy_animate_staggered.rs`: 3; the rest run through the list's animator, `lazy_animate_item.rs`) |
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/staggeredgrid/LazyStaggeredGridItemDisappearanceAnimationTest.kt | 12 | `animateItem` fade-out | partial (`lazy_animate_staggered.rs`: 3, `wholeLineRemoved` among them; left: reversed and padded ones, re-adding) |
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/staggeredgrid/LazyStaggeredGridItemPlacementAnimationTest.kt | 49 | `animateItem` placement | partial (`lazy_animate_staggered.rs`: 18, each orientation, reversed or not; `columnCountChange` reads only the first item, D1472. Left: those the list's file ports the same way, `animateSpacingChange`, the `_differentSpans` ones) |
@@ -268,13 +268,13 @@ Pager prefetch already uses a cache window in 1.12.1 (`isCacheWindowForPagerEnab
 | compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/gestures/snapping/LazyListSnapLayoutInfoProviderTest.kt | 3 | List `SnapLayoutInfoProvider` | ported (`snapping.rs`: all 3, one test, with a header and without) |
 | compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/gestures/snapping/SnapFlingBehaviorTest.kt | 17 | `snapFlingBehavior` approach and snap phases, remaining offset, velocity | partial (`snapping.rs`: 15 of 17. Left: `findClosestOffset`'s 2, of the test's own provider) |
 | compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewRequesterViewIntegrationTest.kt | 4 | `bringIntoView` reaching Android's `requestRectangleOnScreen` | n/a: Android View interop |
-| compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewResponderTest.kt | 20 | `BringIntoViewRequester` propagating up through responders, interrupting requests | partial (`bring_into_view.rs`: 8 of 20, D1371; the interruption and cancellation tests wait on the animated `ContentInViewNode`; the 4 `isChildOf` ones test a helper of the test) |
-| compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewScrollableInteractionTest.kt | 24 | Scrollables scroll requested rects into view (leading, trailing, center, bigger than the parent) | partial (`bring_into_view.rs`: 15 of 24, each in both orientations, D1371; the concurrent requests' order and the spec's tests through `Modifier.scrollable(bringIntoViewSpec)` wait on the animated `ContentInViewNode`; the detached-coordinates one on a suspending responder) |
+| compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewResponderTest.kt | 20 | `BringIntoViewRequester` propagating up through responders, interrupting requests | ported (`bring_into_view.rs`: 16 of 20, D1371, D1376; the 4 `isChildOf` ones test a helper of the test) |
+| compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewScrollableInteractionTest.kt | 24 | Scrollables scroll requested rects into view (leading, trailing, center, bigger than the parent) | ported (`bring_into_view.rs`: all 24, each in both orientations, D1371, D1376; `shouldUseCustomSpec` counts the animation specs the spec gives, where Compose counts their `vectorize`) |
 | compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/MutatorMutexTest.kt | 8 | `MutatorMutex` priorities, `tryMutate`, `tryLock` | ported (`mutator_mutex.rs`: 7 tests for the 8; `tryLock`/`unlock` are internal, checked through `try_mutate`; an interrupted mutation returns `Err(MutationInterrupted)`, D850) |
-| compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/gestures/BringIntoViewRequestPriorityQueueTest.kt | 15 | The internal request queue of `ContentInViewNode` | n/a: internal class (port its rules with feature:bring-into-view if compose-rs grows the same queue) |
+| compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/gestures/BringIntoViewRequestPriorityQueueTest.kt | 15 | The internal request queue of `ContentInViewNode` | ported (`gestures/bring_into_view_queue.rs`'s unit tests: 13 of 15, D1377; the 2 `toString` ones check Kotlin's debugging strings) |
 | compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/gestures/DraggableAnchorsTest.kt | 11 | `DraggableAnchors` builder, closest anchor, min/max, equality | ported (`anchored_draggable.rs`; `equality_differentObject` compares with a string, which Rust doesn't compile) |
 | compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/gestures/DraggableIsAnyChangedToDownTest.kt | 10 | The internal `isAnyChangedToDown` helper | n/a: internal helper |
-| compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/gestures/UpdatableAnimationStateTest.kt | 7 | The internal animation state behind bring-into-view | n/a: internal class |
+| compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/gestures/UpdatableAnimationStateTest.kt | 7 | The internal animation state behind bring-into-view | ported (`gestures/updatable_animation_state.rs`'s unit tests: all 7, D1376) |
 
 ### Helper files without tests (23)
 
@@ -346,7 +346,7 @@ From `compose/foundation/foundation-layout/api/current.txt` and `compose/foundat
   - state and modifiers: `ScrollableState` (`scroll(priority) {}`, `dispatchRawDelta`, `isScrollInProgress`, `canScroll*`, `lastScrolled*`, `scrollIndicatorState`), `ScrollableState(consume)`/`rememberScrollableState`, `ScrollScope`, `Modifier.scrollable` (both overloads), `Modifier.scrollableArea`;
   - flings: `FlingBehavior`, `TargetedFlingBehavior`, `ScrollableDefaults` (`flingBehavior()`, `reverseDirection`);
   - extensions: `scrollBy`, `animateScrollBy`, `stopScroll`;
-  - `BringIntoViewSpec` with `LocalBringIntoViewSpec`, `clipScrollableContainer`, `checkScrollableContainerConstraints`.
+  - `clipScrollableContainer`, `checkScrollableContainerConstraints` (`BringIntoViewSpec` with `LocalBringIntoViewSpec` is in, D1371, D1376).
 - **scroll-state-api:**
   - `ScrollState`: `animateScrollTo`, `scroll {}`, suspend `scrollTo` that returns what it consumed, `canScrollForward`/`Backward`, `isScrollInProgress`, `lastScrolled*`, `interactionSource`, `scrollIndicatorState`, `Saver`;
   - the parameters `enabled`, `flingBehavior`, `reverseScrolling` and `overscrollEffect` of `verticalScroll`/`horizontalScroll`.
@@ -366,7 +366,7 @@ From `compose/foundation/foundation-layout/api/current.txt` and `compose/foundat
   - `animateBy`, `animatePanBy`, `animateRotateBy`, `animateZoomBy`, `panBy`, `rotateBy`, `zoomBy`, `stopTransformation`.
 - **anchored-draggable:** Done (D1463, `overscrollEffect` D1464) but for the deprecated constructors and `settle(velocity)`: `AnchoredDraggableState` (both constructors, `anchoredDrag`, `dispatchRawDelta`, `progress(from, to)`, `requireOffset`, `settle(spec)`, `updateAnchors`, `currentValue`, `targetValue`, `settledValue`, `offset`, `lastVelocity`, `isAnimationRunning`, `Saver()`), `DraggableAnchors {}`, `DraggableAnchorsConfig`, `Modifier.anchoredDraggable` (both overloads), `AnchoredDragScope`, `AnchoredDraggableDefaults` (`flingBehavior`, `PositionalThreshold`, `SnapAnimationSpec`, `DecayAnimationSpec`), `animateTo`, `animateToWithDecay`, `snapTo`, `forEach`.
 - **snapping:** Done (D1462): `SnapLayoutInfoProvider` (interface, and for `LazyListState`/`LazyGridState`), `SnapPosition` (Start, Center, End), `snapFlingBehavior`, `rememberSnapFlingBehavior` (for a provider, a `LazyListState` or a `LazyGridState`).
-- **bring-into-view:** done (D1371) but for the animated `ContentInViewNode` (containers scroll at once) and the lazy layouts reading `LocalBringIntoViewSpec` (after C8): `BringIntoViewRequester()`, `Modifier.bringIntoViewRequester`, `bringIntoView(rect)`, `bringIntoViewResponder`, `BringIntoViewSpec`, `LocalBringIntoViewSpec`.
+- **bring-into-view:** done (D1371, the animated `ContentInViewNode` D1376) but for the lazy layouts, which jump and use the default spec until C8: `BringIntoViewRequester()`, `Modifier.bringIntoViewRequester`, `bringIntoView(rect)`, `bringIntoViewResponder`, `BringIntoViewSpec` (with the deprecated `scrollAnimationSpec`), `LocalBringIntoViewSpec`, `Modifier.scrollable(bringIntoViewSpec)`.
 - **lazy-layout-info:** done (D859).
 - **lazy-state-api:** on `LazyListState` and `LazyGridState`:
   - `animateScrollToItem`, `requestScrollToItem`, `scroll(priority) {}`, `dispatchRawDelta`;
@@ -378,7 +378,7 @@ From `compose/foundation/foundation-layout/api/current.txt` and `compose/foundat
 - **lazy-semantics:** `CollectionInfo`, `ScrollToIndex` and `scrollByOffset` are done on lists, grids and pagers (D1468), a traversal group too. Left: `CollectionItemInfo` and `IndexForKey`, for `performScrollToKey`.
 - **pinnable:** (Started, D1282: `LOCAL_PINNABLE_CONTAINER`, `PinnableContainer` and `PinnedHandle` in ui, lazy items pinned one at a time by what's focusable; the rest of this waits.) `LocalPinnableContainer`/`PinnableContainer` (ui) honoured by lazy items, `LazyLayoutPinnableItem`, `LazyLayoutPinnedItemList`.
 - **beyond-bounds-api:** ui's `BeyondBoundsLayout` (`ModifierLocalBeyondBoundsLayout`, `layout(direction) {}`) answered by lazy layouts. compose-rs answers focus searches only.
-- **animate-item:** `Modifier::animate_item` and `animate_item_with(scope, fade_in_spec, placement_spec, fade_out_spec)` (`AnimateItemModifier`), D1472: lists, grids and staggered grids (`LazyStaggeredGridItemScope`) done. Left: grids and staggered grids in lookahead scopes (lists in one: D1226), the rows' remaining tests.
+- **animate-item:** `Modifier::animate_item` and `animate_item_with(scope, fade_in_spec, placement_spec, fade_out_spec)` (`AnimateItemModifier`), D1472: lists, grids and staggered grids (`LazyStaggeredGridItemScope`) done. In lookahead scopes all three (D1226). Left: their Compose lookahead tests, the rows' remaining tests.
 - **lazy-layout-public:**
   - layout: `LazyLayout(itemProvider, modifier, prefetchState, measurePolicy)`, `LazyLayoutItemProvider`, `LazyLayoutMeasurePolicy`, `LazyLayoutMeasureScope.compose(index)`;
   - prefetch: `LazyLayoutPrefetchState` (`schedulePrecomposition`, `schedulePrecompositionAndPremeasure`, `PrefetchHandle.cancel`/`markAsUrgent`, `PrefetchResultScope`), the `onNestedPrefetch` constructor (*exp*), `NestedPrefetchScope` (*exp*);
@@ -389,7 +389,7 @@ From `compose/foundation/foundation-layout/api/current.txt` and `compose/foundat
   - state: `PagerState` (abstract) and `PagerState(…, pageCount)`, `rememberPagerState`;
   - `PageSize` (Fill, Fixed), `PagerDefaults` (`flingBehavior`, `pageNestedScrollConnection`, `bringIntoViewSpec`, `BeyondViewportPageCount`), `PagerSnapDistance.atMost`;
   - info and scopes: `PagerLayoutInfo`, `PageInfo`, `PagerScope`.
-- **keep-focused-in-view:** no API. Compose's scrollables keep a focused child in view when their viewport shrinks (`ContentInViewNode`).
+- **keep-focused-in-view:** no API. Compose's scrollables keep a focused child in view when their viewport shrinks (`ContentInViewNode.onRemeasured`; the rest of `ContentInViewNode` is in, D1376, and this would start its animation).
 - **system-gesture-exclusion:** `Modifier.systemGestureExclusion()`, with a rect lambda (Android).
 - **flags:** `ComposeFoundationFlags` (*exp*). compose-rs has none now: the pausable-prefetch flag it mirrored went as the tip's did (D892).
 
@@ -416,7 +416,7 @@ Each entry gives the Compose API, what it does, the test files that need it (by 
    - Tests: ScrollableTest, ScrollableAreaTest, and most scroll-state and lazy-state tests.
    - Depends on: mutator-mutex; interaction (`DragInteraction`, misc ledger) for `interactionSource`.
    - Size: L. Experimental: no.
-   - **Mostly done** (D851, D852, D855): `ScrollableState`, `ScrollableStateExt` (`scroll`, `scroll_by`, `animate_scroll_by`, `stop_scroll`), `ScrollScope`, `FlingBehavior`, `DefaultFlingBehavior`, `ScrollableDefaults` (`fling_behavior`, `reverse_direction`), `scrollable_state`/`remember_scrollable_state`, `Modifier.scrollable`/`scrollable_with`. Left: `scrollableArea`, keyboard paging, `TargetedFlingBehavior`, `BringIntoViewSpec`, `clipScrollableContainer`, `checkScrollableContainerConstraints`, the overscroll overload.
+   - **Mostly done** (D851, D852, D855): `ScrollableState`, `ScrollableStateExt` (`scroll`, `scroll_by`, `animate_scroll_by`, `stop_scroll`), `ScrollScope`, `FlingBehavior`, `DefaultFlingBehavior`, `ScrollableDefaults` (`fling_behavior`, `reverse_direction`), `scrollable_state`/`remember_scrollable_state`, `Modifier.scrollable`/`scrollable_with` (and `bringIntoViewSpec`, the last parameter of `scrollable_overscroll`, D1376). Left: `scrollableArea`, keyboard paging, `TargetedFlingBehavior`, `clipScrollableContainer`, `checkScrollableContainerConstraints`, the overscroll overload.
 4. **scroll-state-api.**
    - API: the rest of `ScrollState`, and `verticalScroll`'s `enabled`/`flingBehavior`/`reverseScrolling` parameters.
    - Tests: ScrollTest (rest).
@@ -469,7 +469,7 @@ Each entry gives the Compose API, what it does, the test files that need it (by 
     - Tests: ScrollFocusableInteractionTest, LazyListFocusableInteractionTest.
     - Depends on: none.
     - Size: M. Experimental: no.
-14. **bring-into-view.** Done but for the animation (D1371); the animated `ContentInViewNode` is next.
+14. **bring-into-view.** Done (D1371, D1376; [design](design/content-in-view.md)) but for the lazy layouts (after C8).
     - API: `BringIntoViewRequester`, `bringIntoViewRequester`, `BringIntoViewSpec`, `LocalBringIntoViewSpec`.
     - Tests: BringIntoViewResponderTest, BringIntoViewScrollableInteractionTest.
     - Depends on: scrollable.
@@ -524,7 +524,7 @@ Each entry gives the Compose API, what it does, the test files that need it (by 
     - Depends on: ui modifier locals. compose-rs's `lay_out_beyond_bounds` is the mechanism, focus-only.
     - Size: M. Experimental: no.
 25. **animate-item.**
-    - API: `animateItem` for lists and grids (staggered with 27). Done for all three (D1472); in a lookahead scope a list's is set up ahead and places toward the offset ahead, as Compose's (D1226); grids' don't tell the passes apart yet.
+    - API: `animateItem` for lists and grids (staggered with 27). Done for all three (D1472); in a lookahead scope all three are set up ahead and place toward the offset ahead, as Compose's (D1226).
     - Does: fades items in and out and animates moves, keeping items moving out of view composed while they leave; a removed item is drawn from what it last drew, as Compose's.
     - Tests: the 3 list, 3 grid and 3 staggered animation files.
     - Depends on: lazy-layout-info (tests), animation (exists); ui lookahead for the lookahead variants (ui ledger).
@@ -534,7 +534,7 @@ Each entry gives the Compose API, what it does, the test files that need it (by 
     - Tests: all 25 pager files.
     - Depends on: scrollable, lazy-state-api, snapping, cache-window, bring-into-view, pinnable, lazy-semantics, scroll-indicator-state. Built on compose-rs's lazy list internals.
     - Size: XL. Experimental: no.
-27. **staggered-grid.** The grid and its window are done (D1469, D1470); 192 of the 317 tests ported. `scrollIndicatorState` is in (D1568), `animate_item` too (D1472). Left: the rest of its animation files, and lookahead.
+27. **staggered-grid.** The grid and its window are done (D1469, D1470); 192 of the 317 tests ported. `scrollIndicatorState` is in (D1568), `animate_item` too (D1472). Left: the rest of its animation files, and its lookahead tests (the feature is in, D1226).
     - API: `LazyVerticalStaggeredGrid`, `LazyHorizontalStaggeredGrid` and their API.
     - Tests: all 20 staggered files.
     - Depends on: lazy-layout-info, lazy-state-api, cache-window (staggered's default), animate-item, pinnable, beyond-bounds-api, ui lookahead.

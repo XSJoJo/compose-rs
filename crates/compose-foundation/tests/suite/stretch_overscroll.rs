@@ -163,6 +163,7 @@ fn stretching(pull: Pull) -> Stretching {
                             true,
                             None,
                             None,
+                            None,
                         )
                         .overscroll(effect)
                         .draw_behind(move |_| {
@@ -600,6 +601,7 @@ fn a_glow_takes_a_pull_and_releases_on_the_way_back() {
                     effect.clone(),
                     true,
                     true,
+                    None,
                     None,
                     None,
                 )

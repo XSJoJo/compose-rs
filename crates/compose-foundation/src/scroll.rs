@@ -30,6 +30,9 @@ use compose_ui::{
 
 use compose_ui::KeyInputModifierNode;
 
+use crate::gestures::content_in_view::{
+    self, ContentInView, ContentInViewConfig, destination, resolve_spec, shifted,
+};
 use crate::gestures::{DRAG_GESTURES, GestureState, Orientation, aligned, parent_aligned};
 use crate::gestures::{
     DefaultFlingBehavior, DragSession, FlingBehavior, LocalBoxFuture, MouseWheel, ScrollBlock,
@@ -445,6 +448,7 @@ impl ModifierNodeElement for ScrollElement {
             drag: DragScroller::along(self.vertical),
             laid_out: Rc::default(),
             rtl: false,
+            content_in_view: None,
         }
     }
 
@@ -466,6 +470,9 @@ impl ModifierNodeElement for ScrollElement {
         node.fling_behavior = self.fling_behavior.clone();
         node.reverse_scrolling = self.reverse_scrolling;
         node.overscroll = self.overscroll.clone();
+        if let Some(content_in_view) = &node.content_in_view {
+            content_in_view.set_config(node.content_in_view_config());
+        }
     }
 
     fn same(&self, other: &Self) -> bool {
@@ -575,6 +582,8 @@ pub(crate) struct ScrollNode {
     laid_out: Rc<Cell<i32>>,
     /// Horizontal in a right-to-left layout: its content starts at the right.
     rtl: bool,
+    /// Its bring-into-view requests and their animation, from the first request on (D1376).
+    content_in_view: Option<Rc<ContentInView>>,
 }
 
 impl ScrollNode {
@@ -620,6 +629,27 @@ impl ScrollNode {
     /// (`reverse_scrolling`), or a row right to left (both: neither).
     fn mirrored(&self, rtl: bool) -> bool {
         self.reverse_scrolling ^ (!self.vertical && rtl)
+    }
+
+    /// How far what's inside moves along the axis once the scrolling asked for (not laid out
+    /// yet) is.
+    fn pending_shift(&self) -> f32 {
+        let pending = (self.state.value() - self.laid_out.get()) as f32;
+        if self.mirrored(self.rtl) { pending } else { -pending }
+    }
+
+    /// What its bring-into-view animation scrolls, as its scrollable's: the state, its pixels
+    /// against the layout's unless mirrored (`ScrollableDefaults.reverseDirection`), and the scroll
+    /// not laid out yet.
+    fn content_in_view_config(&self) -> ContentInViewConfig {
+        let (state, laid_out) = (self.state, self.laid_out.clone());
+        ContentInViewConfig {
+            state: self.dyn_state.clone(),
+            vertical: self.vertical,
+            reverse_direction: !self.mirrored(self.rtl),
+            spec: None,
+            pending: Some(Rc::new(move || (state.value() - laid_out.get()) as f32)),
+        }
     }
 }
 
@@ -742,23 +772,47 @@ impl ModifierNode for ScrollNode {
     fn hit_clip(&self) -> Option<compose_ui::Shape> {
         Some(compose_ui::Shape::Rectangle)
     }
-    /// Scrolls as far as `LOCAL_BRING_INTO_VIEW_SPEC` where it's composed says to show `rect`
-    /// (by default, nothing if it's in view or spans the viewport, else the least that brings
-    /// its nearer edge in), as Compose's `ContentInViewNode` with `bringIntoViewSpec`.
-    fn bring_into_view_in(
+    fn as_bring_into_view_responder(
+        &mut self,
+    ) -> Option<&mut dyn compose_ui::BringIntoViewResponderNode> {
+        Some(self)
+    }
+}
+
+/// As its scrollable's `ContentInViewNode`, with `LOCAL_BRING_INTO_VIEW_SPEC` where it's
+/// composed: it animates to what's asked (by default, nothing if it's in view or spans the
+/// viewport, else the least that brings its nearer edge in).
+impl compose_ui::BringIntoViewResponderNode for ScrollNode {
+    fn calculate_rect_for_parent(
+        &self,
+        rect: Rect,
+        scope: &compose_ui::BringIntoViewScope,
+    ) -> Rect {
+        let spec = resolve_spec(&None, Some(scope.locals()));
+        let rect = shifted(rect, self.pending_shift(), self.vertical);
+        destination(&*spec, rect, scope.viewport(), self.vertical)
+    }
+
+    fn bring_child_into_view(
         &mut self,
         rect: Rect,
-        viewport: IntSize,
-        locals: compose_runtime::CompositionLocalAnchor,
-    ) -> Option<Rect> {
-        let mirrored = self.mirrored(self.rtl);
-        let (start, end, length) = scroll_axis(rect, viewport, self.vertical, mirrored);
-        // Where it will be once the scrolling asked for (not yet laid out) is.
-        let pending = (self.state.value() - self.laid_out.get()) as f32;
-        let spec = locals.get(&crate::relocation::LOCAL_BRING_INTO_VIEW_SPEC);
-        let delta = spec.calculate_scroll_distance(start - pending, end - start, length);
-        let used = if delta == 0.0 { 0.0 } else { self.state.dispatch_raw_delta(delta) };
-        Some(scrolled_rect(rect, used, self.vertical, mirrored))
+        parent: Rect,
+        bounds: compose_ui::BringIntoViewBounds,
+        scope: &compose_ui::BringIntoViewScope,
+    ) -> Option<compose_ui::LocalBoxFuture<'static, ()>> {
+        // What shows already needs no queue, no task and no state: none is made.
+        if content_in_view::shows(rect, parent, self.pending_shift(), self.vertical) {
+            return None;
+        }
+        let config = self.content_in_view_config();
+        let content_in_view = match &self.content_in_view {
+            Some(content_in_view) => {
+                content_in_view.set_config(config);
+                content_in_view.clone()
+            }
+            None => self.content_in_view.insert(ContentInView::new(config)).clone(),
+        };
+        Some(content_in_view.bring_child_into_view(bounds, scope))
     }
 }
 

@@ -12,17 +12,17 @@ What Compose's `compose/foundation/foundation` tests and public API in this area
 
 | Status | Files | @Test |
 |---|---:|---:|
-| `ported` | 33 | 377 |
+| `ported` | 35 | 421 |
 | `covered` | 11 | 59 |
 | `port` | 15 | 107 |
 | `partial` | 36 | 1,219 |
-| `feature:<name>` | 133 | 1,886 |
+| `feature:<name>` | 131 | 1,842 |
 | `n/a` | 77 | 1,022 |
 | **Total** | **305** | **4,670** |
 
 Of the `n/a` tests, 571 (48 files) test the **deprecated** value-based `BasicTextField` and its internals (see below) or `ClickableText`/`onFocusedBoundsChanged`, 389 (23 files) test Compose-internal data structures or helpers whose behaviour other files check through public API, and 28 (4 files) test Compose's own test infrastructure or compare a golden image. Three `feature:` rows (`textfield/TextFieldContextMenuTest`, `textfield/TextFieldTextContextMenuBuilderTest`, `textfield/TextFieldToolbarTest`) mix the legacy and state-based fields: their 41 legacy (`btf1`) tests are n/a too.
 
-By feature, the `feature:` rows wait on: `text-context-menu` 294 tests (21 files), `text-field-state` 255 (17), `touch-text-selection` 227 (10), `android-ime` 170 (13), `style-api` 159 (9), `handwriting` 84 (6), `border-parity` 79 (3), `magnifier` 78 (5), `text-field-styles` 67 (4), `polygon-shapes` 64 (4), `text-links` 56 (3), `bring-into-view-requester` 48 (3), `content-receiver` 40 (4), `selection-state` 34, `drag-and-drop` 31 (4), `clickable-parity` 26 (4), `basic-marquee` 23, `android-external-surface` 20 (2), `hover-icon-override` 18, `android-window-rects` 16 (2), `text-auto-size` 15, `shapes` 14, `smart-selection` 13 (4), `background-text-measurement` 11, `cursor-blink` 11 (2), `basic-tooltip` 8, `dead-keys` 6, `inline-content` 6, `ui-text-substitution` 6 (2), `ui-text-async-fonts` 4, `basic-text-drawing` 3. The `partial` rows add more demand on `clickable-parity`, `focusable-parity` and `image-painter`, and on ui's input mode and indirect pointers (`ClickableTest`, `CombinedClickableTest`, `ToggleableTest`, `SelectableTest` and `FocusableTest`'s remaining scenarios).
+By feature, the `feature:` rows wait on: `text-context-menu` 294 tests (21 files), `text-field-state` 255 (17), `touch-text-selection` 227 (10), `android-ime` 170 (13), `style-api` 159 (9), `handwriting` 84 (6), `border-parity` 79 (3), `magnifier` 78 (5), `text-field-styles` 67 (4), `polygon-shapes` 64 (4), `text-links` 56 (3), `content-receiver` 40 (4), `selection-state` 34, `drag-and-drop` 31 (4), `clickable-parity` 26 (4), `basic-marquee` 23, `android-external-surface` 20 (2), `hover-icon-override` 18, `android-window-rects` 16 (2), `text-auto-size` 15, `shapes` 14, `smart-selection` 13 (4), `background-text-measurement` 11, `cursor-blink` 11 (2), `basic-tooltip` 8, `dead-keys` 6, `inline-content` 6, `ui-text-substitution` 6 (2), `bring-into-view-requester` 4, `ui-text-async-fonts` 4, `basic-text-drawing` 3. The `partial` rows add more demand on `clickable-parity`, `focusable-parity` and `image-painter`, and on ui's input mode and indirect pointers (`ClickableTest`, `CombinedClickableTest`, `ToggleableTest`, `SelectableTest` and `FocusableTest`'s remaining scenarios).
 
 **The value-based `BasicTextField` is deprecated.** At this commit both `BasicTextField(value: String, onValueChange, …)` and `BasicTextField(value: TextFieldValue, …)` are `@Deprecated("Use the BasicTextField(state: TextFieldState, ...) overload instead …")` (`BasicTextField.kt` lines 799 and 970). compose-rs's only text field is the `String` one (D96). So its tests (`textfield/**`, `text/CoreTextField*`, the `Legacy*` IME tests and the legacy internals) are `n/a` here, and the state-based field's tests (`text/input/**`) wait on `text-field-state`, even where compose-rs's field already does what they check (the rows say so). `KeyboardActions`, `KeyboardOptions` and `VisualTransformation` aren't deprecated themselves, but in foundation only the deprecated field takes `KeyboardActions` and `VisualTransformation`.
 
@@ -98,8 +98,8 @@ Paths are relative to `frameworks/support`. A status cites the compose-rs tests 
 | File (relative to `frameworks/support`) | @Test | Covers | Status |
 |---|---:|---|---|
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewRequesterViewIntegrationTest.kt` | 4 | `bringIntoView` reaches `View.requestRectangleOnScreen`, and back | feature:bring-into-view-requester — plus the Android host bridge |
-| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewResponderTest.kt` | 20 | `BringIntoViewRequester` through responders: rects, child sizes, propagation, interruption of overlapping requests | feature:bring-into-view-requester |
-| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewScrollableInteractionTest.kt` | 24 | a requester inside scrollables scrolls the least needed (leading, trailing, centred, bigger than the viewport) | feature:bring-into-view-requester — the scrolling side exists for focus (`compose-foundation/src/scroll.rs` `bring_into_view`); shared with the gestures/scrolling ledger |
+| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewResponderTest.kt` | 20 | `BringIntoViewRequester` through responders: rects, child sizes, propagation, interruption of overlapping requests | ported: counted in the foundation-layout-lazy ledger (`bring_into_view.rs`, D1371, D1376) |
+| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewScrollableInteractionTest.kt` | 24 | a requester inside scrollables scrolls the least needed (leading, trailing, centred, bigger than the viewport) | ported: counted in the foundation-layout-lazy ledger (`bring_into_view.rs`, D1371, D1376) |
 
 ### selection: 2 files, 88 tests
 
@@ -471,7 +471,7 @@ From `api/current.txt`, every public, non-deprecated API in this area that compo
 
 ### `androidx.compose.foundation.relocation`
 
-`BringIntoViewRequester()`, `BringIntoViewRequester.bringIntoView(rect)`, `Modifier.bringIntoViewRequester`: missing; only the responder side exists, internally (`ModifierNode::bring_into_view`, used for focus) (`bring-into-view-requester`).
+`BringIntoViewRequester()`, `BringIntoViewRequester.bringIntoView(rect)`, `Modifier.bringIntoViewRequester`: done (D1371; the containers animate, D1376). Left: the Android host's `requestRectangleOnScreen` past the root (`bring-into-view-requester`).
 
 ### `androidx.compose.foundation.selection`
 
@@ -657,8 +657,9 @@ Sizes: S under a day, M a few days, L a week or two, XL multi-week. "Other area"
 - **Compose API:** `BringIntoViewRequester`, `bringIntoView(rect)`, `Modifier.bringIntoViewRequester`.
 - **What:** application code asks the scrollable ancestors to show a node or a rect of it, each scrolling the least needed, newer requests interrupting older ones they don't contain; on Android it continues to `View.requestRectangleOnScreen` past the root.
 - **Tests:** `relocation/*`.
-- **Depends on:** ui's responder side (exists as `ModifierNode::bring_into_view`); the gestures area's `BringIntoViewSpec`; the Android host bridge.
-- **Size:** M. **Experimental:** no.
+- **Status:** done but for the Android host bridge (D1371, D1376).
+- **Depends on:** the Android host bridge.
+- **Size:** S (what's left). **Experimental:** no.
 
 ### basic-tooltip
 - **Compose API:** `BasicTooltipBox`, `BasicTooltipState`, `rememberBasicTooltipState`, `BasicTooltipDefaults`.

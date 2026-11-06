@@ -1180,7 +1180,10 @@ impl TextFieldNode {
             cursor.bottom - scroll.y,
         );
         scope.run_after_layout(move || {
-            handle.bring_into_view(Some(rect));
+            // What the containers animate runs on, as Compose's launched `bringIntoView`.
+            if let Some(shown) = handle.bring_into_view(Some(rect)) {
+                compose_runtime::platform::launch(shown);
+            }
         });
     }
 

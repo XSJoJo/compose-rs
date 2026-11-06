@@ -897,11 +897,12 @@ fn a_tall_field_focused_shows_its_cursor() {
     }
 }
 
-/// A tall field whose cursor is in view, its top a little below the column's: focused, nothing
-/// scrolls. The whole doesn't fit, so the column shows the cursor, already shown; asking for the
-/// whole then the cursor, one after the other, would bring its top up (D1145).
+/// A tall field whose cursor is in view, its top a little below the column's: focused, its top
+/// comes up to the column's, as Compose's: the cursor's request, already shown, isn't queued
+/// (`isMaxVisible`), and the whole field's, too large, goes to its nearer edge (D1145, D1376).
+// Compose: compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/gestures/ContentInViewNode.kt, bringChildIntoView (no test of its own)
 #[test]
-fn a_tall_field_with_its_cursor_in_view_stays_where_it_is() {
+fn a_tall_field_with_its_cursor_in_view_brings_its_top_up() {
     let text = "line\n".repeat(40);
     for state_based in [false, true] {
         let scroll_state = **Box::leak(Box::new(ScrollState::new(0)));
@@ -927,6 +928,7 @@ fn a_tall_field_with_its_cursor_in_view_stays_where_it_is() {
         let before = scroll_state.value();
         ui.on_node_with_tag("field").request_focus();
         ui.wait_for_idle();
-        assert_eq!(scroll_state.value(), before, "state {state_based}");
+        let moved = (scroll_state.value() - before) as f32;
+        assert!((moved - 20.0 * density).abs() <= 1.0, "state {state_based}: moved {moved}");
     }
 }

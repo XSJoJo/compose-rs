@@ -116,9 +116,8 @@ struct LazyListInner {
     /// It's been measured ahead, in a `LookaheadScope`: what it says of where it is is what's
     /// ahead's, as Compose's `hasLookaheadOccurred` (D1226).
     measured_ahead: Cell<bool>,
-    /// Where the pass ahead placed each animated item (its key, index and offset from the
-    /// content's start): the pass that's now places it there, as Compose's `lookaheadOffset`.
-    lookahead_mains: RefCell<Vec<(u64, usize, i32)>>,
+    /// Where the pass ahead placed each animated item: the pass that's now places it there.
+    lookahead_places: RefCell<Vec<item_animator::LookaheadPlace>>,
     /// What runs `animate_item`, shared with its items' nodes.
     item_animator: Rc<ItemAnimator>,
     /// What `scroll_indicator_state` gives, one object as Compose's.
@@ -404,7 +403,7 @@ impl LazyListInner {
             core: crate::gestures::ScrollCore::new(),
             laid_out: layout_info::LaidOut::new(),
             measured_ahead: Cell::new(false),
-            lookahead_mains: RefCell::default(),
+            lookahead_places: RefCell::default(),
             density: Cell::new(1.0),
             laid_items: RefCell::new(None),
             scroll_outer: RefCell::new(None),
@@ -2670,6 +2669,26 @@ struct LazyListLayout {
 /// Measures an item by index (once), recording its size; `None` if it isn't composed.
 type MeasureItem<'a> = dyn FnMut(usize, &mut Sizes) -> Option<Placeable> + 'a;
 
+/// Notes where the pass ahead positioned each animated item, for the pass that's now to place it
+/// there (`before` is the content padding first along the axis).
+fn note_lookahead_places(
+    state: &LazyListInner,
+    positioned: &[item_animator::Positioned],
+    before: i32,
+) {
+    let animator = &state.item_animator;
+    let mut places = state.lookahead_places.borrow_mut();
+    places.clear();
+    places.extend(positioned.iter().filter(|it| animator.animates(it.key)).map(|it| {
+        item_animator::LookaheadPlace {
+            key: it.key,
+            index: it.index,
+            main: it.main + before,
+            cross: it.cross,
+        }
+    }));
+}
+
 impl MeasurePolicy for LazyListLayout {
     fn measure(
         &self,
@@ -2891,6 +2910,7 @@ impl MeasurePolicy for LazyListLayout {
                     lane_count: 1,
                     layout_min: 0,
                     layout_max: 0,
+                    looking_ahead,
                 };
                 if tells {
                     animator.on_measured(state, &pass, &[], &mut |_, _| None);
@@ -3554,6 +3574,8 @@ impl MeasurePolicy for LazyListLayout {
             }
         };
         let mut moved_away = Vec::new();
+        // Across, where the pass ahead placed those the pass that's now places where they're ahead.
+        let mut crosses: Vec<(Placeable, i32)> = Vec::new();
         if let Some(items) = &mut animated_items {
             if let Some((from_index, from_offset, asked)) = scrolled_from {
                 let moved =
@@ -3571,14 +3593,16 @@ impl MeasurePolicy for LazyListLayout {
                 // Now, after the pass ahead: each animated item where it is ahead, animating
                 // toward there, as Compose's `place` with a `lookaheadOffset`; those moving away
                 // too, where the pass ahead put them.
-                for (key, item, main) in state.lookahead_mains.borrow().iter().copied() {
-                    let Some(placeable) = measure(item, &mut sizes) else { continue };
+                for place in state.lookahead_places.borrow().iter() {
+                    let Some(placeable) = measure(place.index, &mut sizes) else { continue };
+                    let main = place.main;
+                    crosses.push((placeable, place.cross));
                     let entry = ahead.iter_mut().chain(&mut placed).chain(&mut beyond);
                     match entry.into_iter().find(|(other, _)| *other == placeable) {
                         Some(entry) => entry.1 = main,
                         None => {
                             beyond.push((placeable, main));
-                            moved_away.push((key, placeable, main));
+                            moved_away.push((place.key, placeable, main));
                         }
                     }
                     if let Some(it) = items.iter_mut().find(|(_, other, _)| *other == placeable) {
@@ -3624,12 +3648,10 @@ impl MeasurePolicy for LazyListLayout {
                     lane_count: 1,
                     layout_min: layout_bounds.map_or(0, |bounds| bounds.0),
                     layout_max: layout_bounds.map_or(0, |bounds| bounds.1),
+                    looking_ahead,
                 };
                 if looking_ahead {
-                    let mut mains = state.lookahead_mains.borrow_mut();
-                    mains.clear();
-                    let animated = positioned.iter().filter(|it| animator.animates(it.key));
-                    mains.extend(animated.map(|it| (it.key, it.index, it.main + before)));
+                    note_lookahead_places(state, &positioned, before);
                 }
                 let moved = animator.on_measured(state, &pass, &positioned, &mut |item, _| {
                     measure(item, &mut sizes).map(|it| (main_of(&it) + spacing).max(0))
@@ -3648,11 +3670,14 @@ impl MeasurePolicy for LazyListLayout {
                         }
                         moved_away.push((away.key, placeable, away.main + before));
                         if looking_ahead {
-                            state.lookahead_mains.borrow_mut().push((
-                                away.key,
-                                away.index,
-                                away.main + before,
-                            ));
+                            state.lookahead_places.borrow_mut().push(
+                                item_animator::LookaheadPlace {
+                                    key: away.key,
+                                    index: away.index,
+                                    main: away.main + before,
+                                    cross: away.cross,
+                                },
+                            );
                         }
                     }
                 }
@@ -3676,7 +3701,8 @@ impl MeasurePolicy for LazyListLayout {
             if vertical { (cross_total, main_total) } else { (main_total, cross_total) };
         let position_of = |placeable: &Placeable, main: i32| {
             let main = if reverse { main_total - main - main_of(placeable) } else { main };
-            let cross = aligned(placeable, cross_total);
+            let ahead = crosses.iter().find(|(other, _)| other == placeable);
+            let cross = ahead.map_or_else(|| aligned(placeable, cross_total), |(_, cross)| *cross);
             if vertical {
                 // The content padding's start is on the right in a right-to-left layout.
                 let before = if layout_direction == compose_ui::LayoutDirection::Rtl {
