@@ -227,6 +227,10 @@ impl super::ListObserver for Observer {
         }
     }
 
+    fn item_main_size(&self) -> Option<i32> {
+        self.0.inner().map(|inner| peek(&inner.page_size).max(0))
+    }
+
     fn after_measure(&self) {
         if let Some(inner) = self.0.inner() {
             inner.after_measure();
@@ -1269,8 +1273,13 @@ impl MeasurePolicy for PageLayout {
         measurables: &[Measurable],
         constraints: Constraints,
     ) -> MeasureResult {
-        // Observed: a new page size measures the page again.
-        let size = self.state.inner().map_or(0, |inner| inner.page_size.get());
+        // Its size along the pager, as its constraints carry it (Compose's child constraints).
+        let along = if self.vertical { constraints.max_height } else { constraints.max_width };
+        let size = if along == Constraints::INFINITY {
+            self.state.inner().map_or(0, |inner| inner.page_size.get())
+        } else {
+            along
+        };
         let child = if self.vertical {
             Constraints::new(0, constraints.max_width, 0, size)
         } else {

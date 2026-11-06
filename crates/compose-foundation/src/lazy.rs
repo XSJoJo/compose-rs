@@ -255,6 +255,11 @@ trait ListObserver {
         after: i32,
         spacing: i32,
     );
+    /// The size along the list its items are measured at most at: a pager's page size, as
+    /// Compose's pager's child constraints carry it.
+    fn item_main_size(&self) -> Option<i32> {
+        None
+    }
     /// With what's laid out known.
     fn after_measure(&self);
     /// `used` pixels were asked of the list, for the next measurement.
@@ -2287,10 +2292,30 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
         } else {
             (cross_max - cross_before - cross_after).max(0)
         };
+        // The position, with the scrolling asked for; the first visible item found again by
+        // its key if items came or went before it. A pager's pages are its size along it.
+        let observer = state.observer.borrow().clone();
+        let mut main_room_of_item = Constraints::INFINITY;
+        if let Some(observer) = observer {
+            compose_runtime::snapshots::Snapshot::without_read_observation(|| {
+                observer.before_measure(
+                    state,
+                    &info.items,
+                    density,
+                    main_max,
+                    before,
+                    after,
+                    spacing,
+                );
+            });
+            if let Some(main) = observer.item_main_size() {
+                main_room_of_item = main;
+            }
+        }
         let item_constraints = if vertical {
-            Constraints::new(0, cross_room, 0, Constraints::INFINITY)
+            Constraints::new(0, cross_room, 0, main_room_of_item)
         } else {
-            Constraints::new(0, Constraints::INFINITY, 0, cross_room)
+            Constraints::new(0, main_room_of_item, 0, cross_room)
         };
         if state.item_constraints_written.replace(Some(item_constraints)) != Some(item_constraints)
         {
@@ -2320,11 +2345,17 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
         let main_of =
             move |placeable: &Placeable| if vertical { placeable.height } else { placeable.width };
         state.prefetch.layout_started();
+        // Set where only items composed already are placed (beyond those wanted, up to a pinned
+        // one): the others between aren't composed for it.
+        let only_composed = Cell::new(false);
         // An item is composed as the measurement reaches it (a request's paused composition
         // completed and applied then), as Compose's `measuredItemProvider.getAndMeasure`.
         let mut measure_child = |index: usize, sizes: &mut Sizes| -> Option<Placeable> {
             if let Some(placeable) = placeables.get(&index) {
                 return Some(*placeable);
+            }
+            if only_composed.get() && !children.contains(&index) && !composer.has(index) {
+                return None;
             }
             let measurable = composer.measurable(scope, index)?;
             let placeable = scope.measure(measurable, item_constraints);
@@ -2335,19 +2366,6 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
         let measure: &mut MeasureItem<'_> = &mut measure_child;
         // The position, with the scrolling asked for; the first visible item found again by
         // its key if items came or went before it.
-        if let Some(observer) = state.observer.borrow().clone() {
-            compose_runtime::snapshots::Snapshot::without_read_observation(|| {
-                observer.before_measure(
-                    state,
-                    &info.items,
-                    density,
-                    main_max,
-                    before,
-                    after,
-                    spacing,
-                );
-            });
-        }
         let (mut index, offset) = state.position.get();
         let scrolled = state.pending.replace(0.0);
         let mut offset = offset + scrolled;
@@ -2858,6 +2876,7 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
         let mut main =
             placed.last().map_or(before, |(placeable, main)| main + main_of(placeable) + spacing);
         for next in end_index..placed_end.min(count) {
+            only_composed.set(next >= wanted_end);
             if let Some(placeable) = measure(next, &mut sizes) {
                 beyond.push((placeable, main));
                 main += (main_of(&placeable) + spacing).max(0);
@@ -2870,11 +2889,13 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
         let mut ahead: Vec<(Placeable, i32)> = Vec::new();
         let mut main = placed.first().map_or(before, |(_, main)| *main);
         for previous in (placed_start.min(lead)..lead).rev() {
+            only_composed.set(previous < wanted_start);
             if let Some(placeable) = measure(previous, &mut sizes) {
                 main -= (main_of(&placeable) + spacing).max(0);
                 ahead.push((placeable, main));
             }
         }
+        only_composed.set(false);
         ahead.reverse();
         let extent_start = main - before;
         let pending = state.pending.get();

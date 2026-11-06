@@ -1513,6 +1513,10 @@ struct Measurer<'a, 's, 'scope> {
     scope: &'a mut SubcomposeMeasureScope<'s, 'scope>,
     /// What composes the items as the measurement reaches them.
     composer: &'a mut ItemComposer,
+    /// The items composed before this measurement, and whether only those (and those it composed)
+    /// are measured: beyond those wanted, up to a pinned one.
+    before: &'a [usize],
+    only_composed: bool,
     placeables: HashMap<usize, Placeable>,
     lines: &'a mut Lines,
     slots: &'a Slots,
@@ -1559,6 +1563,9 @@ impl MeasuredLines {
 impl Measurer<'_, '_, '_> {
     /// Item `item`'s layout, composed as the measurement reaches it; `None` past the items.
     fn child_of(&mut self, item: usize) -> Option<Measurable> {
+        if self.only_composed && !self.before.contains(&item) && !self.composer.has(item) {
+            return None;
+        }
         self.composer.measurable(self.scope, item)
     }
 
@@ -1768,6 +1775,8 @@ impl ItemsMeasurePolicy for LazyGridLayout {
         let mut measurer = Measurer {
             scope,
             composer,
+            before: &children,
+            only_composed: false,
             placeables: HashMap::new(),
             lines: &mut lines,
             slots: &slots,
@@ -2284,6 +2293,7 @@ impl ItemsMeasurePolicy for LazyGridLayout {
         let mut main =
             placed.last().map_or(before, |(line, main)| main + (m.size_of(*line) + spacing).max(0));
         for next in end_index..placed_end {
+            m.only_composed = next >= wanted_end;
             if let Some(size) = m.line(next) {
                 beyond_lines.push((next, main));
                 main += (size + spacing).max(0);
@@ -2294,11 +2304,13 @@ impl ItemsMeasurePolicy for LazyGridLayout {
         let mut ahead_lines: Vec<(usize, i32)> = Vec::new();
         let mut main = placed.first().map_or(before, |(_, main)| *main);
         for previous in (placed_start.min(lead)..lead).rev() {
+            m.only_composed = previous < wanted_start;
             if let Some(size) = m.line(previous) {
                 main -= (size + spacing).max(0);
                 ahead_lines.push((previous, main));
             }
         }
+        m.only_composed = false;
         ahead_lines.reverse();
         let extent_start = main - before;
         let pending = state.pending.get();
