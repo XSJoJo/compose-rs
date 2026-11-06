@@ -888,7 +888,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1502 | [runtime](decisions/runtime.md#d1502) | current |
 | D1503 | [runtime](decisions/runtime.md#d1503) | current |
 | D1504 | [runtime](decisions/runtime.md#d1504) | current |
-| D1505 | [runtime](decisions/runtime.md#d1505) | current |
+| D1506 | [runtime](decisions/runtime.md#d1506) | current |
 | D1550 | [ui-and-layout](decisions/ui-and-layout.md#d1550) | current |
 | D1551 | [ui-and-layout](decisions/ui-and-layout.md#d1551) | current |
 | D1552 | [ui-and-layout](decisions/ui-and-layout.md#d1552) | current |

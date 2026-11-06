@@ -1181,18 +1181,22 @@ mod tests {
         assert!(!poll_now(panicking));
         assert!(current_job().is_none(), "no task is being polled");
         assert!(!has_ready_tasks());
-        // A later run works, the finished task's slot reused.
-        let later = Rc::new(Cell::new(false));
-        let next = {
-            let later = later.clone();
-            launch(async move {
-                assert!(current_job().is_some());
-                later.set(true);
+        // A later run works, in the two finished tasks' slots: the panicking one's was freed.
+        let slots = with_executor(|executor| executor.tasks.len());
+        let later = Rc::new(Cell::new(0));
+        let next: Vec<Job> = (0..2)
+            .map(|_| {
+                let later = later.clone();
+                launch(async move {
+                    assert!(current_job().is_some());
+                    later.set(later.get() + 1);
+                })
             })
-        };
+            .collect();
+        assert_eq!(with_executor(|executor| executor.tasks.len()), slots, "no slot leaked");
         assert!(run_ready());
-        assert!(later.get());
-        assert!(!next.is_active());
+        assert_eq!(later.get(), 2);
+        assert!(next.iter().all(|job| !job.is_active()));
     }
 
     /// Two tasks panicking in one `run_ready`: both finish, the first's panic is raised.
