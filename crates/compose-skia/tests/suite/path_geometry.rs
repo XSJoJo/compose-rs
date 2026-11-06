@@ -1,9 +1,10 @@
 //! Path geometry against Skia (Android's `android.graphics.Path` and Compose Desktop are both
 //! Skia): Compose's `PathReversionTest.pixelComparison`, and compose-rs's `PathMeasure` (Skia's
 //! `SkContourMeasure` ported) measuring as Skia's does. "Ours" is our commands replayed into a
-//! Skia path, as Replayer.kt replays them into an `android.graphics.Path`.
+//! Skia path, as Replayer.kt replays them into an `android.graphics.Path`. And `PathHitTester`
+//! against Skia's `contains`.
 
-use compose::ui::{Offset, Path, PathCommand, PathFillType, PathMeasure};
+use compose::ui::{Offset, Path, PathCommand, PathFillType, PathHitTester, PathMeasure};
 use compose_skia::skia_safe::{self, ContourMeasureIter, PathBuilder};
 
 #[path = "../../../compose-ui/tests/suite/path_shapes.rs"]
@@ -135,4 +136,78 @@ fn pieces_end_where_skia_ends_them() {
             assert_near(a, b, "piece bounds");
         }
     }
+}
+
+/// The points of a 200 × 200 grid around `path` where our hit tester and Skia's `contains`
+/// disagree.
+fn disagreements_with_skia(path: &Path) -> Vec<Offset> {
+    let tester = PathHitTester::new(path, 0.5);
+    let skia = replay(path);
+    let bounds = path.get_bounds().inflate(10.0);
+    let mut disagreements = Vec::new();
+    for row in 0..200 {
+        for column in 0..200 {
+            // Off the grid of the path's own coordinates, so no point is on an edge.
+            let x = bounds.left + bounds.width() * (column as f32 + 0.37) / 200.0;
+            let y = bounds.top + bounds.height() * (row as f32 + 0.61) / 200.0;
+            if tester.contains(Offset::new(x, y)) != skia.contains((x, y)) {
+                disagreements.push(Offset::new(x, y));
+            }
+        }
+    }
+    disagreements
+}
+
+// Not one of Compose's tests: a cubic turning vertically twice, which Compose's own hit tester
+// gets wrong (its `findCubicExtremaY` finds no turn; D1908), hits as Skia's.
+#[test]
+fn a_cubic_turning_twice_hits_as_skia() {
+    let path = Path::new();
+    path.move_to(50.0, 0.0);
+    path.cubic_to(120.0, -40.0, -20.0, 140.0, 50.0, 0.0);
+    path.close();
+    assert_eq!(disagreements_with_skia(&path), []);
+    assert!(PathHitTester::new(&path, 0.5).contains(Offset::new(64.13, -5.83)));
+    for data in [shapes::CUBICS, shapes::HEART, shapes::FILL_TYPES] {
+        assert_eq!(disagreements_with_skia(&svg_path(data)), []);
+    }
+}
+
+// Not one of Compose's tests: a horizontal ray through a vertex crosses its two edges once.
+#[test]
+fn a_ray_through_a_vertex_hits_as_skia() {
+    let diamond = Path::new();
+    diamond.move_to(50.0, 0.0);
+    diamond.line_to(100.0, 50.0);
+    diamond.line_to(50.0, 100.0);
+    diamond.line_to(0.0, 50.0);
+    diamond.close();
+    diamond.set_fill_type(PathFillType::EvenOdd);
+    let skia = replay(&diamond);
+    let tester = PathHitTester::new(&diamond, 0.5);
+    for x in [20.0, 50.0, 80.0] {
+        assert!(skia.contains((x, 50.0)));
+        assert!(tester.contains(Offset::new(x, 50.0)), "{x}");
+    }
+}
+
+// Not one of Compose's tests: a contour is filled as if closed by a line back to its start,
+// whether it's closed (a close has no points of its own) or left open, so it's hit so too
+// (where Compose's hit tester leaves that line out; D1908).
+#[test]
+fn contours_hit_as_closed_as_skia() {
+    let closed = Path::new();
+    closed.move_to(50.0, 0.0);
+    closed.line_to(100.0, 50.0);
+    closed.line_to(50.0, 100.0);
+    closed.line_to(0.0, 50.0);
+    closed.close();
+    assert_eq!(disagreements_with_skia(&closed), []);
+    let open = Path::new();
+    open.move_to(50.0, 0.0);
+    open.cubic_to(120.0, -40.0, -20.0, 140.0, 20.0, 30.0);
+    open.move_to(200.0, 200.0);
+    open.line_to(300.0, 200.0);
+    open.line_to(250.0, 300.0);
+    assert_eq!(disagreements_with_skia(&open), []);
 }

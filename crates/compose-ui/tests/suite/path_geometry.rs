@@ -577,3 +577,48 @@ fn measures_clamp_curves_split_and_operators_combine() {
         assert!(!combined.is_empty());
     }
 }
+
+// Not one of Compose's tests: a distance exactly at the end of a segment is on that segment, as
+// Skia's `distanceToSegment` finds it (the first ending at or after it).
+#[test]
+fn a_distance_on_a_corner_belongs_to_the_side_before_it() {
+    let square = rect_path(&[Rect::new(0.0, 0.0, 10.0, 10.0)]);
+    let mut measure = PathMeasure::new();
+    measure.set_path(Some(&square), false);
+    assert_eq!(measure.get_position(10.0), Offset::new(10.0, 0.0));
+    assert_eq!(measure.get_tangent(10.0), Offset::new(1.0, 0.0));
+    assert_eq!(measure.get_tangent(20.0), Offset::new(0.0, 1.0));
+
+    // A piece ending exactly where the cubic ends and the line starts has the cubic only.
+    let cubic = Path::new();
+    cubic.move_to(0.0, 0.0);
+    cubic.cubic_to(0.0, 50.0, 100.0, 50.0, 100.0, 0.0);
+    measure.set_path(Some(&cubic), false);
+    let cubic_length = measure.length();
+    let path = cubic.copy();
+    path.line_to(200.0, 0.0);
+    measure.set_path(Some(&path), false);
+    let piece = Path::new();
+    assert!(measure.get_segment(0.0, cubic_length, &piece, true));
+    let types: Vec<_> = (&piece).into_iter().map(|segment| segment.segment_type()).collect();
+    assert_eq!(types, [PathSegmentType::Move, PathSegmentType::Cubic]);
+    assert_eq!(piece.data().last_point(), Some(Offset::new(100.0, 0.0)));
+}
+
+// Not one of Compose's tests: a ray through a vertex crosses its two edges once (the edge ending
+// at the ray's height doesn't count, the one starting there does), so even-odd sees it inside.
+#[test]
+fn a_ray_through_a_vertex_crosses_once() {
+    let diamond = Path::new();
+    diamond.move_to(50.0, 0.0);
+    diamond.line_to(100.0, 50.0);
+    diamond.line_to(50.0, 100.0);
+    diamond.line_to(0.0, 50.0);
+    diamond.close();
+    diamond.set_fill_type(PathFillType::EvenOdd);
+    let tester = PathHitTester::new(&diamond, 0.5);
+    for x in [20.0, 50.0, 80.0] {
+        assert!(tester.contains(Offset::new(x, 50.0)), "{x}");
+    }
+    assert!(!tester.contains(Offset::new(-10.0, 50.0)));
+}
