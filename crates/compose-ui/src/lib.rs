@@ -75,6 +75,8 @@ mod paragraph;
 mod paragraph_style;
 mod parent_data;
 mod path;
+mod path_geometry;
+mod path_measure;
 mod pinnable;
 mod placeholder;
 mod placement;
@@ -296,6 +298,10 @@ pub use parent_data::{LayoutIdParentData, ParentDataModifierNode};
 pub use path::{
     Path, PathCommand, PathData, PathDirection, PathError, PathFillType, PathOperation, PathStep,
 };
+pub use path_geometry::{
+    ConicEvaluation, PathHitTester, PathIterator, PathSegment, PathSegmentType,
+};
+pub use path_measure::PathMeasure;
 pub use pinnable::{FocusPin, LOCAL_PINNABLE_CONTAINER, PinnableContainer, PinnedHandle};
 pub use placeholder::{Placeholder, PlaceholderVerticalAlign, Placeholders};
 pub use placement::PlacementScope;

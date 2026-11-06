@@ -35,6 +35,8 @@ mod only_unsafe_module;
 mod paragraph;
 mod paragraph_style;
 mod parent_data;
+mod path_geometry;
+mod path_shapes;
 mod placeholder;
 mod placement_pass;
 mod pointer_event;

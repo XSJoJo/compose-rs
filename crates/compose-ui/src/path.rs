@@ -229,6 +229,18 @@ impl PathData {
         &self.commands
     }
 
+    /// The last point a command put down (a close puts none), as Skia's `getLastPt`: `None`
+    /// without one.
+    pub fn last_point(&self) -> Option<Offset> {
+        self.commands.iter().rev().find_map(|command| match *command {
+            PathCommand::MoveTo(point)
+            | PathCommand::LineTo(point)
+            | PathCommand::QuadTo(_, point)
+            | PathCommand::CubicTo(_, _, point) => Some(point),
+            PathCommand::Close => None,
+        })
+    }
+
     /// Runs its steps (iteratively, however many: an operand's contents have none) with
     /// `push` making a value of an operand's contents, `combine` combining two (the first if it
     /// can't), `combine_or` combining the second and third or else giving the first, `add` adding

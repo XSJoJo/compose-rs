@@ -634,6 +634,34 @@ struct RenderPath {
     stroke: Option<(Brush, f32, f32, StrokeCap)>,
 }
 
+/// `data` trimmed as `path` asks, as Compose's `PathComponent.updateRenderPath` (D1908): the
+/// piece from the start to the end (fractions of the first contour's length, moved by the
+/// offset and wrapped), two pieces when it wraps past the end. As Compose's, the trimmed path is
+/// a new one: its fill type is the default.
+fn trimmed(data: Arc<PathData>, path: &VectorPath) -> Arc<PathData> {
+    let (start, end) = (path.trim_path_start, path.trim_path_end);
+    if start == 0.0 && end == 1.0 {
+        return data;
+    }
+    let mut measure = crate::path_measure::PathMeasure::new();
+    measure.set_path(Some(&crate::path::Path::from_shared_data(data)), false);
+    let length = measure.length();
+    let start = ((start + path.trim_path_offset) % 1.0) * length;
+    let end = ((end + path.trim_path_offset) % 1.0) * length;
+    let render = crate::path::Path::new();
+    if start > end {
+        let piece = crate::path::Path::new();
+        measure.get_segment(start, length, &piece, true);
+        render.add_path(&piece, Offset::ZERO);
+        piece.reset();
+        measure.get_segment(0.0, end, &piece, true);
+        render.add_path(&piece, Offset::ZERO);
+    } else {
+        measure.get_segment(start, end, &render, true);
+    }
+    render.data()
+}
+
 impl RenderGroup {
     fn of(group: &VectorGroup) -> RenderGroup {
         let identity = group.rotation == 0.0
@@ -655,7 +683,10 @@ impl RenderGroup {
             .map(|child| match child {
                 VectorNode::Group(group) => RenderNode::Group(RenderGroup::of(group)),
                 VectorNode::Path(path) => RenderNode::Path(RenderPath {
-                    path: Arc::new(nodes_to_data(&path.path_data, path.path_fill_type)),
+                    path: trimmed(
+                        Arc::new(nodes_to_data(&path.path_data, path.path_fill_type)),
+                        path,
+                    ),
                     fill: path.fill.clone().map(|brush| (brush, path.fill_alpha)),
                     stroke: path.stroke.clone().map(|brush| {
                         (brush, path.stroke_alpha, path.stroke_line_width, path.stroke_line_cap)
