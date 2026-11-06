@@ -2199,8 +2199,10 @@ impl TextFieldNode {
 }
 
 impl ModifierNode for TextFieldNode {
-    fn on_detach(&mut self, _: &mut compose_ui::NodeContext<'_>) {
+    fn on_detach(&mut self, context: &mut compose_ui::NodeContext<'_>) {
         self.tell_focus(false);
+        // Its handles go with it (D2011).
+        self.touch.reset(Some(context.handle()));
     }
     fn as_layout(&mut self) -> Option<&mut dyn LayoutModifierNode> {
         Some(self)
@@ -2272,7 +2274,7 @@ impl ModifierNode for TextFieldNode {
         self.preedit_interrupted = false;
         self.composing_over_text = false;
         self.restart_input = false;
-        self.touch.reset();
+        self.touch.reset(Some(context.handle()));
     }
 }
 

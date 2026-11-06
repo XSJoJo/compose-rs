@@ -20,6 +20,10 @@ Rejected: drawing the handles from the field's node, outside its bounds, with a 
 
 The node writes them at the end of its measurement, where its cursor and selection rects are refreshed, only while handles may show (touch interaction and focus); once none show it stops. A field never touched by a finger writes nothing.
 
+**A frame behind.** The node writes the states during a measurement, so a handle comes or goes in the frame after the measurement that decides it: its popup is composed by the next recomposition, as Compose's handles follow a `derivedStateOf` the measurement's writes invalidate. Its position is read by the popup's position provider after the layout that wrote it, so a handle already shown moves in the same frame.
+
+**Visible bounds.** A handle hides when its point leaves the field's bounds clipped by its ancestors (Compose's `visibleBounds()`): while handles may show, a node of no size in the inner field follows those bounds after each layout and measures the field again when they change, a frame behind as Compose's (D2011). **Its node made anew.** `TouchHandles` is the composable's and outlives a node its decoration makes anew: a node detached or reset takes back what it told (D2011).
+
 ## Gestures: in the existing nodes
 
 **Decision: the field's node and the container's node detect the touch gestures themselves, in their pointer input, as they detect the mouse's now; the handles' nodes detect their own drags.** Rejected: Compose's coroutine detectors (`detectDragGesturesAfterLongPress`, `detectTapAndPress`) as suspending pointer input. compose-rs has them for applications, but the field's node is one node with its own state machine for presses (D1047, D96) and a second detector beside it would race it for the same events.

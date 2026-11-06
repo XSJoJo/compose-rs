@@ -120,8 +120,15 @@ pub(crate) struct TouchHandles {
     pub ended: Cell<bool>,
     /// The cursor handle was tapped: what the text toolbar will toggle on (`text-context-menu`).
     pub cursor_tapped: Cell<bool>,
-    /// The field's node, measured again when a handle is dragged.
+    /// The field's node, measured again when a handle is dragged: the one focused last (a
+    /// decoration moving the inner field makes the node anew).
     pub field: Cell<Option<NodeHandle>>,
+    /// While handles may show: the inner field's bounds clipped by its ancestors are followed,
+    /// as Compose's `textLayoutCoordinates.visibleBounds()`.
+    pub active: OwnedState<bool>,
+    /// The inner field's visible bounds, in its coordinates, after its last placement: a handle's
+    /// point outside them hides it (one frame behind, as Compose's).
+    pub visible: Cell<Option<Rect>>,
 }
 
 impl TouchHandles {
@@ -133,6 +140,28 @@ impl TouchHandles {
             ended: Cell::new(false),
             cursor_tapped: Cell::new(false),
             field: Cell::new(None),
+            active: compose_runtime::mutable_state_of(false),
+            visible: Cell::new(None),
+        }
+    }
+
+    /// The field's node `field` is gone: nothing it told shows any more, and drags aren't told
+    /// to it.
+    pub(crate) fn forget(&self, field: Option<NodeHandle>) {
+        if field.is_some() && self.field.get() == field {
+            self.field.set(None);
+        }
+        if self.shown.with(ShownHandles::any) {
+            self.shown.set(ShownHandles::default());
+        }
+        if self.active.with(|active| *active) {
+            self.active.set(false);
+        }
+    }
+
+    fn measure_field(&self) {
+        if let Some(field) = self.field.get() {
+            field.invalidate_measurement();
         }
     }
 
@@ -141,9 +170,7 @@ impl TouchHandles {
             Some(moved) => self.moved.set(Some(moved)),
             None => self.ended.set(true),
         }
-        if let Some(field) = self.field.get() {
-            field.invalidate_measurement();
-        }
+        self.measure_field();
     }
 }
 
@@ -158,6 +185,9 @@ impl compose_runtime::ComposeArg for TouchHandles {
 #[composable]
 #[allow(non_snake_case)]
 pub(crate) fn TextFieldHandles(handles: Rc<TouchHandles>) {
+    if handles.active.get() {
+        VisibleBoundsReader(handles.clone());
+    }
     let shown = handles.shown.get();
     if !shown.any() {
         return;
@@ -170,6 +200,71 @@ pub(crate) fn TextFieldHandles(handles: Rc<TouchHandles>) {
     }
     if let Some(left) = shown.end {
         HandlePopup(handles, Handle::SelectionEnd, left);
+    }
+}
+
+/// A node of no size in the inner field that follows the field's bounds clipped by its
+/// ancestors after each layout, for the field's handles, while they may show.
+#[composable]
+#[allow(non_snake_case)]
+fn VisibleBoundsReader(handles: Rc<TouchHandles>) {
+    Layout(
+        Modifier.then_custom(VisibleBoundsElement(handles)),
+        empty_measure_policy(),
+        compose_runtime::callback(|| {}),
+    );
+}
+
+#[derive(Clone)]
+struct VisibleBoundsElement(Rc<TouchHandles>);
+
+struct VisibleBoundsNode(Rc<TouchHandles>);
+
+impl ModifierNodeElement for VisibleBoundsElement {
+    type Node = VisibleBoundsNode;
+    fn create(&self) -> VisibleBoundsNode {
+        VisibleBoundsNode(self.0.clone())
+    }
+    fn update(&self, node: &mut VisibleBoundsNode) {
+        node.0 = self.0.clone();
+    }
+    fn same(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+    fn name(&self) -> &'static str {
+        "selection_handles_visible_bounds"
+    }
+}
+
+impl ModifierNode for VisibleBoundsNode {
+    fn as_global_position_aware(
+        &mut self,
+    ) -> Option<&mut dyn compose_ui::GlobalPositionAwareModifierNode> {
+        Some(self)
+    }
+    fn on_detach(&mut self, _context: &mut compose_ui::NodeContext<'_>) {
+        self.0.visible.set(None);
+    }
+}
+
+impl compose_ui::GlobalPositionAwareModifierNode for VisibleBoundsNode {
+    /// The inner field's bounds in the window, clipped by its ancestors and the window, back in
+    /// its coordinates, as Compose's `LayoutCoordinates.visibleBounds()`; the field measures
+    /// again when they changed.
+    fn on_globally_positioned(
+        &mut self,
+        coordinates: compose_ui::LayoutCoordinates,
+        _context: &mut compose_ui::NodeContext<'_>,
+    ) {
+        let Some(field) = coordinates.parent_layout_coordinates() else { return };
+        let window = field.bounds_in_window();
+        let top_left = field.window_to_local(Offset::new(window.left, window.top));
+        let bottom_right = field.window_to_local(Offset::new(window.right, window.bottom));
+        let visible = Rect::new(top_left.x, top_left.y, bottom_right.x, bottom_right.y);
+        if self.0.visible.get() != Some(visible) {
+            self.0.visible.set(Some(visible));
+            self.0.measure_field();
+        }
     }
 }
 

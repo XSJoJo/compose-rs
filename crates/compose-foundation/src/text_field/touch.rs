@@ -9,7 +9,7 @@
 use std::rc::Rc;
 
 use compose_ui::platform::{ParagraphHandle, TextMeasurer};
-use compose_ui::{EventContext, Offset, PointerEvent, PointerType, ResolvedTextDirection};
+use compose_ui::{EventContext, Offset, PointerEvent, PointerType, Rect, ResolvedTextDirection};
 
 use super::TextFieldNode;
 use crate::selection_handles::{Handle, HandlePositions, ShownHandles, TouchHandles};
@@ -29,6 +29,8 @@ pub(crate) struct Touch {
     /// What the handles were last told.
     shown: ShownHandles,
     positions: HandlePositions,
+    /// Whether the handles were told they may show (`TouchHandles::active`).
+    active: bool,
     /// The handle drag the field follows: the handle, where it pointed in the text at the drag's
     /// start (Compose's `getAdjustedCoordinates`, a pixel up), and the field's scroll then.
     drag: Option<(Handle, Offset, Offset)>,
@@ -64,6 +66,7 @@ impl Touch {
             cursor_handle: None,
             shown: ShownHandles::default(),
             positions: HandlePositions::default(),
+            active: false,
             drag: None,
             long_press_job: None,
             pending: None,
@@ -82,12 +85,19 @@ impl Touch {
             self.handles = handles.clone();
             self.shown = ShownHandles::default();
             self.positions = HandlePositions::default();
+            self.active = false;
             self.drag = None;
         }
     }
 
-    /// Reused for another field, or detached: no handle shows.
-    pub(super) fn reset(&mut self) {
+    /// Reused for another field, or detached: no handle shows, here or in the popups it told
+    /// (the composable's `TouchHandles` outlives a node its decoration made anew).
+    pub(super) fn reset(&mut self, field: Option<compose_ui::NodeHandle>) {
+        if let Some(handles) = &self.handles {
+            handles.forget(field);
+        }
+        self.shown = ShownHandles::default();
+        self.active = false;
         self.direct = true;
         self.cursor_handle = None;
         self.drag = None;
@@ -126,9 +136,7 @@ impl TextFieldNode {
     pub(super) fn touch_focus_changed(&mut self, focused: bool, context: &mut EventContext<'_>) {
         let Some(handles) = &self.touch.handles else { return };
         if focused {
-            if handles.field.get().is_none() {
-                handles.field.set(Some(context.handle()));
-            }
+            handles.field.set(Some(context.handle()));
             if self.touch.direct && context.input_mode() != compose_ui::InputMode::Touch {
                 self.touch.direct = false;
             }
@@ -321,7 +329,7 @@ impl TextFieldNode {
     pub(super) fn tell_handles(&mut self, measurer: &dyn TextMeasurer, paragraph: ParagraphHandle) {
         let may_show =
             self.focused && self.enabled && self.touch.direct && self.touch.long.is_none();
-        if !may_show && !self.touch.shown.any() {
+        if !may_show && !self.touch.shown.any() && !self.touch.active {
             return;
         }
         let Some(handles) = self.touch.handles.clone() else { return };
@@ -345,14 +353,26 @@ impl TextFieldNode {
         let mut shown = ShownHandles::default();
         let mut positions = self.touch.positions;
         let dragging = self.touch.drag.map(|(handle, _, _)| handle);
+        if may_show != self.touch.active {
+            self.touch.active = may_show;
+            handles.active.set(may_show);
+        }
+        // The field's bounds clipped by its ancestors, after its last placement; its own bounds
+        // until they're known.
         let size = self.size;
+        let visible = handles.visible.get().filter(|_| may_show).unwrap_or(Rect::new(
+            0.0,
+            0.0,
+            size.width as f32,
+            size.height as f32,
+        ));
         let scroll = self.scroll;
         let in_view = |point: Offset| {
             let local = point - scroll;
-            local.x >= 0.0
-                && local.y >= 0.0
-                && local.x <= size.width as f32
-                && local.y <= size.height as f32
+            local.x >= visible.left
+                && local.y >= visible.top
+                && local.x <= visible.right
+                && local.y <= visible.bottom
         };
         let mut place = |handle: Handle, point: Offset| {
             positions.text[handle.index()] = point;

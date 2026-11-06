@@ -5,6 +5,7 @@
 
 #![allow(non_snake_case)]
 
+use compose_foundation::layout::*;
 use compose_foundation::*;
 use compose_test::*;
 use compose_ui::platform::{FixedFontMetrics, FixedTextMeasurer};
@@ -609,4 +610,73 @@ fn the_cursor_handle_hides_while_another_window_takes_the_keys() {
     covered.set(true);
     ui.wait_for_idle();
     assert_no_cursor_handle(&mut ui);
+}
+
+/// A decoration that moves the inner field makes the field's node anew: the old node's handle
+/// goes with it, and the new node's handles follow their drags (the review of D2010).
+#[test]
+fn a_field_made_anew_by_its_decoration_leaves_no_handle_and_follows_drags() {
+    let state = state_of("hello hello");
+    let wrap = Box::leak(Box::new(compose_runtime::mutable_state_of(false))).handle();
+    let mut ui = touch_rule(move || {
+        BasicTextFieldOfState!(
+            state,
+            modifier = Modifier.test_tag(TAG).width(200.dp()),
+            text_style = TextStyle { font_size: 10.sp(), ..TextStyle::DEFAULT },
+            decorator = move |inner: compose_runtime::Callback| {
+                if wrap.get() {
+                    Box!({ inner() });
+                } else {
+                    inner();
+                }
+            },
+        );
+    });
+    focus(&mut ui);
+    click(&mut ui, Offset::new(20.0, 5.0));
+    assert_cursor_handle_shown(&mut ui);
+    wrap.set(true);
+    ui.wait_for_idle();
+    assert_no_cursor_handle(&mut ui);
+    ui.on_node_with_tag(TAG).perform_touch_input(|touch| {
+        touch.advance_event_time(1000);
+        touch.click_at(Offset::new(20.0, 5.0));
+    });
+    ui.wait_for_idle();
+    assert_cursor_handle_shown(&mut ui);
+    assert_eq!(state.selection(), TextRange::at(2));
+    drag_cursor_handle(&mut ui, false, 60.0, 1000);
+    assert_eq!(state.selection(), TextRange::at(8));
+}
+
+/// A field scrolled out of a scrolling container's viewport shows no handle: its visible bounds
+/// are clipped by its ancestors, as Compose's `visibleBounds()` (the review of D2010).
+#[test]
+fn a_field_scrolled_out_of_its_container_shows_no_handle() {
+    let state = state_of("hello");
+    let scroll = **Box::leak(Box::new(ScrollState::new(0)));
+    let mut ui = touch_rule(move || {
+        Column!(Modifier.height(100.dp()).vertical_scroll(scroll), {
+            BasicTextFieldOfState!(
+                state,
+                modifier = Modifier.test_tag(TAG).width(100.dp()),
+                text_style = TextStyle { font_size: 10.sp(), ..TextStyle::DEFAULT },
+            );
+            compose_foundation::layout::Spacer(Modifier.height(1000.dp()));
+        });
+    });
+    focus(&mut ui);
+    click(&mut ui, Offset::new(20.0, 5.0));
+    assert_cursor_handle_shown(&mut ui);
+    crate::scroll_support::run(&mut ui, async move {
+        let _ = scroll.scroll_to(300).await;
+    });
+    ui.wait_for_idle();
+    assert_eq!(scroll.value(), 300);
+    assert_no_cursor_handle(&mut ui);
+    crate::scroll_support::run(&mut ui, async move {
+        let _ = scroll.scroll_to(0).await;
+    });
+    ui.wait_for_idle();
+    assert_cursor_handle_shown(&mut ui);
 }
