@@ -43,7 +43,7 @@ pub use configuration_override::DeviceConfigurationOverride;
 pub use edge_effects::{FakeEdgeEffect, FakeEdgeEffects};
 pub use injection::{
     InjectionScope, KeyInjectionScope, MouseButton, MouseInjectionScope, ScrollWheel,
-    TouchInjectionScope,
+    TouchInjectionScope, TrackpadButton, TrackpadInjectionScope,
 };
 pub use interaction::{SemanticsNodeInteraction, SemanticsNodeInteractionCollection};
 pub use matcher::{

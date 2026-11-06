@@ -19,3 +19,4 @@ mod rule;
 mod run;
 mod sample_font;
 mod selectors;
+mod trackpad;

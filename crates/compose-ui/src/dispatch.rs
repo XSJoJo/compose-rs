@@ -111,6 +111,8 @@ impl LiveChange {
         change.pointer_type = event.pointer_type;
         change.scroll_delta = event.scroll_delta;
         change.wheel_step = event.wheel_step;
+        change.pan_offset = event.pan_offset;
+        change.scale_factor = event.scale_factor;
         change.sharing(self.consumed.clone())
     }
 
@@ -411,11 +413,18 @@ impl UiTree {
             let already_down = event.pointer_type == crate::input::PointerType::Mouse
                 && captured.is_some()
                 && previous.is_some_and(|it| it.pressed);
+            // A trackpad's pan or pinch keeps what it starts on, as a press does: Compose's is a
+            // stream of fake fingers.
             let path = match (event.kind, captured) {
                 (PointerEventType::Press, Some(captured)) if already_down => {
                     self.captures[captured].1.clone()
                 }
-                (PointerEventType::Press, captured) => {
+                (
+                    PointerEventType::Press
+                    | PointerEventType::PanStart
+                    | PointerEventType::ScaleStart,
+                    captured,
+                ) => {
                     if let Some(captured) = captured {
                         self.captures.remove(captured);
                     }
@@ -426,28 +435,48 @@ impl UiTree {
                 (PointerEventType::Release, Some(captured)) if !event.pressed => {
                     self.captures.remove(captured).1
                 }
+                (PointerEventType::PanEnd | PointerEventType::ScaleEnd, Some(captured)) => {
+                    self.captures.remove(captured).1
+                }
                 (
-                    PointerEventType::Release | PointerEventType::Move | PointerEventType::Unknown,
+                    PointerEventType::Release
+                    | PointerEventType::Move
+                    | PointerEventType::Unknown
+                    | PointerEventType::PanMove
+                    | PointerEventType::ScaleChange,
                     Some(captured),
                 ) => self.captures[captured].1.clone(),
                 _ => self.hit_test(position),
             };
             // A mouse's hover: what it left hears `Exit`, what it came over `Enter`, as Compose's
-            // (not while a button is held: a drag stays with what it pressed).
+            // (not while a button is held: a drag stays with what it pressed; nor in a pinch,
+            // whose fingers don't hover).
             let is_mouse = event.pointer_type == crate::input::PointerType::Mouse;
             let hovering = is_mouse
                 && event.kind != PointerEventType::Scroll
+                && !event.kind.is_scale()
                 && (!event.pressed || (event.kind == PointerEventType::Press && !already_down));
             if is_mouse && event.kind != PointerEventType::Scroll {
                 self.mouse = (!event.pressed).then_some(position);
+                if event.kind.is_pan() {
+                    self.panning = event.kind != PointerEventType::PanEnd;
+                }
             }
+            let mut path = path;
             if hovering {
-                let now = if event.kind == PointerEventType::Release || captured.is_some() {
+                let now = if event.kind.is_pan() && captured.is_some() {
+                    self.still_under(&path, position)
+                } else if event.kind == PointerEventType::Release || captured.is_some() {
                     self.hit_test(position)
                 } else {
                     path.clone()
                 };
-                self.update_hover(now, event, &mut actions, &mut requests);
+                let entered = self.update_hover(now, event, &mut actions, &mut requests);
+                // A hover move hears `Enter` where it comes in, not the move too, as Compose's
+                // `HitPathTracker` makes the move an `Enter` there.
+                if event.kind == PointerEventType::Move && !entered.is_empty() {
+                    path.retain(|entry| !entered.contains(entry));
+                }
             }
             // For a press, whether something before each entry (around it) waits for a gesture past
             // it, as Compose's `hasWaitingParent`.
@@ -784,13 +813,14 @@ impl UiTree {
 
     /// Moves the mouse's hover to the entries of `now`: `Exit` to those it left, `Enter` to
     /// those it came over (in the main pass).
+    /// Returns the entries it came over.
     fn update_hover(
         &mut self,
         now: Vec<HitEntry>,
         event: PointerEvent,
         actions: &mut Vec<Action>,
         requests: &mut Requests,
-    ) {
+    ) -> Vec<HitEntry> {
         let before = std::mem::take(&mut self.hovered);
         let same = |a: &HitEntry, b: &HitEntry| {
             a.node == b.node && a.index == b.index && a.version == b.version
@@ -802,6 +832,7 @@ impl UiTree {
         self.deliver_hover(&left, PointerEventType::Exit, event, actions, requests);
         self.deliver_hover(&entered, PointerEventType::Enter, event, actions, requests);
         self.hovered = now;
+        entered
     }
 
     /// Delivers `kind` (`Enter` or `Exit`) to `entries` (outer to inner), each its own event,
@@ -851,13 +882,25 @@ impl UiTree {
         icon.unwrap_or_default()
     }
 
+    /// What of `path` is still under `position`: a pan comes over nothing new, as Compose's
+    /// suppresses its hit tests; what scrolls away from under the cursor exits.
+    fn still_under(&mut self, path: &[HitEntry], position: Offset) -> Vec<HitEntry> {
+        let under = self.hit_test(position);
+        path.iter().filter(|entry| under.contains(entry)).copied().collect()
+    }
+
     /// Hit-tests the resting mouse again (after a layout moved what's under it): what it left
-    /// hears `Exit`, what it's now over `Enter`.
+    /// hears `Exit`, what it's now over `Enter` (nothing new during a trackpad's pan).
     pub fn refresh_hover(&mut self) -> Vec<Action> {
         let mut actions = Vec::new();
         let Some(position) = self.mouse else { return actions };
         let mut requests = Requests::default();
-        let now = self.hit_test(position);
+        let now = if self.panning {
+            let hovered = self.hovered.clone();
+            self.still_under(&hovered, position)
+        } else {
+            self.hit_test(position)
+        };
         self.update_hover(now, PointerEvent::moved(position, false), &mut actions, &mut requests);
         self.apply_requests(requests, &mut actions);
         actions
@@ -868,6 +911,7 @@ impl UiTree {
         let mut actions = Vec::new();
         let mut requests = Requests::default();
         self.mouse = None;
+        self.panning = false;
         self.pointer_states.retain(|it| it.1.pressed);
         let mut event = PointerEvent::moved(Offset::new(-1.0, -1.0), false);
         event.kind = PointerEventType::Exit;
@@ -879,6 +923,7 @@ impl UiTree {
     /// Ends every pointer gesture in progress, as when the window loses the pointer.
     pub fn cancel_pointers(&mut self) {
         self.pointer_states.clear();
+        self.panning = false;
         let mut told: Vec<HitEntry> = Vec::new();
         for (_, path) in std::mem::take(&mut self.captures) {
             for entry in path {

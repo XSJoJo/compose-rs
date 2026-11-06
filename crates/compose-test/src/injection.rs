@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use compose_ui::{
     Density, Dp, IntSize, Key, KeyEvent, KeyEventType, KeyModifiers, Offset, PointerButtons,
-    PointerEvent, PointerId, PointerType, Rect, ViewConfiguration, platform::NodeId,
+    PointerEvent, PointerEventType, PointerId, PointerType, Rect, ViewConfiguration,
+    platform::NodeId,
 };
 
 use crate::interaction::SemanticsNodeInteraction;
@@ -66,6 +67,23 @@ pub enum ScrollWheel {
     Horizontal,
 }
 
+/// What moves the cursor, as Compose's `InputSource`: both are the cursor's pointer (pointer 0,
+/// a mouse to the tree), told apart in what injection says.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CursorSource {
+    Mouse,
+    Trackpad,
+}
+
+impl CursorSource {
+    fn name(self) -> &'static str {
+        match self {
+            CursorSource::Mouse => "mouse",
+            CursorSource::Trackpad => "trackpad",
+        }
+    }
+}
+
 /// What injection keeps across blocks: the touches down, the mouse, the keys held, as
 /// Compose's `InputDispatcherState`. Positions are in the root.
 #[derive(Default)]
@@ -73,9 +91,15 @@ pub(crate) struct InputState {
     /// The fingers down, by pointer id, and whether one moved since the last event.
     touches: BTreeMap<u64, Offset>,
     touch_updated: bool,
+    /// The cursor, which the mouse and a trackpad move, as Compose's `CursorInputState`.
     mouse: Offset,
     mouse_entered: bool,
     mouse_buttons: PointerButtons,
+    /// Which of them moved it last, as `currentInputSource`.
+    cursor_source: Option<CursorSource>,
+    /// A trackpad's pan in progress and how far it panned, its pinch and how much it scaled.
+    pan: Option<Offset>,
+    scale: Option<f32>,
     keys: Vec<Key>,
     /// When the last key went down, the key that repeats, and when it last repeated (ms of the
     /// test clock).
@@ -829,6 +853,203 @@ impl VelocityPath {
     }
 }
 
+// ---- The cursor: the mouse's and a trackpad's ------------------------------------------------------
+
+impl InjectionScope<'_> {
+    fn cursor_event(&mut self, event: PointerEvent) {
+        self.send(event.with_pointer(PointerId(0), PointerType::Mouse));
+    }
+
+    /// Ends a touch gesture in progress: the cursor's events cancel it, as Compose's dispatcher.
+    fn cancel_touch(&mut self) {
+        if self.rule.input.touches.is_empty() {
+            return;
+        }
+        let ids: Vec<u64> = std::mem::take(&mut self.rule.input.touches).into_keys().collect();
+        for id in ids {
+            self.rule.host.with_tree(|tree| tree.cancel_pointer(touch_pointer(id)));
+        }
+    }
+
+    /// The cursor is `source`'s from now: the other's buttons held are cancelled, as Compose's
+    /// `enqueueMousePress` cancels a trackpad's gesture, and the other way.
+    fn take_cursor(&mut self, source: CursorSource) {
+        let input = &mut self.rule.input;
+        if input.cursor_source.is_some_and(|it| it != source)
+            && input.mouse_buttons.are_any_pressed()
+        {
+            input.mouse_buttons = PointerButtons::NONE;
+            self.rule.host.with_tree(|tree| tree.cancel_pointer(PointerId(0)));
+        }
+        self.rule.input.cursor_source = Some(source);
+    }
+
+    /// The cursor's position, in the node's coordinates.
+    fn cursor_position(&self) -> Offset {
+        self.to_local(self.rule.input.mouse)
+    }
+
+    /// Moves the cursor to `position` `delay_millis` on, as `enqueueMouseMove` and
+    /// `enqueueTrackpadMove`: it enters the window first if it was outside, and leaves it if
+    /// `position` is.
+    fn cursor_move_to(&mut self, source: CursorSource, position: Offset, delay_millis: u64) {
+        self.advance_event_time(delay_millis);
+        self.take_cursor(source);
+        self.cancel_touch();
+        let root = self.to_root(position);
+        self.rule.input.mouse = root;
+        let inside = self.within_root(root);
+        // Leaving the window: the exit, then the move, as Compose's `enqueueMouseMove`.
+        if !inside && self.rule.input.mouse_entered {
+            self.rule.input.mouse_entered = false;
+            self.rule.host.send_pointer_left();
+        }
+        let buttons = self.rule.input.mouse_buttons;
+        if inside && !buttons.are_any_pressed() {
+            self.rule.input.mouse_entered = true;
+        }
+        self.cursor_event(PointerEvent::moved(root, false).with_buttons(buttons));
+    }
+
+    /// Presses `bit` (`label` in what's said) where the cursor is, as `enqueueMousePress` and
+    /// `enqueueTrackpadPress`.
+    #[track_caller]
+    fn cursor_press(&mut self, source: CursorSource, bit: PointerButtons, label: &str) {
+        let name = source.name();
+        let held = self.rule.input.mouse_buttons;
+        assert!(
+            held.0 & bit.0 == 0,
+            "compose-test: Cannot send {name} button down event, button {label} is already pressed"
+        );
+        let position = self.rule.input.mouse;
+        assert!(
+            self.within_root(position) || held.are_any_pressed(),
+            "compose-test: Cannot start a {name} gesture outside the Compose root bounds, {name} \
+             position is {position:?}"
+        );
+        self.take_cursor(source);
+        self.cancel_touch();
+        let buttons = PointerButtons(held.0 | bit.0);
+        self.rule.input.mouse_buttons = buttons;
+        // A press ends the hover until the release, as Compose's on Android (`exitHoverOnPress`).
+        self.rule.input.mouse_entered = false;
+        self.cursor_event(PointerEvent::press(position).with_buttons(buttons));
+    }
+
+    /// Releases `bit`, as `enqueueMouseRelease` and `enqueueTrackpadRelease`: the cursor hovers
+    /// again.
+    #[track_caller]
+    fn cursor_release(&mut self, source: CursorSource, bit: PointerButtons, label: &str) {
+        let name = source.name();
+        let held = self.rule.input.mouse_buttons;
+        assert!(
+            held.0 & bit.0 != 0,
+            "compose-test: Cannot send {name} button up event, button {label} is not pressed"
+        );
+        let buttons = PointerButtons(held.0 & !bit.0);
+        self.rule.input.mouse_buttons = buttons;
+        let position = self.rule.input.mouse;
+        self.cursor_event(PointerEvent::release(position).with_buttons(buttons));
+        if buttons.are_any_pressed() {
+            return;
+        }
+        // Inside the window, the cursor hovers again at once: the enter and a move where it
+        // is, as Compose's `enqueueMouseRelease` on Android (`exitHoverOnPress`).
+        let inside = self.within_root(position);
+        self.rule.input.mouse_entered = inside;
+        if inside {
+            self.cursor_event(PointerEvent::moved(position, false));
+        } else {
+            self.rule.input.cursor_source = None;
+        }
+    }
+
+    /// Cancels the buttons' gesture, `delay_millis` on, as `enqueueMouseCancel` and
+    /// `enqueueTrackpadCancel`.
+    #[track_caller]
+    fn cursor_cancel(&mut self, source: CursorSource, delay_millis: u64) {
+        let name = source.name();
+        self.advance_event_time(delay_millis);
+        assert!(
+            self.rule.input.mouse_buttons.are_any_pressed(),
+            "compose-test: Cannot send {name} cancel event, no {name} buttons are pressed"
+        );
+        assert!(
+            self.rule.input.cursor_source == Some(source),
+            "compose-test: Cannot send {name} cancel event, since the current cursor input isn't \
+             a {name}"
+        );
+        self.rule.input.mouse_buttons = PointerButtons::NONE;
+        self.rule.input.cursor_source = None;
+        self.rule.host.with_tree(|tree| tree.cancel_pointer(PointerId(0)));
+        self.rule.run_current();
+    }
+
+    /// The cursor comes into the window at `position`, `delay_millis` on, as `enter`.
+    #[track_caller]
+    fn cursor_enter(&mut self, source: CursorSource, position: Offset, delay_millis: u64) {
+        let name = source.name();
+        assert!(
+            !self.rule.input.mouse_entered,
+            "compose-test: Cannot send {name} hover enter event, {name} is already hovering"
+        );
+        assert!(
+            !self.rule.input.mouse_buttons.are_any_pressed(),
+            "compose-test: Cannot send {name} hover enter event, {name} buttons are down"
+        );
+        self.advance_event_time(delay_millis);
+        let root = self.to_root(position);
+        assert!(
+            self.within_root(root),
+            "compose-test: Cannot send {name} hover enter event, {position:?} is out of bounds"
+        );
+        self.rule.input.cursor_source = Some(source);
+        self.rule.input.mouse = root;
+        self.rule.input.mouse_entered = true;
+        self.cursor_event(PointerEvent::moved(root, false));
+    }
+
+    /// The cursor leaves the window at `position`, `delay_millis` on, as `exit`.
+    #[track_caller]
+    fn cursor_exit(&mut self, source: CursorSource, position: Offset, delay_millis: u64) {
+        let name = source.name();
+        assert!(
+            self.rule.input.mouse_entered,
+            "compose-test: Cannot send {name} hover exit event, {name} is not hovering"
+        );
+        self.advance_event_time(delay_millis);
+        let root = self.to_root(position);
+        self.rule.input.mouse = root;
+        self.rule.input.mouse_entered = false;
+        self.rule.input.cursor_source = None;
+        self.rule.host.send_pointer_left();
+        self.rule.run_current();
+    }
+
+    /// Moves the cursor along `curve` over `duration_millis`, a move about every event period, as
+    /// `animateMoveAlong`.
+    #[track_caller]
+    fn cursor_animate_along(
+        &mut self,
+        source: CursorSource,
+        curve: &dyn Fn(u64) -> Offset,
+        duration_millis: u64,
+    ) {
+        assert!(duration_millis > 0, "compose-test: Duration is 0");
+        let start = curve(0);
+        if start != self.cursor_position() {
+            self.cursor_move_to(source, start, 0);
+        }
+        let steps = ((duration_millis as f32 / EVENT_PERIOD_MILLIS as f32).round() as u64).max(1);
+        let mut previous = 0;
+        for step in 1..=steps {
+            let time = lerp_time(0, duration_millis, step as f32 / steps as f32);
+            self.cursor_move_to(source, curve(time), time - previous);
+            previous = time;
+        }
+    }
+}
+
 // ---- Mouse ---------------------------------------------------------------------------------------
 
 /// Mouse gestures on a node, as Compose's `MouseInjectionScope`: one cursor, positions in the
@@ -842,29 +1063,20 @@ impl<'r> Deref for MouseInjectionScope<'r> {
     }
 }
 
+const MOUSE: CursorSource = CursorSource::Mouse;
+
 impl MouseInjectionScope<'_> {
     fn input(&mut self) -> &mut InputState {
         &mut self.0.rule.input
     }
 
     fn mouse_event(&mut self, event: PointerEvent) {
-        self.0.send(event.with_pointer(PointerId(0), PointerType::Mouse));
-    }
-
-    /// Ends a touch gesture in progress: a mouse event cancels it, as Compose's dispatcher.
-    fn cancel_touch(&mut self) {
-        if self.input().touches.is_empty() {
-            return;
-        }
-        let ids: Vec<u64> = std::mem::take(&mut self.input().touches).into_keys().collect();
-        for id in ids {
-            self.0.rule.host.with_tree(|tree| tree.cancel_pointer(touch_pointer(id)));
-        }
+        self.0.cursor_event(event);
     }
 
     /// The cursor's position, in the node's coordinates, as `currentPosition`.
     pub fn current_position(&self) -> Offset {
-        self.0.to_local(self.0.rule.input.mouse)
+        self.0.cursor_position()
     }
 
     /// Moves the cursor to `position`, an event period on, as `moveTo(position)`: it enters
@@ -875,21 +1087,7 @@ impl MouseInjectionScope<'_> {
 
     /// The same, `delay_millis` on, as `moveTo(position, delayMillis)`.
     pub fn move_to_after(&mut self, position: Offset, delay_millis: u64) {
-        self.0.advance_event_time(delay_millis);
-        self.cancel_touch();
-        let root = self.0.to_root(position);
-        self.input().mouse = root;
-        let inside = self.0.within_root(root);
-        // Leaving the window: the exit, then the move, as Compose's `enqueueMouseMove`.
-        if !inside && self.input().mouse_entered {
-            self.input().mouse_entered = false;
-            self.0.rule.host.send_pointer_left();
-        }
-        let buttons = self.input().mouse_buttons;
-        if inside && !buttons.are_any_pressed() {
-            self.input().mouse_entered = true;
-        }
-        self.mouse_event(PointerEvent::moved(root, false).with_buttons(buttons));
+        self.0.cursor_move_to(MOUSE, position, delay_millis);
     }
 
     /// Moves the cursor by `delta`, an event period on, as `moveBy(delta)`.
@@ -913,100 +1111,31 @@ impl MouseInjectionScope<'_> {
     /// Presses `button` where the cursor is, as `press(button)`.
     #[track_caller]
     pub fn press(&mut self, button: MouseButton) {
-        let bit = button.bit();
-        let held = self.input().mouse_buttons;
-        assert!(
-            held.0 & bit.0 == 0,
-            "compose-test: Cannot send mouse button down event, button {button:?} is already \
-             pressed"
-        );
-        let position = self.input().mouse;
-        assert!(
-            self.0.within_root(position),
-            "compose-test: Cannot start a mouse gesture outside the Compose root bounds, mouse \
-             position is {position:?}"
-        );
-        self.cancel_touch();
-        let buttons = PointerButtons(held.0 | bit.0);
-        self.input().mouse_buttons = buttons;
-        // A press ends the hover until the release, as Compose's on Android (`exitHoverOnPress`).
-        self.input().mouse_entered = false;
-        self.mouse_event(PointerEvent::press(position).with_buttons(buttons));
+        self.0.cursor_press(MOUSE, button.bit(), &format!("{button:?}"));
     }
 
     /// Releases `button`, as `release(button)`: the cursor hovers again.
     #[track_caller]
     pub fn release(&mut self, button: MouseButton) {
-        let bit = button.bit();
-        let held = self.input().mouse_buttons;
-        assert!(
-            held.0 & bit.0 != 0,
-            "compose-test: Cannot send mouse button up event, button {button:?} is not pressed"
-        );
-        let buttons = PointerButtons(held.0 & !bit.0);
-        self.input().mouse_buttons = buttons;
-        let position = self.input().mouse;
-        self.mouse_event(PointerEvent::release(position).with_buttons(buttons));
-        if buttons.are_any_pressed() {
-            return;
-        }
-        // Inside the window, the cursor hovers again at once: the enter and a move where it
-        // is, as Compose's `enqueueMouseRelease` on Android (`exitHoverOnPress`).
-        let inside = self.0.within_root(position);
-        self.input().mouse_entered = inside;
-        if inside {
-            self.mouse_event(PointerEvent::moved(position, false));
-        }
+        self.0.cursor_release(MOUSE, button.bit(), &format!("{button:?}"));
     }
 
     /// Cancels the press, an event period on, as `cancel()`.
     #[track_caller]
     pub fn cancel(&mut self) {
-        assert!(
-            self.input().mouse_buttons.are_any_pressed(),
-            "compose-test: Cannot send mouse cancel event, no mouse buttons are pressed"
-        );
-        self.0.advance_event_time(EVENT_PERIOD_MILLIS);
-        self.input().mouse_buttons = PointerButtons::NONE;
-        self.0.rule.host.with_tree(|tree| tree.cancel_pointer(PointerId(0)));
-        self.0.rule.run_current();
+        self.0.cursor_cancel(MOUSE, EVENT_PERIOD_MILLIS);
     }
 
     /// The cursor comes into the window at `position`, an event period on, as `enter`.
     #[track_caller]
     pub fn enter(&mut self, position: Offset) {
-        assert!(
-            !self.input().mouse_entered,
-            "compose-test: Cannot send mouse hover enter event, mouse is already hovering"
-        );
-        assert!(
-            !self.input().mouse_buttons.are_any_pressed(),
-            "compose-test: Cannot send mouse hover enter event, mouse buttons are down"
-        );
-        self.0.advance_event_time(EVENT_PERIOD_MILLIS);
-        let root = self.0.to_root(position);
-        assert!(
-            self.0.within_root(root),
-            "compose-test: Cannot send mouse hover enter event, {position:?} is out of bounds"
-        );
-        self.input().mouse = root;
-        self.input().mouse_entered = true;
-        self.mouse_event(PointerEvent::moved(root, false));
+        self.0.cursor_enter(MOUSE, position, EVENT_PERIOD_MILLIS);
     }
 
     /// The cursor leaves the window at `position`, an event period on, as `exit`.
     #[track_caller]
     pub fn exit(&mut self, position: Offset) {
-        assert!(
-            self.input().mouse_entered,
-            "compose-test: Cannot send mouse hover exit event, mouse is not hovering"
-        );
-        self.0.advance_event_time(EVENT_PERIOD_MILLIS);
-        let root = self.0.to_root(position);
-        self.input().mouse = root;
-        self.input().mouse_entered = false;
-        self.0.rule.host.send_pointer_left();
-        self.0.rule.run_current();
+        self.0.cursor_exit(MOUSE, position, EVENT_PERIOD_MILLIS);
     }
 
     /// Turns `wheel` by `delta` (positive: forward, new content at the bottom or end; a unit
@@ -1112,18 +1241,7 @@ impl MouseInjectionScope<'_> {
     /// Moves the cursor along `curve` over `duration_millis`, as `animateMoveAlong`.
     #[track_caller]
     pub fn animate_move_along(&mut self, curve: &dyn Fn(u64) -> Offset, duration_millis: u64) {
-        assert!(duration_millis > 0, "compose-test: Duration is 0");
-        let start = curve(0);
-        if start != self.current_position() {
-            self.move_to_after(start, 0);
-        }
-        let steps = ((duration_millis as f32 / EVENT_PERIOD_MILLIS as f32).round() as u64).max(1);
-        let mut previous = 0;
-        for step in 1..=steps {
-            let time = lerp_time(0, duration_millis, step as f32 / steps as f32);
-            self.move_to_after(curve(time), time - previous);
-            previous = time;
-        }
+        self.0.cursor_animate_along(MOUSE, curve, duration_millis);
     }
 
     /// Presses at `start`, moves to `end` over `duration_millis` and releases, as
@@ -1159,6 +1277,492 @@ impl MouseInjectionScope<'_> {
     /// The default duration of the mouse's animated gestures (300 ms).
     pub fn default_gesture_millis(&self) -> u64 {
         DEFAULT_MOUSE_GESTURE_MILLIS
+    }
+}
+
+// ---- Trackpad ----------------------------------------------------------------------------------
+
+/// A trackpad's button, as Compose's `TrackpadButton`: its id is Android's `MotionEvent` bit.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum TrackpadButton {
+    #[default]
+    Primary,
+    Secondary,
+    Tertiary,
+}
+
+impl TrackpadButton {
+    /// Its id, as `buttonId`: its bit among an event's buttons.
+    pub fn button_id(self) -> i32 {
+        self.bit().0
+    }
+
+    fn bit(self) -> PointerButtons {
+        match self {
+            TrackpadButton::Primary => PointerButtons::PRIMARY,
+            TrackpadButton::Secondary => PointerButtons::SECONDARY,
+            TrackpadButton::Tertiary => PointerButtons::TERTIARY,
+        }
+    }
+}
+
+/// A trackpad's gestures on a node, as Compose's `TrackpadInjectionScope`: the cursor it moves
+/// (the mouse's), its buttons, and its two-finger pans and pinches, positions in the node's
+/// coordinates.
+///
+/// What a node hears is what Compose's hears on Android 14 and later (D1674): a pan is
+/// `PanStart`, `PanMove`s (their `pan_offset` the scroll's, the opposite of the fingers' move, as
+/// Android's `AXIS_GESTURE_SCROLL_*_DISTANCE`) and `PanEnd`, at the cursor, which keeps hovering;
+/// a pinch is `ScaleStart`, `ScaleChange`s (one with its second finger down and one with it up,
+/// a factor of 1) and `ScaleEnd`; a gesture starting with buttons held releases them first, and
+/// after one the cursor hovers again with a move where it is.
+pub struct TrackpadInjectionScope<'r>(InjectionScope<'r>);
+
+impl<'r> Deref for TrackpadInjectionScope<'r> {
+    type Target = InjectionScope<'r>;
+    fn deref(&self) -> &InjectionScope<'r> {
+        &self.0
+    }
+}
+
+const TRACKPAD: CursorSource = CursorSource::Trackpad;
+
+/// A trackpad gesture's default duration, as Compose's `DefaultTrackpadGestureDurationMillis`.
+const DEFAULT_TRACKPAD_GESTURE_MILLIS: u64 = 300;
+
+impl TrackpadInjectionScope<'_> {
+    fn input(&mut self) -> &mut InputState {
+        &mut self.0.rule.input
+    }
+
+    /// The cursor's position, in the node's coordinates, as `currentPosition`.
+    pub fn current_position(&self) -> Offset {
+        self.0.cursor_position()
+    }
+
+    /// Moves the cursor to `position`, an event period on, as `moveTo(position)`.
+    pub fn move_to(&mut self, position: Offset) {
+        self.move_to_after(position, EVENT_PERIOD_MILLIS);
+    }
+
+    /// The same, `delay_millis` on, as `moveTo(position, delayMillis)`.
+    pub fn move_to_after(&mut self, position: Offset, delay_millis: u64) {
+        self.0.cursor_move_to(TRACKPAD, position, delay_millis);
+    }
+
+    /// As `moveBy(delta)`.
+    pub fn move_by(&mut self, delta: Offset) {
+        self.move_by_after(delta, EVENT_PERIOD_MILLIS);
+    }
+
+    /// As `moveBy(delta, delayMillis)`.
+    pub fn move_by_after(&mut self, delta: Offset, delay_millis: u64) {
+        let position = self.current_position() + delta;
+        self.move_to_after(position, delay_millis);
+    }
+
+    /// Moves the cursor without sending an event, as `updatePointerTo`.
+    pub fn update_pointer_to(&mut self, position: Offset) {
+        let root = self.0.to_root(position);
+        self.input().mouse = root;
+    }
+
+    /// As `updatePointerBy`.
+    pub fn update_pointer_by(&mut self, delta: Offset) {
+        let position = self.current_position() + delta;
+        self.update_pointer_to(position);
+    }
+
+    /// Presses `button` where the cursor is, as `press(button)`.
+    #[track_caller]
+    pub fn press(&mut self, button: TrackpadButton) {
+        self.0.cursor_press(TRACKPAD, button.bit(), &button.button_id().to_string());
+    }
+
+    /// Releases `button`, as `release(button)`: the cursor hovers again.
+    #[track_caller]
+    pub fn release(&mut self, button: TrackpadButton) {
+        self.0.cursor_release(TRACKPAD, button.bit(), &button.button_id().to_string());
+    }
+
+    /// Cancels the buttons' gesture, an event period on, as `cancel()`.
+    #[track_caller]
+    pub fn cancel(&mut self) {
+        self.cancel_after(EVENT_PERIOD_MILLIS);
+    }
+
+    /// As `cancel(delayMillis)`.
+    #[track_caller]
+    pub fn cancel_after(&mut self, delay_millis: u64) {
+        self.0.cursor_cancel(TRACKPAD, delay_millis);
+    }
+
+    /// The cursor comes into the window at `position`, an event period on, as `enter`.
+    #[track_caller]
+    pub fn enter(&mut self, position: Offset) {
+        self.enter_after(position, EVENT_PERIOD_MILLIS);
+    }
+
+    /// As `enter(position, delayMillis)`.
+    #[track_caller]
+    pub fn enter_after(&mut self, position: Offset, delay_millis: u64) {
+        self.0.cursor_enter(TRACKPAD, position, delay_millis);
+    }
+
+    /// The cursor leaves the window at `position`, an event period on, as `exit`.
+    #[track_caller]
+    pub fn exit(&mut self, position: Offset) {
+        self.exit_after(position, EVENT_PERIOD_MILLIS);
+    }
+
+    /// As `exit(position, delayMillis)`.
+    #[track_caller]
+    pub fn exit_after(&mut self, position: Offset, delay_millis: u64) {
+        self.0.cursor_exit(TRACKPAD, position, delay_millis);
+    }
+
+    /// What a pan or a pinch starts with, inside the window: the buttons held are released (and
+    /// the cursor hovers again), as Compose's on Android, whose two fingers are a touch stream.
+    fn release_buttons(&mut self) {
+        if !self.input().mouse_buttons.are_any_pressed() {
+            return;
+        }
+        self.input().mouse_buttons = PointerButtons::NONE;
+        let position = self.input().mouse;
+        self.0.cursor_event(PointerEvent::release(position).with_buttons(PointerButtons::NONE));
+        self.0.cursor_event(PointerEvent::moved(position, false));
+    }
+
+    /// The cursor hovers again after a pan or a pinch, as Compose's hover enter after them.
+    fn hover_again(&mut self) {
+        let position = self.input().mouse;
+        self.0.cursor_event(PointerEvent::moved(position, false));
+    }
+
+    fn cursor_inside(&self) -> bool {
+        self.0.within_root(self.0.rule.input.mouse)
+    }
+
+    /// Starts a two-finger pan where the cursor is, as `panStart`.
+    #[track_caller]
+    pub fn pan_start(&mut self) {
+        self.input().cursor_source = Some(TRACKPAD);
+        assert!(
+            self.input().pan.is_none(),
+            "compose-test: Cannot send trackpad pan start event, a pan gesture is already in \
+             progress"
+        );
+        self.input().pan = Some(Offset::ZERO);
+        if self.cursor_inside() {
+            self.release_buttons();
+            let position = self.input().mouse;
+            self.0.cursor_event(PointerEvent::pan(
+                PointerEventType::PanStart,
+                position,
+                Offset::ZERO,
+            ));
+        }
+    }
+
+    /// Pans by `delta` (the fingers' move), an event period on, as `panMoveBy(delta)`.
+    #[track_caller]
+    pub fn pan_move_by(&mut self, delta: Offset) {
+        self.pan_move_by_after(delta, EVENT_PERIOD_MILLIS);
+    }
+
+    /// As `panMoveBy(delta, delayMillis)`.
+    #[track_caller]
+    pub fn pan_move_by_after(&mut self, delta: Offset, delay_millis: u64) {
+        self.0.advance_event_time(delay_millis);
+        self.input().cursor_source = Some(TRACKPAD);
+        let Some(panned) = self.input().pan else {
+            panic!(
+                "compose-test: Cannot send trackpad pan move event, no pan gesture is in progress"
+            )
+        };
+        self.input().pan = Some(panned + delta);
+        if self.cursor_inside() {
+            let position = self.input().mouse;
+            // The scroll's distance, the fingers' move turned around, as Android's.
+            let offset = Offset::ZERO - delta;
+            self.0.cursor_event(PointerEvent::pan(PointerEventType::PanMove, position, offset));
+        }
+    }
+
+    /// Ends the pan, an event period on, as `panEnd()`.
+    #[track_caller]
+    pub fn pan_end(&mut self) {
+        self.pan_end_after(EVENT_PERIOD_MILLIS);
+    }
+
+    /// As `panEnd(delayMillis)`.
+    #[track_caller]
+    pub fn pan_end_after(&mut self, delay_millis: u64) {
+        self.0.advance_event_time(delay_millis);
+        self.input().cursor_source = Some(TRACKPAD);
+        assert!(
+            self.input().pan.is_some(),
+            "compose-test: Cannot send trackpad pan end event, no pan gesture is in progress"
+        );
+        if self.cursor_inside() {
+            let position = self.input().mouse;
+            self.0.cursor_event(PointerEvent::pan(
+                PointerEventType::PanEnd,
+                position,
+                Offset::ZERO,
+            ));
+            self.hover_again();
+        }
+        self.input().pan = None;
+    }
+
+    /// Starts a pinch where the cursor is, as `scaleStart`.
+    #[track_caller]
+    pub fn scale_start(&mut self) {
+        self.input().cursor_source = Some(TRACKPAD);
+        assert!(
+            self.input().scale.is_none(),
+            "compose-test: Cannot send trackpad scale start event, a scale gesture is already in \
+             progress"
+        );
+        self.input().scale = Some(1.0);
+        if self.cursor_inside() {
+            self.release_buttons();
+            let position = self.input().mouse;
+            self.0.cursor_event(PointerEvent::scale(PointerEventType::ScaleStart, position, 1.0));
+            // The second finger coming down.
+            self.0.cursor_event(PointerEvent::scale(PointerEventType::ScaleChange, position, 1.0));
+        }
+    }
+
+    /// Scales by `scale_factor` (more than 0), an event period on, as `scaleChangeBy`.
+    #[track_caller]
+    pub fn scale_change_by(&mut self, scale_factor: f32) {
+        self.scale_change_by_after(scale_factor, EVENT_PERIOD_MILLIS);
+    }
+
+    /// As `scaleChangeBy(scaleFactor, delayMillis)`.
+    #[track_caller]
+    pub fn scale_change_by_after(&mut self, scale_factor: f32, delay_millis: u64) {
+        self.0.advance_event_time(delay_millis);
+        self.input().cursor_source = Some(TRACKPAD);
+        let Some(scaled) = self.input().scale else {
+            panic!(
+                "compose-test: Cannot send trackpad scale change event, no scale gesture is in \
+                 progress"
+            )
+        };
+        self.input().scale = Some(scaled * scale_factor);
+        if self.cursor_inside() {
+            let position = self.input().mouse;
+            let event = PointerEvent::scale(PointerEventType::ScaleChange, position, scale_factor);
+            self.0.cursor_event(event);
+        }
+    }
+
+    /// Ends the pinch, an event period on, as `scaleEnd()`.
+    #[track_caller]
+    pub fn scale_end(&mut self) {
+        self.scale_end_after(EVENT_PERIOD_MILLIS);
+    }
+
+    /// As `scaleEnd(delayMillis)`.
+    #[track_caller]
+    pub fn scale_end_after(&mut self, delay_millis: u64) {
+        self.0.advance_event_time(delay_millis);
+        self.input().cursor_source = Some(TRACKPAD);
+        assert!(
+            self.input().scale.is_some(),
+            "compose-test: Cannot send trackpad scale end event, no scale gesture is in progress"
+        );
+        if self.cursor_inside() {
+            let position = self.input().mouse;
+            // The second finger lifting, then the first.
+            self.0.cursor_event(PointerEvent::scale(PointerEventType::ScaleChange, position, 1.0));
+            self.0.cursor_event(PointerEvent::scale(PointerEventType::ScaleEnd, position, 1.0));
+            self.hover_again();
+        }
+        self.input().scale = None;
+    }
+
+    // ---- Gestures -------------------------------------------------------------------------
+
+    /// A click at the center with the primary button, as `click()`.
+    pub fn click(&mut self) {
+        let center = self.center();
+        self.click_at(center, TrackpadButton::Primary);
+    }
+
+    /// A press and a release of `button` at `position`, as `click(position, button)`.
+    #[track_caller]
+    pub fn click_at(&mut self, position: Offset, button: TrackpadButton) {
+        self.update_pointer_to(position);
+        self.press(button);
+        self.release(button);
+    }
+
+    /// A secondary-button click, as `rightClick(position)`.
+    #[track_caller]
+    pub fn right_click(&mut self, position: Offset) {
+        self.click_at(position, TrackpadButton::Secondary);
+    }
+
+    /// Two clicks, halfway through the double-tap window apart, as `doubleClick`.
+    pub fn double_click(&mut self, position: Offset, button: TrackpadButton) {
+        let delay = default_double_tap_delay_millis(&self.view_configuration());
+        self.click_at(position, button);
+        self.0.advance_event_time(delay);
+        self.click_at(position, button);
+    }
+
+    /// Three clicks, as `tripleClick`.
+    pub fn triple_click(&mut self, position: Offset, button: TrackpadButton) {
+        let delay = default_double_tap_delay_millis(&self.view_configuration());
+        self.click_at(position, button);
+        self.0.advance_event_time(delay);
+        self.click_at(position, button);
+        self.0.advance_event_time(delay);
+        self.click_at(position, button);
+    }
+
+    /// A press held 100 ms past the long-press timeout, as `longClick`.
+    pub fn long_click(&mut self, position: Offset, button: TrackpadButton) {
+        let hold = self.view_configuration().long_press_timeout_millis + 100;
+        self.update_pointer_to(position);
+        self.press(button);
+        self.0.advance_event_time(hold);
+        self.release(button);
+    }
+
+    /// Moves the cursor to `position` over `duration_millis`, as `animateMoveTo`.
+    pub fn animate_move_to(&mut self, position: Offset, duration_millis: u64) {
+        let start = self.current_position();
+        let duration = duration_millis as f32;
+        self.animate_move_along(
+            &|time| lerp(start, position, time as f32 / duration),
+            duration_millis,
+        );
+    }
+
+    /// As `animateMoveBy`.
+    pub fn animate_move_by(&mut self, delta: Offset, duration_millis: u64) {
+        let position = self.current_position() + delta;
+        self.animate_move_to(position, duration_millis);
+    }
+
+    /// Moves the cursor along `curve` over `duration_millis`, as `animateMoveAlong`.
+    #[track_caller]
+    pub fn animate_move_along(&mut self, curve: &dyn Fn(u64) -> Offset, duration_millis: u64) {
+        self.0.cursor_animate_along(TRACKPAD, curve, duration_millis);
+    }
+
+    /// Presses `button` at `start`, moves to `end` over `duration_millis` and releases, as
+    /// `dragAndDrop`.
+    pub fn drag_and_drop(
+        &mut self,
+        start: Offset,
+        end: Offset,
+        button: TrackpadButton,
+        duration_millis: u64,
+    ) {
+        self.update_pointer_to(start);
+        self.press(button);
+        self.animate_move_to(end, duration_millis);
+        self.release(button);
+    }
+
+    /// A pan by `offset` in one move, as `pan(offset)`.
+    pub fn pan(&mut self, offset: Offset) {
+        self.pan_start();
+        self.pan_move_by(offset);
+        self.pan_end();
+    }
+
+    /// A pan along `curve` (how far it's panned at each time, in ms, from zero) over
+    /// `duration_millis`, a move about every event period and at each key time, as
+    /// `pan(curve, durationMillis, keyTimes)`.
+    #[track_caller]
+    pub fn pan_along(
+        &mut self,
+        curve: &dyn Fn(u64) -> Offset,
+        duration_millis: u64,
+        key_times: &[u64],
+    ) {
+        assert!(
+            duration_millis >= 1,
+            "compose-test: duration must be at least 1 millisecond, not {duration_millis}"
+        );
+        assert!(
+            key_times.iter().all(|time| *time <= duration_millis),
+            "compose-test: keyTimes contains timestamps out of range [0..{duration_millis}]: \
+             {key_times:?}"
+        );
+        assert!(
+            key_times.windows(2).all(|pair| pair[0] <= pair[1]),
+            "compose-test: keyTimes must be sorted: {key_times:?}"
+        );
+        self.pan_start();
+        let mut panned = Offset::ZERO;
+        let (mut time, mut key) = (0, 0);
+        while time < duration_millis {
+            while key < key_times.len() && key_times[key] <= time {
+                key += 1;
+            }
+            let next = key_times.get(key).copied().unwrap_or(duration_millis);
+            let steps = (((next - time) as f32 / EVENT_PERIOD_MILLIS as f32).round() as u64).max(1);
+            let mut previous = time;
+            for step in 1..=steps {
+                let at = lerp_time(time, next, step as f32 / steps as f32);
+                let value = curve(at);
+                self.pan_move_by_after(value - panned, at - previous);
+                panned = value;
+                previous = at;
+            }
+            time = next;
+        }
+        self.pan_end_after(0);
+    }
+
+    /// A pan by `offset` ending at `end_velocity` px/s, as `panWithVelocity`, over a default
+    /// duration computed from it (`None`), along the path of `swipeWithVelocity`.
+    #[track_caller]
+    pub fn pan_with_velocity(
+        &mut self,
+        offset: Offset,
+        end_velocity: f32,
+        duration_millis: Option<u64>,
+    ) {
+        assert!(
+            end_velocity >= 0.0,
+            "compose-test: Velocity cannot be {end_velocity}, it must be positive"
+        );
+        let duration = duration_millis
+            .unwrap_or_else(|| default_velocity_duration(Offset::ZERO, offset, end_velocity));
+        let minimum = (2.5 * EVENT_PERIOD_MILLIS as f32).ceil() as u64;
+        assert!(
+            duration >= minimum,
+            "compose-test: Duration must be at least {minimum}ms because velocity requires at \
+             least 3 input events"
+        );
+        let path = VelocityPath::new(Offset::ZERO, offset, end_velocity, duration);
+        self.pan_along(&|time| path.offset_at(time), duration, &[]);
+    }
+
+    /// A pinch scaling by `scale_factor` in one change, as `scale(scaleFactor)`.
+    pub fn scale(&mut self, scale_factor: f32) {
+        self.scale_start();
+        self.scale_change_by(scale_factor);
+        self.scale_end();
+    }
+
+    /// As [`InjectionScope::advance_event_time`].
+    pub fn advance_event_time(&mut self, duration_millis: u64) {
+        self.0.advance_event_time(duration_millis);
+    }
+
+    /// The default duration of the trackpad's animated gestures (300 ms).
+    pub fn default_gesture_millis(&self) -> u64 {
+        DEFAULT_TRACKPAD_GESTURE_MILLIS
     }
 }
 
@@ -1355,6 +1959,20 @@ impl SemanticsNodeInteraction<'_> {
     ) -> &mut Self {
         let (node, bounds, root) = self.injection_bounds();
         let mut scope = MouseInjectionScope(InjectionScope::new(self.rule, node, bounds, root));
+        block(&mut scope);
+        self.rule.wait_for_idle();
+        self
+    }
+
+    /// Sends the trackpad gestures `block` makes on the node, then waits for idle, as
+    /// `performTrackpadInput`.
+    #[track_caller]
+    pub fn perform_trackpad_input(
+        &mut self,
+        block: impl FnOnce(&mut TrackpadInjectionScope<'_>),
+    ) -> &mut Self {
+        let (node, bounds, root) = self.injection_bounds();
+        let mut scope = TrackpadInjectionScope(InjectionScope::new(self.rule, node, bounds, root));
         block(&mut scope);
         self.rule.wait_for_idle();
         self

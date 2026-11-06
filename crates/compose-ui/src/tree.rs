@@ -417,6 +417,8 @@ pub struct UiTree {
     pub(crate) hovered: Vec<crate::dispatch::HitEntry>,
     /// Where the mouse is, in the root, while it's in the window and no button is held.
     pub(crate) mouse: Option<crate::unit::Offset>,
+    /// A trackpad's pan is in progress: the hover comes over nothing new until it ends.
+    pub(crate) panning: bool,
     /// Observes the state measure policies and custom nodes read (D71), keyed by node.
     pub(crate) observer: Option<Rc<compose_runtime::platform::ReadObserver>>,
     pub(crate) measure_runs: u64,
@@ -623,6 +625,7 @@ impl UiTree {
             first_down_primary_only: true,
             hovered: Vec::new(),
             mouse: None,
+            panning: false,
             observer: None,
             measure_runs: 0,
             focus_requests,

@@ -39,7 +39,7 @@ These are on local branches, so they're not lost, but each still has to finish i
 ### 4. Foundation
 - **Style API** (about 160), **border parity** (about 80).
 - **Overscroll's pixels:** `StretchOverscrollScreenshotTest` and `OverscrollTest`'s drawing tests have no port (a phone check stands for them). Lists and `vertical_scroll` clip both axes at rest, without `clipScrollableContainer`, so shadows across their axis are clipped where Compose's aren't.
-- **Gestures and scrolling:** `transformable`'s trackpad pans and scales (7, with pointer-input-types; the rest is in, D1369), 2D scrolling's remaining tests (about 20: semantics with nested scrolls, fling cancellations, the trackpad; D1370), `bringIntoView` in the lazy layouts: they jump to what's brought into view and use the default spec until C8 (the other scrolling containers animate, as Compose's `ContentInViewNode`, D1376), and keeping a focused child in view when a scroll's viewport shrinks, public lazy layout API (about 40), `BeyondBoundsLayout` (about 35).
+- **Gestures and scrolling:** `transformable`'s trackpad pans and scales (7; ui has the events, D1674; the rest is in, D1369), foundation's `TrackpadScrollingLogic`, 2D scrolling's remaining tests (about 20: semantics with nested scrolls, fling cancellations, the trackpad; D1370), `bringIntoView` in the lazy layouts: they jump to what's brought into view and use the default spec until C8 (the other scrolling containers animate, as Compose's `ContentInViewNode`, D1376), and keeping a focused child in view when a scroll's viewport shrinks, public lazy layout API (about 40), `BeyondBoundsLayout` (about 35).
 
 ### 5. Material 3
 - **Whole components missing:** carousel (about 100), floating toolbar (about 80), search bar (about 65), wide navigation rail (about 45), wavy progress (about 45), short navigation bar (about 35), loading indicator (about 20), FAB menu (about 15).
@@ -53,7 +53,7 @@ These are on local branches, so they're not lost, but each still has to finish i
 - **Locale and device data:** the date and time pickers use small tables for a few languages. Real data needs `icu4x`, a decision for the user.
 
 ### 7. The test framework
-`compose-test` lacks parts of ui-test that ports will need: pointer, trackpad and indirect injection (about 175 tests of its own), device configuration override, and capture to image.
+`compose-test` lacks parts of ui-test that ports will need: indirect pointer injection (about 120 tests of its own), device configuration override, and capture to image. Trackpad injection is in (D1674): pans and pinches as Android 14 delivers them, on ui's pan and scale events.
 
 ## Not verified on a device
 
