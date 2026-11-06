@@ -1026,6 +1026,21 @@ impl MouseInjectionScope<'_> {
         self.mouse_event(PointerEvent::scroll(root, delta));
     }
 
+    /// Turns both wheels by `offset` in one event (units as `scroll`'s), as `scroll(offset:
+    /// Offset)`.
+    pub fn scroll_offset(&mut self, offset: Offset) {
+        let position = self.current_position();
+        self.move_to_after(position, 0);
+        let root = self.input().mouse;
+        if !self.0.within_root(root) {
+            return;
+        }
+        let density = self.0.density;
+        let to_px = |units: f32| density.to_px(Dp(units * SCROLL_DP_PER_UNIT));
+        let delta = Offset::new(to_px(offset.x), to_px(offset.y));
+        self.mouse_event(PointerEvent::scroll(root, delta));
+    }
+
     // ---- Gestures -------------------------------------------------------------------------
 
     /// A click at the center, the button held 60 ms, as `click()`.
