@@ -61,6 +61,7 @@ mod lazy_state_restoration;
 mod lazy_support;
 mod legacy;
 mod locals;
+mod lookahead_scenes;
 mod modifier_memoization;
 mod modifiers_api;
 mod motion_frame_of_reference;
