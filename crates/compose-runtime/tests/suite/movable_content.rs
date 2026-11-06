@@ -4806,6 +4806,197 @@ fn anchors_and_key_tokens_follow_content_of_many_groups_moved_twice() {
     test.dispose();
 }
 
+/// Content of `groups` key groups, then a provider of 7 and a `remember` keeping an anchor and a key
+/// token there, moved from `start` through `moves` (places of [`across`]), `groups` set to the next
+/// of `counts` before each move: after each, the anchor reads 7 and the token hashes as it did.
+fn follows_moves(start: i32, moves: &[i32], counts: &[usize]) {
+    type Kept = Rc<RefCell<Option<(CompositionLocalAnchor, CompositeKeyToken, u64)>>>;
+    type NodeKept = Rc<Cell<Option<(CompositeKeyToken, u64)>>>;
+    let (kept, node_kept): (Kept, NodeKept) = Default::default();
+    let (k, n) = (kept.clone(), node_kept.clone());
+    let groups = mutable_state_of(counts[0]);
+    let g = groups.handle();
+    let content = movable_content_of(move || {
+        for index in 0..g.get() {
+            key(index, || {});
+        }
+        let (k, n) = (k.clone(), n.clone());
+        CompositionLocalProvider(MOVED_STATIC.provides(7), move || {
+            let (k, n) = (k.clone(), n.clone());
+            // In a group of its own: the token names it, the anchor the provider.
+            key(-1, move || {
+                let k = k.clone();
+                remember(move || {
+                    *k.borrow_mut() = Some((
+                        current_composition_local_anchor(),
+                        current_composite_key_token(),
+                        current_composite_key_hash_code(),
+                    ));
+                });
+            });
+            // A node's token, taken in its node group as a layout node's, which marks nothing.
+            let composer = platform::current();
+            composer.start_node(key_of("movable.TokenNode"), view("TokenNode"));
+            remember(move || {
+                n.set(Some((current_node_composite_key_token(), current_composite_key_hash_code())))
+            });
+            composer.end_group();
+            Marker();
+        });
+    });
+    let position = mutable_state_of(start);
+    let mut test = across(content, position.handle(), false);
+    let (anchor, token, hash) = kept.borrow().expect("composed");
+    let (node_token, node_hash) = node_kept.get().expect("composed");
+    for (step, &to) in moves.iter().enumerate() {
+        groups.set(counts[(step + 1) % counts.len()]);
+        position.set(to);
+        test.expect_changes();
+        let at = format!("step {step}, to {to}, from {start} with {counts:?}");
+        assert_eq!(anchor.get(&MOVED_STATIC), 7, "the anchor at {at}");
+        assert_eq!(composite_key_hash_of(token), Some(hash), "the token at {at}");
+        assert_eq!(composite_key_hash_of(node_token), Some(node_hash), "the node's token at {at}");
+    }
+    test.dispose();
+}
+
+/// Content bouncing between two compositions, as a player between a list and a full screen: what
+/// nodes keep of its places follows it however many times it comes back, its old indices given
+/// to its own groups since.
+#[test]
+fn anchors_and_key_tokens_follow_content_bouncing_between_two_compositions() {
+    for groups in [0, 40, 1100] {
+        follows_moves(1, &[2, 1, 2, 1, 2, 1, 2], &[groups]);
+        follows_moves(0, &[1, 0, 1, 0, 1, 0, 1], &[groups]);
+        follows_moves(0, &[2, 0, 2, 0, 2, 0], &[groups]);
+    }
+}
+
+/// Over three compositions, with groups of it removed and added between moves, so that indices it
+/// left are taken by others in between.
+#[test]
+fn anchors_and_key_tokens_follow_content_round_three_compositions_changing_as_it_moves() {
+    let moves = [1, 2, 0, 2, 1, 0, 1, 2, 0, 1];
+    follows_moves(0, &moves, &[40, 25, 60, 5, 0, 40, 1100, 30]);
+    follows_moves(2, &moves, &[1100, 3, 900, 0, 50]);
+}
+
+/// Content composing again at each place it moves to, a state it reads changing: what nodes made
+/// of its places at each composition (an anchor of its provider and a key token there) all follow
+/// it, though its groups left the same places more than once, at other stays.
+#[test]
+fn anchors_and_key_tokens_made_at_each_place_follow_content_composing_where_it_goes() {
+    type Made = Rc<RefCell<Vec<(CompositionLocalAnchor, CompositeKeyToken, u64)>>>;
+    for groups in [0, 40, 1100] {
+        let made: Made = Rc::default();
+        let (m, step) = (made.clone(), mutable_state_of(0));
+        let s = step.handle();
+        let content = movable_content_of(move || {
+            s.get();
+            for index in 0..groups {
+                key(index, || {});
+            }
+            let m = m.clone();
+            CompositionLocalProvider(MOVED_STATIC.provides(7), move || {
+                m.borrow_mut().push((
+                    current_composition_local_anchor(),
+                    current_composite_key_token(),
+                    current_composite_key_hash_code(),
+                ));
+                Marker();
+            });
+        });
+        let position = mutable_state_of(0);
+        let mut test = across(content, position.handle(), false);
+        for (at, to) in [1, 0, 1, 0, 2, 0, 1, 2, 1, 0].into_iter().enumerate() {
+            step.set(at as i32 + 1);
+            position.set(to);
+            test.expect_changes();
+            let made = made.borrow();
+            assert_eq!(made.len(), at + 2, "composed again at step {at}, with {groups} groups");
+            for (index, (anchor, token, hash)) in made.iter().enumerate() {
+                let which = format!("made at {index}, at step {at}, with {groups} groups");
+                assert_eq!(anchor.get(&MOVED_STATIC), 7, "the anchor {which}");
+                assert_eq!(composite_key_hash_of(*token), Some(*hash), "the token {which}");
+            }
+        }
+        test.dispose();
+    }
+}
+
+/// One content moved out of the main composition, another new there taking the indices it left
+/// and moved out too: a place left twice, by two groups, each found by what was made of it.
+#[test]
+fn anchors_and_key_tokens_of_two_contents_that_left_the_same_places() {
+    type Made = Rc<RefCell<Vec<(CompositionLocalAnchor, CompositeKeyToken, u64)>>>;
+    let made: Made = Rc::default();
+    let content = |value: i32| {
+        let m = made.clone();
+        movable_content_of(move || {
+            let m = m.clone();
+            CompositionLocalProvider(MOVED_STATIC.provides(value), move || {
+                let m = m.clone();
+                remember(move || {
+                    m.borrow_mut().push((
+                        current_composition_local_anchor(),
+                        current_composite_key_token(),
+                        current_composite_key_hash_code(),
+                    ));
+                });
+                Marker();
+            });
+        })
+    };
+    let (first, second) = (content(1), content(2));
+    // Where each is: 0 nowhere, 1 the main composition, 2 the subcomposition.
+    let (at_first, at_second) = (mutable_state_of(1), mutable_state_of(0));
+    let (f, s) = (at_first.handle(), at_second.handle());
+    let mut test = composition_test();
+    test.compose(move || {
+        let (main_first, main_second) = (first.clone(), second.clone());
+        let (sub_first, sub_second) = (first.clone(), second.clone());
+        key(f.get() == 1, move || {
+            if f.get() == 1 {
+                main_first();
+            }
+        });
+        key(s.get() == 1, move || {
+            if s.get() == 1 {
+                main_second();
+            }
+        });
+        Subcompose!(move || {
+            let (sub_first, sub_second) = (sub_first.clone(), sub_second.clone());
+            key(f.get() == 2, move || {
+                if f.get() == 2 {
+                    sub_first();
+                }
+            });
+            key(s.get() == 2, move || {
+                if s.get() == 2 {
+                    sub_second();
+                }
+            });
+        });
+    });
+    let check = |at: &str| {
+        for (index, (anchor, token, hash)) in made.borrow().iter().enumerate() {
+            assert_eq!(anchor.get(&MOVED_STATIC), index as i32 + 1, "the anchor {index} {at}");
+            assert_eq!(composite_key_hash_of(*token), Some(*hash), "the token {index} {at}");
+        }
+    };
+    for (step, (to_first, to_second)) in
+        [(2, 0), (2, 1), (2, 2), (1, 2), (2, 1), (1, 2)].into_iter().enumerate()
+    {
+        at_first.set(to_first);
+        at_second.set(to_second);
+        test.expect_changes();
+        check(&format!("at step {step}"));
+    }
+    assert_eq!(made.borrow().len(), 2);
+    test.dispose();
+}
+
 /// How [`two_providers`] provides at its two places.
 #[derive(Clone, Copy, Debug)]
 enum TwoProviders {

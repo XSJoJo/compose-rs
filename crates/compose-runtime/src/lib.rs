@@ -113,8 +113,8 @@ pub use reusable::{ReusableContent, ReusableContentHost};
 pub use saveable::{
     AutoSaver, CompositeKeyToken, LOCAL_SAVEABLE_STATE_REGISTRY, RegistryEntry, RememberSaveable,
     Saveable, SaveableStateRegistry, SavedState, SavedValue, Saver, composite_key_hash_of,
-    current_composite_key_hash_code, current_composite_key_token, list_saver, map_saver,
-    remember_saveable, remember_saveable_with, saver,
+    current_composite_key_hash_code, current_composite_key_token, current_node_composite_key_token,
+    list_saver, map_saver, remember_saveable, remember_saveable_with, saver,
 };
 pub use saveable_state_holder::{SaveableStateHolder, remember_saveable_state_holder};
 pub use scope::RecomposeScope;

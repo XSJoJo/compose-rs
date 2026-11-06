@@ -129,6 +129,10 @@ pub(crate) const MOVABLE: u8 = 4;
 pub(crate) const MOVABLE_PENDING: u8 = 8;
 /// `Group::flags`: a group that holds, or held, movable content: a removal looks in it.
 pub(crate) const CONTAINS_MOVABLE: u8 = 16;
+/// `Group::flags`: a key token names the group by its place here: if it leaves for another table,
+/// its departure is kept (`MovedGroups`, D1511). A provider's and a node group's always are, for
+/// anchors and layout nodes' tokens.
+pub(crate) const NAMED: u8 = 32;
 
 impl Group {
     pub fn is_provider(&self) -> bool {

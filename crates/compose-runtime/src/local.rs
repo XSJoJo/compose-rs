@@ -819,7 +819,10 @@ fn provider_at(
         None => runtime.compositions.get(id)?,
     };
     let group = data.table.groups.get(provider as usize)?;
-    (group.kind != crate::slot_table::GroupKind::Free && group.provider_version() == version)
+    // A provider's: another group's `node` field is its node, whose bits may be any version.
+    (group.kind != crate::slot_table::GroupKind::Free
+        && group.is_provider()
+        && group.provider_version() == version)
         .then_some(data)
 }
 
@@ -829,7 +832,8 @@ pub fn current_composition_local_anchor() -> CompositionLocalAnchor {
     with_runtime(|runtime| anchor_here(runtime))
 }
 
-/// [`current_composition_local_anchor`] of a runtime composing.
+/// [`current_composition_local_anchor`] of a runtime composing. Nothing marks its provider: every
+/// provider leaving for another composition has its departure kept (`MovedGroups`, D1511).
 pub(crate) fn anchor_here(runtime: &Runtime) -> CompositionLocalAnchor {
     let composition = runtime.check_composing();
     let mut id = runtime.active.expect("composing").composition;
@@ -860,7 +864,10 @@ impl CompositionLocalAnchor {
     }
 
     /// What was provided here, if it's still known: its provider as it was (where it is, or moved
-    /// with content), or no provider in a composition still there (D1511).
+    /// with content), or no provider in a composition still there (D1511). Its provider's version
+    /// standing for what's provided above it too, in other compositions, is the invariant
+    /// `Runtime::composed_under` states: a child's pass after a change above it composes from its
+    /// root (`providers_changed`).
     pub(crate) fn map_if_known(&self, runtime: &Runtime) -> Option<CompositionLocalMap> {
         let (data, provider) = match self.provider {
             NONE => (runtime.compositions.get(self.composition)?, NONE),

@@ -757,7 +757,7 @@ pub(crate) struct Compositions {
 }
 
 impl Compositions {
-    const fn new() -> Compositions {
+    pub(crate) const fn new() -> Compositions {
         Compositions {
             entries: Vec::new(),
             free: Vec::new(),
