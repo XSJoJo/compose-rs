@@ -379,3 +379,58 @@ fn a_scope_looks_ahead_no_more_than_a_tree_without_one_measures() {
     assert_eq!((lookahead_measures, lookahead_places), (get(2), get(3)));
     assert!(lookahead_measures < get(8) && lookahead_places < get(9));
 }
+
+/// Each pass's measurements and placings of what `noting` is on.
+#[derive(Clone, Default)]
+struct Stats(Rc<Cell<[u32; 4]>>);
+
+impl Stats {
+    fn noting(&self) -> Modifier {
+        let stats = self.0.clone();
+        let bump = move |stats: &Rc<Cell<[u32; 4]>>, at: usize| {
+            let mut all = stats.get();
+            all[at] += 1;
+            stats.set(all);
+        };
+        Modifier.layout(move |scope, measurable, constraints| {
+            bump(&stats, if scope.is_looking_ahead() { 0 } else { 1 });
+            let placeable = scope.measure(measurable, constraints);
+            let stats = stats.clone();
+            scope.layout_with(placeable.width, placeable.height, move |placement| {
+                bump(&stats, if placement.is_looking_ahead() { 2 } else { 3 });
+                placement.place(&placeable, 0, 0);
+            })
+        })
+    }
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/LookaheadScopeTest.kt, testReorderChildrenInLookaheadScope
+#[test]
+fn children_reordered_in_a_scope_are_measured_and_placed_again_in_both_passes() {
+    let list = mutable_state_of(vec![1, 2]);
+    let (boxed, row) = (Stats::default(), Stats::default());
+    let (l, b, r) = (list.handle(), boxed.clone(), row.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(400, 400), move || {
+        let (b, r) = (b.clone(), r.clone());
+        Row!(|_| {
+            let (b, r) = (b.clone(), r.clone());
+            in_a_scope(move |_| {
+                for it in l.get() {
+                    let (b, r) = (b.clone(), r.clone());
+                    compose_runtime::key(it, move || {
+                        if it == 1 {
+                            Box!(modifier = Modifier.size(dp(100)).then(b.noting()), {});
+                        } else {
+                            Row!(modifier = Modifier.size(dp(200)).then(r.noting()), |_| {});
+                        }
+                    });
+                }
+            });
+        });
+    });
+    ui.wait_for_idle();
+    assert_eq!((boxed.0.get(), row.0.get()), ([1, 1, 1, 1], [1, 1, 1, 1]));
+    list.set(vec![2, 1]);
+    ui.wait_for_idle();
+    assert_eq!((boxed.0.get(), row.0.get()), ([2, 2, 2, 2], [2, 2, 2, 2]));
+}
