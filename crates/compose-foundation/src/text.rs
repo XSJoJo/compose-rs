@@ -54,14 +54,22 @@ pub fn SelectionContainer(
     #[default(crate::Modifier)] modifier: Modifier,
     content: impl Fn() + 'static,
 ) {
+    // What the tree holding its selection tells its handles, composed after its content.
+    let handles =
+        compose_runtime::remember(|| std::rc::Rc::new(compose_ui::ContainerHandles::new()));
+    handles.set_haptic_feedback(compose_ui::LOCAL_HAPTIC_FEEDBACK.current());
     // Selectable again below a `DisableSelection`, as Compose's.
     compose_runtime::CompositionLocalProvider(LOCAL_SELECTION_REGISTRAR.provides(true), || {
         let content = content.clone();
+        let shown = handles.clone();
         crate::layout::Box(
-            modifier.clone().selection_container(),
+            modifier.clone().selection_container_with_handles(handles.clone()),
             crate::Alignment::TOP_START,
             false,
-            compose_runtime::callback(move |_| content()),
+            compose_runtime::callback(move |_| {
+                content();
+                crate::selection_handles::SelectionContainerHandles(shown.clone());
+            }),
         );
     });
 }
@@ -887,6 +895,52 @@ impl compose_ui::Selectable for TextNode {
         };
         self.selection = range;
         true
+    }
+
+    /// As Compose's `MultiWidgetSelectionDelegate.getHandlePosition`: at the offset kept to the
+    /// last visible one (`lastVisibleOffset`), where `getSelectionHandleCoordinates` says.
+    fn handle_position(
+        &self,
+        offset: usize,
+        start: bool,
+        crossed: bool,
+        measurer: &compose_ui::platform::SharedTextMeasurer,
+    ) -> Option<Offset> {
+        let (paragraph, constraints) = (self.paragraph?, self.constraints?);
+        let measurer = measurer.borrow();
+        let size = constraints.constrain(measurer.metrics(paragraph).size);
+        let layout = measurer.paragraph(paragraph);
+        let lines = layout.line_count();
+        if lines == 0 {
+            return None;
+        }
+        // A text cut by its height: its last line whose top shows.
+        let mut last = lines - 1;
+        while last > 0 && layout.get_line_top(last) >= size.height as f32 {
+            last -= 1;
+        }
+        let offset = offset.min(layout.get_line_end(last, true));
+        let size = compose_ui::Size::new(size.width as f32, size.height as f32);
+        crate::selection_handles::selection_handle_coordinates(
+            &*layout,
+            self.text.as_str(),
+            offset,
+            (start, crossed),
+            size,
+        )
+    }
+
+    fn direction_at(
+        &self,
+        offset: usize,
+        measurer: &compose_ui::platform::SharedTextMeasurer,
+    ) -> compose_ui::ResolvedTextDirection {
+        match self.paragraph {
+            Some(paragraph) => {
+                measurer.borrow().paragraph(paragraph).get_bidi_run_direction(offset)
+            }
+            None => compose_ui::ResolvedTextDirection::Ltr,
+        }
     }
 }
 
