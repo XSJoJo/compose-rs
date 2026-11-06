@@ -20,6 +20,7 @@ mod input_transformation;
 pub mod layout;
 pub mod lazy;
 mod mutator;
+mod output_transformation;
 mod overscroll;
 mod scroll;
 mod scroll_indicator;
@@ -57,6 +58,11 @@ pub use gestures::{
     remember_draggable_2d_state, remember_draggable_state, remember_scrollable_state,
     scrollable_state,
 };
+pub use gestures::{
+    DefaultTransformableState, LocalBoxFuture, TransformCalculations, TransformGestureDetector,
+    TransformScope, TransformableModifier, TransformableState, TransformableStateExt,
+    remember_transformable_state, transformable_state,
+};
 pub use image::{ContentScale, Image, PainterImage, VectorImage};
 pub use input_transformation::{InputTransform, InputTransformation, KeyboardActionHandler};
 pub use lazy::pager::{
@@ -79,6 +85,7 @@ pub use lazy::{
     remember_lazy_staggered_grid_state,
 };
 pub use mutator::{MutatePriority, MutationInterrupted, MutatorMutex};
+pub use output_transformation::{OutputTransform, OutputTransformation};
 pub use overscroll::{
     LOCAL_OVERSCROLL_FACTORY, OverscrollEffect, OverscrollFactory, OverscrollModifier,
     PerformFling, remember_overscroll_effect, without_event_handling, without_visual_effect,

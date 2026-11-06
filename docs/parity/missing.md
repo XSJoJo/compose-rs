@@ -11,12 +11,11 @@ These are on local branches, so they're not lost, but each still has to finish i
 | Work | Branch | State |
 |---|---|---|
 | Stretch and glow overscroll | `worktree-agent-ad25708f190fdec81` | Being built, not reviewed. Design: [stretch-overscroll.md](design/stretch-overscroll.md). |
-| The grid layout, `Grid` (D1368) | `foundation-grid` | Built, with all 79 of `GridTest` ported; not reviewed. |
 
 ## The big missing things
 
 ### 1. Modern text fields (the largest gap)
-- **`TextFieldState` and the state-based `BasicTextField`** (about 700 tests; [design](design/text-field-state.md)). Steps 1 to 3 of six are built: `TextFieldState` (`edit`, its helpers, saver, `remember_text_field_state`), `TextFieldBuffer` with its `ChangeList`, `TextFieldLineLimits`, `BasicTextFieldOfState` over the value field's node and the keyboard path, undo in the state (`UndoState`, Compose's merge rules), `InputTransformation` with Compose's prebuilt ones, `KeyboardActionHandler` and the keyboard options' unspecified values (D1128 to D1133); about 260 of Compose's tests ported. **Still missing:** `OutputTransformation` and the single line's new lines shown as spaces; `on_text_layout`, `scroll_state`, the default width of ten "H" and the rest of `BasicTextFieldTest`, the key, semantics, scroll and focus tests; Material 3's state-based `TextField`s; styles in the state; `BasicSecureTextField` (about 100).
+- **`TextFieldState` and the state-based `BasicTextField`** (about 700 tests; [design](design/text-field-state.md)). Steps 1 to 4 of six are built: `TextFieldState` (`edit`, its helpers, saver, `remember_text_field_state`), `TextFieldBuffer` with its `ChangeList`, `TextFieldLineLimits`, `BasicTextFieldOfState` over the value field's node and the keyboard path, undo in the state (`UndoState`, Compose's merge rules), `InputTransformation` with Compose's prebuilt ones, `KeyboardActionHandler` and the keyboard options' unspecified values, `OutputTransformation` with Compose's mapping and cursor rules and the single line's new lines shown as spaces (D1128 to D1134); about 340 of Compose's tests ported. **Still missing:** the input method reading the shown text of an output transformation (it reads the state's), an output transformation's styles; `on_text_layout`, `scroll_state`, the default width of ten "H" and the rest of `BasicTextFieldTest`, the key, semantics, scroll and focus tests; Material 3's state-based `TextField`s; styles in the state; `BasicSecureTextField` (about 100).
 - **Touch text selection** (about 230): handles and selection gestures in text and fields.
 - **Text context menu** (about 290), **magnifier** (about 80), **handwriting** (about 85), **autofill** (about 165), **text links** (about 55).
 
@@ -38,7 +37,7 @@ These are on local branches, so they're not lost, but each still has to finish i
 
 ### 4. Foundation
 - **Style API** (about 160), **border parity** (about 80).
-- **Gestures and scrolling:** `transformable` (about 40), 2D scrolling (about 45), `bringIntoView` (about 90 across two rows), public lazy layout API (about 40), `BeyondBoundsLayout` (about 35).
+- **Gestures and scrolling:** `transformable`'s trackpad pans and scales (7, with pointer-input-types; the rest is in, D1369), 2D scrolling (about 45), `bringIntoView` (about 90 across two rows), public lazy layout API (about 40), `BeyondBoundsLayout` (about 35).
 
 ### 5. Material 3
 - **Whole components missing:** carousel (about 100), floating toolbar (about 80), search bar (about 65), wide navigation rail (about 45), wavy progress (about 45), short navigation bar (about 35), loading indicator (about 20), FAB menu (about 15).

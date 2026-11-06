@@ -380,6 +380,9 @@ pub struct TextFieldBuffer {
     composition: Option<TextRange>,
     original: TextFieldCharSequence,
     changes: ChangeList,
+    /// The mapping an output transformation's edits make, while one runs (Compose's
+    /// `offsetMappingCalculator`).
+    offset_mapping: Option<crate::output_transformation::OffsetMappingCalculator>,
 }
 
 impl TextFieldBuffer {
@@ -401,7 +404,19 @@ impl TextFieldBuffer {
             composition: initial.composition,
             original,
             changes: changes.map(ChangeList::copy_of).unwrap_or_default(),
+            offset_mapping: None,
         }
+    }
+
+    /// Keeps the mapping the edits from now on make, for an output transformation.
+    pub(crate) fn track_offset_mapping(&mut self) {
+        self.offset_mapping.get_or_insert_with(Default::default);
+    }
+
+    pub(crate) fn take_offset_mapping(
+        &mut self,
+    ) -> Option<crate::output_transformation::OffsetMappingCalculator> {
+        self.offset_mapping.take()
     }
 
     /// The text's length, in bytes.
@@ -535,6 +550,9 @@ impl TextFieldBuffer {
     /// sensible too.
     fn text_will_change(&mut self, start: usize, end: usize, new_length: usize, hardware: bool) {
         self.changes.track_change(start, end, new_length, hardware);
+        if let Some(mapping) = &mut self.offset_mapping {
+            mapping.record_edit_operation(start, end, new_length);
+        }
         self.selection = adjust_text_range(self.selection, start, end, new_length);
     }
 

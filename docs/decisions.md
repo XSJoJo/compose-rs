@@ -18,8 +18,8 @@ The log is split by area into the files below, one table each, rows in number or
 | File | Covers | Rows |
 |---|---|---|
 | [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 174 |
-| [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 392 |
-| [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 72 |
+| [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 393 |
+| [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 73 |
 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md) | Lazy lists and grids, item reuse, the policy of composing only what is in view, prefetch. | 103 |
 | [android-drawing](decisions/android-drawing.md) | The display list and its replayer, render nodes and repaint boundaries, paths, shadows, layers. | 29 |
 | [android-host-and-performance](decisions/android-host-and-performance.md) | The view and activity glue, the frame loop, the hint session, jank, startup, memory, and the optimization flags. | 31 |
@@ -691,9 +691,10 @@ The log is split by area into the files below, one table each, rows in number or
 | D1128 | [text](decisions/text.md#d1128) | current |
 | D1129 | [text](decisions/text.md#d1129) | current |
 | D1130 | [text](decisions/text.md#d1130) | current |
-| D1131 | [text](decisions/text.md#d1131) | revised by [D1132](decisions/text.md#d1132) |
+| D1131 | [text](decisions/text.md#d1131) | revised by [D1132](decisions/text.md#d1132), [D1134](decisions/text.md#d1134) |
 | D1132 | [text](decisions/text.md#d1132) | current |
 | D1133 | [text](decisions/text.md#d1133) | current |
+| D1134 | [text](decisions/text.md#d1134) | current |
 | D1150 | [ui-and-layout](decisions/ui-and-layout.md#d1150) | current |
 | D1151 | [ui-and-layout](decisions/ui-and-layout.md#d1151) | current |
 | D1152 | [ui-and-layout](decisions/ui-and-layout.md#d1152) | current |
@@ -847,6 +848,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1366 | [ui-and-layout](decisions/ui-and-layout.md#d1366) | current |
 | D1367 | [ui-and-layout](decisions/ui-and-layout.md#d1367) | current |
 | D1368 | [ui-and-layout](decisions/ui-and-layout.md#d1368) | current |
+| D1369 | [ui-and-layout](decisions/ui-and-layout.md#d1369) | current |
 | D1400 | [api-and-tooling](decisions/api-and-tooling.md#d1400) | revised by [D1402](api-and-tooling.md#d1402), [D1403](api-and-tooling.md#d1403) |
 | D1401 | [api-and-tooling](decisions/api-and-tooling.md#d1401) | current |
 | D1402 | [api-and-tooling](decisions/api-and-tooling.md#d1402) | current |
