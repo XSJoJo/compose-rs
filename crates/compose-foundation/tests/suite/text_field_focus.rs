@@ -4,9 +4,8 @@
 //!
 //! Compose's D-pad tests press a physical device's keys (a D-pad's, a keyboard's, or both); a
 //! compose-rs key has no source, so each direction is one test here. The `focusBounds_*` tests
-//! wait on the field's focus rect: compose-ui has `FocusProperties::focus_rect` and
-//! `FocusRequester::focused_rect`, but the field doesn't set its cursor's or selection's yet, and
-//! unfocused, a search from above its end finds the box below it, where Compose's finds it.
+//! read the field's focus rect, its cursor's or its selection's while it's focused (D2002),
+//! through a group's `FocusRequester::focused_rect`, as Compose's `FocusRectNode`.
 
 #![allow(non_snake_case)]
 
@@ -20,7 +19,7 @@ use compose_test::*;
 use compose_ui::{
     Alignment, Color, Dialog, FocusDirection, FocusManager, FocusRequester, FocusState, ImeAction,
     Key, KeyEvent, KeyModifiers, LOCAL_FOCUS_MANAGER, LOCAL_SOFTWARE_KEYBOARD_CONTROLLER,
-    MutableInteractionSource, TextRange, UnitExt,
+    MutableInteractionSource, TextRange, TextStyle, UnitExt,
 };
 
 use crate::interaction_helpers::{ends, kinds, record};
@@ -28,6 +27,10 @@ use crate::text_field_basic::type_on_keys;
 
 fn state_of(text: &str) -> TextFieldState {
     **Box::leak(Box::new(TextFieldState::new(text)))
+}
+
+fn state_with(text: &str, selection: TextRange) -> TextFieldState {
+    **Box::leak(Box::new(TextFieldState::with_selection(text, selection)))
 }
 
 fn cell<T: PartialEq + 'static>(value: T) -> MutableState<T> {
@@ -402,4 +405,264 @@ fn tab_enter_and_shift_tab_move_a_single_lines_focus() {
         press(&mut ui, key, modifiers);
         ui.on_node_with_tag(to).assert_is_focused();
     }
+}
+
+/// A focus target that never takes the focus, its handle kept: Compose's tests'
+/// `FocusRectNode`, whose `getFocusedRect` is the focused field's rect in its coordinates.
+#[derive(Clone, Copy)]
+struct FocusRectNode(&'static Cell<Option<compose_ui::NodeHandle>>);
+
+impl FocusRectNode {
+    fn focused_rect(self) -> Option<compose_ui::Rect> {
+        self.0.get().expect("attached").focused_rect()
+    }
+}
+
+impl compose_ui::ModifierNodeElement for FocusRectNode {
+    type Node = FocusRectNode;
+    fn create(&self) -> FocusRectNode {
+        *self
+    }
+    fn update(&self, _node: &mut FocusRectNode) {}
+    fn same(&self, _other: &Self) -> bool {
+        true
+    }
+    fn name(&self) -> &'static str {
+        "focus_rect_node"
+    }
+}
+
+impl compose_ui::ModifierNode for FocusRectNode {
+    fn on_attach(&mut self, context: &mut compose_ui::NodeContext<'_>) {
+        self.0.set(Some(context.handle()));
+    }
+    fn as_focus_target(&mut self) -> Option<&mut dyn compose_ui::FocusTargetModifierNode> {
+        Some(self)
+    }
+}
+
+impl compose_ui::FocusTargetModifierNode for FocusRectNode {
+    fn focusability(&self) -> compose_ui::Focusability {
+        compose_ui::Focusability::NEVER
+    }
+}
+
+/// A rule measuring with Compose's test font (one em wide and high) at density 1, as Compose's
+/// `focusBounds_*` tests, around a field in `content` given a `FocusRectNode` as its modifier.
+fn with_focus_rect(content: impl Fn(Modifier) + 'static) -> (ComposeTestRule, FocusRectNode) {
+    let node = FocusRectNode(Box::leak(Box::default()));
+    let ui = compose_test_with(
+        DEFAULT_SIZE,
+        compose_ui::Density::new(1.0),
+        Box::new(compose_ui::platform::FixedTextMeasurer::with_metrics(
+            compose_ui::platform::FixedFontMetrics::SAMPLE_FONT,
+        )),
+        move || content(Modifier.then_custom(node)),
+    );
+    (ui, node)
+}
+
+fn twenty() -> TextStyle {
+    TextStyle { font_size: 20.sp(), ..TextStyle::DEFAULT }
+}
+
+/// Where the focused field's rect is, in the coordinates of the target around it.
+fn focused_rect(ui: &mut ComposeTestRule, node: FocusRectNode) -> compose_ui::Rect {
+    ui.wait_for_idle();
+    node.focused_rect().expect("the field is focused")
+}
+
+fn focus_field(ui: &mut ComposeTestRule) {
+    ui.on_node(has_set_text_action()).request_focus();
+    ui.wait_for_idle();
+}
+
+/// `rect` is `expected`, within half a pixel, as Compose's `isEqualToWithTolerance`.
+fn assert_rect(rect: compose_ui::Rect, expected: (f32, f32, f32, f32)) {
+    let (left, top, right, bottom) = expected;
+    let close = |a: f32, b: f32| (a - b).abs() <= 0.5;
+    assert!(
+        close(rect.left, left)
+            && close(rect.top, top)
+            && close(rect.right, right)
+            && close(rect.bottom, bottom),
+        "{rect:?} isn't {expected:?}"
+    );
+}
+
+/// The cursor's thickness at density 1, as Compose's `DefaultCursorThickness`.
+const CURSOR: f32 = 2.0;
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldFocusTest.kt, focusBounds_cursor
+#[test]
+fn a_focused_fields_rect_is_its_cursors() {
+    let state = state_of("");
+    let (mut ui, requester) = with_focus_rect(move |modifier| {
+        BasicTextFieldOfState!(state, modifier = modifier, text_style = twenty());
+    });
+    focus_field(&mut ui);
+    assert_rect(focused_rect(&mut ui, requester), (0.0, 0.0, CURSOR, 20.0));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldFocusTest.kt, focusBounds_selection
+#[test]
+fn a_focused_fields_rect_is_its_selections() {
+    let state = state_with("abc", TextRange::new(1, 3));
+    let (mut ui, requester) = with_focus_rect(move |modifier| {
+        BasicTextFieldOfState!(state, modifier = modifier, text_style = twenty());
+    });
+    focus_field(&mut ui);
+    assert_rect(focused_rect(&mut ui, requester), (20.0, 0.0, 60.0, 20.0));
+}
+
+/// A box, a field and a box in a column aligned by `alignment`; the box above's requester given
+/// before its `focusable` (`requester_first`) or after it, as Compose's test, where it finds no
+/// target; the focus manager kept.
+fn box_field_box(
+    alignment: compose_ui::HorizontalAlignment,
+    requester_first: bool,
+) -> (ComposeTestRule, FocusRequester, Kept<FocusManager>) {
+    let requester = FocusRequester::new();
+    let manager: Kept<FocusManager> = Rc::default();
+    let into = manager.clone();
+    let ui = compose_test_with(
+        DEFAULT_SIZE,
+        compose_ui::Density::new(1.0),
+        Box::new(compose_ui::platform::FixedTextMeasurer::new()),
+        move || {
+            *into.borrow_mut() = Some(LOCAL_FOCUS_MANAGER.current());
+            Column!(horizontal_alignment = alignment, {
+                let square = Modifier.width(10.dp()).height(10.dp());
+                Box!(if requester_first {
+                    square.focus_requester(requester).focusable()
+                } else {
+                    square.focusable().focus_requester(requester)
+                });
+                let state = remember_text_field_state("a", None);
+                BasicTextFieldOfState!(state, modifier = Modifier.width(100.dp()).height(10.dp()));
+                Box!(Modifier.width(10.dp()).height(10.dp()).focusable());
+            });
+        },
+    );
+    (ui, requester, manager)
+}
+
+/// Compose's test asks its `FocusRequester`, given after the box's `focusable`, which finds no
+/// target there (`visitChildren`) nor here: nothing is focused, and the search down starts from
+/// the root's top left corner, where the field is the nearest. With the box focused, Compose's
+/// rules and compose-rs's go to the box below, both in the box's beam and the box nearer by
+/// their weighted distance (D2002).
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldFocusTest.kt, focusBounds_nonFocused
+#[test]
+fn a_search_down_from_nothing_finds_the_unfocused_field() {
+    let (mut ui, requester, manager) = box_field_box(Alignment::END, false);
+    requester.request_focus();
+    ui.wait_for_idle();
+    kept(&manager).move_focus(FocusDirection::Down);
+    ui.wait_for_idle();
+    ui.on_node(has_set_text_action()).assert_is_focused();
+}
+
+/// Unfocused, a field's rect in a search is all of it, not its cursor: a search down from a box
+/// above its middle finds it before the box below, the cursor (at the text's end, on the left)
+/// out of the beam (D2002).
+// Compose: compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldSelectionState.kt, getFocusRect (no test of its own)
+#[test]
+fn an_unfocused_fields_rect_is_all_of_it() {
+    let (mut ui, requester, manager) = box_field_box(Alignment::CENTER_HORIZONTALLY, true);
+    requester.request_focus();
+    ui.wait_for_idle();
+    kept(&manager).move_focus(FocusDirection::Down);
+    ui.wait_for_idle();
+    ui.on_node(has_set_text_action()).assert_is_focused();
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldFocusTest.kt, focusBounds_afterEdit
+#[test]
+fn a_focused_fields_rect_follows_an_edit() {
+    let state = state_of("");
+    let (mut ui, requester) = with_focus_rect(move |modifier| {
+        BasicTextFieldOfState!(state, modifier = modifier, text_style = twenty());
+    });
+    focus_field(&mut ui);
+    let before = focused_rect(&mut ui, requester);
+    state.edit(|buffer| buffer.append("a"));
+    let after = focused_rect(&mut ui, requester);
+    assert_rect(before, (0.0, 0.0, CURSOR, 20.0));
+    assert_rect(after, (20.0, 0.0, 20.0 + CURSOR, 20.0));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldFocusTest.kt, focusBounds_whenFontSizeChanges_rectUpdates
+#[test]
+fn a_focused_fields_rect_follows_its_font_size() {
+    let state = state_with("a", TextRange::at(1));
+    let size = cell(20.0f32);
+    let (mut ui, requester) = with_focus_rect(move |modifier| {
+        let style = TextStyle { font_size: size.get().sp(), ..TextStyle::DEFAULT };
+        BasicTextFieldOfState!(state, modifier = modifier, text_style = style);
+    });
+    focus_field(&mut ui);
+    let before = focused_rect(&mut ui, requester);
+    size.set(40.0);
+    let after = focused_rect(&mut ui, requester);
+    assert_rect(before, (20.0, 0.0, 20.0 + CURSOR, 20.0));
+    assert_rect(after, (40.0, 0.0, 40.0 + CURSOR, 40.0));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldFocusTest.kt, focusBounds_multiLine
+#[test]
+fn a_focused_fields_rect_is_on_its_cursors_line() {
+    let state = state_with("a\nb", TextRange::at(3));
+    let (mut ui, requester) = with_focus_rect(move |modifier| {
+        BasicTextFieldOfState!(state, modifier = modifier, text_style = twenty());
+    });
+    focus_field(&mut ui);
+    assert_rect(focused_rect(&mut ui, requester), (20.0, 20.0, 20.0 + CURSOR, 40.0));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldFocusTest.kt, focusBounds_scrollable
+#[test]
+fn a_focused_fields_rect_moves_with_its_scroll() {
+    let state = state_with(&"abc ".repeat(10), TextRange::ZERO);
+    let scroll_state = **Box::leak(Box::new(ScrollState::new(0)));
+    let (mut ui, requester) = with_focus_rect(move |modifier| {
+        BasicTextFieldOfState!(
+            state,
+            modifier = modifier.width(100.dp()),
+            text_style = twenty(),
+            line_limits = TextFieldLineLimits::SingleLine,
+            scroll_state = Some(scroll_state),
+        );
+    });
+    focus_field(&mut ui);
+    let before = focused_rect(&mut ui, requester);
+    scroll_state.dispatch_raw_delta(100.0);
+    let after = focused_rect(&mut ui, requester);
+    assert_rect(before, (0.0, 0.0, CURSOR, 20.0));
+    assert_rect(after, (-100.0, 0.0, -100.0 + CURSOR, 20.0));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldFocusTest.kt, focusBounds_decorated
+#[test]
+fn a_focused_fields_rect_is_inside_its_decoration() {
+    let state = state_with(&"abc ".repeat(10), TextRange::ZERO);
+    let padding = cell(20.0f32);
+    let (mut ui, requester) = with_focus_rect(move |modifier| {
+        BasicTextFieldOfState!(
+            state,
+            modifier = modifier,
+            text_style = twenty(),
+            decorator = move |inner: Callback| {
+                Box!(modifier = Modifier.padding(padding.get().dp()), {
+                    inner();
+                });
+            },
+        );
+    });
+    focus_field(&mut ui);
+    let before = focused_rect(&mut ui, requester);
+    padding.set(40.0);
+    let after = focused_rect(&mut ui, requester);
+    assert_rect(before, (20.0, 20.0, 20.0 + CURSOR, 40.0));
+    assert_rect(after, (40.0, 40.0, 40.0 + CURSOR, 60.0));
 }

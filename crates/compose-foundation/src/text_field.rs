@@ -700,6 +700,7 @@ impl ModifierNodeElement for TextFieldElement {
             density: None,
             direction: compose_ui::LayoutDirection::Ltr,
             cursor_rect: None,
+            text_width: 0.0,
             pending_tap: None,
             scroll: Offset::ZERO,
             overflows: false,
@@ -926,6 +927,8 @@ pub(crate) struct TextFieldNode {
     /// Where the cursor is drawn, from the measurer, refreshed at measurement: moving the
     /// cursor asks for one (the paragraph is kept).
     cursor_rect: Option<Rect>,
+    /// The text's width as laid out, at measurement: what the cursor's focus rect stays in.
+    text_width: f32,
     /// The selection's highlight, from the measurer, refreshed at measurement.
     selection_rects: Vec<Rect>,
     /// A tap to put the cursor at, resolved at the next measurement by the measurer's hit test.
@@ -2130,6 +2133,9 @@ impl ModifierNode for TextFieldNode {
     fn set_is_focus_target(&mut self, is_target: bool) {
         self.is_focus_target = is_target;
     }
+    fn as_focus_properties(&mut self) -> Option<&mut dyn compose_ui::FocusPropertiesModifierNode> {
+        Some(self)
+    }
     fn as_key_input(&mut self) -> Option<&mut dyn KeyInputModifierNode> {
         Some(self)
     }
@@ -2477,6 +2483,7 @@ impl LayoutModifierNode for TextFieldNode {
             metrics.size.height.max(min_height).min(max_height),
         ));
         self.size = size;
+        self.text_width = metrics.size.width as f32;
         self.overflows =
             metrics.size.width + cursor_width > size.width || metrics.size.height > size.height;
         // The text scrolls to keep the cursor in view, as Compose's: sideways on a single line,
@@ -2984,6 +2991,59 @@ impl FocusTargetModifierNode for TextFieldNode {
         }
         context.invalidate_draw();
         self.publish_state_in(EditSource::Other, context);
+    }
+}
+
+impl compose_ui::FocusPropertiesModifierNode for TextFieldNode {
+    /// While it's focused, the field's rect in a focus search, and the one its containers keep in
+    /// view, is its cursor's or its selection's, as Compose's `TextFieldDecoratorModifier`
+    /// (`getFocusRect`); unfocused, all of it (D2002).
+    fn apply_focus_properties(&self, properties: &mut compose_ui::FocusProperties) {
+        if let Some(rect) = self.focus_rect() {
+            properties.focus_rect = rect;
+        }
+    }
+}
+
+impl TextFieldNode {
+    /// The focused field's cursor, as Compose's `calculateCursorRect` (the cursor's width, kept
+    /// in the text and on a whole or half pixel), or the selection's bounds, under its scroll.
+    fn focus_rect(&self) -> Option<Rect> {
+        if !self.focused {
+            return None;
+        }
+        let (density, cursor) = (self.density?, self.cursor_rect?);
+        let rect = if self.anchor == self.cursor {
+            let width = density.to_px(CURSOR_WIDTH).floor().max(1.0);
+            let half = width / 2.0;
+            let center = match self.direction {
+                compose_ui::LayoutDirection::Ltr => cursor.left + half,
+                compose_ui::LayoutDirection::Rtl => cursor.right - half,
+            };
+            // The text's width and the cursor's: the room the field gives them.
+            let end = self.text_width + density.round_to_px(CURSOR_WIDTH) as f32;
+            let center = center.min(end - half).max(half);
+            let center = if width as i32 % 2 == 1 { center.floor() + 0.5 } else { center.round() };
+            Rect::new(center - half, cursor.top, center + half, cursor.bottom)
+        } else {
+            let mut rects = self.selection_rects.iter();
+            let first = *rects.next()?;
+            rects.fold(first, |all, rect| {
+                Rect::new(
+                    all.left.min(rect.left),
+                    all.top.min(rect.top),
+                    all.right.max(rect.right),
+                    all.bottom.max(rect.bottom),
+                )
+            })
+        };
+        let scroll = self.scroll;
+        Some(Rect::new(
+            rect.left - scroll.x,
+            rect.top - scroll.y,
+            rect.right - scroll.x,
+            rect.bottom - scroll.y,
+        ))
     }
 }
 
