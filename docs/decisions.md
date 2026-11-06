@@ -18,10 +18,10 @@ The log is split by area into the files below, one table each, rows in number or
 | File | Covers | Rows |
 |---|---|---|
 | [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 182 |
-| [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 415 |
+| [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 416 |
 | [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 104 |
 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md) | Lazy lists and grids, item reuse, the policy of composing only what is in view, prefetch. | 116 |
-| [android-drawing](decisions/android-drawing.md) | The display list and its replayer, render nodes and repaint boundaries, paths, shadows, layers. | 32 |
+| [android-drawing](decisions/android-drawing.md) | The display list and its replayer, render nodes and repaint boundaries, paths, shadows, layers. | 33 |
 | [android-host-and-performance](decisions/android-host-and-performance.md) | The view and activity glue, the frame loop, the hint session, jank, startup, memory, and the optimization flags. | 31 |
 | [desktop](decisions/desktop.md) | The desktop host: window, Skia rendering, input and events. | 6 |
 | [benchmarks](decisions/benchmarks.md) | The benchmark apps, protocols and rounds, and how results are read. | 35 |
@@ -1005,6 +1005,8 @@ The log is split by area into the files below, one table each, rows in number or
 | D1906 | [ui-and-layout](decisions/ui-and-layout.md#d1906) | current |
 | D1907 | [api-and-tooling](decisions/api-and-tooling.md#d1907) | current |
 | D1908 | [ui-and-layout](decisions/ui-and-layout.md#d1908) | current |
+| D1911 | [ui-and-layout](decisions/ui-and-layout.md#d1911) | current |
+| D1912 | [android-drawing](decisions/android-drawing.md#d1912) | current |
 | D1950 | [runtime](decisions/runtime.md#d1950) | current |
 | D1951 | [runtime](decisions/runtime.md#d1951) | current |
 | D2000 | [text](decisions/text.md#d2000) | current |

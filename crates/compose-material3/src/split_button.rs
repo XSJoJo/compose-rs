@@ -327,7 +327,7 @@ fn split_button(
     let modifier = if checked == Some(true) {
         let shape = shape.clone();
         // As `drawOutline(…, alpha = PressedStateLayerOpacity)`.
-        let tint = content_color.with_alpha(content_color.alpha() as f32 / 255.0 * 0.1);
+        let tint = content_color.with_alpha(content_color.alpha() * 0.1);
         parts.modifier.draw_with_content(move |scope| {
             scope.draw_content();
             let outline =

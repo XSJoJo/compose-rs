@@ -840,7 +840,7 @@ fn a_veil_over_the_parent_stays_so_through_the_hand_off() {
     let ops = &ui.host().display_list().ops;
     let veil = ops.iter().position(|op| {
         matches!(op, DrawOp::DrawRect(rect, paint)
-            if paint.color.red() > paint.color.green() && paint.color.alpha() > 0
+            if ((paint.color.to_argb() >> 16) as u8) > ((paint.color.to_argb() >> 8) as u8) && ((paint.color.to_argb() >> 24) as u8) > 0
                 && rect.left == 0.0 && rect.right == full)
     });
     let veil = veil.unwrap_or_else(|| panic!("the veil, at the content's full size: {ops:?}"));

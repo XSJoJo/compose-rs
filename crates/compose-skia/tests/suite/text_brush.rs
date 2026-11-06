@@ -188,9 +188,15 @@ fn a_spans_brush_overrides_the_styles() {
     assert_ne!(plain, over);
     // The span's own gradient: yellow at its left, green at its right.
     let at_left = over.pixel(5, 50);
-    assert!(at_left.red() > 200 && at_left.green() > 200, "{at_left:?}");
+    assert!(
+        ((at_left.to_argb() >> 16) as u8) > 200 && ((at_left.to_argb() >> 8) as u8) > 200,
+        "{at_left:?}"
+    );
     let at_right = over.pixel(290, 50);
-    assert!(at_right.red() < 60 && at_right.green() > 100, "{at_right:?}");
+    assert!(
+        ((at_right.to_argb() >> 16) as u8) < 60 && ((at_right.to_argb() >> 8) as u8) > 100,
+        "{at_right:?}"
+    );
 }
 
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationTest.kt, testBrush_notEffectedBy_TextDirection
@@ -229,11 +235,20 @@ fn a_gradient_runs_across_the_paragraph_not_a_glyph() {
     let style = sample(100.0).with_brush(Some(left_to_right()), f32::NAN);
     let drawn = picture("abc", style, 300, 100);
     let at_left = drawn.pixel(5, 50);
-    assert!(at_left.red() > 200 && at_left.blue() < 60, "{at_left:?}");
+    assert!(
+        ((at_left.to_argb() >> 16) as u8) > 200 && (at_left.to_argb() as u8) < 60,
+        "{at_left:?}"
+    );
     let in_the_middle = drawn.pixel(150, 50);
-    assert!(in_the_middle.red() > 90 && in_the_middle.blue() > 90, "{in_the_middle:?}");
+    assert!(
+        ((in_the_middle.to_argb() >> 16) as u8) > 90 && (in_the_middle.to_argb() as u8) > 90,
+        "{in_the_middle:?}"
+    );
     let at_right = drawn.pixel(290, 50);
-    assert!(at_right.blue() > 200 && at_right.red() < 60, "{at_right:?}");
+    assert!(
+        (at_right.to_argb() as u8) > 200 && ((at_right.to_argb() >> 16) as u8) < 60,
+        "{at_right:?}"
+    );
 }
 
 /// `abcd` in 100 by 100 at 50 pixels, wrapped to two lines, top to bottom red to blue.
@@ -251,18 +266,30 @@ fn vertical_gradient_picture(max_lines: u32) -> Picture {
 fn a_vertical_gradient_runs_down_all_the_lines() {
     let drawn = vertical_gradient_picture(u32::MAX);
     let near_the_top = drawn.pixel(2, 3);
-    assert!(near_the_top.red() > 220 && near_the_top.blue() < 30, "{near_the_top:?}");
+    assert!(
+        ((near_the_top.to_argb() >> 16) as u8) > 220 && (near_the_top.to_argb() as u8) < 30,
+        "{near_the_top:?}"
+    );
     let in_the_middle = drawn.pixel(2, 48);
-    assert!(in_the_middle.red() > 100 && in_the_middle.blue() > 100, "{in_the_middle:?}");
+    assert!(
+        ((in_the_middle.to_argb() >> 16) as u8) > 100 && (in_the_middle.to_argb() as u8) > 100,
+        "{in_the_middle:?}"
+    );
     let near_the_bottom = drawn.pixel(2, 96);
-    assert!(near_the_bottom.blue() > 220 && near_the_bottom.red() < 30, "{near_the_bottom:?}");
+    assert!(
+        (near_the_bottom.to_argb() as u8) > 220 && ((near_the_bottom.to_argb() >> 16) as u8) < 30,
+        "{near_the_bottom:?}"
+    );
 }
 
 #[test]
 fn a_vertical_gradient_runs_down_the_lines_left_after_a_cut() {
     let drawn = vertical_gradient_picture(1);
     let near_its_bottom = drawn.pixel(2, 46);
-    assert!(near_its_bottom.blue() > 200 && near_its_bottom.red() < 50, "{near_its_bottom:?}");
+    assert!(
+        (near_its_bottom.to_argb() as u8) > 200 && ((near_its_bottom.to_argb() >> 16) as u8) < 50,
+        "{near_its_bottom:?}"
+    );
 }
 
 #[test]

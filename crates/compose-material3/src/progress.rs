@@ -224,7 +224,7 @@ pub fn CircularProgressIndicator(
         let start = 270.0;
         let sweep = coerce_progress(progress()) * 360.0;
         let gap = sweep.min(circular_gap_sweep(scope, gap_size, stroke_width, stroke_cap));
-        if track_color.alpha() > 0 {
+        if track_color.alpha() > 0.0 {
             scope.draw_arc(
                 oval,
                 start + sweep + gap,
@@ -274,7 +274,7 @@ pub fn IndeterminateCircularProgressIndicator(
         let sweep = progress * 360.0;
         let gap = sweep.min(circular_gap_sweep(scope, gap_size, stroke_width, stroke_cap));
         // Compose rotates the canvas about the center; the arcs' start angles turn instead.
-        if track_color.alpha() > 0 {
+        if track_color.alpha() > 0.0 {
             scope.draw_arc(
                 oval,
                 rotation + sweep + gap,

@@ -371,14 +371,12 @@ impl compose_ui::LayoutModifierNode for ThumbNode {
 
 /// `from` blended toward `to` by `fraction`, channel by channel.
 pub(crate) fn blend(from: Color, to: Color, fraction: f32) -> Color {
-    let channel =
-        |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * fraction).round() as u32;
-    Color::from_argb(
-        channel(from.alpha(), to.alpha()) << 24
-            | channel(from.red(), to.red()) << 16
-            | channel(from.green(), to.green()) << 8
-            | channel(from.blue(), to.blue()),
-    )
+    let (from, to) = (from.to_argb(), to.to_argb());
+    let channel = |shift: u32| {
+        let (a, b) = (f32::from((from >> shift) as u8), f32::from((to >> shift) as u8));
+        (a + (b - a) * fraction).round() as u32
+    };
+    Color::from_argb(channel(24) << 24 | channel(16) << 16 | channel(8) << 8 | channel(0))
 }
 
 // ---- RadioButton -----------------------------------------------------------------------------

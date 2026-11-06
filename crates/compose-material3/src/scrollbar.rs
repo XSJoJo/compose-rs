@@ -198,15 +198,11 @@ impl DrawModifierNode for ScrollbarNode {
         }
         let alpha = if style.is_fade_enabled { self.alpha.value() } else { 1.0 };
         let faded = |color: Color| {
-            if alpha == 1.0 {
-                color
-            } else {
-                color.with_alpha(color.alpha() as f32 / 255.0 * alpha)
-            }
+            if alpha == 1.0 { color } else { color.with_alpha(color.alpha() * alpha) }
         };
         let (thumb_color, track_color) = (faded(style.thumb_color), faded(style.track_color));
-        let track_visible = track_color.alpha() > 0;
-        let thumb_visible = thumb_color.alpha() > 0;
+        let track_visible = track_color.alpha() > 0.0;
+        let thumb_visible = thumb_color.alpha() > 0.0;
         if !track_visible && !thumb_visible {
             return;
         }

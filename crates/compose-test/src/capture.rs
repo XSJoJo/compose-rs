@@ -25,7 +25,7 @@ pub struct CapturedImage {
 const CHANNEL_TOLERANCE: f32 = 0.02;
 
 fn channels(color: Color) -> [f32; 4] {
-    [color.red(), color.green(), color.blue(), color.alpha()].map(|channel| channel as f32 / 255.0)
+    [color.red(), color.green(), color.blue(), color.alpha()]
 }
 
 impl CapturedImage {

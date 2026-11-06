@@ -1306,7 +1306,7 @@ impl DrawModifierNode for VeilNode {
         );
         let color = color.value();
         let color = manual.map_or(color, |state| state.combined_veil(color));
-        if color.alpha() != 0 {
+        if color.alpha() != 0.0 {
             let bounds = scope.bounds();
             scope.draw_rect(bounds, Paint::fill(color));
         }

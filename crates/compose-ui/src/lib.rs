@@ -21,6 +21,7 @@ mod brush;
 mod clickable;
 mod clipboard;
 mod color_filter;
+pub mod colorspace;
 mod configuration;
 mod constraints;
 mod content_scale;

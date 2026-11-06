@@ -27,7 +27,11 @@ fn a_shadow_is_drawn_behind_the_clipped_content() {
     };
     assert_eq!(*outline, Outline::Rectangle(Rect::new(10.0, 10.0, 60.0, 60.0)));
     assert_eq!(*elevation, 4.0);
-    assert_eq!((ambient.alpha(), spot.alpha()), (10, 48), "Compose's 3.9 % and 19 %");
+    assert_eq!(
+        (((ambient.to_argb() >> 24) as u8), ((spot.to_argb() >> 24) as u8)),
+        (10, 48),
+        "Compose's 3.9 % and 19 %"
+    );
     assert_eq!(*light, (0.0, -300.0, 600.0));
 }
 

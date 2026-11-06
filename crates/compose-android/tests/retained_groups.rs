@@ -1645,8 +1645,8 @@ fn a_shadow_is_its_layers_elevation_outline_and_colors() {
         [Layer {
             outline: Some((2, (0.0, 0.0, 30.0, 30.0), [5.0; 4])),
             elevation: 6.0,
-            ambient: Color::RED.argb(),
-            spot: Color::BLUE.argb(),
+            ambient: Color::RED.to_argb(),
+            spot: Color::BLUE.to_argb(),
             ..Layer::plain(layers[0].key, (0.0, 0.0, 30.0, 30.0))
         }]
     );

@@ -35,10 +35,10 @@ fn a_horizontal_gradient_goes_from_its_first_color_to_its_last() {
     let mut renderer = render(&list);
     let left = renderer.pixel(1, 50);
     let right = renderer.pixel(98, 50);
-    assert!(left.red() > 240 && left.blue() < 15, "{left:?}");
-    assert!(right.blue() > 240 && right.red() < 15, "{right:?}");
+    assert!(((left.to_argb() >> 16) as u8) > 240 && (left.to_argb() as u8) < 15, "{left:?}");
+    assert!((right.to_argb() as u8) > 240 && ((right.to_argb() >> 16) as u8) < 15, "{right:?}");
     let middle = renderer.pixel(50, 50);
-    assert!((100..160).contains(&middle.red()), "{middle:?}");
+    assert!((100..160).contains(&((middle.to_argb() >> 16) as u8)), "{middle:?}");
 }
 
 #[test]
@@ -67,8 +67,8 @@ fn a_radial_gradient_and_a_shaded_path_stay_in_the_lists_coordinates() {
     let mut renderer = render(&list);
     let center = renderer.pixel(50, 50);
     let edge = renderer.pixel(99, 50);
-    assert!(center.red() < 20, "{center:?}");
-    assert!(edge.red() > 230, "{edge:?}");
+    assert!(((center.to_argb() >> 16) as u8) < 20, "{center:?}");
+    assert!(((edge.to_argb() >> 16) as u8) > 230, "{edge:?}");
 }
 
 #[test]
@@ -121,8 +121,8 @@ fn a_gradient_interpolates_premultiplied_colors() {
     let mut renderer = render(&list);
     // Half red over white: (255, 128, 128); unpremultiplied would give (191, 128, 128).
     let middle = renderer.pixel(50, 50);
-    assert!(middle.red() > 245, "{middle:?}");
-    assert!((115..140).contains(&middle.green()), "{middle:?}");
+    assert!(((middle.to_argb() >> 16) as u8) > 245, "{middle:?}");
+    assert!((115..140).contains(&((middle.to_argb() >> 8) as u8)), "{middle:?}");
 }
 
 /// A remembered `Path` reset and rebuilt in its drawing block each frame (D530) renders as it

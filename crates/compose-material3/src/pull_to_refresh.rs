@@ -574,7 +574,7 @@ fn circular_arrow_progress_indicator(state: Rc<dyn PullToRefreshState>, color: C
     Canvas(Modifier.then_custom(ArrowSemantics(state)).size(SPINNER_SIZE), move |draw| {
         let density = draw.density();
         let values = ArrowValues::of(drawn.distance_fraction());
-        let color = color.with_alpha(color.alpha() as f32 / 255.0 * alpha.get());
+        let color = color.with_alpha(color.alpha() * alpha.get());
         let stroke = density.to_px(STROKE_WIDTH);
         let bounds = draw.bounds();
         let center = Offset::new(bounds.width() / 2.0, bounds.height() / 2.0);

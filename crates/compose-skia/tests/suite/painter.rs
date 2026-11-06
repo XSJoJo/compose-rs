@@ -112,9 +112,9 @@ fn a_painters_alpha_fades_it_over_what_is_under_it() {
     let pixel = capture(&mut ui).pixel(50, 50);
     let expected = Color::RED.with_alpha(0.5).composite_over(Color::WHITE);
     for (channel, wanted) in [
-        (pixel.red(), expected.red()),
-        (pixel.green(), expected.green()),
-        (pixel.blue(), expected.blue()),
+        (((pixel.to_argb() >> 16) as u8), ((expected.to_argb() >> 16) as u8)),
+        (((pixel.to_argb() >> 8) as u8), ((expected.to_argb() >> 8) as u8)),
+        ((pixel.to_argb() as u8), (expected.to_argb() as u8)),
     ] {
         assert!(channel.abs_diff(wanted) <= 2, "{pixel:?} against {expected:?}");
     }
@@ -468,7 +468,10 @@ fn a_painter_draws_and_takes_its_alpha() {
     assert!(draws.get() > 0);
     let pixel = capture(&mut ui).pixel(50, 50);
     let expected = Color::RED.with_alpha(0.5).composite_over(Color::WHITE);
-    assert!(pixel.green().abs_diff(expected.green()) <= 2, "{pixel:?} against {expected:?}");
+    assert!(
+        ((pixel.to_argb() >> 8) as u8).abs_diff((expected.to_argb() >> 8) as u8) <= 2,
+        "{pixel:?} against {expected:?}"
+    );
     // It took the alpha: no layer.
     let dump = ui.host().display_list().dump();
     assert!(!dump.contains("save layer"), "{dump}");
@@ -599,7 +602,7 @@ fn a_painter_node_is_measured_again_only_for_new_intrinsics() {
     ui.wait_for_idle();
     assert_eq!(measures.get(), first, "a new alpha and painter of the same size");
     let faded = capture(&mut ui).pixel(5, 5);
-    assert!(faded.alpha() < 255 || faded != Color::RED, "drawn again: {faded:?}");
+    assert!(((faded.to_argb() >> 24) as u8) < 255 || faded != Color::RED, "drawn again: {faded:?}");
     side.set(20.0);
     ui.wait_for_idle();
     assert!(measures.get() > first, "a new intrinsic size");
@@ -652,7 +655,10 @@ fn a_bitmap_painter_draws_fades_and_tints_its_bitmap() {
     image.assert_pixel_color(Color::RED, 30, 70);
     let faded = painter_on_white(painter(), 0.5, None).pixel(50, 50);
     let expected = Color::RED.with_alpha(0.5).composite_over(Color::WHITE);
-    assert!(faded.green().abs_diff(expected.green()) <= 2, "{faded:?} against {expected:?}");
+    assert!(
+        ((faded.to_argb() >> 8) as u8).abs_diff((expected.to_argb() >> 8) as u8) <= 2,
+        "{faded:?} against {expected:?}"
+    );
     let tinted = painter_on_white(painter(), 1.0, Some(ColorFilter::tint(Color::CYAN)));
     tinted.assert_pixel_color(Color::WHITE, 195, 5);
     tinted.assert_pixel_color(Color::CYAN, 30, 70);

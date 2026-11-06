@@ -411,7 +411,7 @@ fn an_images_color_filter_goes_last_on_the_wire() {
         if tint.is_some() {
             assert_eq!(bytes[filter], color_filter::BLEND_MODE);
             let written = u32::from_le_bytes(bytes[filter + 1..filter + 5].try_into().unwrap());
-            assert_eq!(written, Color::BLUE.argb());
+            assert_eq!(written, Color::BLUE.to_argb());
             assert_eq!(bytes[filter + 5], BlendMode::SrcIn as u8);
         } else {
             assert_eq!(bytes[filter], color_filter::NONE);

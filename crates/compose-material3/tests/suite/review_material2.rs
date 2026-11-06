@@ -44,19 +44,19 @@ fn composite_over(color: Color, alpha: f32, background: Color) -> Color {
     };
     Color::from_argb(
         0xFF00_0000
-            | channel(color.red(), background.red()) << 16
-            | channel(color.green(), background.green()) << 8
-            | channel(color.blue(), background.blue()),
+            | channel((color.to_argb() >> 16) as u8, (background.to_argb() >> 16) as u8) << 16
+            | channel((color.to_argb() >> 8) as u8, (background.to_argb() >> 8) as u8) << 8
+            | channel(color.to_argb() as u8, background.to_argb() as u8),
     )
 }
 
 fn assert_close(actual: Color, expected: Color, what: &str) {
     let near = |a: u8, b: u8| a.abs_diff(b) <= 1;
     assert!(
-        near(actual.alpha(), expected.alpha())
-            && near(actual.red(), expected.red())
-            && near(actual.green(), expected.green())
-            && near(actual.blue(), expected.blue()),
+        near((actual.to_argb() >> 24) as u8, (expected.to_argb() >> 24) as u8)
+            && near((actual.to_argb() >> 16) as u8, (expected.to_argb() >> 16) as u8)
+            && near((actual.to_argb() >> 8) as u8, (expected.to_argb() >> 8) as u8)
+            && near(actual.to_argb() as u8, expected.to_argb() as u8),
         "{what}: {actual:?}, Compose {expected:?}"
     );
 }
@@ -157,10 +157,10 @@ fn a_disabled_slider_has_materials_disabled_colors() {
     let mut wrong = Vec::new();
     let mut check = |actual: Color, expected: Color, what: &str| {
         let near = |a: u8, b: u8| a.abs_diff(b) <= 1;
-        let close = near(actual.alpha(), expected.alpha())
-            && near(actual.red(), expected.red())
-            && near(actual.green(), expected.green())
-            && near(actual.blue(), expected.blue());
+        let close = near((actual.to_argb() >> 24) as u8, (expected.to_argb() >> 24) as u8)
+            && near((actual.to_argb() >> 16) as u8, (expected.to_argb() >> 16) as u8)
+            && near((actual.to_argb() >> 8) as u8, (expected.to_argb() >> 8) as u8)
+            && near(actual.to_argb() as u8, expected.to_argb() as u8);
         if !close {
             wrong.push(format!("{what}: {actual:?}, Compose {expected:?}"));
         }

@@ -69,7 +69,10 @@ fn a_blur_is_its_edge_treatments_layer() {
         assert_eq!(blurred.pixels(), layered.pixels(), "{treatment:?}");
         // Blurred: the square's edge fades from blue to black.
         let edge = blurred.pixel(6, 48);
-        assert!(edge.blue() > 20 && edge.blue() < 235, "{treatment:?}: {edge:?}");
+        assert!(
+            (edge.to_argb() as u8) > 20 && (edge.to_argb() as u8) < 235,
+            "{treatment:?}: {edge:?}"
+        );
         let middle = blurred.pixel(48, 48);
         assert_eq!(middle, Color::BLUE, "{treatment:?}");
     }
@@ -94,7 +97,7 @@ fn a_bounded_blur_keeps_its_edges_and_an_unbounded_one_fades_them() {
     };
     assert_eq!(corner(BlurredEdgeTreatment::RECTANGLE), Color::BLUE);
     let faded = corner(BlurredEdgeTreatment::UNBOUNDED);
-    assert!(faded.red() > 20, "white shows through: {faded:?}");
+    assert!(((faded.to_argb() >> 16) as u8) > 20, "white shows through: {faded:?}");
 }
 
 // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/draw/BlurTest.kt, testNoopBlur, testRectangleBlurredEdgeTreatmentHasShape, testUnboundedBlurredEdgeTreatmentDoesNotHaveShape
@@ -132,7 +135,11 @@ fn an_unbounded_blur_bleeds_past_its_edges() {
     };
     assert_eq!(outside(BlurredEdgeTreatment::RECTANGLE), Color::WHITE);
     let bled = outside(BlurredEdgeTreatment::UNBOUNDED);
-    assert!(bled.red() < 235 && bled.blue() > bled.red(), "blue bleeds out: {bled:?}");
+    assert!(
+        ((bled.to_argb() >> 16) as u8) < 235
+            && (bled.to_argb() as u8) > ((bled.to_argb() >> 16) as u8),
+        "blue bleeds out: {bled:?}"
+    );
 }
 
 /// A blur of no radius with a shape blurs nothing but still clips to the shape, as Compose's

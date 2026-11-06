@@ -29,3 +29,4 @@ mod text_field_height;
 mod text_painter;
 mod text_reuse;
 mod vectors;
+mod wide_colors;

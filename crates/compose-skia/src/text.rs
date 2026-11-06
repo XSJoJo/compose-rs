@@ -752,7 +752,7 @@ impl SkiaTextMeasurer {
             let mut run = skia_text_style(run_style, density, alias.as_deref());
             if background.is_specified() {
                 let mut paint = skia_safe::Paint::default();
-                paint.set_color(skia_safe::Color::new(background.argb()));
+                paint.set_color(skia_safe::Color::new(background.to_argb()));
                 run.set_background_paint(&paint);
             }
             run_styles.push(run);
@@ -1123,7 +1123,7 @@ fn skia_text_style(style: &TextStyle, density: &Density, alias: Option<&str>) ->
     let font_px = font_px_of(style, density);
     let mut text_style = SkiaTextStyle::new();
     let color = compose_ui::platform::resolve_text_color(style);
-    text_style.set_color(skia_safe::Color::new(color.argb()));
+    text_style.set_color(skia_safe::Color::new(color.to_argb()));
     text_style.set_font_size(font_px);
     let mut family_names = families(style.font_family.as_ref());
     if let Some(alias) = alias {
@@ -1153,7 +1153,7 @@ fn skia_text_style(style: &TextStyle, density: &Density, alias: Option<&str>) ->
             kind |= skia_safe::textlayout::TextDecoration::LINE_THROUGH;
         }
         text_style.set_decoration_type(kind);
-        text_style.set_decoration_color(skia_safe::Color::new(color.argb()));
+        text_style.set_decoration_color(skia_safe::Color::new(color.to_argb()));
     }
     if let Some(line_height) = px(style.line_height)
         && font_px > 0.0
@@ -1173,7 +1173,7 @@ fn skia_text_style(style: &TextStyle, density: &Density, alias: Option<&str>) ->
     }
     if let Some(shadow) = style.shadow {
         text_style.add_shadow(skia_safe::textlayout::TextShadow::new(
-            skia_safe::Color::new(shadow.color.argb()),
+            skia_safe::Color::new(shadow.color.to_argb()),
             (shadow.offset.x, shadow.offset.y),
             blur_sigma(shadow.blur_radius),
         ));
@@ -1191,7 +1191,7 @@ fn foreground_paint(style: &TextStyle, color: compose_ui::Color) -> skia_safe::P
     use skia_safe::paint;
     let mut foreground = skia_safe::Paint::default();
     foreground.set_anti_alias(true);
-    foreground.set_color(skia_safe::Color::new(color.argb()));
+    foreground.set_color(skia_safe::Color::new(color.to_argb()));
     if let Some(compose_ui::DrawStyle::Stroke(stroke)) = style.draw_style {
         foreground.set_style(paint::Style::Stroke);
         foreground.set_stroke_width(stroke.width);

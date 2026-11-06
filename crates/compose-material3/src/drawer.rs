@@ -452,8 +452,7 @@ pub fn ModalNavigationDrawer(
                         .fill_max_size()
                         .draw_behind(move |draw| {
                             // Not past open, however far a spring takes the sheet.
-                            let alpha =
-                                scrim_color.alpha() as f32 / 255.0 * fraction.fraction().min(1.0);
+                            let alpha = scrim_color.alpha() * fraction.fraction().min(1.0);
                             draw.draw_rect(
                                 draw.bounds(),
                                 compose_ui::Paint::fill(scrim_color.with_alpha(alpha)),

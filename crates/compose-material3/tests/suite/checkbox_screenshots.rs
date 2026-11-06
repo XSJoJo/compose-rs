@@ -99,7 +99,7 @@ fn filled(top: f32, color: Color) -> Drawn {
 /// stroked 1 dp in.
 fn outlined(top: f32, fill: Color, border: Color) -> Vec<Drawn> {
     let mut drawn = Vec::new();
-    if fill.alpha() > 0 {
+    if ((fill.to_argb() >> 24) as u8) > 0 {
         drawn.push(Drawn::Box {
             left: 16.0,
             top: top + 16.0,

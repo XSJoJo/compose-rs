@@ -780,7 +780,7 @@ impl LayerProperties {
 
 /// `color` with its alpha multiplied by `alpha`.
 fn faded(color: Color, alpha: f32) -> Color {
-    color.with_alpha(color.alpha() as f32 / 255.0 * alpha)
+    color.with_alpha(color.alpha() * alpha)
 }
 
 impl ModifierNodeElement for GraphicsLayerElement {

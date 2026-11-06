@@ -167,9 +167,11 @@ fn a_lazy_scrollbar_thumb_reaches_the_end_with_spacing() {
 fn layer_alpha(ui: &mut ComposeTestRule) -> Option<(u8, Rect)> {
     ui.host().display_list().ops.iter().find_map(|op| match op {
         DrawOp::DrawRect(rect, paint)
-            if paint.color.red() == 255 && paint.color.alpha() < 255 && paint.color.alpha() > 0 =>
+            if ((paint.color.to_argb() >> 16) as u8) == 255
+                && ((paint.color.to_argb() >> 24) as u8) < 255
+                && ((paint.color.to_argb() >> 24) as u8) > 0 =>
         {
-            Some((paint.color.alpha(), *rect))
+            Some((((paint.color.to_argb() >> 24) as u8), *rect))
         }
         _ => None,
     })
@@ -237,11 +239,11 @@ fn scrolling_under_a_resting_mouse_moves_the_hover() {
     let hovered_item = |ui: &mut ComposeTestRule| {
         ui.host().display_list().ops.iter().find_map(|op| match op {
             DrawOp::DrawRect(_, paint)
-                if paint.color.red() == 255
-                    && paint.color.alpha() > 0
-                    && paint.color.alpha() < 255 =>
+                if ((paint.color.to_argb() >> 16) as u8) == 255
+                    && ((paint.color.to_argb() >> 24) as u8) > 0
+                    && ((paint.color.to_argb() >> 24) as u8) < 255 =>
             {
-                Some(paint.color.green())
+                Some((paint.color.to_argb() >> 8) as u8)
             }
             _ => None,
         })
@@ -451,11 +453,14 @@ fn passes_hover_moves_at_the_release_of_a_drag() {
             .iter()
             .filter_map(|op| match op {
                 DrawOp::DrawRect(_, paint)
-                    if paint.color.red() == 255
-                        && paint.color.alpha() > 0
-                        && paint.color.alpha() < 255 =>
+                    if ((paint.color.to_argb() >> 16) as u8) == 255
+                        && ((paint.color.to_argb() >> 24) as u8) > 0
+                        && ((paint.color.to_argb() >> 24) as u8) < 255 =>
                 {
-                    Some((paint.color.green(), paint.color.alpha()))
+                    Some((
+                        ((paint.color.to_argb() >> 8) as u8),
+                        ((paint.color.to_argb() >> 24) as u8),
+                    ))
                 }
                 _ => None,
             })
