@@ -79,7 +79,13 @@ struct RecomposerInner {
     paused: Cell<bool>,
     /// Its effects' tasks held back while it's paused.
     paused_waiters: RefCell<Vec<Waker>>,
+    /// Its registration observers (`observe`), each with its handle's token.
+    #[cfg(feature = "composition-observer")]
+    registration_observers: RefCell<Vec<RegistrationObserver>>,
 }
+
+#[cfg(feature = "composition-observer")]
+type RegistrationObserver = (u64, Rc<dyn crate::tooling::CompositionRegistrationObserver>);
 
 impl RecomposerInner {
     /// `effectJob` completed: cancelled, or closed with no effect left.
@@ -175,6 +181,15 @@ impl RecomposerInfo {
     pub fn change_count(&self) -> u64 {
         self.recomposer.change_count()
     }
+
+    /// Observes the recomposer's compositions registered and unregistered, as `observe`.
+    #[cfg(feature = "composition-observer")]
+    pub fn observe(
+        &self,
+        observer: impl crate::tooling::CompositionRegistrationObserver,
+    ) -> crate::tooling::CompositionObserverHandle {
+        self.recomposer.observe(observer)
+    }
 }
 
 thread_local! {
@@ -209,6 +224,8 @@ impl Recomposer {
             frame_awaiters: Cell::new(0),
             paused: Cell::new(false),
             paused_waiters: RefCell::new(Vec::new()),
+            #[cfg(feature = "composition-observer")]
+            registration_observers: RefCell::new(Vec::new()),
         };
         Owned::new(inner, |inner| Recomposer { inner })
     }
@@ -235,6 +252,79 @@ impl Recomposer {
         RecomposerInfo { recomposer: *self }
     }
 
+    /// Tells `observer` of each composition registered with it from now on, and unregistered, as
+    /// `Recomposer.observe`: first of those it has now, at once. A composition is registered as
+    /// its first composition begins, before its content runs, and unregistered when it's disposed,
+    /// when a pass of it panics, or when the recomposer shuts down. The handle stops it, disposed
+    /// or dropped.
+    #[cfg(feature = "composition-observer")]
+    pub fn observe(
+        &self,
+        observer: impl crate::tooling::CompositionRegistrationObserver,
+    ) -> crate::tooling::CompositionObserverHandle {
+        crate::tooling::observe_registrations(*self, Rc::new(observer))
+    }
+
+    /// Its registration observers, in order.
+    #[cfg(feature = "composition-observer")]
+    pub(crate) fn registration_observers(
+        &self,
+    ) -> Vec<Rc<dyn crate::tooling::CompositionRegistrationObserver>> {
+        self.inner.try_get().map_or_else(Vec::new, |inner| {
+            inner
+                .registration_observers
+                .borrow()
+                .iter()
+                .map(|(_, observer)| observer.clone())
+                .collect()
+        })
+    }
+
+    #[cfg(feature = "composition-observer")]
+    pub(crate) fn add_registration_observer(
+        &self,
+        token: u64,
+        observer: Rc<dyn crate::tooling::CompositionRegistrationObserver>,
+    ) {
+        if let Some(inner) = self.inner.try_get() {
+            inner.registration_observers.borrow_mut().push((token, observer));
+        }
+    }
+
+    /// The observer of `token`, taken out.
+    #[cfg(feature = "composition-observer")]
+    pub(crate) fn remove_registration_observer(
+        &self,
+        token: u64,
+    ) -> Option<Rc<dyn crate::tooling::CompositionRegistrationObserver>> {
+        let inner = self.inner.try_get()?;
+        let mut observers = inner.registration_observers.borrow_mut();
+        let at = observers.iter().position(|(other, _)| *other == token)?;
+        Some(observers.remove(at).1)
+    }
+
+    /// Whether compositions are registered with it: not shut down nor shutting down, as Compose's
+    /// state above `ShuttingDown`.
+    #[cfg(feature = "composition-observer")]
+    pub(crate) fn takes_registrations(&self) -> bool {
+        self.inner.try_get().is_some_and(|inner| !inner.is_over())
+    }
+
+    /// Whether `data`'s composition is under it, `is_default` saying whether it's the thread's.
+    #[cfg(feature = "composition-observer")]
+    pub(crate) fn holds_composition(
+        &self,
+        data: &crate::runtime::CompositionData,
+        is_default: bool,
+    ) -> bool {
+        self.holds(data, is_default)
+    }
+
+    #[cfg(feature = "composition-observer")]
+    pub(crate) fn is_thread_default(&self) -> bool {
+        self.is_default()
+    }
+
     fn is_default(&self) -> bool {
         self.inner.try_get().is_some_and(|inner| inner.is_default)
     }
@@ -250,6 +340,8 @@ impl Recomposer {
     /// Its compositions with work for a pass, in order of creation (of a slot, when slots are
     /// reused). Not those composed in this frame, which are still finishing: what's written since
     /// is for the next frame, as Compose's `alreadyComposed`.
+    /// Nor one composing now, a frame run from inside its pass: what it invalidated is for a frame
+    /// after it, as Compose's recomposer sees a composition's writes once its pass applies them.
     fn invalid_compositions(&self) -> Vec<CompositionId> {
         let is_default = self.is_default();
         with_runtime(|runtime| {
@@ -259,6 +351,7 @@ impl Recomposer {
                     compositions.get(*id).is_some_and(|data| {
                         self.holds(data, is_default)
                             && compositions.is_tree_root(data)
+                            && !data.composing
                             && (data.has_own_work() || compositions.has_work_below(data))
                     })
                 })
@@ -340,7 +433,13 @@ impl Recomposer {
     pub(crate) fn update_state(&self) {
         let Some(inner) = self.inner.try_get() else { return };
         let state = self.derive_state();
-        let changed = inner.state.replace(state) != state;
+        let before = inner.state.replace(state);
+        let changed = before != state;
+        // Shut down: its compositions are no longer its (`tooling`), told last.
+        #[cfg(feature = "composition-observer")]
+        let shut_down_now = changed
+            && state <= RecomposerState::ShuttingDown
+            && before > RecomposerState::ShuttingDown;
         if state != RecomposerState::Idle {
             let waker = inner.work_waker.borrow_mut().take();
             if let Some(waker) = waker {
@@ -363,6 +462,10 @@ impl Recomposer {
         let waiters = std::mem::take(&mut *inner.waiters.borrow_mut());
         for waker in waiters {
             waker.wake();
+        }
+        #[cfg(feature = "composition-observer")]
+        if shut_down_now {
+            crate::tooling::recomposer_shut_down(*self);
         }
     }
 
