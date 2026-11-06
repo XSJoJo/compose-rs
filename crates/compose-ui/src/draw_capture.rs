@@ -94,17 +94,12 @@ impl DrawScope<'_> {
             return;
         }
         let origin = self.origin;
-        // Its paints name shaders by index: the list's own from `base` on.
-        let base = self.list.shaders.len() as u32;
+        // Its paints name shaders and color filters by index: the list's own from the bases on.
+        let bases = (self.list.shaders.len() as u32, self.list.color_filters.len() as u32);
         self.list.shaders.extend_from_slice(&flat.shaders);
+        self.list.color_filters.extend_from_slice(&flat.color_filters);
         self.list.push(DrawOp::Translate(origin));
-        for op in &flat.ops {
-            let mut op = op.clone();
-            if let Some(index) = op.paint_mut().and_then(|paint| paint.shader.as_mut()) {
-                index.0 += base;
-            }
-            self.list.push(op);
-        }
+        crate::display_list::extend_shifted(&mut self.list.ops, &flat.ops, bases);
         self.list.push(DrawOp::Translate(crate::unit::Offset::new(0.0 - origin.x, 0.0 - origin.y)));
     }
 }

@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crate::color_filter::{BlendMode, ColorFilter};
 use crate::display_list::{DisplayList, DrawOp};
 use crate::graphics::{Color, Outline, Paint, Shape};
 use crate::path::{Path, PathData};
@@ -9,10 +10,11 @@ use crate::text::ParagraphHandle;
 use crate::unit::{Density, Offset, Rect, Size};
 
 /// Whether `paint` draws nothing: a transparent color and no shader (Material's transparent
-/// containers). Its drawing isn't recorded, as Skia drops it (`SkPaint::nothingToDraw`): a
-/// frame doesn't copy, send and replay it.
+/// containers), blended over what's there and unfiltered (a filter or a mode like `Clear` can
+/// draw a transparent color). Its drawing isn't recorded, as Skia drops it
+/// (`SkPaint::nothingToDraw`): a frame doesn't copy, send and replay it.
 fn draws_nothing(paint: &Paint) -> bool {
-    paint.color.alpha() == 0 && paint.shader.is_none()
+    paint.color.alpha() == 0 && paint.shader.is_none() && paint.is_plain()
 }
 
 /// What a draw node draws with, as `DrawScope`: its size, in pixels, and the display list.
@@ -257,7 +259,7 @@ impl DrawScope<'_> {
         dst: Rect,
         alpha: f32,
     ) {
-        self.draw_image_tinted(image, src, dst, alpha, None);
+        self.draw_image_filtered(image, src, dst, alpha, None);
     }
 
     /// The same, its pixels all in `tint` if any, as `drawImage` with `ColorFilter.tint`.
@@ -269,12 +271,59 @@ impl DrawScope<'_> {
         alpha: f32,
         tint: Option<Color>,
     ) {
-        // Transparent draws nothing: on the wire, 0 is no tint.
-        if tint.is_some_and(|tint| tint.alpha() == 0) {
+        let filter = tint.map(ColorFilter::tint);
+        self.draw_image_filtered(image, src, dst, alpha, filter.as_ref());
+    }
+
+    /// The same through `color_filter`, as `drawImage(…, colorFilter)`.
+    pub fn draw_image_filtered(
+        &mut self,
+        image: &crate::image::ImageBitmap,
+        src: Rect,
+        dst: Rect,
+        alpha: f32,
+        color_filter: Option<&ColorFilter>,
+    ) {
+        // A transparent `SrcIn` tint draws nothing.
+        if color_filter.and_then(ColorFilter::src_in_tint).is_some_and(|tint| tint.alpha() == 0) {
             return;
         }
+        let color_filter = color_filter.map(|filter| self.list.push_color_filter(*filter));
         let dst = self.to_list(dst);
-        self.list.push(DrawOp::DrawImage { image: image.clone(), src, dst, alpha, tint });
+        self.list.push(DrawOp::DrawImage { image: image.clone(), src, dst, alpha, color_filter });
+    }
+
+    /// `paint` through `color_filter` (none: as it is), as the draw calls' `colorFilter`: the
+    /// filter is kept by this display list (`DisplayList::color_filters`), so the paint is for
+    /// this scope's drawing only.
+    pub fn paint_with_color_filter(
+        &mut self,
+        paint: Paint,
+        color_filter: Option<&ColorFilter>,
+    ) -> Paint {
+        match color_filter {
+            Some(filter) => paint.with_color_filter(self.list.push_color_filter(*filter)),
+            None => Paint { color_filter: None, ..paint },
+        }
+    }
+
+    /// Saves, and draws what follows into a layer bounded by `bounds` (in the node's
+    /// coordinates), composited at the next restore with `alpha`, through `color_filter` and
+    /// with `blend_mode`, as `Canvas.saveLayer(bounds, paint)`.
+    pub fn save_layer(
+        &mut self,
+        bounds: Rect,
+        alpha: f32,
+        color_filter: Option<&ColorFilter>,
+        blend_mode: BlendMode,
+    ) {
+        if color_filter.is_none() && blend_mode == BlendMode::SrcOver {
+            self.save_layer_alpha(bounds, alpha);
+            return;
+        }
+        let bounds = self.to_list(bounds);
+        let color_filter = color_filter.map(|filter| self.list.push_color_filter(*filter));
+        self.list.push(DrawOp::SaveLayer { bounds, alpha, color_filter, blend_mode });
     }
 
     /// Draws `path` (in the node's coordinates), as `drawPath`: a `&Path`, its contents as they

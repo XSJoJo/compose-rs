@@ -1,14 +1,18 @@
 package rs.compose.android
 
 import android.graphics.Bitmap
+import android.graphics.BlendMode
+import android.graphics.BlendModeColorFilter
 import android.graphics.Canvas
+import android.graphics.ColorFilter
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.LightingColorFilter
 import android.graphics.LinearGradient
 import android.graphics.Matrix
 import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
-import android.graphics.PorterDuffColorFilter
 import android.graphics.RadialGradient
 import android.graphics.Rect
 import android.graphics.RectF
@@ -102,8 +106,18 @@ internal class Replayer(var text: TextMeasurer) {
     private var shaderCount = 0
     private var shaderNext = 0
     private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-    /** The tint `bitmapPaint`'s filter is for, 0 for none. */
-    private var bitmapTint = 0
+    /** The paint a `SAVE_LAYER` composites its layer with. */
+    private val layerPaint = Paint()
+    /**
+     * Color filters by their bytes (kind, then 20 values as ints, unused ones 0), the oldest
+     * replaced when full, as the gradients: a filter drawn each frame is built once.
+     */
+    private val filterKeys = IntArray(FILTER_CACHE_CAPACITY * FILTER_KEY_INTS)
+    private val filters = arrayOfNulls<ColorFilter>(FILTER_CACHE_CAPACITY)
+    private var filterCount = 0
+    private var filterNext = 0
+    /** The filter being read, as its key. */
+    private val filterKey = IntArray(FILTER_KEY_INTS)
     private val rect = RectF()
     private val source = Rect()
     private val clip = Path()
@@ -160,16 +174,20 @@ internal class Replayer(var text: TextMeasurer) {
     private var paintWidth = 0f
     private var paintCap = 0
     private var paintShader: Shader? = null
+    private var paintBlendMode = BLEND_SRC_OVER
+    private var paintFilter: ColorFilter? = null
 
     /**
-     * Reads a paint: color, style, width, cap, then its shader (a kind; for a gradient, its
-     * definition and alpha). A drawing scaled by ([scaleX], [scaleY]) then moved by ([x], [y])
-     * (a path's) has its gradient moved back, as compose-skia's: a gradient is in the list's
-     * coordinates.
+     * Reads a paint: color, style flags (1 stroke, 2 a blend mode follows, 4 a color filter
+     * follows), width, cap, its shader (a kind; for a gradient, its definition and alpha), then
+     * its blend mode and color filter if the flags say so. A drawing scaled by ([scaleX],
+     * [scaleY]) then moved by ([x], [y]) (a path's) has its gradient moved back, as
+     * compose-skia's: a gradient is in the list's coordinates.
      */
     private fun ByteBuffer.readPaint(x: Float = 0f, y: Float = 0f, scaleX: Float = 1f, scaleY: Float = 1f): Paint {
         var color = getInt()
-        val stroke = get().toInt() != 0
+        val flags = get().toInt()
+        val stroke = flags and 1 != 0
         val width = float()
         val cap = get().toInt()
         val kind = get().toInt()
@@ -177,6 +195,16 @@ internal class Replayer(var text: TextMeasurer) {
         if (shader != null) {
             // The shader paints; the paint's alpha is the gradient's, as compose-skia's.
             color = (float().coerceIn(0f, 1f) * 255f + 0.5f).toInt() shl 24
+        }
+        val blendMode = if (flags and 2 != 0) get().toInt() else BLEND_SRC_OVER
+        val filter = if (flags and 4 != 0) readColorFilter() else null
+        if (blendMode != paintBlendMode) {
+            paintBlendMode = blendMode
+            paint.blendMode = blendModeOf(blendMode)
+        }
+        if (filter !== paintFilter) {
+            paintFilter = filter
+            paint.colorFilter = filter
         }
         if (shader !== paintShader) {
             paintShader = shader
@@ -203,6 +231,56 @@ internal class Replayer(var text: TextMeasurer) {
             }
         }
         return paint
+    }
+
+    /**
+     * Reads a color filter (`serialize.rs`'s `Writer::color_filter`): its kind (0 none, 1 a
+     * blend mode's, 2 lighting, 3 a matrix), then its values. The same bytes give the same
+     * filter object, kept in [filters]: one is built only when a frame draws a new one.
+     */
+    private fun ByteBuffer.readColorFilter(): ColorFilter? {
+        val kind = get().toInt()
+        if (kind == FILTER_NONE) return null
+        val key = filterKey
+        key.fill(0)
+        key[0] = kind
+        when (kind) {
+            FILTER_BLEND_MODE -> {
+                key[1] = getInt()
+                key[2] = get().toInt()
+            }
+            FILTER_LIGHTING -> {
+                key[1] = getInt()
+                key[2] = getInt()
+            }
+            FILTER_COLOR_MATRIX -> for (index in 1..20) key[index] = getInt()
+            else -> {
+                unreadable = true
+                return null
+            }
+        }
+        for (entry in 0 until filterCount) {
+            val from = entry * FILTER_KEY_INTS
+            var same = true
+            for (index in 0 until FILTER_KEY_INTS) {
+                if (filterKeys[from + index] != key[index]) {
+                    same = false
+                    break
+                }
+            }
+            if (same) return filters[entry]
+        }
+        val filter = when (kind) {
+            FILTER_BLEND_MODE -> BlendModeColorFilter(key[1], blendModeOf(key[2]))
+            FILTER_LIGHTING -> LightingColorFilter(key[1], key[2])
+            else -> ColorMatrixColorFilter(FloatArray(20) { Float.fromBits(key[it + 1]) })
+        }
+        val entry = if (filterCount < FILTER_CACHE_CAPACITY) filterCount++ else {
+            filterNext.also { filterNext = (filterNext + 1) % FILTER_CACHE_CAPACITY }
+        }
+        key.copyInto(filterKeys, entry * FILTER_KEY_INTS)
+        filters[entry] = filter
+        return filter
     }
 
     /**
@@ -509,6 +587,14 @@ internal class Replayer(var text: TextMeasurer) {
                     val alpha = (buffer.float().coerceIn(0f, 1f) * 255f + 0.5f).toInt()
                     canvas.saveLayerAlpha(rect, alpha)
                 }
+                SAVE_LAYER -> {
+                    // A layer composited through a paint: alpha, blend mode, color filter.
+                    buffer.readRect(rect)
+                    layerPaint.alpha = (buffer.float().coerceIn(0f, 1f) * 255f + 0.5f).toInt()
+                    layerPaint.blendMode = blendModeOf(buffer.get().toInt())
+                    layerPaint.colorFilter = buffer.readColorFilter()
+                    canvas.saveLayer(rect, layerPaint)
+                }
                 TRANSFORM -> {
                     val pivotX = buffer.float()
                     val pivotY = buffer.float()
@@ -527,13 +613,8 @@ internal class Replayer(var text: TextMeasurer) {
                     val src = buffer.readRect(RectF())
                     buffer.readRect(rect)
                     bitmapPaint.alpha = (buffer.float().coerceIn(0f, 1f) * 255f + 0.5f).toInt()
-                    val tint = buffer.getInt()
-                    if (tint != bitmapTint) {
-                        bitmapTint = tint
-                        bitmapPaint.colorFilter =
-                            if (tint == 0) null
-                            else PorterDuffColorFilter(tint, PorterDuff.Mode.SRC_IN)
-                    }
+                    val filter = buffer.readColorFilter()
+                    if (filter !== bitmapPaint.colorFilter) bitmapPaint.colorFilter = filter
                     if (image != null) {
                         source.set(src.left.toInt(), src.top.toInt(), src.right.toInt(), src.bottom.toInt())
                         canvas.drawBitmap(image, source, rect, bitmapPaint)
@@ -555,8 +636,10 @@ internal class Replayer(var text: TextMeasurer) {
                     val scaleX = buffer.float()
                     val scaleY = buffer.float()
                     val paint = buffer.readPaint(x, y, scaleX, scaleY)
-                    // A mask is tinted by a color: a gradient draws the path.
-                    val masked = !paintStroke && paintShader == null && maskNew(kept, scaleX, scaleY)
+                    // A mask is tinted by a color: a gradient, a filter or a blend mode draws the
+                    // path.
+                    val masked = !paintStroke && paintShader == null && paintFilter == null &&
+                        paintBlendMode == BLEND_SRC_OVER && maskNew(kept, scaleX, scaleY)
                     if (kept != null && (!masked || !drawMask(canvas, kept, x, y, scaleX, scaleY))) {
                         kept.drawnAsPath = true
                         canvas.save()
@@ -1526,6 +1609,33 @@ internal class Replayer(var text: TextMeasurer) {
         const val DROP_PATH = 21
         const val DEFINE_IMAGE = 22
         const val DROP_IMAGE = 23
+        const val SAVE_LAYER = 24
+
+        const val FILTER_NONE = 0
+        const val FILTER_BLEND_MODE = 1
+        const val FILTER_LIGHTING = 2
+        const val FILTER_COLOR_MATRIX = 3
+        /** A filter's key: its kind and up to 20 values. */
+        const val FILTER_KEY_INTS = 21
+        /** Color filters kept: a screen's few tints, and an animated one. */
+        const val FILTER_CACHE_CAPACITY = 8
+        /** `SrcOver`'s index in Compose's blend modes (`BlendMode`), the default. */
+        const val BLEND_SRC_OVER = 3
+
+        /** Compose's blend modes (`BlendMode`, as `serialize.rs` writes them), in order. */
+        private val BLEND_MODES = arrayOf(
+            BlendMode.CLEAR, BlendMode.SRC, BlendMode.DST, BlendMode.SRC_OVER,
+            BlendMode.DST_OVER, BlendMode.SRC_IN, BlendMode.DST_IN, BlendMode.SRC_OUT,
+            BlendMode.DST_OUT, BlendMode.SRC_ATOP, BlendMode.DST_ATOP, BlendMode.XOR,
+            BlendMode.PLUS, BlendMode.MODULATE, BlendMode.SCREEN, BlendMode.OVERLAY,
+            BlendMode.DARKEN, BlendMode.LIGHTEN, BlendMode.COLOR_DODGE, BlendMode.COLOR_BURN,
+            BlendMode.HARD_LIGHT, BlendMode.SOFT_LIGHT, BlendMode.DIFFERENCE,
+            BlendMode.EXCLUSION, BlendMode.MULTIPLY, BlendMode.HUE, BlendMode.SATURATION,
+            BlendMode.COLOR, BlendMode.LUMINOSITY,
+        )
+
+        /** Android's blend mode for Compose's [mode] (`SrcOver` for one out of range). */
+        fun blendModeOf(mode: Int): BlendMode = BLEND_MODES.getOrElse(mode) { BlendMode.SRC_OVER }
 
         const val SHADER_NONE = 0
         const val SHADER_LINEAR = 1
