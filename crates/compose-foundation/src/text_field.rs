@@ -3798,6 +3798,14 @@ struct FocusOnTapNode {
 }
 
 impl FocusOnTapNode {
+    /// Forgets the field's focus: detached or reused, it's another field's decoration next.
+    fn forget_focus(&mut self) {
+        self.field_focused = false;
+        self.focused = false;
+    }
+}
+
+impl FocusOnTapNode {
     /// Ends the press told, if any: released, or cancelled.
     fn end_press(&mut self, released: bool) {
         use compose_ui::PressInteraction;
@@ -3841,6 +3849,11 @@ impl ModifierNode for FocusOnTapNode {
 
     fn on_detach(&mut self, _context: &mut compose_ui::NodeContext<'_>) {
         self.end_press(false);
+        self.forget_focus();
+    }
+
+    fn on_reset(&mut self, _context: &mut compose_ui::NodeContext<'_>) {
+        self.forget_focus();
     }
 
     fn as_traversable(&mut self) -> Option<&mut dyn compose_ui::TraversableNode> {
@@ -3857,7 +3870,11 @@ impl compose_ui::TraversableNode for FocusOnTapNode {
 impl compose_ui::FocusEventModifierNode for FocusOnTapNode {
     /// The field gaining the focus (not another target in its decoration) is shown whole, if its
     /// containers can, as Compose's `FocusableNode.onFocusStateChange` (D1145).
-    fn on_focus_event(&mut self, _state: compose_ui::FocusState, context: &mut EventContext<'_>) {
+    fn on_focus_event(&mut self, state: compose_ui::FocusState, context: &mut EventContext<'_>) {
+        // Nothing below focused, the field isn't (it went while focused, or was reused).
+        if !state.has_focus() {
+            self.field_focused = false;
+        }
         let focused = self.field_focused;
         if focused && !self.focused {
             context.bring_into_view();

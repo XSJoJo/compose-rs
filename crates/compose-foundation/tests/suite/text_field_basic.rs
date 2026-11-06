@@ -910,6 +910,126 @@ fn a_focused_icon_in_the_decoration_doesnt_show_the_whole_field() {
     }
 }
 
+/// A field whose inner field went while focused, then came back, is shown whole when focused
+/// again: its decoration forgets the field's focus with it (the review of D1149).
+// Compose: compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/text/input/internal/TextFieldDecoratorModifier.kt, onFocusEvent (no test of its own)
+#[test]
+fn a_field_removed_while_focused_is_shown_whole_when_focused_again() {
+    for state_based in [false, true] {
+        let scroll_state = **Box::leak(Box::new(ScrollState::new(0)));
+        let state = state_of("text");
+        let shown = cell(true);
+        let mut ui = compose_test(move || {
+            let decorator = move |inner: Callback| {
+                Column!({
+                    if shown.get() {
+                        inner();
+                    } else {
+                        Box!(Modifier.height(20.dp()));
+                    }
+                    Box!(Modifier.height(30.dp()));
+                });
+            };
+            Column!(modifier = Modifier.height(100.dp()).vertical_scroll(scroll_state), {
+                Box!(Modifier.height(70.dp()));
+                if state_based {
+                    BasicTextFieldOfState!(
+                        state,
+                        modifier = Modifier.test_tag("field"),
+                        decorator = decorator,
+                    );
+                } else {
+                    BasicTextField!(
+                        "text".to_string(),
+                        |_| {},
+                        modifier = Modifier.test_tag("field"),
+                        decoration_box = decorator,
+                    );
+                }
+                Box!(Modifier.height(300.dp()));
+            });
+        });
+        let density = ui.density().density;
+        ui.on_node_with_tag("field").request_focus();
+        ui.wait_for_idle();
+        assert!(scroll_state.value() > 0, "state {state_based}: shown whole the first time");
+        // Removed while focused, the view back at the top, then back.
+        shown.set(false);
+        ui.wait_for_idle();
+        scroll_state.dispatch_raw_delta(-(scroll_state.value() as f32));
+        ui.wait_for_idle();
+        shown.set(true);
+        ui.wait_for_idle();
+        assert_eq!(scroll_state.value(), 0);
+        ui.on_node_with_tag("field").request_focus();
+        ui.wait_for_idle();
+        let field = ui.on_node_with_tag("field").get_unclipped_bounds_in_root();
+        assert!(
+            (field.bottom.0 * density - 100.0 * density).abs() <= 1.0,
+            "state {state_based}: the field ends at {:?}",
+            field.bottom
+        );
+    }
+}
+
+/// A field reused while focused (its content's key changed, as a lazy item's reuse) is shown
+/// whole when focused again: its decoration's node, reset, forgets the field's focus (the review
+/// of D1149).
+// Compose: compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/text/input/internal/TextFieldDecoratorModifier.kt, onFocusEvent (no test of its own)
+#[test]
+fn a_field_reused_while_focused_is_shown_whole_when_focused_again() {
+    for state_based in [false, true] {
+        let scroll_state = **Box::leak(Box::new(ScrollState::new(0)));
+        let state = state_of("text");
+        let generation = cell(0);
+        let mut ui = compose_test(move || {
+            let decorator = |inner: Callback| {
+                Column!({
+                    inner();
+                    Box!(Modifier.height(30.dp()));
+                });
+            };
+            Column!(modifier = Modifier.height(100.dp()).vertical_scroll(scroll_state), {
+                Box!(Modifier.height(70.dp()));
+                ReusableContent(generation.get(), || {
+                    if state_based {
+                        BasicTextFieldOfState!(
+                            state,
+                            modifier = Modifier.test_tag("field"),
+                            decorator = decorator,
+                        );
+                    } else {
+                        BasicTextField!(
+                            "text".to_string(),
+                            |_| {},
+                            modifier = Modifier.test_tag("field"),
+                            decoration_box = decorator,
+                        );
+                    }
+                });
+                Box!(Modifier.height(300.dp()));
+            });
+        });
+        let density = ui.density().density;
+        ui.on_node_with_tag("field").request_focus();
+        ui.wait_for_idle();
+        assert!(scroll_state.value() > 0, "state {state_based}: shown whole the first time");
+        generation.set(1);
+        ui.wait_for_idle();
+        scroll_state.dispatch_raw_delta(-(scroll_state.value() as f32));
+        ui.wait_for_idle();
+        assert_eq!(scroll_state.value(), 0);
+        ui.on_node_with_tag("field").request_focus();
+        ui.wait_for_idle();
+        let field = ui.on_node_with_tag("field").get_unclipped_bounds_in_root();
+        assert!(
+            (field.bottom.0 * density - 100.0 * density).abs() <= 1.0,
+            "state {state_based}: the field ends at {:?}",
+            field.bottom
+        );
+    }
+}
+
 /// A field taller than the column scrolling it, mostly above it, shows its cursor (its first
 /// line) when focused, as Compose's `bringSelectionEndIntoView`, not its bottom: both fields
 /// (D1141). Its whole is asked for too (D1145), but it doesn't fit.
