@@ -955,6 +955,13 @@ pub mod SemanticsActions {
 pub static PART_OF_PARENT: SemanticsPropertyKey<()> =
     SemanticsPropertyKey::with_merge_policy("PartOfParent", parent_only);
 
+/// compose-rs's own: the parts ([`PART_OF_PARENT`]) below this node are its own, through the
+/// semantics nodes between, as if its own modifiers set them (a text field's decoration, its
+/// inner text's semantics on the decorated field's node, as Compose's decorator modifier's,
+/// D2003). It isn't shown in either tree.
+pub static PARTS_HOST: SemanticsPropertyKey<()> =
+    SemanticsPropertyKey::with_merge_policy("PartsHost", parent_only);
+
 // ---- The configuration -------------------------------------------------------------------------
 
 /// A key and its value.
@@ -1563,6 +1570,12 @@ impl SemanticsConfiguration {
     pub fn part_of_parent(&mut self) {
         self.set(&PART_OF_PARENT, ());
     }
+
+    /// compose-rs's: the parts below are this node's, through the semantics nodes between
+    /// ([`PARTS_HOST`]).
+    pub fn parts_host(&mut self) {
+        self.set(&PARTS_HOST, ());
+    }
 }
 
 impl fmt::Debug for SemanticsConfiguration {
@@ -1663,9 +1676,10 @@ impl fmt::Debug for SemanticsConfiguration {
         ];
         for entry in &self.entries {
             // Actions besides the clicks aren't printed (what offers them is: a scroll range,
-            // a focusable node…), nor the password's obfuscation.
+            // a focusable node…), nor the password's obfuscation, nor a parts host's marker.
             let common = same_key(entry.key, &P::SELECTABLE_GROUP)
                 || same_key(entry.key, &P::IS_PASSWORD_OBFUSCATED)
+                || same_key(entry.key, &PARTS_HOST)
                 || entry.value.is_action()
                 || shown.iter().any(|key| same_key(*key, entry.key));
             if !common {

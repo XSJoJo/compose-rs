@@ -3,11 +3,9 @@
 //! field's least size.
 //!
 //! Compose's two `nonPlacedInnerTextField_*` don't hold: compose-rs's field node is the inner
-//! text's, so a decorator not calling it has no field to type in (D1147). Nor do
-//! `focusIsAppliedOnDecoratedComposable` and `semanticsAreAppliedOnDecoratedComposable`: the
-//! inner field's semantics are its nearest semantics node's above it (`PART_OF_PARENT`), the
-//! decoration's tagged box there, where Compose's are the decorated field's (the decorator
-//! modifier's), the tagged box a child of it (D1149). The long press's selection waits on
+//! text's, so a decorator not calling it has no field to type in (D1147). The inner field's
+//! semantics are the decorated field's node's, through the decoration's own semantics nodes,
+//! as Compose's decorator modifier's (D2003). The long press's selection waits on
 //! touch-text-selection.
 
 #![allow(non_snake_case)]
@@ -46,6 +44,33 @@ fn decorated(state: TextFieldState) -> ComposeTestRule {
             },
         );
     })
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldDecoratorTest.kt, focusIsAppliedOnDecoratedComposable
+#[test]
+fn the_focus_is_the_decorated_fields() {
+    let mut ui = decorated(state_of(""));
+    ui.on_node_with_tag(TAG).perform_click();
+    ui.on_node_with_tag_unmerged(DECORATION).assert(has_parent(is_focused()));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldDecoratorTest.kt, semanticsAreAppliedOnDecoratedComposable
+#[test]
+fn the_semantics_are_the_decorated_fields() {
+    let mut ui = decorated(state_of("hello"));
+    let mut decoration = ui.on_node_with_tag_unmerged(DECORATION);
+    decoration.assert(has_parent(has_text("hello")));
+    decoration.assert(has_parent(has_set_text_action()));
+    // The decoration's own node is the decoration's alone (D2003).
+    decoration.assert(!has_text("hello"));
+    decoration.assert(!has_set_text_action());
+    // So is its `SemanticsNode`'s configuration, as an accessibility service reads it.
+    let node = decoration.fetch_semantics_node();
+    assert!(!node.unmerged_config().contains(&compose_ui::SemanticsActions::SET_TEXT));
+    let field = ui.on_node_with_tag(TAG).fetch_semantics_node();
+    assert!(field.unmerged_config().contains(&compose_ui::SemanticsActions::SET_TEXT));
+    // Merged, the field says its text once.
+    ui.on_node_with_tag(TAG).assert_text_equals(&["hello"]);
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldDecoratorTest.kt, clickGestureIsAppliedOnDecoratedComposable

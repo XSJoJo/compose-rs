@@ -111,7 +111,7 @@ pub fn BasicTextField(
     crate::layout::Box(
         // An I-beam over the field, as Compose Desktop's text fields.
         modifier
-            .semantics_with(true, |_| {})
+            .semantics_with(true, |config| config.parts_host())
             .then_custom(FocusOnTap { interaction_source: press_source })
             .pointer_hover_icon(compose_ui::PointerIcon::Text),
         crate::Alignment::TOP_START,
@@ -229,7 +229,7 @@ pub fn BasicTextFieldOfState(
     };
     crate::layout::Box(
         modifier
-            .semantics_with(true, |_| {})
+            .semantics_with(true, |config| config.parts_host())
             .then_custom(FocusOnTap { interaction_source: press_source })
             .pointer_hover_icon(compose_ui::PointerIcon::Text),
         crate::Alignment::TOP_START,
