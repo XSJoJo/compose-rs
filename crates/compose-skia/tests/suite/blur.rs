@@ -105,3 +105,32 @@ fn no_radius_is_no_blur_and_the_treatments_have_their_shapes() {
     assert!(BlurredEdgeTreatment::RECTANGLE.shape.is_some());
     assert!(BlurredEdgeTreatment::UNBOUNDED.shape.is_none());
 }
+
+/// An unbounded blur reaches past its node's edges, over what's around it; a bounded one
+/// stays inside them.
+#[test]
+fn an_unbounded_blur_bleeds_past_its_edges() {
+    set_capture_renderer(compose_skia::raster_colors);
+    let outside = |treatment: BlurredEdgeTreatment| {
+        let mut ui = ComposeTestRule::sized(IntSize::new(100, 100), move || {
+            let treatment = treatment.clone();
+            Box!(
+                modifier = Modifier.test_tag("around").size(100.dp()).background(Color::WHITE),
+                content_alignment = compose::ui::Alignment::CENTER,
+                {
+                    Box!(
+                        modifier = Modifier
+                            .size(50.dp())
+                            .blur_with(Dp(8.0), Dp(8.0), treatment.clone())
+                            .background(Color::BLUE)
+                    );
+                }
+            );
+        });
+        // Two pixels left of the blurred box, which spans 25 to 75.
+        ui.on_node_with_tag("around").capture_to_image().pixel(23, 50)
+    };
+    assert_eq!(outside(BlurredEdgeTreatment::RECTANGLE), Color::WHITE);
+    let bled = outside(BlurredEdgeTreatment::UNBOUNDED);
+    assert!(bled.red() < 235 && bled.blue() > bled.red(), "blue bleeds out: {bled:?}");
+}

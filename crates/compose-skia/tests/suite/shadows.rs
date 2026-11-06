@@ -177,3 +177,30 @@ fn the_shadow_painters_take_their_alpha_and_filter() {
     let dropped = Painter::new(DropShadowPainter::new(CIRCLE_SHAPE, Shadow::new(Dp(4.0))));
     painted(dropped, 1.0, None).assert_pixel_color(Color::BLACK, 30, 30);
 }
+
+/// An inner shadow stays inside its shape: a circle's leaves the box's corners, outside the
+/// circle, and what's around the box as they were.
+#[test]
+fn an_inner_shadow_stays_inside_its_shape() {
+    set_capture_renderer(compose_skia::raster_colors);
+    let mut ui = ComposeTestRule::sized(IntSize::new(100, 100), move || {
+        Box!(
+            modifier = Modifier.test_tag(TAG).size(100.dp()).background(Color::WHITE),
+            content_alignment = Alignment::CENTER,
+            {
+                Box!(
+                    modifier = Modifier
+                        .size(60.dp())
+                        .background(Color::WHITE)
+                        .inner_shadow(CIRCLE_SHAPE, Shadow::new(Dp(8.0)))
+                );
+            }
+        );
+    });
+    let image = ui.on_node_with_tag(TAG).capture_to_image();
+    let edge = darkness(image.pixel(21, 50));
+    assert!(edge > 60, "inside the circle's edge: {edge}");
+    for (x, y) in [(21, 21), (78, 78), (18, 50), (50, 18), (2, 2)] {
+        image.assert_pixel_color(Color::WHITE, x, y);
+    }
+}
