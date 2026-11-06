@@ -1593,3 +1593,395 @@ fn without_reads_in_a_read_only_snapshot() {
     });
     assert_eq!(changes.get(), 0);
 }
+
+// ---- Computed states (D1504) ------------------------------------------------------------------
+
+/// Keeps a computed or derived state for the test's thread, as Kotlin's closures keep theirs.
+fn kept<T: 'static>(state: impl Into<KeptState<T>>) -> State<T> {
+    state.into().0
+}
+
+struct KeptState<T: 'static>(State<T>);
+
+impl<T: 'static> From<ComputedState<T>> for KeptState<T> {
+    fn from(state: ComputedState<T>) -> KeptState<T> {
+        let handle = state.as_state();
+        std::mem::forget(state);
+        KeptState(handle)
+    }
+}
+
+impl<T: 'static> From<DerivedState<T>> for KeptState<T> {
+    fn from(state: DerivedState<T>) -> KeptState<T> {
+        let handle = state.as_state();
+        std::mem::forget(state);
+        KeptState(handle)
+    }
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/SnapshotStateObserverTestsCommon.kt, computedStateOfInvalidatesObserver
+#[test]
+fn a_computed_state_read_under_a_scope_calls_it_back() {
+    let changes = Rc::new(Cell::new(0));
+    let callback = counting(&changes);
+    run_simple_test(|observer, state| {
+        let computed = kept(computed_state_of(move || state.get()));
+        Snapshot::notify_objects_initialized();
+        observer.observe_reads("scope", &callback, || computed.get());
+    });
+    assert_eq!(changes.get(), 1);
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/SnapshotStateObserverTestsCommon.kt, computedStateOfReferentialChangeDoesNotInvalidateObserver
+#[test]
+fn a_computed_state_of_an_equal_new_value_doesnt_call_its_scope_back() {
+    let changes = Rc::new(Cell::new(0));
+    let callback = counting(&changes);
+    run_simple_test(|observer, _| {
+        let state = mutable_state_of_with(Rc::new(vec![42]), ReferentialEqualityPolicy);
+        let read = state.handle();
+        let computed = kept(computed_state_of(move || read.get()));
+        Snapshot::notify_objects_initialized();
+        observer.observe_reads("scope", &callback, || computed.get());
+        state.set(Rc::new(vec![42]));
+        std::mem::forget(state);
+    });
+    assert_eq!(changes.get(), 0);
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/SnapshotStateObserverTestsCommon.kt, nestedComputedStateOfInvalidatesObserver
+#[test]
+fn a_nested_computed_state_calls_its_scope_back() {
+    let changes = Rc::new(Cell::new(0));
+    let callback = counting(&changes);
+    run_simple_test(|observer, state| {
+        let inner = kept(computed_state_of(move || state.get()));
+        let outer = kept(computed_state_of(move || inner.get()));
+        Snapshot::notify_objects_initialized();
+        observer.observe_reads("scope", &callback, || outer.get());
+    });
+    assert_eq!(changes.get(), 1);
+}
+
+/// A new list equal to the old one, through a computed state with `policy`'s equivalence.
+fn a_new_equal_list_through<P: MutationPolicy<Rc<Vec<i32>>> + 'static>(policy: P) -> u32 {
+    let changes = Rc::new(Cell::new(0));
+    let callback = counting(&changes);
+    run_simple_test(|observer, _| {
+        let state = mutable_state_of_with(Rc::new(vec![1]), ReferentialEqualityPolicy);
+        let read = state.handle();
+        let computed = kept(computed_state_of_with(policy, move || read.get()));
+        Snapshot::notify_objects_initialized();
+        observer.observe_reads("scope", &callback, || computed.get());
+        state.set(Rc::new(vec![1]));
+        std::mem::forget(state);
+    });
+    changes.get()
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/SnapshotStateObserverTestsCommon.kt, computedStateOfWithReferentialMutationPolicy
+#[test]
+fn a_computed_state_with_the_referential_policy_calls_back_for_a_new_list() {
+    assert_eq!(a_new_equal_list_through(ReferentialEqualityPolicy), 1);
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/SnapshotStateObserverTestsCommon.kt, computedStateOfWithStructuralMutationPolicy
+#[test]
+fn a_computed_state_with_the_structural_policy_doesnt_call_back_for_an_equal_list() {
+    assert_eq!(a_new_equal_list_through(StructuralEqualityPolicy), 0);
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/SnapshotStateObserverTestsCommon.kt, readingComputedStateAndDependencyInvalidates
+#[test]
+fn reading_a_computed_state_and_what_it_reads_calls_back_once() {
+    let changes = Rc::new(Cell::new(0));
+    let callback = counting(&changes);
+    run_simple_test(|observer, state| {
+        let computed = kept(computed_state_of(move || state.get() >= 0));
+        Snapshot::notify_objects_initialized();
+        observer.observe_reads("scope", &callback, || {
+            computed.get();
+            state.get();
+        });
+    });
+    assert_eq!(changes.get(), 1);
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/SnapshotStateObserverTestsCommon.kt, readingComputedStateWithDependencyChangeInvalidates
+#[test]
+fn a_computed_state_reading_more_after_a_change_calls_back_for_it() {
+    let changes = Rc::new(Cell::new(0));
+    let callback = counting(&changes);
+    run_simple_test(|observer, state| {
+        let second = mutable_state_of(false);
+        let read = second.handle();
+        let computed =
+            kept(computed_state_of(move || if read.get() { Some(state.get()) } else { None }));
+        Snapshot::notify_objects_initialized();
+        observer.observe_reads("scope", &callback, || computed.get());
+        second.set(true);
+        Snapshot::send_apply_notifications();
+        Snapshot::notify_objects_initialized();
+        observer.observe_reads("scope", &callback, || computed.get());
+        std::mem::forget(second);
+    });
+    assert_eq!(changes.get(), 2);
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/SnapshotStateObserverTestsCommon.kt, readingComputedStateConditionallyInvalidatesBothScopes
+#[test]
+fn a_scope_no_longer_reading_a_computed_state_isnt_called_back() {
+    let changes = Rc::new(Cell::new(0));
+    let callback = counting(&changes);
+    run_simple_test(|observer, state| {
+        let computed = kept(computed_state_of(move || state.get()));
+        Snapshot::notify_objects_initialized();
+        observer.observe_reads("scope", &callback, || computed.get());
+        observer.observe_reads("other scope", &callback, || computed.get());
+        Snapshot::notify_objects_initialized();
+        observer.observe_reads("other scope", &callback, || {});
+    });
+    assert_eq!(changes.get(), 1);
+}
+
+/// `a` and `b`, ten and twenty.
+fn ten_and_twenty() -> (MutableState<i32>, MutableState<i32>) {
+    let (a, b) = (mutable_state_of(10), mutable_state_of(20));
+    let handles = (a.handle(), b.handle());
+    std::mem::forget((a, b));
+    handles
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/SnapshotStateObserverTestsCommon.kt, readComputedStateInsideDerivedState
+#[test]
+fn a_derived_state_reading_a_computed_one_calls_back_on_a_change() {
+    let changes = Rc::new(Cell::new(0));
+    let callback = counting(&changes);
+    run_simple_test(|observer, _| {
+        let (a, b) = ten_and_twenty();
+        let computed = kept(computed_state_of(move || a.get() + b.get()));
+        let derived = kept(derived_state_of(move || computed.get() * 2));
+        Snapshot::notify_objects_initialized();
+        observer.observe_reads("scope", &callback, || derived.get());
+        a.update(|a| a + 1);
+        Snapshot::send_apply_notifications();
+        assert_eq!(changes.get(), 1);
+        observer.observe_reads("scope", &callback, || derived.get());
+        b.update(|b| b + 1);
+        Snapshot::send_apply_notifications();
+        assert_eq!(changes.get(), 2);
+        observer.observe_reads("scope", &callback, || derived.get());
+        a.update(|a| a + 1);
+        b.update(|b| b - 1);
+        Snapshot::send_apply_notifications();
+        assert_eq!(changes.get(), 2);
+    });
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/SnapshotStateObserverTestsCommon.kt, readDerivedStateInsideComputedState
+#[test]
+fn a_computed_state_reading_a_derived_one_calls_back_on_a_change() {
+    let changes = Rc::new(Cell::new(0));
+    let callback = counting(&changes);
+    run_simple_test(|observer, _| {
+        let (a, b) = ten_and_twenty();
+        let derived = kept(derived_state_of(move || a.get() + b.get()));
+        let computed = kept(computed_state_of(move || derived.get() * 2));
+        Snapshot::notify_objects_initialized();
+        observer.observe_reads("scope", &callback, || computed.get());
+        a.update(|a| a + 1);
+        Snapshot::send_apply_notifications();
+        assert_eq!(changes.get(), 1);
+        observer.observe_reads("scope", &callback, || derived.get());
+        b.update(|b| b - 1);
+        Snapshot::send_apply_notifications();
+        assert_eq!(changes.get(), 2);
+        observer.observe_reads("scope", &callback, || derived.get());
+        a.update(|a| a + 1);
+        b.update(|b| b - 1);
+        Snapshot::send_apply_notifications();
+        assert_eq!(changes.get(), 2);
+    });
+}
+
+/// `if cond then a + b else c` through `pick`, read under a scope: changing what it reads
+/// without changing its value calls nothing back. `reread` reads it again before the last write,
+/// as two of Compose's three tests do.
+fn changing_dependencies(
+    pick: impl FnOnce(MutableState<bool>, State<i32>, MutableState<i32>) -> State<i32>,
+    sum_of: impl FnOnce(MutableState<i32>, MutableState<i32>) -> State<i32>,
+    reread: bool,
+) {
+    let changes = Rc::new(Cell::new(0));
+    let callback = counting(&changes);
+    run_simple_test(|observer, _| {
+        let (a, b) = ten_and_twenty();
+        let c = mutable_state_of(30);
+        let condition = mutable_state_of(true);
+        let value = pick(condition.handle(), sum_of(a, b), c.handle());
+        Snapshot::notify_objects_initialized();
+        observer.observe_reads("scope", &callback, || value.get());
+        condition.set(false);
+        Snapshot::send_apply_notifications();
+        assert_eq!(changes.get(), 0);
+        a.set(30);
+        Snapshot::send_apply_notifications();
+        assert_eq!(changes.get(), 0);
+        c.set(0);
+        Snapshot::send_apply_notifications();
+        assert_eq!(changes.get(), 1);
+        observer.observe_reads("scope", &callback, || value.get());
+        condition.set(true);
+        a.set(-20);
+        Snapshot::send_apply_notifications();
+        assert_eq!(changes.get(), 1);
+        if reread {
+            observer.observe_reads("scope", &callback, || value.get());
+        }
+        a.set(0);
+        Snapshot::send_apply_notifications();
+        assert_eq!(changes.get(), 2);
+        std::mem::forget((c, condition));
+    });
+}
+
+fn computed_pick(
+    condition: MutableState<bool>,
+    sum: State<i32>,
+    c: MutableState<i32>,
+) -> State<i32> {
+    kept(computed_state_of(move || if condition.get() { sum.get() } else { c.get() }))
+}
+
+fn computed_sum(a: MutableState<i32>, b: MutableState<i32>) -> State<i32> {
+    kept(computed_state_of(move || a.get() + b.get()))
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/SnapshotStateObserverTestsCommon.kt, computedStateChangesDependencies
+#[test]
+fn a_computed_state_changing_what_it_reads_calls_back_for_a_new_value_only() {
+    // Kotlin's `a + b` is in the calculation itself: a computed sum is transparent, the same.
+    changing_dependencies(computed_pick, computed_sum, false);
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/SnapshotStateObserverTestsCommon.kt, computedStateChangesDependenciesBetweenDerivedAndDirectStates
+#[test]
+fn a_computed_state_changing_between_a_derived_state_and_a_state() {
+    changing_dependencies(
+        computed_pick,
+        |a, b| kept(derived_state_of(move || a.get() + b.get())),
+        true,
+    );
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/SnapshotStateObserverTestsCommon.kt, derivedStateChangesDependenciesBetweenComputedAndDirectStates
+#[test]
+fn a_derived_state_changing_between_a_computed_state_and_a_state() {
+    changing_dependencies(
+        |condition, sum, c| {
+            kept(derived_state_of(move || if condition.get() { sum.get() } else { c.get() }))
+        },
+        computed_sum,
+        true,
+    );
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/SnapshotStateObserverTestsCommon.kt, readInterwovenComputedAndDerivedStates
+#[test]
+fn interwoven_computed_and_derived_states_call_back_once() {
+    for computed_first in [true, false] {
+        let changes = Rc::new(Cell::new(0));
+        let callback = counting(&changes);
+        run_simple_test(|observer, _| {
+            let state = mutable_state_of(1);
+            let read = state.handle();
+            let last = if computed_first {
+                let c1 = kept(computed_state_of(move || read.get() * 2));
+                let d1 = kept(derived_state_of(move || c1.get() * 3));
+                kept(computed_state_of(move || d1.get() * 5))
+            } else {
+                let d1 = kept(derived_state_of(move || read.get() * 2));
+                let c1 = kept(computed_state_of(move || d1.get() * 3));
+                kept(derived_state_of(move || c1.get() * 5))
+            };
+            Snapshot::notify_objects_initialized();
+            observer.observe_reads("scope", &callback, || last.get());
+            state.update(|s| s + 1);
+            Snapshot::send_apply_notifications();
+            assert_eq!(changes.get(), 1);
+            std::mem::forget(state);
+        });
+    }
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/SnapshotStateObserverTestsCommon.kt, computedState_doesNotLeakDependenciesToScope_whenDependenciesChangeWithoutValueChanged
+#[test]
+fn a_computed_state_whose_value_stays_calls_nothing_back() {
+    let changes = Rc::new(Cell::new(0));
+    let callback = counting(&changes);
+    run_simple_test(|observer, _| {
+        let a = mutable_state_of(1);
+        let read = a.handle();
+        let computed = kept(computed_state_of(move || read.get() > 0));
+        Snapshot::notify_objects_initialized();
+        observer.observe_reads("scope", &callback, || computed.get());
+        assert_eq!(changes.get(), 0);
+        for value in [2, 3] {
+            a.set(value);
+            Snapshot::send_apply_notifications();
+            assert_eq!(changes.get(), 0);
+        }
+        std::mem::forget(a);
+    });
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/SnapshotStateObserverTestsCommon.kt, computedState_readInWithoutReadObservation_doesNotClearDependencies
+#[test]
+fn a_computed_state_read_without_observation_too_still_calls_back() {
+    let changes = Rc::new(Cell::new(0));
+    let callback = counting(&changes);
+    run_simple_test(|observer, _| {
+        let a = mutable_state_of(0);
+        let read = a.handle();
+        let computed = kept(computed_state_of(move || read.get()));
+        Snapshot::notify_objects_initialized();
+        observer.observe_reads("scope", &callback, || {
+            computed.get();
+            Snapshot::without_read_observation(|| computed.get());
+        });
+        a.update(|a| a + 1);
+        Snapshot::send_apply_notifications();
+        assert_eq!(changes.get(), 1);
+        std::mem::forget(a);
+    });
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorJvmTest/kotlin/androidx/compose/runtime/snapshots/SnapshotStateObserverTestsJvm.kt, rereadingComputedState_whenDependenciesChanged
+#[test]
+fn computed_states_of_the_same_value_reading_less_stay_quiet() {
+    let changes = Rc::new(Cell::new(0));
+    let callback = counting(&changes);
+    let (first, second) = (mutable_state_of(true), mutable_state_of(true));
+    let (read_first, read_second) = (first.handle(), second.handle());
+    let computed: Vec<ComputedState<()>> = (0..10)
+        .map(|_| {
+            computed_state_of(move || {
+                if read_second.get() {
+                    read_first.get();
+                }
+            })
+        })
+        .collect();
+    run_simple_test(|observer, _| {
+        observer.observe_reads("draw", &callback, || {
+            for state in &computed {
+                state.get();
+            }
+        });
+        Snapshot::send_apply_notifications();
+        first.set(false);
+        second.set(false);
+        Snapshot::send_apply_notifications();
+    });
+    assert_eq!(changes.get(), 0);
+}

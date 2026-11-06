@@ -28,6 +28,7 @@ mod compose_arg;
 mod compose_node;
 mod composer;
 mod composition;
+mod computed;
 mod context;
 mod deep_link_key;
 mod derived;
@@ -67,6 +68,7 @@ pub use compose_node::{
 };
 pub use composer::current_recompose_scope;
 pub use composition::{ApplierRef, Composition, PausableComposition, ReusableComposition};
+pub use computed::{ComputedState, computed_state_of, computed_state_of_with};
 pub use context::{CompositionContext, remember_composition_context};
 pub use derived::{DerivedState, derived_state_of, derived_state_of_with};
 pub use effects::{
