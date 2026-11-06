@@ -577,14 +577,41 @@ impl PathHitTester {
         self.empty = path.is_empty();
         self.bounds = path.get_bounds();
         self.edges.clear();
+        // Each contour is filled as if a line closed it back to its start, closed or not, as
+        // Skia's `contains` (a close has no points of its own): that line is an edge too, where
+        // Compose's hit tester leaves it out (D1908).
+        let (mut start, mut current) = (Offset::ZERO, Offset::ZERO);
         for segment in path.iterator_with(ConicEvaluation::AsQuadratics, tolerance) {
-            if matches!(
-                segment.segment_type,
-                PathSegmentType::Line | PathSegmentType::Quadratic | PathSegmentType::Cubic
-            ) {
-                let (min_y, max_y) = vertical_bounds(&segment);
-                self.edges.push(Edge { segment, min_y, max_y });
+            match segment.segment_type {
+                PathSegmentType::Move => {
+                    self.close_contour(current, start);
+                    start = segment.point(0);
+                    current = start;
+                }
+                PathSegmentType::Line | PathSegmentType::Quadratic | PathSegmentType::Cubic => {
+                    current = segment.point(segment.segment_type.point_count() - 1);
+                    self.push_edge(segment);
+                }
+                PathSegmentType::Close => {
+                    self.close_contour(current, start);
+                    current = start;
+                }
+                PathSegmentType::Conic | PathSegmentType::Done => {}
             }
+        }
+        self.close_contour(current, start);
+    }
+
+    fn push_edge(&mut self, segment: PathSegment) {
+        let (min_y, max_y) = vertical_bounds(&segment);
+        self.edges.push(Edge { segment, min_y, max_y });
+    }
+
+    /// The line from `current` back to the contour's `start`, unless it's there.
+    fn close_contour(&mut self, current: Offset, start: Offset) {
+        if current != start {
+            let points = [current.x, current.y, start.x, start.y];
+            self.push_edge(PathSegment::new(PathSegmentType::Line, &points, 0.0));
         }
     }
 
@@ -887,17 +914,24 @@ fn monotonic_cubic_winding(points: &[f32], x: f32, y: f32) -> i32 {
 
 /// Splits a cubic where it turns vertically: the number of splits, the cubics written one after
 /// the other sharing their ends (6 floats apart), as Compose's `cubicToMonotonicCubics`.
+///
+/// Where Compose's `findCubicExtremaY` passes the derivative's polynomial coefficients, its
+/// middle one wrong (`2(a − 2b − c)` for `2(a − 2b + c)`), to a solver taking Bézier control
+/// values, this finds the turns as Skia does (D1908): the roots of the derivative, a quadratic
+/// Bézier of control values `b − a`, `c − b`, `d − c` (as `vertical_bounds` finds them). Compose's
+/// misses the turns of curves like `M50,0 C120,-40 -20,140 50,0`, so their hit tests disagree with
+/// Skia's. The second root is made relative to the rest of the cubic after the first root, as
+/// Skia's `SkChopCubicAt`; Compose keeps the last relative `t`, the same for two roots at most.
 fn cubic_to_monotonic_cubics(cubic: &[f32], destination: &mut [f32; 20]) -> usize {
     let (a, b, c, d) = (cubic[1], cubic[3], cubic[5], cubic[7]);
     let mut roots = [0.0; 2];
-    let count =
-        find_quadratic_roots(d - a + 3.0 * (b - c), 2.0 * (a - b - b - c), b - a, &mut roots, 0);
+    let count = find_quadratic_roots(b - a, c - b, d - c, &mut roots, 0);
     destination[..8].copy_from_slice(&cubic[..8]);
-    let mut last_t = 0.0;
+    let mut last_root = 0.0;
     let mut offset = 0;
     for &root in &roots[..count] {
-        let t = ((root - last_t) / (1.0 - last_t)).clamp(0.0, 1.0);
-        last_t = t;
+        let t = ((root - last_root) / (1.0 - last_root)).clamp(0.0, 1.0);
+        last_root = root;
         split_cubic_at(destination, offset, t);
         offset += 6;
     }
