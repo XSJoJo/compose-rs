@@ -11,7 +11,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use compose_runtime::CompositionLocalAnchor;
+use compose_runtime::{CancellationHandle, CompositionLocalAnchor};
 use compose_ui::{
     BoundsRead, BringIntoViewBounds, BringIntoViewScope, IntSize, LocalBoxFuture, NodeHandle, Rect,
 };
@@ -151,7 +151,7 @@ pub(crate) struct ContentInView {
     /// Keeping the focused child in view after the viewport shrank, as `trackingFocusedChild`.
     tracking: Cell<bool>,
     /// A shrink waiting for its frame's end to see whether the focused child was clipped.
-    checking: Cell<bool>,
+    checking: RefCell<Option<PendingCheck>>,
     /// The container's handle, for the focused rect inside it.
     handle: Cell<Option<NodeHandle>>,
 }
@@ -165,7 +165,7 @@ impl ContentInView {
             requests: RefCell::default(),
             animating: Cell::new(false),
             tracking: Cell::new(false),
-            checking: Cell::new(false),
+            checking: RefCell::new(None),
             handle: Cell::new(None),
         })
     }
@@ -213,19 +213,32 @@ impl ContentInView {
         self.handle.set(Some(handle));
         self.locals.set(Some(locals));
         self.viewport.set(size);
-        if self.animating.get() || self.tracking.get() || self.checking.get() {
+        if self.animating.get() || self.tracking.get() {
+            return;
+        }
+        // Another shrink in this frame (a layout callback's write laid out again): one check,
+        // from the size the frame's first started at to the last, where the child is placed.
+        if let Some(pending) = self.checking.borrow_mut().as_mut() {
+            pending.size = size;
             return;
         }
         // At the end of this frame, its layout done and the tree free; the animation it may
         // start takes its first step then.
-        self.checking.set(true);
         let this = self.clone();
         let check = move || {
-            this.checking.set(false);
-            this.keep_focused_in_view(previous, size, handle);
+            let Some(pending) = this.checking.take() else { return };
+            this.keep_focused_in_view(pending.previous, pending.size, handle);
         };
-        if locals.schedule_frame_end_callback(check).is_none() {
-            self.checking.set(false);
+        if let Some(cancel) = locals.schedule_frame_end_callback(check) {
+            *self.checking.borrow_mut() = Some(PendingCheck { previous, size, cancel });
+        }
+    }
+
+    /// The container is detached, as the end of `ContentInViewNode`'s coroutine scope: a check
+    /// waiting for the frame's end won't run (it would keep the container until a frame ends).
+    pub(crate) fn on_detach(&self) {
+        if let Some(pending) = self.checking.take() {
+            pending.cancel.cancel();
         }
     }
 
@@ -251,11 +264,18 @@ impl ContentInView {
         }
     }
 
-    /// Reads every request's bounds again, outside the queue.
-    fn refresh(&self) -> Vec<Request> {
+    /// Reads every request's bounds again, outside the queue; `at_frame_end`, where the tree is
+    /// free, every read tells.
+    fn refresh(&self, at_frame_end: bool) -> Vec<Request> {
         let requests = self.requests.borrow_mut().snapshot();
         for request in &requests {
-            request.refresh();
+            let told = request.refresh();
+            // A tree busy at a frame's end is a bug; the cap on reads that can't tell
+            // (`MOST_BUSY_READS`) would otherwise take the request for gone frames later.
+            debug_assert!(
+                told || !at_frame_end,
+                "a bring-into-view request's bounds couldn't be read at the frame's end"
+            );
         }
         requests
     }
@@ -281,7 +301,7 @@ impl ContentInView {
         Box::pin(async move {
             let wait = request.continuation.clone().wait();
             // Where it and the others are now (it may be gone already: resumed at once).
-            this.refresh();
+            this.refresh(false);
             request.refresh();
             let enqueued = this.requests.borrow_mut().enqueue(request);
             if enqueued && !this.animating.get() {
@@ -344,7 +364,7 @@ impl ContentInView {
     /// first, as `resumeAndRemoveWhile { it == null || isMaxVisible(it) }`: each decided with
     /// nothing borrowed, then resumed if it's still the smallest.
     fn resume_shown(&self, spec: &dyn BringIntoViewSpec) {
-        let requests = self.refresh();
+        let requests = self.refresh(true);
         let shown: Vec<&Request> = requests
             .iter()
             .rev()
@@ -380,7 +400,7 @@ impl ContentInView {
             let (animation, spec, frames) = (&animation, &*spec, &frames);
             let scrolled = state
                 .scroll(MutatePriority::Default, move |scroll| async move {
-                    this.refresh();
+                    this.refresh(false);
                     animation.set_value(this.scroll_delta(spec));
                     animation
                         .animate_to_zero(
@@ -419,6 +439,14 @@ impl ContentInView {
             }
         });
     }
+}
+
+/// A shrink waiting for its frame's end: from what size to what, and the check's handle,
+/// cancelled if the container is detached first.
+struct PendingCheck {
+    previous: IntSize,
+    size: IntSize,
+    cancel: CancellationHandle,
 }
 
 /// Ends the animation: the requests it leaves are cancelled.

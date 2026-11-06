@@ -5,9 +5,10 @@
 
 #![allow(non_snake_case)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use compose_foundation::gestures::{LocalBoxFuture, ScrollBlock};
 use compose_foundation::layout::*;
 use compose_foundation::*;
 use compose_runtime::*;
@@ -68,18 +69,30 @@ fn scene(
     size: f32,
     content: impl Fn(Case) + Clone + 'static,
 ) -> Scene {
+    scene_with(case, viewport, size, |modifier| modifier, content)
+}
+
+/// [`scene`], with `area` of the scroll's area modifier, before the scroll.
+fn scene_with(
+    case: Case,
+    viewport: Option<MutableState<f32>>,
+    size: f32,
+    area: impl Fn(Modifier) -> Modifier + 'static,
+    content: impl Fn(Case) + Clone + 'static,
+) -> Scene {
     let scroll = ScrollState::new(0);
     let state = *scroll;
     let manager: Rc<RefCell<Option<FocusManager>>> = Rc::default();
     let into = manager.clone();
+    let area = Rc::new(area);
     let mut ui = ComposeTestRule::sized(IntSize::new(600, 600), move || {
         let _owner = &scroll;
         *into.borrow_mut() = Some(LOCAL_FOCUS_MANAGER.current());
         let size = viewport.map_or(size, |viewport| viewport.get());
         let direction = if case.rtl { LayoutDirection::Rtl } else { LayoutDirection::Ltr };
-        let content = content.clone();
+        let (content, area) = (content.clone(), area.clone());
         CompositionLocalProvider(LOCAL_LAYOUT_DIRECTION.provides(direction), move || {
-            let modifier = Modifier.test_tag(AREA).size(size.dp());
+            let modifier = area(Modifier.test_tag(AREA).size(size.dp()));
             let content = content.clone();
             if case.horizontal {
                 let modifier = modifier.horizontal_scroll_with(state, true, None, case.reverse);
@@ -403,6 +416,43 @@ fn shrink_after_shrink_keeps_the_focused_child_in_view() {
     }
 }
 
+// compose-rs's own (D1376, on review): two shrinks in one frame, the first leaving the focused
+// child in view and the second hiding it, are checked as one, from the size the frame started
+// with to the last: the child is kept in view.
+#[test]
+fn two_shrinks_in_a_frame_are_checked_from_first_to_last() {
+    for case in CASES {
+        let size = mutable_state_of(100.0);
+        let sizes = size.handle();
+        // The first shrink, to 95, is seen in a layout whose callback shrinks it to 50: laid
+        // out again in the same frame.
+        let area = move |modifier: Modifier| {
+            modifier.on_size_changed(move |seen: IntSize| {
+                if seen.width.min(seen.height) == 95 {
+                    sizes.set(50.0);
+                }
+            })
+        };
+        // A child of 10 after 85, and 20 more after it: the content outgrows the viewport.
+        let mut scene = scene_with(case, Some(size.handle()), 100.0, area, move |case| {
+            if case.reverse {
+                Spacer!(modifier = Modifier.size(20.dp()));
+            }
+            WithSpacerBefore(case, 85.0, || TestFocusable(10.0, FOCUSABLE));
+            if !case.reverse {
+                Spacer!(modifier = Modifier.size(20.dp()));
+            }
+        });
+        scene.request_focus_and_scroll_to_top();
+        scene.assert_position(FOCUSABLE, case.pick(5.0, 85.0));
+        size.set(95.0);
+        scene.ui.wait_for_idle();
+        assert_eq!(size.get(), 50.0);
+        assert!(scene.displayed(FOCUSABLE), "{case:?}");
+        scene.assert_position(FOCUSABLE, case.pick(0.0, 40.0));
+    }
+}
+
 /// Five focusables of 100 in a viewport of `viewport`, the third tagged.
 fn five(case: Case, viewport: f32) -> Scene {
     scene(case, None, viewport, |_| {
@@ -485,4 +535,72 @@ fn a_focused_node_outside_isnt_followed() {
         ui.wait_for_idle();
         assert_eq!(state.value(), 0, "horizontal: {horizontal}");
     }
+}
+
+/// A scrollable state whose clones are counted through `alive`: what keeps one keeps it.
+#[derive(Clone)]
+struct Tracked {
+    inner: DefaultScrollableState,
+    alive: Rc<()>,
+}
+
+impl ScrollableState for Tracked {
+    fn scroll_boxed<'a>(
+        &'a self,
+        priority: MutatePriority,
+        block: ScrollBlock<'a>,
+    ) -> LocalBoxFuture<'a, Result<(), MutationInterrupted>> {
+        self.inner.scroll_boxed(priority, block)
+    }
+
+    fn dispatch_raw_delta(&self, delta: f32) -> f32 {
+        self.inner.dispatch_raw_delta(delta)
+    }
+
+    fn is_scroll_in_progress(&self) -> bool {
+        self.inner.is_scroll_in_progress()
+    }
+}
+
+impl ComposeArg for Tracked {
+    fn same(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.alive, &other.alive)
+    }
+}
+
+// compose-rs's own (D1376, on review): a container detached in the frame its viewport shrank
+// cancels the check waiting for the frame's end, which would otherwise keep it (and its state)
+// queued until a frame ends.
+#[test]
+fn a_container_leaving_in_the_frame_it_shrank_cancels_its_check() {
+    let size = mutable_state_of(100.0);
+    let shown = mutable_state_of(true);
+    let state = Tracked { inner: scrollable_state(|delta| delta), alive: Rc::new(()) };
+    let alive = Rc::downgrade(&state.alive);
+    let (sizes, shows) = (size.handle(), shown.handle());
+    let mut ui = ComposeTestRule::sized(IntSize::new(600, 600), move || {
+        if shows.get() {
+            Box!(
+                modifier = Modifier
+                    .size(sizes.get().dp())
+                    .scrollable(state.clone(), Orientation::Vertical)
+                    // The shrink seen, the container leaves in the same frame.
+                    .on_size_changed(move |size: IntSize| {
+                        if size.height < 100 {
+                            shows.set(false);
+                        }
+                    })
+            );
+        }
+    });
+    ui.wait_for_idle();
+    // At the end of the frame, before the check: what keeps the state then.
+    let at_frame_end = Rc::new(Cell::new(None));
+    let (probe, seen) = (alive.clone(), at_frame_end.clone());
+    let _probe = Recomposer::current_thread()
+        .schedule_frame_end_callback(move || seen.set(Some(probe.strong_count())));
+    size.set(50.0);
+    ui.wait_for_idle();
+    assert!(!shown.get(), "it left in the frame it shrank");
+    assert_eq!(at_frame_end.get(), Some(alive.strong_count()), "nothing queued keeps it");
 }

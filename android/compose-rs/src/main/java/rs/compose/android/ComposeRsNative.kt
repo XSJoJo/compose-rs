@@ -153,6 +153,12 @@ internal object ComposeRsNative {
      */
     @JvmStatic external fun pointerIconBitmap(host: Long, stylus: Boolean, shape: FloatArray): ByteArray?
 
+    /**
+     * compose-rs's `PointerIcon::TYPE_*`, in the order a debug build of [ComposeRsView] checks
+     * them against the SDK's `PointerIcon.TYPE_*`.
+     */
+    @JvmStatic external fun pointerIconTypes(): IntArray
+
     /** [pointerIcon] for no icon: a stylus over none (the view's own then). */
     const val POINTER_ICON_NONE = -1
 

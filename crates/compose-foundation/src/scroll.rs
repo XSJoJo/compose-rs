@@ -756,6 +756,9 @@ impl ModifierNode for ScrollNode {
         self.drag.detach();
     }
     fn on_detach(&mut self, _context: &mut compose_ui::NodeContext<'_>) {
+        if let Some(content_in_view) = &self.content_in_view {
+            content_in_view.on_detach();
+        }
         // The press after it reads the factory again and attaches a new one.
         if let Some(node) = self.local_overscroll_node.take() {
             node.detach();

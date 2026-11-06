@@ -1804,6 +1804,22 @@ pub extern "system" fn Java_rs_compose_android_ComposeRsNative_pointerIconBitmap
     .unwrap_or_default()
 }
 
+/// `ComposeRsNative.pointerIconTypes()`: compose-rs's `PointerIcon::TYPE_*`, in the order a debug
+/// build of the view checks them against the SDK's (`pointer_icon::ANDROID_TYPES`).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_rs_compose_android_ComposeRsNative_pointerIconTypes<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+) -> JIntArray<'local> {
+    let types = &crate::pointer_icon::ANDROID_TYPES;
+    with_env(&mut env, |env| {
+        let array = env.new_int_array(types.len())?;
+        array.set_region(env, 0, types)?;
+        Ok::<_, jni::errors::Error>(array)
+    })
+    .unwrap_or_default()
+}
+
 /// `ComposeRsNative.scroll(host, x, y, dx, dy, meta)`: a mouse wheel at (`x`, `y`), by pixels.
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]

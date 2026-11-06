@@ -775,6 +775,55 @@ fn a_rect_read_after_the_requester_left_is_none() {
     assert_eq!(asked.borrow()[0](), None);
 }
 
+/// A responder keeping the first `local_rect` it's given, unread, and reading it in each
+/// `calculate_rect_for_parent`, which the tree asks inside a walk, busy.
+struct ReadsInsideTheWalk {
+    kept: RefCell<Option<LocalRect>>,
+    read: RefCell<Vec<Option<Rect>>>,
+}
+
+impl BringIntoViewResponder for ReadsInsideTheWalk {
+    fn calculate_rect_for_parent(&self, local_rect: Rect) -> Rect {
+        if let Some(kept) = self.kept.borrow().as_ref() {
+            self.read.borrow_mut().push(kept());
+        }
+        local_rect
+    }
+
+    fn bring_child_into_view(
+        &self,
+        local_rect: Rc<dyn Fn() -> Option<Rect>>,
+    ) -> LocalBoxFuture<'_, ()> {
+        self.kept.borrow_mut().get_or_insert(local_rect);
+        Box::pin(async {})
+    }
+}
+
+// compose-rs's own (D1376, on review): a deprecated responder's `local_rect` first read while the
+// tree is busy (from inside a walk) gives where the request found the requester, not `None`: the
+// requester hasn't gone.
+#[test]
+fn a_first_read_of_the_rect_while_the_tree_is_busy_gives_where_it_was_asked() {
+    let responder =
+        Rc::new(ReadsInsideTheWalk { kept: RefCell::default(), read: RefCell::default() });
+    let given: Rc<dyn BringIntoViewResponder> = responder.clone();
+    let requester = BringIntoViewRequester::new();
+    let into = requester.clone();
+    let mut ui = window(move || {
+        Box!(
+            modifier = Modifier
+                .bring_into_view_responder(given.clone())
+                .bring_into_view_requester(into.clone())
+                .size(10.dp())
+        );
+    });
+    bring(&mut ui, &requester, None);
+    assert!(responder.read.borrow().is_empty(), "kept, not read yet");
+    // The second request's walk reads the first's rect inside it, the tree busy.
+    bring(&mut ui, &requester, None);
+    assert_eq!(*responder.read.borrow(), [Some(Rect::new(0.0, 0.0, 10.0, 10.0))]);
+}
+
 // ---- The animation -----------------------------------------------------------------------------
 
 /// Three boxes inside each other, 100, 50 and 25 px from their start, the largest past a 100 px
