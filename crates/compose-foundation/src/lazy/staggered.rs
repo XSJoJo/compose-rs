@@ -2142,6 +2142,8 @@ impl StaggeredLayout {
         reverse: bool,
         cross_before: i32,
     ) -> MeasureResult {
+        // Now, after the pass ahead, the lanes go back to the pass ahead's.
+        c.lane_info.roll_back();
         *staggered.lane_info.borrow_mut() = std::mem::take(c.lane_info);
         let (minimum, cross_max) = if vertical {
             (constraints.min_height, constraints.max_width)
@@ -2197,6 +2199,13 @@ impl MeasurePolicy for StaggeredLayout {
         let state = &self.list;
         // Observed: a scroll measures the grid again.
         state.remeasure.get();
+        // In a scope, what it tells and keeps is the pass ahead's, as a list's (D1226): the pass
+        // that's now leaves the lanes as they were too.
+        let looking_ahead = scope.is_looking_ahead();
+        if looking_ahead {
+            state.measured_ahead.set(true);
+        }
+        let tells = looking_ahead || !state.measured_ahead.get();
         let info = &self.info;
         let (vertical, reverse) = (info.vertical, info.reverse);
         let density = scope.density();
@@ -2243,8 +2252,10 @@ impl MeasurePolicy for StaggeredLayout {
         let cross_room = cross_max - cross_before - cross_after;
         let slots = self.slots(cross_room, cross_spacing, density);
         let lanes = slots.count();
-        state.prefetch.window_lanes.set(lanes.max(1));
-        if !self.told.borrow().as_ref().is_some_and(|told| Rc::ptr_eq(told, &slots)) {
+        if tells {
+            state.prefetch.window_lanes.set(lanes.max(1));
+        }
+        if tells && !self.told.borrow().as_ref().is_some_and(|told| Rc::ptr_eq(told, &slots)) {
             *self.told.borrow_mut() = Some(slots.clone());
             // As `schedulePrefetch`: a full line across them all, another in its lane.
             let (cells, grid, items) = (slots.clone(), self.state, info.items.clone());
@@ -2287,21 +2298,25 @@ impl MeasurePolicy for StaggeredLayout {
         };
         if lanes > 0 {
             let hint = super::grid::cell_constraints(vertical, slots.sizes[0]);
-            if state.item_constraints_written.replace(Some(hint)) != Some(hint) {
+            if tells && state.item_constraints_written.replace(Some(hint)) != Some(hint) {
                 state.item_constraints.set(Some(hint));
             }
         }
         if count == 0 || lanes == 0 {
             let size = IntSize::new(min_width, min_height);
-            state.room_backward.set(0.0);
-            state.room_forward.set(0.0);
-            state.publish_can_scroll();
-            state.room_estimated.set((false, false));
-            state.beyond_more.set((false, false));
+            if tells {
+                state.room_backward.set(0.0);
+                state.room_forward.set(0.0);
+                state.publish_can_scroll();
+                state.room_estimated.set((false, false));
+                state.beyond_more.set((false, false));
+            }
             // Its items gone, what they drew may fade out, and it holds their room for that.
             let animator = &state.item_animator;
             let size = if animator.idle() {
-                animator.note_items(&info.items, 0);
+                if tells {
+                    animator.note_items(&info.items, 0);
+                }
                 size
             } else {
                 let pass = item_animator::Pass {
@@ -2313,9 +2328,11 @@ impl MeasurePolicy for StaggeredLayout {
                     lane_count: lanes.max(1),
                     layout_min: 0,
                     layout_max: 0,
-                    looking_ahead: false,
+                    looking_ahead,
                 };
-                animator.on_measured(state, &pass, &[], &mut |_, _| None);
+                if tells {
+                    animator.on_measured(state, &pass, &[], &mut |_, _| None);
+                }
                 let min = animator.min_size_to_fit_disappearing();
                 IntSize::new(
                     constraints.constrain_width(size.width.max(min.width)),
@@ -2323,21 +2340,23 @@ impl MeasurePolicy for StaggeredLayout {
                 )
             };
             state.laid_out.begin();
-            // Nothing visible: the window starts over.
-            state.prefetch.after_layout(
-                state,
-                self.scheduler.as_ref(),
-                None,
-                0,
-                false,
-                None,
-                &[],
-                &mut |_| None,
-            );
             let keys_changed = state.note_laid_items(&info.items);
-            state.laid_out.end(viewport(size), keys_changed);
-            // Its lanes as asked keep waiting for items.
-            state.pending.set(0.0);
+            if tells {
+                // Nothing visible: the window starts over.
+                state.prefetch.after_layout(
+                    state,
+                    self.scheduler.as_ref(),
+                    None,
+                    0,
+                    false,
+                    None,
+                    &[],
+                    &mut |_| None,
+                );
+                state.laid_out.end(viewport(size), keys_changed);
+                // Its lanes as asked keep waiting for items.
+                state.pending.set(0.0);
+            }
             return scope.layout(size.width, size.height);
         }
         state.had_items.set(true);
@@ -2445,7 +2464,7 @@ impl MeasurePolicy for StaggeredLayout {
         if let Some(lacked) = c.lacked {
             c.lane_info.roll_back();
             self.ask_for(&staggered, lacked, c.lacked_room, (composed_start, composed_end), lanes);
-        } else {
+        } else if tells {
             c.lane_info.commit_pass();
         }
         if done.is_none() {
@@ -2453,7 +2472,7 @@ impl MeasurePolicy for StaggeredLayout {
         }
         let mut done = done.take().expect("not stopped before its first item");
         let stopped = c.lacked.is_some();
-        if !stopped {
+        if !stopped && tells {
             state.asked.set(0);
             staggered.stops.set(0);
             staggered.jump_to_compose.set(false);
@@ -2571,7 +2590,9 @@ impl MeasurePolicy for StaggeredLayout {
         }
         if stopped {
             // The size stays this one until a whole measurement, however many frames that takes.
-            staggered.last_main.set(Some(layout_main));
+            if tells {
+                staggered.last_main.set(Some(layout_main));
+            }
             *staggered.lane_info.borrow_mut() = std::mem::take(c.lane_info);
             for (placeable, main, cross) in &positioned {
                 c.place(&placed, placeable, *main, *cross);
@@ -2632,14 +2653,24 @@ impl MeasurePolicy for StaggeredLayout {
             visible.iter().map(|at| done.arena[*at].main_size).sum::<i32>() / visible.len() as i32
                 + spacing
         };
-        *staggered.lane_info.borrow_mut() = std::mem::take(c.lane_info);
+        // The lanes back, for prefetching to read; now, after the pass ahead, kept aside and then
+        // back as the pass ahead left them.
+        let lanes_now = if tells {
+            *staggered.lane_info.borrow_mut() = std::mem::take(c.lane_info);
+            None
+        } else {
+            Some(std::mem::take(c.lane_info))
+        };
         let optimizations = c.scope.optimizations();
         let prefetch = &state.prefetch;
-        prefetch.policy.set(Policy::of(optimizations));
-        prefetch.vertical.set(vertical);
-        prefetch.visible.set(visible.len());
+        if tells {
+            prefetch.policy.set(Policy::of(optimizations));
+            prefetch.vertical.set(vertical);
+            prefetch.visible.set(visible.len());
+        }
         // The window, as `onVisibleItemsUpdated` and `onScroll` with `LazyStaggeredGridCacheWindowScope`.
-        if staggered.prefetching_enabled.get() {
+        if !tells {
+        } else if staggered.prefetching_enabled.get() {
             let mut shown = prefetch.sizes.borrow_mut();
             shown.clear();
             let mut last = vec![-1; lanes];
@@ -2691,13 +2722,13 @@ impl MeasurePolicy for StaggeredLayout {
         } else {
             prefetch.reset_window();
         }
-        let beyond_ended = state.beyond_ended.take();
+        let beyond_ended = tells && state.beyond_ended.take();
         if beyond_ended {
             prefetch.search_ended();
         }
         // What's measured and what's in the window stay, as Compose's `keepAroundItems`; those
         // apart stay on their own, and what's between them and the others doesn't.
-        {
+        if tells {
             let mut detached = prefetch.detached.borrow_mut();
             if *detached != apart {
                 if detached.iter().any(|item| !apart.contains(item)) {
@@ -2710,7 +2741,13 @@ impl MeasurePolicy for StaggeredLayout {
             let first = if apart.is_empty() { first } else { first.max(wanted.0) };
             (first, (last + 1).min(count))
         });
-        let limits = prefetch.target(wanted, (composed_start, composed_end), window, None);
+        // Now, after the pass ahead, what's composed is what either wants, as a list's.
+        let limits = if tells {
+            prefetch.target(wanted, (composed_start, composed_end), window, None)
+        } else {
+            let (low, high) = prefetch.limits.get();
+            (low.min(wanted.0), high.max(wanted.1))
+        };
         let covers = composed_start <= wanted.0 && composed_end >= wanted.1;
         let past_limits = composed_start < limits.0 || composed_end > limits.1;
         let search_ended = beyond_ended && past_limits;
@@ -2719,68 +2756,76 @@ impl MeasurePolicy for StaggeredLayout {
         }
         let mut composed = (composed_start, composed_end);
         let composed_more = state.composed_more.take();
-        if !covers || search_ended || c.lacked_unready || prefetch.take_cancelled() {
+        if !covers || search_ended || c.lacked_unready || (tells && prefetch.take_cancelled()) {
             composed = limits;
             state.compose(composed);
         } else if composed_more {
             state.composed.set(composed);
         }
-        prefetch.node.set(Some(node));
-        prefetch.count.set(count);
-        prefetch.wanted.set(wanted);
-        prefetch.limits.set(limits);
-        prefetch.trim_between_frames(state, self.scheduler.as_ref(), composed);
-        // `applyMeasureResult`: the position, what's left of the scroll and how far it can go.
-        let first_offset = first_visible_offset(&done.first_indices, &done.first_offsets);
-        let first_key = visible
-            .iter()
-            .map(|at| &done.arena[*at])
-            .find(|item| item.index == first_item)
-            .map(|item| info.items.key(item.index as usize));
-        state.first_key.set(first_key);
-        state.position.set((first_item as usize, first_offset as f32));
-        *staggered.position.borrow_mut() = (done.first_indices.clone(), done.first_offsets.clone());
-        staggered.jumped.set(false);
-        let rounded = (first_item as usize, first_offset);
-        if state.published.get() != rounded {
-            state.published.set(rounded);
-            state.first_index.set(rounded.0);
-            state.first_offset.set(rounded.1);
-        }
-        let left = (-pending) - done.consumed;
-        let at_end = left.abs() > 0.5;
-        state.pending.set(if at_end { 0.0 } else { -left });
         let mut post_scroll: Option<Box<dyn FnOnce()>> = None;
-        if let Some(overshoot) = state.overshoot.borrow_mut().take() {
-            let moved = if at_end { overshoot.asked + left } else { overshoot.asked };
-            post_scroll = overshoot.rest(moved);
-        }
-        let pending = state.pending.get();
-        let reaches_end = done.current_indices.contains(&(count as i32 - 1));
-        let forward_room = (max_current - available) as f32;
-        state.room_forward.set(if reaches_end {
-            if forward_room > 0.0 { forward_room - pending } else { 0.0 }
+        if tells {
+            prefetch.node.set(Some(node));
+            prefetch.count.set(count);
+            prefetch.wanted.set(wanted);
+            prefetch.limits.set(limits);
+            prefetch.trim_between_frames(state, self.scheduler.as_ref(), composed);
+            // `applyMeasureResult`: the position, what's left of the scroll and how far it can go.
+            let first_offset = first_visible_offset(&done.first_indices, &done.first_offsets);
+            let first_key = visible
+                .iter()
+                .map(|at| &done.arena[*at])
+                .find(|item| item.index == first_item)
+                .map(|item| info.items.key(item.index as usize));
+            state.first_key.set(first_key);
+            state.position.set((first_item as usize, first_offset as f32));
+            *staggered.position.borrow_mut() =
+                (done.first_indices.clone(), done.first_offsets.clone());
+            staggered.jumped.set(false);
+            let rounded = (first_item as usize, first_offset);
+            if state.published.get() != rounded {
+                state.published.set(rounded);
+                state.first_index.set(rounded.0);
+                state.first_offset.set(rounded.1);
+            }
+            let left = (-pending) - done.consumed;
+            let at_end = left.abs() > 0.5;
+            state.pending.set(if at_end { 0.0 } else { -left });
+            if let Some(overshoot) = state.overshoot.borrow_mut().take() {
+                let moved = if at_end { overshoot.asked + left } else { overshoot.asked };
+                post_scroll = overshoot.rest(moved);
+            }
+            let pending = state.pending.get();
+            let reaches_end = done.current_indices.contains(&(count as i32 - 1));
+            let forward_room = (max_current - available) as f32;
+            state.room_forward.set(if reaches_end {
+                if forward_room > 0.0 { forward_room - pending } else { 0.0 }
+            } else {
+                let remaining = (count as i32 - 1 - most).max(1) as f32;
+                (forward_room.max(0.0) + average.max(1) as f32 * remaining / lanes as f32 - pending)
+                    .max(1.0)
+            });
+            let reaches_start = known_room.is_some();
+            state.room_backward.set(if let Some(room) = known_room {
+                if room > 0 { room as f32 + pending } else { 0.0 }
+            } else {
+                let first_room = done.first_offsets[0] as f32;
+                let remaining = least.max(1) as f32;
+                (first_room.max(0.0) + average.max(1) as f32 * remaining / lanes as f32 + pending)
+                    .max(1.0)
+            });
+            state.room_estimated.set((!reaches_start, !reaches_end));
+            state.publish_can_scroll();
+            state.beyond_more.set((wanted.0 > 0, wanted.1 < count));
+            let per_item = average as f32 / lanes as f32;
+            let layout_info = (count, per_item, spacing, main_max, before + after);
+            if state.layout_info_written.replace(layout_info) != layout_info {
+                state.layout_info.set(layout_info);
+            }
         } else {
-            let remaining = (count as i32 - 1 - most).max(1) as f32;
-            (forward_room.max(0.0) + average.max(1) as f32 * remaining / lanes as f32 - pending)
-                .max(1.0)
-        });
-        let reaches_start = known_room.is_some();
-        state.room_backward.set(if let Some(room) = known_room {
-            if room > 0 { room as f32 + pending } else { 0.0 }
-        } else {
-            let first_room = done.first_offsets[0] as f32;
-            let remaining = least.max(1) as f32;
-            (first_room.max(0.0) + average.max(1) as f32 * remaining / lanes as f32 + pending)
-                .max(1.0)
-        });
-        state.room_estimated.set((!reaches_start, !reaches_end));
-        state.publish_can_scroll();
-        state.beyond_more.set((wanted.0 > 0, wanted.1 < count));
-        let per_item = average as f32 / lanes as f32;
-        let layout_info = (count, per_item, spacing, main_max, before + after);
-        if state.layout_info_written.replace(layout_info) != layout_info {
-            state.layout_info.set(layout_info);
+            // What either pass wants stays composed, and trimming lets go of neither's.
+            let (start, end) = prefetch.wanted.get();
+            prefetch.wanted.set((start.min(wanted.0), end.max(wanted.1)));
+            prefetch.limits.set(limits);
         }
         if c.sizes.len() > 4 * MOST_MISSING * lanes {
             let near = MOST_MISSING * lanes;
@@ -2794,7 +2839,34 @@ impl MeasurePolicy for StaggeredLayout {
         let mut placed = placed;
         let mut animated_items: Vec<(u64, Placeable, i32, i32)> = Vec::new();
         if animator.idle() {
-            animator.note_items(&info.items, first_item as usize);
+            if tells {
+                animator.note_items(&info.items, first_item as usize);
+            }
+        } else if !tells {
+            // Now, after the pass ahead: each animated item where it is ahead, as a list's
+            // (Compose's `lookaheadOffset`), those moving away too.
+            for place in state.lookahead_places.borrow().iter() {
+                let found = c.child_of(place.index).and_then(|child| c.placeables[child]);
+                let placeable = match found {
+                    Some(placeable) => placeable,
+                    None => {
+                        let lane = lanes_now
+                            .as_ref()
+                            .map_or(0, |it| it.get_lane(place.index as i32).max(0));
+                        let lane = lane as usize;
+                        let span = c.span_range(place.index as i32, lane);
+                        let Some(measured) = c.try_measure(place.index as i32, span) else {
+                            continue;
+                        };
+                        measured.placeable
+                    }
+                };
+                match positioned.iter_mut().find(|(other, _, _)| *other == placeable) {
+                    Some(entry) => (entry.1, entry.2) = (place.main, place.cross),
+                    None => positioned.push((placeable, place.main, place.cross)),
+                }
+                animated_items.push((place.key, placeable, place.main, place.cross));
+            }
         } else {
             animator.add_consumed_scroll(done.consumed.round() as i32);
             let in_view: Vec<item_animator::Positioned> = visible
@@ -2827,8 +2899,11 @@ impl MeasurePolicy for StaggeredLayout {
                 lane_count: lanes,
                 layout_min: done.first_offsets.iter().copied().min().unwrap_or(0),
                 layout_max: max_current + content_padding,
-                looking_ahead: false,
+                looking_ahead,
             };
+            if looking_ahead {
+                super::note_lookahead_places(state, &in_view, 0);
+            }
             let moved = animator.on_measured(state, &pass, &in_view, &mut |item, moved| {
                 c.try_measure(item as i32, (moved.lane, moved.span))
                     .map(|measured| measured.size_with_spacing)
@@ -2846,6 +2921,14 @@ impl MeasurePolicy for StaggeredLayout {
                     positioned.push((placeable, away.main, away.cross));
                 }
                 animated_items.push((away.key, placeable, away.main, away.cross));
+                if looking_ahead {
+                    state.lookahead_places.borrow_mut().push(item_animator::LookaheadPlace {
+                        key: away.key,
+                        index: away.index,
+                        main: away.main,
+                        cross: away.cross,
+                    });
+                }
             }
             let min = animator.min_size_to_fit_disappearing();
             if min != IntSize::ZERO {
@@ -2872,7 +2955,7 @@ impl MeasurePolicy for StaggeredLayout {
         for (placeable, main, cross) in &positioned {
             c.place(&placed, placeable, *main, *cross);
         }
-        for (key, placeable, main, cross) in &animated_items {
+        for (key, placeable, main, cross) in animated_items.iter().filter(|_| !looking_ahead) {
             let size = if vertical { placeable.height } else { placeable.width };
             let along = if reverse { placed.main_layout_size - main - size } else { *main };
             let along = along + before;
@@ -2881,8 +2964,12 @@ impl MeasurePolicy for StaggeredLayout {
             let x = if rtl { width - x - placeable.width } else { x };
             animator.note_placed(*key, x, y, (-before, placed.main_layout_size + after, vertical));
         }
-        staggered.last_main.set(Some(layout_main));
-        {
+        if let Some(mut lanes) = lanes_now {
+            lanes.roll_back();
+            *staggered.lane_info.borrow_mut() = lanes;
+        }
+        if tells {
+            staggered.last_main.set(Some(layout_main));
             let mut last = staggered.last_placed.borrow_mut();
             last.clear();
             last.extend(visible.iter().map(|at| {
@@ -2912,7 +2999,9 @@ impl MeasurePolicy for StaggeredLayout {
         }
         drop(laid);
         let keys_changed = state.note_laid_items(&info.items);
-        state.laid_out.end(viewport(IntSize::new(width, height)), keys_changed);
+        if tells {
+            state.laid_out.end(viewport(IntSize::new(width, height)), keys_changed);
+        }
         if let Some(post_scroll) = post_scroll {
             c.scope.run_after_layout(post_scroll);
         }

@@ -1673,6 +1673,7 @@ impl Measurer<'_, '_> {
 fn step_back(
     measurer: &mut Measurer<'_, '_>,
     state: &LazyListInner,
+    tells: bool,
     spacing: i32,
     index: &mut usize,
     offset: &mut f32,
@@ -1694,7 +1695,9 @@ fn step_back(
                 }
                 // As many lines as cover the offset (D576).
                 let wanted = ((-*offset) / average).ceil().max(1.0) as usize;
-                state.pending.set(state.pending.get() + *offset);
+                if tells {
+                    state.pending.set(state.pending.get() + *offset);
+                }
                 *offset = 0.0;
                 return wanted;
             }
@@ -1714,6 +1717,12 @@ impl MeasurePolicy for LazyGridLayout {
         let state = &self.state;
         // Observed: a scroll measures the grid again.
         state.remeasure.get();
+        // In a scope, what it tells and keeps is the pass ahead's, as a list's (D1226).
+        let looking_ahead = scope.is_looking_ahead();
+        if looking_ahead {
+            state.measured_ahead.set(true);
+        }
+        let tells = looking_ahead || !state.measured_ahead.get();
         let info = &self.info;
         let vertical = info.vertical;
         let density = scope.density();
@@ -1766,11 +1775,11 @@ impl MeasurePolicy for LazyGridLayout {
         let slots = self.slots(cross_room, cross_spacing, density);
         // A cell's constraints, for what's composed in it that guesses at its own (a nested list).
         let hint = cell_constraints(vertical, slots.sizes[0]);
-        if state.item_constraints_written.replace(Some(hint)) != Some(hint) {
+        if tells && state.item_constraints_written.replace(Some(hint)) != Some(hint) {
             state.item_constraints.set(Some(hint));
         }
         let cross_cells = slots.count().max(1);
-        if state.cross_cells_written.replace(cross_cells) != cross_cells {
+        if tells && state.cross_cells_written.replace(cross_cells) != cross_cells {
             state.cross_cells.set(cross_cells);
         }
         let mut lines = self.lines.borrow_mut();
@@ -1821,30 +1830,33 @@ impl MeasurePolicy for LazyGridLayout {
         if count == 0 {
             // As a list's: the initial position waits for the first items; a grid emptied
             // starts again at its top.
-            if state.had_items.get() {
+            if !tells {
+            } else if state.had_items.get() {
                 state.position.set((0, 0.0));
                 state.first_key.set(None);
                 state.had_items.set(false);
             } else {
                 state.pending.set(state.pending.get() + offset - state.position.get().1);
             }
-            // Nothing visible: the window starts over.
-            state.prefetch.after_layout(
-                state,
-                self.scheduler.as_ref(),
-                None,
-                0,
-                false,
-                None,
-                &[],
-                &mut |_| None,
-            );
-            // Known: an empty list takes no scroll (D480).
-            state.room_backward.set(0.0);
-            state.room_forward.set(0.0);
-            state.publish_can_scroll();
-            state.room_estimated.set((false, false));
-            state.beyond_more.set((false, false));
+            if tells {
+                // Nothing visible: the window starts over.
+                state.prefetch.after_layout(
+                    state,
+                    self.scheduler.as_ref(),
+                    None,
+                    0,
+                    false,
+                    None,
+                    &[],
+                    &mut |_| None,
+                );
+                // Known: an empty list takes no scroll (D480).
+                state.room_backward.set(0.0);
+                state.room_forward.set(0.0);
+                state.publish_can_scroll();
+                state.room_estimated.set((false, false));
+                state.beyond_more.set((false, false));
+            }
             drop(measurer);
             // As large as its padding, as a list's (D865).
             let (main_padding, cross_padding) = (before + after, cross_before + cross_after);
@@ -1861,7 +1873,9 @@ impl MeasurePolicy for LazyGridLayout {
             };
             // Its items gone, what they drew may fade out, and it holds their room for that.
             let size = if animator.idle() {
-                animator.note_items(&info.items, 0);
+                if tells {
+                    animator.note_items(&info.items, 0);
+                }
                 size
             } else {
                 let pass = item_animator::Pass {
@@ -1873,9 +1887,11 @@ impl MeasurePolicy for LazyGridLayout {
                     lane_count: 1,
                     layout_min: 0,
                     layout_max: 0,
-                    looking_ahead: false,
+                    looking_ahead,
                 };
-                animator.on_measured(state, &pass, &[], &mut |_, _| None);
+                if tells {
+                    animator.on_measured(state, &pass, &[], &mut |_, _| None);
+                }
                 let min = animator.min_size_to_fit_disappearing();
                 IntSize::new(
                     constraints.constrain_width(size.width.max(min.width)),
@@ -1884,27 +1900,29 @@ impl MeasurePolicy for LazyGridLayout {
             };
             state.laid_out.begin();
             let keys_changed = state.note_laid_items(&info.items);
-            state.laid_out.end(
-                LaidViewport {
-                    start: -before,
-                    end: main_max - before,
-                    count: 0,
-                    size,
-                    vertical,
-                    reverse,
-                    before,
-                    after,
-                    spacing,
-                    max_span: slots.count(),
-                },
-                keys_changed,
-            );
+            if tells {
+                state.laid_out.end(
+                    LaidViewport {
+                        start: -before,
+                        end: main_max - before,
+                        count: 0,
+                        size,
+                        vertical,
+                        reverse,
+                        before,
+                        after,
+                        spacing,
+                        max_span: slots.count(),
+                    },
+                    keys_changed,
+                );
+            }
             return scope.layout(size.width, size.height);
         }
         state.had_items.set(true);
         // From here on, in lines: the first visible one, and the pixels into it.
         let mut index = m.lines.line_of(first_item.min(count - 1));
-        let mut wanted_before = step_back(m, state, spacing, &mut index, &mut offset);
+        let mut wanted_before = step_back(m, state, tells, spacing, &mut index, &mut offset);
         // On over the lines scrolled past, while they're composed; far ahead, jumped over by the
         // average size (an estimate).
         while m.lines.exists(index + 1) {
@@ -1981,8 +1999,8 @@ impl MeasurePolicy for LazyGridLayout {
                 offset -= gap;
                 scrolled_back += gap as i32;
                 let pending_before_gap = state.pending.get();
-                let wanted = step_back(m, state, spacing, &mut index, &mut offset);
-                if wanted > 0 {
+                let wanted = step_back(m, state, tells, spacing, &mut index, &mut offset);
+                if wanted > 0 && tells {
                     // Left to the next round, and no scroll anyone asked for.
                     animator.note_scroll_back_left(state.pending.get() - pending_before_gap);
                 }
@@ -2114,19 +2132,23 @@ impl MeasurePolicy for LazyGridLayout {
                 .min(MOST_MISSING);
             let more =
                 (room.max(1) as usize).div_ceil((in_view + spacing).max(1) as usize).min(cap);
-            state.asked.set(more);
+            if tells {
+                state.asked.set(more);
+            }
             wanted_end = m.lines.at_most_last(end_index + more + beyond + beyond_after - 1) + 1;
         }
-        if !missing {
+        if !missing && tells {
             state.asked.set(0);
         }
         // The items composed, from the lines: whole lines.
         let wanted_items = (m.lines.start(wanted_start), m.lines.start(wanted_end));
         let covers = composed_start <= wanted_items.0 && composed_end >= wanted_items.1;
         let prefetch = &state.prefetch;
-        prefetch.policy.set(policy);
-        prefetch.vertical.set(self.info.vertical);
-        prefetch.visible.set(m.lines.start(end_index) - m.lines.start(lead));
+        if tells {
+            prefetch.policy.set(policy);
+            prefetch.vertical.set(self.info.vertical);
+            prefetch.visible.set(m.lines.start(end_index) - m.lines.start(lead));
+        }
         // The header sticking over the first item in view (`applyStickyItems`): where it sticks.
         // Compose's sticking item has no line (`UnknownRow`), so its window has no first line while
         // one sticks: nothing's requested before it, nothing kept around it (D1451).
@@ -2146,7 +2168,7 @@ impl MeasurePolicy for LazyGridLayout {
             Some((header, placeable, at))
         });
         // The cache window, once the layout settled: a line at a time, each of its items a request.
-        if !missing && wanted_before == 0 && (headers.is_none() || sticking.is_some()) {
+        if tells && !missing && wanted_before == 0 && (headers.is_none() || sticking.is_some()) {
             let mut laid = match (placed.first().copied(), placed.last().copied()) {
                 (Some((_, first_main)), Some((last_line, last_main))) => {
                     let first = lead.saturating_sub(beyond);
@@ -2232,11 +2254,15 @@ impl MeasurePolicy for LazyGridLayout {
         // The items that may stay composed: those wanted, those in the window (lines), and those
         // requests composed next to them.
         // A focus search that laid lines out beyond the bounds is over: they go (D482, D577).
-        let beyond_ended = state.beyond_ended.take();
+        let beyond_ended = tells && state.beyond_ended.take();
         if beyond_ended {
             prefetch.search_ended();
         }
-        let limits = {
+        // Now, after the pass ahead, what's composed is what either wants, as a list's.
+        let limits = if !tells {
+            let (low, high) = prefetch.limits.get();
+            (low.min(wanted_items.0), high.max(wanted_items.1))
+        } else {
             // The line after the wanted ones the scroll's way, if no focus search just ended.
             let next = if prefetch.forward.get() {
                 m.lines.start(wanted_end + 1)
@@ -2262,7 +2288,7 @@ impl MeasurePolicy for LazyGridLayout {
         let mut composed = (composed_start, composed_end);
         let composed_more = state.composed_more.take();
         // A paused composition cancelled: the items composed again first (D594).
-        let recompose = m.lacked_unready.get() || prefetch.take_cancelled();
+        let recompose = m.lacked_unready.get() || (tells && prefetch.take_cancelled());
         if !covers || search_ended || recompose {
             // Items to compose (or a focus search's to let go): this composition deactivates
             // those no longer wanted too.
@@ -2271,28 +2297,35 @@ impl MeasurePolicy for LazyGridLayout {
         } else if composed_more {
             state.composed.set(composed);
         }
-        prefetch.node.set(Some(node));
-        prefetch.count.set(count);
-        prefetch.wanted.set(wanted_items);
-        prefetch.limits.set(limits);
-        // Those no longer wanted are deactivated by the next composition (D575).
-        prefetch.trim_between_frames(state, self.scheduler.as_ref(), composed);
         let first_item = m.lines.start(index);
-        state.position.set((first_item, offset));
-        state.first_key.set(Some(info.items.key(first_item)));
-        // In items, as `first_visible_item_index` (a scrollbar's estimates): a line's extent
-        // shared among its items.
-        let lines = m.lines.count_estimate().max(1);
-        let per_item = (average + spacing) as f32 * lines as f32 / count as f32;
-        let layout_info = (count, per_item, spacing, main_max, before + after);
-        if state.layout_info_written.replace(layout_info) != layout_info {
-            state.layout_info.set(layout_info);
-        }
-        let rounded = (first_item, offset.round() as i32);
-        if state.published.get() != rounded {
-            state.published.set(rounded);
-            state.first_index.set(rounded.0);
-            state.first_offset.set(rounded.1);
+        if tells {
+            prefetch.node.set(Some(node));
+            prefetch.count.set(count);
+            prefetch.wanted.set(wanted_items);
+            prefetch.limits.set(limits);
+            // Those no longer wanted are deactivated by the next composition (D575).
+            prefetch.trim_between_frames(state, self.scheduler.as_ref(), composed);
+            state.position.set((first_item, offset));
+            state.first_key.set(Some(info.items.key(first_item)));
+            // In items, as `first_visible_item_index` (a scrollbar's estimates): a line's extent
+            // shared among its items.
+            let lines = m.lines.count_estimate().max(1);
+            let per_item = (average + spacing) as f32 * lines as f32 / count as f32;
+            let layout_info = (count, per_item, spacing, main_max, before + after);
+            if state.layout_info_written.replace(layout_info) != layout_info {
+                state.layout_info.set(layout_info);
+            }
+            let rounded = (first_item, offset.round() as i32);
+            if state.published.get() != rounded {
+                state.published.set(rounded);
+                state.first_index.set(rounded.0);
+                state.first_offset.set(rounded.1);
+            }
+        } else {
+            // What either pass wants stays composed, and trimming lets go of neither's.
+            let (start, end) = prefetch.wanted.get();
+            prefetch.wanted.set((start.min(wanted_items.0), end.max(wanted_items.1)));
+            prefetch.limits.set(limits);
         }
         // The whole lines composed out of view are placed too (clipped away), so focus can move
         // to them; those composed beyond the wanted ones (prefetched) aren't. A focused item's
@@ -2345,17 +2378,22 @@ impl MeasurePolicy for LazyGridLayout {
         let pending = state.pending.get();
         let reaches_start = (lead == 0 || placed_start == 0) && wanted_before == 0;
         let average = m.line_sizes.average() as f32 + spacing as f32;
-        state.room_backward.set(if reaches_start {
-            (-extent_start) as f32 + pending
-        } else {
-            (placed_start.min(lead) as f32 * average - extent_start as f32 + pending).max(1.0)
-        });
+        if tells {
+            state.room_backward.set(if reaches_start {
+                (-extent_start) as f32 + pending
+            } else {
+                (placed_start.min(lead) as f32 * average - extent_start as f32 + pending).max(1.0)
+            });
+        }
         let reaches_end = !missing && (at_end || !m.lines.exists(placed_end));
-        state.room_estimated.set((!reaches_start, !reaches_end));
+        if tells {
+            state.room_estimated.set((!reaches_start, !reaches_end));
+        }
         // What input taken past an estimated end couldn't use goes to the parents once the
         // layout is over, as a list's (D479, D490); the distance moved in lines measured.
         let mut post_scroll: Option<Box<dyn FnOnce()>> = None;
-        if pending == 0.0
+        if tells
+            && pending == 0.0
             && !missing
             && wanted_before == 0
             && let Some(overshoot) = state.overshoot.borrow_mut().take()
@@ -2368,19 +2406,21 @@ impl MeasurePolicy for LazyGridLayout {
                 post_scroll = overshoot.rest(moved);
             }
         }
-        state.beyond_more.set((placed_start.min(lead) > 0, m.lines.exists(placed_end)));
-        state.room_forward.set(if reaches_end {
-            (extent_end.max(content_end) - main_max).max(0) as f32 - pending
-        } else {
-            let lines_after =
-                m.lines.count_estimate().saturating_sub(placed_end.max(end_index)) as f32;
-            (lines_after * average + (extent_end.max(content_end) - main_max) as f32 - pending)
-                .max(1.0)
-        });
-        state.publish_can_scroll();
         let header = headers.map(|(header, _)| header);
-        if state.sticky_written.replace(header) != header {
-            state.sticky.set(header);
+        if tells {
+            state.beyond_more.set((placed_start.min(lead) > 0, m.lines.exists(placed_end)));
+            state.room_forward.set(if reaches_end {
+                (extent_end.max(content_end) - main_max).max(0) as f32 - pending
+            } else {
+                let lines_after =
+                    m.lines.count_estimate().saturating_sub(placed_end.max(end_index)) as f32;
+                (lines_after * average + (extent_end.max(content_end) - main_max) as f32 - pending)
+                    .max(1.0)
+            });
+            state.publish_can_scroll();
+            if state.sticky_written.replace(header) != header {
+                state.sticky.set(header);
+            }
         }
         // A focused item composed out of the composed lines (pinned), placed out of view.
         let mut pinned: Vec<(Placeable, i32, i32)> = Vec::new();
@@ -2414,6 +2454,8 @@ impl MeasurePolicy for LazyGridLayout {
         let mut cross_total = cross_max;
         let mut animated_items: Vec<(u64, Placeable, i32, i32)> = Vec::new();
         let (mut moved_to_start, mut moved_to_end) = (Vec::new(), Vec::new());
+        // Where the pass ahead placed those the pass that's now places where they're ahead.
+        let mut overrides: Vec<(Placeable, i32, i32)> = Vec::new();
         if !animator.idle() {
             if let Some((from_item, from_offset, asked)) = scrolled_from {
                 let from_line = m.lines.line_of(from_item.min(count - 1));
@@ -2428,7 +2470,25 @@ impl MeasurePolicy for LazyGridLayout {
                 animator.add_consumed_scroll(item_animator::consumed_scroll(asked, moved));
             }
             let settled = !missing && wanted_before == 0 && !m.lacked_unready.get();
-            if settled {
+            if !tells {
+                // Now, after the pass ahead: each animated item where it is ahead, as a list's
+                // (Compose's `lookaheadOffset`), those moving away too.
+                for place in state.lookahead_places.borrow().iter() {
+                    let Some((placeable, _)) = m.item(place.index) else { continue };
+                    overrides.push((placeable, place.main, place.cross));
+                    animated_items.push((place.key, placeable, place.main, place.cross));
+                    pinned.retain(|(other, _, _)| *other != placeable);
+                    let lines = ahead_lines.iter().chain(&placed).chain(&beyond_lines);
+                    let in_lines = lines.clone().any(|&(line, _)| {
+                        m.measured_line(line).is_some_and(|(start, end, _)| {
+                            m.cells[start..end].iter().any(|(other, _)| *other == placeable)
+                        })
+                    });
+                    if !in_lines {
+                        moved_to_end.push((placeable, place.main, place.cross));
+                    }
+                }
+            } else if settled {
                 let mut positioned = Vec::new();
                 for &(line, main) in ahead_lines.iter().chain(&placed).chain(&beyond_lines) {
                     let (first_cell, _, _) = m.measured_line(line).expect("a line measured");
@@ -2470,8 +2530,11 @@ impl MeasurePolicy for LazyGridLayout {
                     lane_count: slots.count(),
                     layout_min,
                     layout_max,
-                    looking_ahead: false,
+                    looking_ahead,
                 };
+                if looking_ahead {
+                    super::note_lookahead_places(state, &positioned, before);
+                }
                 let moved = animator.on_measured(state, &pass, &positioned, &mut |item, moved| {
                     m.measure(item, moved.lane, moved.span).map(|(placeable, _)| {
                         let size = if vertical { placeable.height } else { placeable.width };
@@ -2492,6 +2555,16 @@ impl MeasurePolicy for LazyGridLayout {
                             moved_to_end.push(entry);
                         }
                         animated_items.push((away.key, placeable, away.main + before, lane_cross));
+                        if looking_ahead {
+                            state.lookahead_places.borrow_mut().push(
+                                item_animator::LookaheadPlace {
+                                    key: away.key,
+                                    index: away.index,
+                                    main: away.main + before,
+                                    cross: lane_cross,
+                                },
+                            );
+                        }
                     }
                 }
                 let min = animator.min_size_to_fit_disappearing();
@@ -2516,7 +2589,7 @@ impl MeasurePolicy for LazyGridLayout {
                     cross_total = constrain_cross(cross_total.max(cross_min));
                 }
             }
-        } else if !missing && wanted_before == 0 {
+        } else if !missing && wanted_before == 0 && tells {
             animator.note_items(&info.items, first_item);
         }
         let (width, height) =
@@ -2540,6 +2613,9 @@ impl MeasurePolicy for LazyGridLayout {
             let (start, end, _) = m.measured_line(line).expect("a line measured");
             for &(placeable, cross) in &m.cells[start..end] {
                 if sticking.is_none_or(|(_, header, _)| header != placeable) {
+                    let ahead = overrides.iter().find(|(other, _, _)| *other == placeable);
+                    let (main, cross) =
+                        ahead.map_or((main, cross), |&(_, main, cross)| (main, cross));
                     place(m.scope, &placeable, main, cross);
                 }
             }
@@ -2550,15 +2626,17 @@ impl MeasurePolicy for LazyGridLayout {
         for (placeable, main, cross) in &pinned {
             place(m.scope, placeable, *main, *cross);
         }
-        state.sticking_size.set(sticking.map_or(0, |(_, placeable, _)| {
-            if vertical { placeable.height } else { placeable.width }
-        }));
+        if tells {
+            state.sticking_size.set(sticking.map_or(0, |(_, placeable, _)| {
+                if vertical { placeable.height } else { placeable.width }
+            }));
+        }
         // The header last: drawn over the items, and hit first.
         if let Some((_, placeable, at)) = &sticking {
             place(m.scope, placeable, *at, 0);
         }
         m.scope.set_motion_frame_of_reference_placement(false);
-        for (key, placeable, main, cross) in &animated_items {
+        for (key, placeable, main, cross) in animated_items.iter().filter(|_| !looking_ahead) {
             let (x, y) = position_of(placeable, *main, *cross);
             let x = if rtl { width - x - placeable.width } else { x };
             animator.note_placed(*key, x, y, (-before, main_total + after, vertical));
@@ -2617,21 +2695,23 @@ impl MeasurePolicy for LazyGridLayout {
         }
         drop(laid);
         let keys_changed = state.note_laid_items(&info.items);
-        state.laid_out.end(
-            LaidViewport {
-                start: -before,
-                end: main_max - before,
-                count,
-                size: IntSize::new(width, height),
-                vertical,
-                reverse,
-                before,
-                after,
-                spacing,
-                max_span: slots.count(),
-            },
-            keys_changed,
-        );
+        if tells {
+            state.laid_out.end(
+                LaidViewport {
+                    start: -before,
+                    end: main_max - before,
+                    count,
+                    size: IntSize::new(width, height),
+                    vertical,
+                    reverse,
+                    before,
+                    after,
+                    spacing,
+                    max_span: slots.count(),
+                },
+                keys_changed,
+            );
+        }
         if let Some(post_scroll) = post_scroll {
             m.scope.run_after_layout(post_scroll);
         }
