@@ -269,14 +269,18 @@ impl TextFieldNode {
                         self.word_selection(start, end)
                     }
                 };
+                // Begun past the text, the drag goes on from where its first selection started,
+                // before it's put in order (Compose's `newSelection.start`): from the end of the
+                // last word when it went back.
+                let begun = anchor;
                 // Never reversed, as Compose's.
                 let (anchor, cursor) = (anchor.min(cursor), anchor.max(cursor));
                 if self.anchor == self.cursor || anchor != cursor {
                     self.anchor = anchor;
                     self.cursor = cursor;
                 }
-                if long.begin.is_none() && self.anchor != self.cursor {
-                    long.begin = Some(self.anchor);
+                if long.begin.is_none() && anchor != cursor {
+                    long.begin = Some(begun);
                     self.touch.long = Some(long);
                 }
             }
