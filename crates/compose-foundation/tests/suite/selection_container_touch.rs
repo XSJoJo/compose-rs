@@ -575,3 +575,204 @@ fn a_dragged_handle_outside_the_visible_bounds_still_shows() {
         touch.up();
     });
 }
+
+/// Whether `handle` shows, as Compose's `assertSelectionHandlesShown`: there and visible.
+fn shown(ui: &mut ComposeTestRule, handle: Handle) -> bool {
+    let nodes = ui.on_all_nodes(is_selection_handle(Some(handle))).fetch_semantics_nodes();
+    match nodes.as_slice() {
+        [] => false,
+        [node] => node.config().get(&SELECTION_HANDLE_INFO_KEY).expect("its info").visible,
+        _ => panic!("more than one {handle:?} handle"),
+    }
+}
+
+const LINES: usize = 20;
+const LINE: f32 = 15.0;
+
+/// A container 100 px high over a column of twenty texts of 15 px ("0" to "19", each tagged by
+/// its text) scrolling by `state`, as Compose's `LazyColumnMultiTextRegressionTest` over a lazy
+/// column (whose texts leave the composition as they scroll away, so Compose pins those
+/// selected: the auto-scroll's part).
+fn scrolling_texts(state: ScrollState) -> ComposeTestRule {
+    container_with(false, move || {
+        Box!(modifier = Modifier.height(100.dp()), {
+            Column!(modifier = Modifier.vertical_scroll(state), {
+                for index in 0..LINES {
+                    BasicText!(
+                        index.to_string(),
+                        modifier = Modifier.fill_max_width().test_tag(index.to_string()),
+                        style = TextStyle { font_size: LINE.sp(), ..TextStyle::DEFAULT }
+                    );
+                }
+            });
+        });
+    })
+}
+
+/// A long press on text `from`, dragged to text `to`, as Compose's `createSelection`.
+fn select_lines(ui: &mut ComposeTestRule, from: usize, to: usize) {
+    let center =
+        |ui: &mut ComposeTestRule, line: usize| character_box(ui, &line.to_string(), 0).center();
+    let (from, to) = (center(ui, from), center(ui, to));
+    ui.on_node_with_tag(CONTAINER).perform_touch_input(|touch| {
+        let timeout = touch.view_configuration().long_press_timeout_millis;
+        touch.down(from);
+        touch.advance_event_time(timeout + 10);
+        touch.move_to(from);
+        touch.move_to(to);
+        touch.up();
+    });
+    ui.wait_for_idle();
+}
+
+fn scroll_to(ui: &mut ComposeTestRule, state: ScrollState, to: i32) {
+    crate::scroll_support::run(ui, async move {
+        let _ = state.scroll_to(to).await;
+    });
+}
+
+// After Compose's compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/LazyColumnMultiTextRegressionTest.kt, whenScrollingTextOutOfViewUpwards_handlesDisappear,
+// over a column scrolled by its state: each handle hides once where it points scrolls out of the
+// container's view (Compose's `updateHandleOffsets`), and shows again as it comes back.
+#[test]
+fn handles_hide_as_their_texts_scroll_out_of_view_and_come_back_with_them() {
+    let state = ScrollState::new(0);
+    let state = *state;
+    let mut ui = scrolling_texts(state);
+    let start = |ui: &mut ComposeTestRule| shown(ui, Handle::SelectionStart);
+    let end = |ui: &mut ComposeTestRule| shown(ui, Handle::SelectionEnd);
+    assert!(!start(&mut ui) && !end(&mut ui));
+    select_lines(&mut ui, 1, 3);
+    let (first, last) = selection(&mut ui).expect("a selection");
+    assert_anchor(&mut ui, Some(first), 0, "1");
+    assert_anchor(&mut ui, Some(last), 1, "3");
+    assert!(start(&mut ui) && end(&mut ui));
+    // The start handle at line 1's bottom (30), the end at line 3's (60).
+    let at = |ui: &mut ComposeTestRule, handle| handle_info(ui, handle).position.y;
+    assert_eq!(
+        (at(&mut ui, Handle::SelectionStart), at(&mut ui, Handle::SelectionEnd)),
+        (30.0, 60.0)
+    );
+    scroll_to(&mut ui, state, 30);
+    assert!(start(&mut ui) && end(&mut ui), "on the edge, still in view");
+    assert_eq!(at(&mut ui, Handle::SelectionEnd), 30.0);
+    scroll_to(&mut ui, state, 31);
+    assert!(!start(&mut ui) && end(&mut ui));
+    scroll_to(&mut ui, state, 61);
+    assert!(!start(&mut ui) && !end(&mut ui));
+    scroll_to(&mut ui, state, 45);
+    assert!(!start(&mut ui) && end(&mut ui));
+    scroll_to(&mut ui, state, 0);
+    assert!(start(&mut ui) && end(&mut ui));
+    assert_eq!(
+        (at(&mut ui, Handle::SelectionStart), at(&mut ui, Handle::SelectionEnd)),
+        (30.0, 60.0)
+    );
+}
+
+// Not one of Compose's: a finger's long press dragged over texts in a scrolling column selects
+// them, the column not scrolling (Compose's texts take the drag ahead of the scrollables around
+// them).
+#[test]
+fn a_long_press_dragged_in_a_scrolling_column_selects_and_does_not_scroll() {
+    let state = ScrollState::new(0);
+    let state = *state;
+    let mut ui = scrolling_texts(state);
+    select_lines(&mut ui, 3, 1);
+    let (first, last) = selection(&mut ui).expect("a selection");
+    assert_anchor(&mut ui, Some(first), 1, "3");
+    assert_anchor(&mut ui, Some(last), 0, "1");
+    assert_eq!(state.value(), 0);
+}
+
+// Not one of Compose's: the visible bounds are clipped by the window too, as Compose's
+// `visibleBounds()` (`boundsInWindow`): a container running past the window's bottom hides the
+// handle pointing past it.
+#[test]
+fn a_handle_pointing_past_the_window_hides() {
+    let measurer = FixedTextMeasurer::with_metrics(FixedFontMetrics::SAMPLE_FONT);
+    let mut ui =
+        compose_test_with(IntSize::new(400, 400), Density::new(1.0), Box::new(measurer), || {
+            // The window is 400 px high: the second text's bottom is 10 px past it.
+            Box!(modifier = Modifier.offset(0.dp(), 370.dp()).test_tag(CONTAINER), {
+                SelectionContainer!({
+                    Column!({
+                        BasicText!("aaa", modifier = Modifier.test_tag(TAG1), style = style());
+                        BasicText!("bbb", modifier = Modifier.test_tag(TAG2), style = style());
+                    });
+                });
+            });
+        });
+    ui.host().set_input_mode(InputMode::Touch);
+    ui.wait_for_idle();
+    start_selection(&mut ui, TAG1, 0);
+    assert!(shown(&mut ui, Handle::SelectionStart) && shown(&mut ui, Handle::SelectionEnd));
+    // Everything selected: the end handle points at the second text's bottom, past the window.
+    select_all(&mut ui);
+    let (_, last) = selection(&mut ui).expect("a selection");
+    assert_anchor(&mut ui, Some(last), 3, TAG2);
+    assert!(shown(&mut ui, Handle::SelectionStart));
+    assert!(!shown(&mut ui, Handle::SelectionEnd));
+}
+
+// Not one of Compose's: a graphics layer moving the container, with no layout, moves its visible
+// bounds (Compose's container's position in the window changes): the handle it takes past the
+// window hides.
+#[test]
+fn a_container_moved_by_a_graphics_layer_past_the_window_hides_its_handle() {
+    let translation = compose_runtime::mutable_state_of(0.0f32);
+    let moved = translation.handle();
+    let measurer = FixedTextMeasurer::with_metrics(FixedFontMetrics::SAMPLE_FONT);
+    let mut ui = compose_test_with(
+        IntSize::new(400, 400),
+        Density::new(1.0),
+        Box::new(measurer),
+        move || {
+            // The texts' bottoms at 360 and 380, the window 400 px high.
+            let modifier = Modifier
+                .offset(0.dp(), 340.dp())
+                .graphics_layer(move |layer| layer.translation_y = moved.get())
+                .test_tag(CONTAINER);
+            Box!(modifier = modifier, {
+                SelectionContainer!({
+                    Column!({
+                        BasicText!("aaa", modifier = Modifier.test_tag(TAG1), style = style());
+                        BasicText!("bbb", modifier = Modifier.test_tag(TAG2), style = style());
+                    });
+                });
+            });
+        },
+    );
+    ui.host().set_input_mode(InputMode::Touch);
+    ui.wait_for_idle();
+    start_selection(&mut ui, TAG1, 0);
+    select_all(&mut ui);
+    assert!(shown(&mut ui, Handle::SelectionStart) && shown(&mut ui, Handle::SelectionEnd));
+    // 30 px down: the end handle 10 px past the window, the start one 10 px in it.
+    translation.set(30.0);
+    ui.wait_for_idle();
+    assert!(shown(&mut ui, Handle::SelectionStart));
+    assert!(!shown(&mut ui, Handle::SelectionEnd));
+    translation.set(0.0);
+    ui.wait_for_idle();
+    assert!(shown(&mut ui, Handle::SelectionEnd));
+}
+
+/// Cmd+A (Ctrl+A): everything in the focused container selected.
+fn select_all(ui: &mut ComposeTestRule) {
+    let modifiers = if cfg!(target_os = "macos") {
+        compose_ui::KeyModifiers { meta: true, ..Default::default() }
+    } else {
+        compose_ui::KeyModifiers { ctrl: true, ..Default::default() }
+    };
+    for kind in [compose_ui::KeyEventType::KeyDown, compose_ui::KeyEventType::KeyUp] {
+        let key = compose_ui::Key::Character('a');
+        ui.host().send_key(compose_ui::KeyEvent {
+            key,
+            kind,
+            modifiers,
+            from_soft_keyboard: false,
+        });
+    }
+    ui.wait_for_idle();
+}

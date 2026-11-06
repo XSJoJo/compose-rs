@@ -959,8 +959,12 @@ impl compose_ui::Selectable for TextNode {
         if text.is_empty() {
             return compose_ui::Rect::ZERO;
         }
-        let last = crate::selection_handles::previous_char(text, text.len());
-        let offset = crate::selection_handles::previous_char(text, offset.min(last) + 1);
+        // Compose's `offset.coerceIn(0, textLength - 1)`, in bytes: the character the offset is
+        // in, the last past the text.
+        let mut offset = offset.min(text.len() - 1);
+        while !text.is_char_boundary(offset) {
+            offset -= 1;
+        }
         self.laid_out(measurer, |layout, _| layout.get_bounding_box(offset))
             .unwrap_or(compose_ui::Rect::ZERO)
     }

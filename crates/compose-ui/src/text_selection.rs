@@ -250,6 +250,12 @@ pub(crate) struct TextSelection {
     unit: Unit,
 }
 
+/// Where a selection's container and the texts of its ends were, in the root, with their sizes:
+/// what its handles follow, as Compose's `updateHandleOffsets` runs when the container's
+/// position or a selected text's coordinates change.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct HandlesPlacedFor([(NodeId, Offset, IntSize); 3]);
+
 /// A text below a container: its node, the chain index of its selectable, its bounds in the
 /// root, and its text's version.
 #[derive(Clone, Copy, Debug)]
@@ -616,6 +622,7 @@ impl UiTree {
     /// the container's coordinates, hidden outside its visible bounds unless it's dragged.
     /// Nothing for a container without handles.
     pub(crate) fn refresh_handles(&mut self, container: NodeId) {
+        self.handles_placed_for = self.text_selection.and_then(|it| self.handles_placed(&it));
         let Some(found) = self.container_handles(container) else { return };
         let handles = found.handles.clone();
         handles.container.set(Some(container));
@@ -632,8 +639,11 @@ impl UiTree {
             ) {
                 let crossed = anchor > focus;
                 let origin = self.layer_origin(container, found.layer);
+                // Compose's `visibleBounds()`: clipped by the clips around it and the window.
                 let clipped = self.coordinate_values(container, found.layer, found.index);
-                let visible = clipped.clipped_bounds.translate(-origin);
+                let window = self.window_bounds_of(container);
+                let visible = crate::layout_callbacks::intersect(clipped.clipped_bounds, window)
+                    .translate(-clipped.position_in_root);
                 let dragging = handles.dragging();
                 let mut directions = [ResolvedTextDirection::Ltr; 2];
                 for (slot, (point, start)) in
@@ -674,6 +684,33 @@ impl UiTree {
         if was_at != positions {
             handles.positions.set(positions);
         }
+    }
+
+    /// After a layout or graphics layers moving (`moved`), tells `selection`'s handles where they
+    /// point if its container or the texts of its ends moved or changed size, as Compose's
+    /// container updates them when its position changes and a selected text when its
+    /// coordinates do; else nothing.
+    pub(crate) fn refresh_handles_if_moved(&mut self, selection: &TextSelection, moved: &[NodeId]) {
+        let nodes = [selection.container, selection.anchor.node, selection.focus.node];
+        let layer_moved =
+            moved.iter().any(|&layer| nodes.iter().any(|&node| self.is_at_or_below(node, layer)));
+        if layer_moved || self.handles_placed(selection) != self.handles_placed_for {
+            self.refresh_handles(selection.container);
+        }
+    }
+
+    /// Where `selection`'s container and the texts of its ends are now, in the root, with their
+    /// sizes (graphics layers left out: their moves are told apart).
+    fn handles_placed(&self, selection: &TextSelection) -> Option<HandlesPlacedFor> {
+        let at = |node: NodeId| {
+            let value = self.get(node)?;
+            Some((node, self.layer_origin(node, 0), value.layers.first()?.size))
+        };
+        Some(HandlesPlacedFor([
+            at(selection.container)?,
+            at(selection.anchor.node)?,
+            at(selection.focus.node)?,
+        ]))
     }
 
     /// A selection started in another container clears this one's.
@@ -958,6 +995,18 @@ impl PointerInputModifierNode for SelectionContainerNode {
         _bounds: IntSize,
         context: &mut EventContext<'_>,
     ) {
+        if pass == PointerEventPass::Initial {
+            // A long press's drag is the selection's before what's inside sees it, as Compose's
+            // texts take it ahead of the scrollables around them (a lazy column's items).
+            let long = self.finger.as_ref().is_some_and(|finger| finger.long);
+            if long && event.kind == PointerEventType::Move && event.pressed && !event.consumed {
+                let Some(position) = context.pointer_position() else { return };
+                event.consume();
+                let container = context.node;
+                context.requests.selection.push(SelectionRequest::Extend { container, position });
+            }
+            return;
+        }
         if pass != PointerEventPass::Main {
             return;
         }
@@ -1057,13 +1106,8 @@ impl SelectionContainerNode {
             }
             PointerEventType::Move if event.pressed => {
                 let Some(finger) = &mut self.finger else { return };
-                if finger.long {
-                    if !event.consumed {
-                        event.consume();
-                        let request = SelectionRequest::Extend { container, position };
-                        context.requests.selection.push(request);
-                    }
-                } else {
+                // A long press's moves were taken in the initial pass.
+                if !finger.long {
                     let moved = position - finger.at;
                     let slop = context.view_configuration().touch_slop;
                     if event.consumed || moved.x.hypot(moved.y) > slop {

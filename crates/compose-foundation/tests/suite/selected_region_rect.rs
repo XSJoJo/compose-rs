@@ -147,3 +147,33 @@ fn two_selected_texts_make_one_region() {
     select_all(&mut ui);
     assert_eq!(region(&mut ui), units(0.0, 0.0, 5.0, 2.0));
 }
+
+/// `text` alone in a container, all selected: its region.
+fn all_of(text: &'static str) -> Option<Rect> {
+    let mut ui = container((0.0, 0.0), move || {
+        BasicText!(text, style = style());
+    });
+    click(&mut ui, (0.0, 0.0), (0.0, 0.0));
+    select_all(&mut ui);
+    region(&mut ui)
+}
+
+// Not one of Compose's (offsets there are UTF-16's): a text ending in a character of several
+// bytes has its last character's box, never a byte inside it.
+#[test]
+fn a_region_ending_on_a_character_of_two_bytes_is_its_box() {
+    assert_eq!(all_of("a\u{e9}"), units(0.0, 0.0, 2.0, 1.0));
+}
+
+// Not one of Compose's: an emoji of four bytes, alone and last.
+#[test]
+fn a_region_of_an_emoji_is_its_box() {
+    assert_eq!(all_of("\u{1F600}"), units(0.0, 0.0, 1.0, 1.0));
+    assert_eq!(all_of("ab\u{1F600}"), units(0.0, 0.0, 3.0, 1.0));
+}
+
+// Not one of Compose's: a combining mark last takes no space, after the character it marks.
+#[test]
+fn a_region_ending_on_a_combining_mark_ends_with_its_base() {
+    assert_eq!(all_of("ae\u{301}"), units(0.0, 0.0, 2.0, 1.0));
+}

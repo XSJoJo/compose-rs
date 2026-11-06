@@ -279,6 +279,21 @@ fn the_box_past_the_text_is_its_last_characters() {
     assert_eq!(box_, Rect::new(4.0 * FONT, FONT, 5.0 * FONT, 2.0 * FONT));
 }
 
+// Not one of Compose's (its offsets are UTF-16's): past a text ending in a character of several
+// bytes, the box is that character's.
+#[test]
+fn the_box_past_a_text_ending_on_a_wide_character_is_that_characters() {
+    assert_eq!(bounding_box("a\u{e9}", 3), Rect::new(FONT, 0.0, 2.0 * FONT, FONT));
+    assert_eq!(bounding_box("a\u{1F600}", 9), Rect::new(FONT, 0.0, 2.0 * FONT, FONT));
+}
+
+// Not one of Compose's: an offset inside an emoji is the emoji's.
+#[test]
+fn the_box_inside_a_wide_character_is_that_characters() {
+    assert_eq!(bounding_box("a\u{1F600}b", 2), Rect::new(FONT, 0.0, 2.0 * FONT, FONT));
+    assert_eq!(bounding_box("\u{e9}a", 1), Rect::new(0.0, 0.0, FONT, FONT));
+}
+
 fn line_range(text: &str, layout: Layout, offset: usize) -> Range<usize> {
     let mut ui = laid_out(AnnotatedString::new(text.to_string()), layout);
     ask(&mut ui, |selectable, measurer| selectable.range_of_line_containing(offset, measurer))

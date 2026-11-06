@@ -1020,6 +1020,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D2010 | [text](decisions/text.md#d2010) | revised by [D2015](decisions/text.md#d2015) |
 | D2011 | [text](decisions/text.md#d2011) | current |
 | D2012 | [text](decisions/text.md#d2012) | current |
-| D2013 | [text](decisions/text.md#d2013) | current |
-| D2014 | [text](decisions/text.md#d2014) | current |
+| D2013 | [text](decisions/text.md#d2013) | revised by [D2016](decisions/text.md#d2016) |
+| D2014 | [text](decisions/text.md#d2014) | revised by [D2016](decisions/text.md#d2016) |
 | D2015 | [text](decisions/text.md#d2015) | current |
+| D2016 | [text](decisions/text.md#d2016) | current |
