@@ -26,11 +26,13 @@ pub mod scrollbar;
 pub mod shape;
 mod text;
 mod text_field;
+mod text_field_buffer;
+mod text_field_state;
 pub mod text_input;
 pub mod tooltip;
 
 pub use compose_ui::{
-    Alignment, AnnotatedString, Color, FontFamily, FontStyle, ImageBitmap, Modifier,
+    Alignment, AnnotatedString, Brush, Color, FontFamily, FontStyle, ImageBitmap, Modifier,
     RECTANGLE_SHAPE, Role, Shape, SpanStyle, TextAlign, TextDecoration, TextOverflow, TextStyle,
 };
 
@@ -92,7 +94,9 @@ pub use text::{
     BasicAnnotatedText, BasicText, DisableSelection, LOCAL_TEXT_SELECTION_COLORS,
     SelectionContainer, TextSelectionColors,
 };
-pub use text_field::{BasicTextField, inner_text_field_only};
+pub use text_field::{BasicTextField, BasicTextFieldOfState, inner_text_field_only};
+pub use text_field_buffer::{ChangeList, TextFieldBuffer};
+pub use text_field_state::{TextFieldLineLimits, TextFieldState, remember_text_field_state};
 pub use text_input::{
     ImeAction, ImeOptions, KeyboardActions, KeyboardCapitalization, KeyboardOptions, KeyboardType,
     OffsetMapping, PasswordVisualTransformation, TransformedText, VisualTransform,
