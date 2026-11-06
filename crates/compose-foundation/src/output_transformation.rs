@@ -357,6 +357,23 @@ pub(crate) fn transformed_text(
     Some((buffer.as_str().to_string(), mapping))
 }
 
+/// Whether `value` through `transformation` shows as `shown` (`None`: as it is), without the
+/// mapping `transformed_text` computes: a field checks at each measurement that what it shows is
+/// still what its transformation makes (D1142, D1145).
+pub(crate) fn shows_as(
+    value: &TextFieldCharSequence,
+    transformation: &OutputTransformation,
+    shown: Option<&str>,
+) -> bool {
+    let mut buffer = TextFieldBuffer::new(value.clone());
+    transformation.transform_output(&mut buffer);
+    if buffer.changes().change_count() == 0 {
+        shown.is_none()
+    } else {
+        shown == Some(buffer.as_str())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

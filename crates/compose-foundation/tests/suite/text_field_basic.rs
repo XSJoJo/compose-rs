@@ -804,9 +804,61 @@ fn a_narrower_field_lays_its_text_out_narrower() {
     assert_eq!(first - second, (50.0 * density).round() as i32);
 }
 
+/// A short field whose decoration (a supporting text under it) sits just below the fold is shown
+/// whole when focused, not only its cursor, as Compose's `FocusableNode` asks for the whole
+/// decorated field beside the cursor's request and the column shows the larger that fits: both
+/// fields (D1145).
+// Compose: compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/Focusable.kt, onFocusStateChange (no test of its own)
+#[test]
+fn a_short_field_focused_is_shown_whole() {
+    for state_based in [false, true] {
+        let scroll_state = **Box::leak(Box::new(ScrollState::new(0)));
+        let state = state_of("text");
+        let mut ui = compose_test(move || {
+            let decorator = |inner: Callback| {
+                Column!({
+                    inner();
+                    Box!(Modifier.height(30.dp()).test_tag("supporting"));
+                });
+            };
+            Column!(modifier = Modifier.height(100.dp()).vertical_scroll(scroll_state), {
+                // The text's line in view, the supporting text under the fold.
+                Box!(Modifier.height(70.dp()));
+                if state_based {
+                    BasicTextFieldOfState!(
+                        state,
+                        modifier = Modifier.test_tag("field"),
+                        decorator = decorator,
+                    );
+                } else {
+                    BasicTextField!(
+                        "text".to_string(),
+                        |_| {},
+                        modifier = Modifier.test_tag("field"),
+                        decoration_box = decorator,
+                    );
+                }
+                Box!(Modifier.height(300.dp()));
+            });
+        });
+        ui.wait_for_idle();
+        assert_eq!(scroll_state.value(), 0);
+        ui.on_node_with_tag("field").request_focus();
+        ui.wait_for_idle();
+        let field = ui.on_node_with_tag("field").get_unclipped_bounds_in_root();
+        let density = ui.density().density;
+        // Its bottom at the column's bottom: all of it in view.
+        assert!(
+            (field.bottom.0 * density - 100.0 * density).abs() <= 1.0,
+            "state {state_based}: the field ends at {:?}",
+            field.bottom
+        );
+    }
+}
+
 /// A field taller than the column scrolling it, mostly above it, shows its cursor (its first
 /// line) when focused, as Compose's `bringSelectionEndIntoView`, not its bottom: both fields
-/// (D1141).
+/// (D1141). Its whole is asked for too (D1145), but it doesn't fit.
 #[test]
 fn a_tall_field_focused_shows_its_cursor() {
     let text = "line\n".repeat(40);
@@ -842,5 +894,41 @@ fn a_tall_field_focused_shows_its_cursor() {
             scrolled <= top + 1.0 && scrolled + 100.0 * density > top,
             "the first line in view, state {state_based}: {scrolled} for a field at {top}"
         );
+    }
+}
+
+/// A tall field whose cursor is in view, its top a little below the column's: focused, its top
+/// comes up to the column's, as Compose's: the cursor's request, already shown, isn't queued
+/// (`isMaxVisible`), and the whole field's, too large, goes to its nearer edge (D1145, D1376).
+// Compose: compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/gestures/ContentInViewNode.kt, bringChildIntoView (no test of its own)
+#[test]
+fn a_tall_field_with_its_cursor_in_view_brings_its_top_up() {
+    let text = "line\n".repeat(40);
+    for state_based in [false, true] {
+        let scroll_state = **Box::leak(Box::new(ScrollState::new(0)));
+        let state = state_with(&text, TextRange::ZERO);
+        let value = text.clone();
+        let mut ui = compose_test(move || {
+            let value = value.clone();
+            Column!(modifier = Modifier.height(100.dp()).vertical_scroll(scroll_state), {
+                Box!(Modifier.height(300.dp()));
+                if state_based {
+                    BasicTextFieldOfState!(state, modifier = Modifier.test_tag("field"));
+                } else {
+                    BasicTextField!(value.clone(), |_| {}, modifier = Modifier.test_tag("field"));
+                }
+                Box!(Modifier.height(300.dp()));
+            });
+        });
+        let density = ui.density().density;
+        let top = ui.on_node_with_tag("field").get_unclipped_bounds_in_root().top.0 * density;
+        // Its top 20 dp below the column's.
+        scroll_state.dispatch_raw_delta(top - 20.0 * density);
+        ui.wait_for_idle();
+        let before = scroll_state.value();
+        ui.on_node_with_tag("field").request_focus();
+        ui.wait_for_idle();
+        let moved = (scroll_state.value() - before) as f32;
+        assert!((moved - 20.0 * density).abs() <= 1.0, "state {state_based}: moved {moved}");
     }
 }

@@ -944,8 +944,8 @@ impl UiTree {
                 self.tell_focus_tap(node, tap);
             }
         }
-        if let Some(node) = requests.bring_into_view {
-            self.bring_focused_into_view(node, requests.bring_into_view_rect);
+        if !requests.bring_into_view.is_empty() {
+            self.bring_focused_into_view(requests.bring_into_view);
         }
         actions.append(&mut self.pending_actions);
     }

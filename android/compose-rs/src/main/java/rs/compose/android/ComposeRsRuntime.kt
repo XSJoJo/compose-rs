@@ -4,10 +4,13 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.database.ContentObserver
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.text.ShowSecretsSetting
+import android.util.Log
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -83,6 +86,33 @@ object ComposeRsRuntime {
             Settings.Global.ANIMATOR_DURATION_SCALE,
             1f,
         )
+
+    /**
+     * Whether a password's last typed character shows for a moment, typed on a screen's keyboard
+     * (bit 1) and on a physical one (bit 2), as Compose's `PasswordVisibilitySetting`
+     * (`BasicSecureTextField.android.kt`): `ShowSecretsSetting` from API 37, the "Show passwords"
+     * setting (`TEXT_SHOW_PASSWORD`) for both before, shown if it can't be read. Read only, when a
+     * password field asks; not watched (D1146).
+     */
+    internal fun readShowPassword(): Int {
+        val context = applicationContext ?: return 3
+        return try {
+            if (Build.VERSION.SDK_INT >= 37) {
+                val touch = if (ShowSecretsSetting.shouldShowTouchInput(context)) 1 else 0
+                val physical = if (ShowSecretsSetting.shouldShowPhysicalInput(context)) 2 else 0
+                touch or physical
+            } else if (
+                Settings.System.getInt(context.contentResolver, Settings.System.TEXT_SHOW_PASSWORD) > 0
+            ) {
+                3
+            } else {
+                0
+            }
+        } catch (e: Exception) {
+            Log.w("ComposeRs", "Failed to read the show password setting, showing it", e)
+            3
+        }
+    }
 
     /** The first read since it was last watched, from Rust (`bridge.rs`), on the main thread. */
     internal fun readAnimatorScale(): Float {

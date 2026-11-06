@@ -254,6 +254,23 @@ pub enum Key {
     /// Keyboard navigation's own keys, as `Key.NavigateNext` and `Key.NavigatePrevious`.
     NavigateNext,
     NavigatePrevious,
+    /// A keyboard's own clipboard keys and Insert, as `Key.Copy`, `Key.Cut`, `Key.Paste` and
+    /// `Key.Insert`.
+    Copy,
+    Cut,
+    Paste,
+    Insert,
+    /// The numeric keypad's navigation keys (Num Lock off), as `Key.NumPadDirectionUp` and the
+    /// others: a desktop's; Android has none.
+    NumPadDirectionUp,
+    NumPadDirectionDown,
+    NumPadDirectionLeft,
+    NumPadDirectionRight,
+    NumPadMoveHome,
+    NumPadMoveEnd,
+    NumPadPageUp,
+    NumPadPageDown,
+    NumPadInsert,
     /// The modifier keys, as Compose's `Key.ShiftLeft`… A host reports what they hold in
     /// [`KeyEvent::modifiers`]; tests' key injection presses them as keys (D903).
     ShiftLeft,
@@ -316,6 +333,23 @@ impl KeyEvent {
             Key::Back | Key::Escape => Direction::Exit,
             _ => return None,
         })
+    }
+
+    /// The key a numeric keypad's navigation key stands for (its arrows, Home, End, Page Up and
+    /// Down, Insert), as Compose's key mappings take either; any other key as it is.
+    pub fn without_num_pad(key: Key) -> Key {
+        match key {
+            Key::NumPadDirectionUp => Key::DirectionUp,
+            Key::NumPadDirectionDown => Key::DirectionDown,
+            Key::NumPadDirectionLeft => Key::DirectionLeft,
+            Key::NumPadDirectionRight => Key::DirectionRight,
+            Key::NumPadMoveHome => Key::MoveHome,
+            Key::NumPadMoveEnd => Key::MoveEnd,
+            Key::NumPadPageUp => Key::PageUp,
+            Key::NumPadPageDown => Key::PageDown,
+            Key::NumPadInsert => Key::Insert,
+            other => other,
+        }
     }
 
     pub fn down(key: Key) -> KeyEvent {
@@ -492,6 +526,9 @@ impl EventContext<'_> {
     }
 }
 
+/// A node asking to be shown, with what of it: a rect in a chain entry's layer, or all of it.
+pub(crate) type BringIntoViewRequest = (NodeId, Option<(usize, crate::unit::Rect)>);
+
 /// Requests handlers make, applied after dispatch.
 #[derive(Default)]
 pub(crate) struct Requests {
@@ -509,10 +546,10 @@ pub(crate) struct Requests {
     pub(crate) reset_input_method: bool,
     /// Show (true) or hide (false) the on-screen keyboard.
     pub(crate) software_keyboard: Option<bool>,
-    /// The handling node asks to be shown (`EventContext::bring_into_view`).
-    pub(crate) bring_into_view: Option<NodeId>,
-    /// What of it: a rect in its chain entry's layer (`EventContext::bring_rect_into_view`).
-    pub(crate) bring_into_view_rect: Option<(usize, crate::unit::Rect)>,
+    /// The handling nodes asking to be shown (`EventContext::bring_into_view`), each with what
+    /// of it: a rect in its chain entry's layer (`EventContext::bring_rect_into_view`), or all of
+    /// it. Shown together, as Compose's `ContentInViewNode` queues them (D1145).
+    pub(crate) bring_into_view: Vec<BringIntoViewRequest>,
 }
 
 impl EventContext<'_> {
@@ -555,16 +592,25 @@ impl EventContext<'_> {
     /// Asks the scrolling containers around this node to show it, as a focused node does
     /// (`FocusableNode`'s `bringIntoView`): once it's placed, if it isn't yet.
     pub fn bring_into_view(&mut self) {
-        self.requests.bring_into_view = Some(self.context.node);
-        self.requests.bring_into_view_rect = None;
+        self.request_bring_into_view(None);
     }
 
     /// Asks the scrolling containers around this node to show `rect`, in the coordinates of the
     /// layout this node is in, as a focused text field shows its cursor (Compose's
     /// `bringSelectionEndIntoView`): once it's placed, if it isn't yet (all of it, then).
     pub fn bring_rect_into_view(&mut self, rect: crate::unit::Rect) {
-        self.requests.bring_into_view = Some(self.context.node);
-        self.requests.bring_into_view_rect = self.context.index.map(|index| (index, rect));
+        self.request_bring_into_view(self.context.index.map(|index| (index, rect)));
+    }
+
+    /// A node's request takes the place of its last one; requests of several nodes in one focus
+    /// change are shown together, the largest that fits each container (D1145).
+    fn request_bring_into_view(&mut self, what: Option<(usize, crate::unit::Rect)>) {
+        let node = self.context.node;
+        let requests = &mut self.requests.bring_into_view;
+        match requests.iter_mut().find(|(each, _)| *each == node) {
+            Some(request) => request.1 = what,
+            None => requests.push((node, what)),
+        }
     }
 
     /// Queues a focus event for application code (`on_focus_event`, `on_focus_changed`), as

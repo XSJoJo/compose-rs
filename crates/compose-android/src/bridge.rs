@@ -34,6 +34,8 @@ static VM: OnceLock<JavaVM> = OnceLock::new();
 static WAKE: OnceLock<(Global<JClass<'static>>, JStaticMethodID)> = OnceLock::new();
 /// `ComposeRsNative.readAnimatorScale`, of `WAKE`'s class.
 static READ_ANIMATOR_SCALE: OnceLock<JStaticMethodID> = OnceLock::new();
+/// `ComposeRsNative.readShowPassword`, of `WAKE`'s class.
+static READ_SHOW_PASSWORD: OnceLock<JStaticMethodID> = OnceLock::new();
 
 pub(crate) fn set_vm(vm: JavaVM) {
     install_panic_hook();
@@ -910,6 +912,11 @@ fn create(
             .expect("compose-android: ComposeRsNative.readAnimatorScale");
         let _ = READ_ANIMATOR_SCALE.set(read_scale);
         crate::read_animator_duration_scale_with(read_animator_scale);
+        let read_show_password = env
+            .get_static_method_id(class, jni_str!("readShowPassword"), jni_sig!("()I"))
+            .expect("compose-android: ComposeRsNative.readShowPassword");
+        let _ = READ_SHOW_PASSWORD.set(read_show_password);
+        compose_ui::set_show_password_source(Some(read_show_password_setting));
         // A task woken on any thread posts a tick to the main thread.
         platform::set_wake_handler(|| {
             let (Some(vm), Some((class, wake))) = (VM.get(), WAKE.get()) else { return };
@@ -1298,6 +1305,33 @@ fn read_animator_scale() -> f32 {
         scale
     })
     .unwrap_or(1.0)
+}
+
+/// The "Show passwords" setting, read when a password field asks (`ComposeRsRuntime.
+/// readShowPassword`): whether a screen's keyboard's last typed character shows, and a physical
+/// one's (D1146). Read only, never written. Shown for both if it can't be read, as Compose's.
+fn read_show_password_setting() -> (bool, bool) {
+    let (Some(vm), Some((class, _)), Some(read)) = (VM.get(), WAKE.get(), READ_SHOW_PASSWORD.get())
+    else {
+        return (true, true);
+    };
+    let bits = vm
+        .attach_current_thread(|env| -> jni::errors::Result<i32> {
+            // SAFETY: `read` is `()I`, static, of `class`.
+            let bits = unsafe {
+                env.call_static_method_unchecked(
+                    class,
+                    *read,
+                    ReturnType::Primitive(Primitive::Int),
+                    &[],
+                )
+            };
+            let bits = bits.and_then(|value| value.i());
+            check(env, "ComposeRsNative.readShowPassword");
+            bits
+        })
+        .unwrap_or(3);
+    (bits & 1 != 0, bits & 2 != 0)
 }
 
 /// `ComposeRsNative.readAnimatorScaleAgain()`: the setting's no longer watched (no view shows), so
@@ -1799,6 +1833,10 @@ pub extern "system" fn Java_rs_compose_android_ComposeRsNative_key(
         16 => Key::Back,
         17 => Key::NavigateNext,
         18 => Key::NavigatePrevious,
+        19 => Key::Copy,
+        20 => Key::Cut,
+        21 => Key::Paste,
+        22 => Key::Insert,
         _ => match character {
             Some(c) => Key::Character(c),
             None => return false,
