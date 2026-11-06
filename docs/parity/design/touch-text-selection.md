@@ -60,4 +60,4 @@ Both fields are one node, so the gestures, the handles' visibility and their pos
 1. The handles' infrastructure, the cursor handle of a field (`TextFieldCursorHandleTest`).
 2. The selection handles of a field, long press and drags (`TextFieldSelectionHandlesTest`, `TextFieldLongPressTest`, `TextFieldScrolledSelectionGestureTest`, the handle cases of `TextFieldDoubleTapTest`).
 3. The container's long press and handles (`SelectionHandlesTest`, `SelectionHandlePopupPositionTest`, the touch parts of `SelectionContainerTest` and `SelectionContainerFocusTest`).
-4. `MultiWidgetSelectionDelegateTest` and `SelectionManagerGetSelectedRegionRectTest`, through the `Selectable`'s handle positions and bounds.
+4. `MultiWidgetSelectionDelegateTest` and `SelectionManagerGetSelectedRegionRectTest`, through the `Selectable`'s handle positions and bounds: `Selectable` answers what Compose's `MultiWidgetSelectionDelegate` does (boxes, lines, the last visible offset, line heights), and the tree gives the selected region's bounds for the toolbar (D2014).

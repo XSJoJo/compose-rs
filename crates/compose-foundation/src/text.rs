@@ -850,6 +850,38 @@ impl SemanticsModifierNode for TextNode {
     }
 }
 
+impl TextNode {
+    /// `ask` with its paragraph's layout and its size, once laid out.
+    fn laid_out<R>(
+        &self,
+        measurer: &compose_ui::platform::SharedTextMeasurer,
+        ask: impl FnOnce(&dyn compose_ui::Paragraph, compose_ui::Size) -> R,
+    ) -> Option<R> {
+        let (paragraph, constraints) = (self.paragraph?, self.constraints?);
+        let measurer = measurer.borrow();
+        let size = constraints.constrain(measurer.metrics(paragraph).size);
+        let layout = measurer.paragraph(paragraph);
+        Some(ask(&*layout, compose_ui::Size::new(size.width as f32, size.height as f32)))
+    }
+}
+
+/// The end of what a text laid out as `layout` within `size` shows, as Compose's
+/// `lastVisibleOffset`: its last line, or the last whose top is above its bottom when it's cut
+/// by its height, to that line's visible end.
+fn last_visible_offset(layout: &dyn compose_ui::Paragraph, size: compose_ui::Size) -> usize {
+    let lines = layout.line_count();
+    if lines == 0 {
+        return 0;
+    }
+    let mut last = lines - 1;
+    if layout.height() > size.height {
+        while last > 0 && layout.get_line_top(last) >= size.height {
+            last -= 1;
+        }
+    }
+    layout.get_line_end(last, true)
+}
+
 impl compose_ui::Selectable for TextNode {
     fn text(&self) -> SharedString {
         self.text.text().clone()
@@ -906,28 +938,74 @@ impl compose_ui::Selectable for TextNode {
         crossed: bool,
         measurer: &compose_ui::platform::SharedTextMeasurer,
     ) -> Option<Offset> {
-        let (paragraph, constraints) = (self.paragraph?, self.constraints?);
-        let measurer = measurer.borrow();
-        let size = constraints.constrain(measurer.metrics(paragraph).size);
-        let layout = measurer.paragraph(paragraph);
-        let lines = layout.line_count();
-        if lines == 0 {
-            return None;
+        self.laid_out(measurer, |layout, size| {
+            let offset = offset.min(last_visible_offset(layout, size));
+            crate::selection_handles::selection_handle_coordinates(
+                layout,
+                self.text.as_str(),
+                offset,
+                (start, crossed),
+                size,
+            )
+        })?
+    }
+
+    fn bounding_box(
+        &self,
+        offset: usize,
+        measurer: &compose_ui::platform::SharedTextMeasurer,
+    ) -> compose_ui::Rect {
+        let text = self.text.as_str();
+        if text.is_empty() {
+            return compose_ui::Rect::ZERO;
         }
-        // A text cut by its height: its last line whose top shows.
-        let mut last = lines - 1;
-        while last > 0 && layout.get_line_top(last) >= size.height as f32 {
-            last -= 1;
+        let last = crate::selection_handles::previous_char(text, text.len());
+        let offset = crate::selection_handles::previous_char(text, offset.min(last) + 1);
+        self.laid_out(measurer, |layout, _| layout.get_bounding_box(offset))
+            .unwrap_or(compose_ui::Rect::ZERO)
+    }
+
+    fn range_of_line_containing(
+        &self,
+        offset: usize,
+        measurer: &compose_ui::platform::SharedTextMeasurer,
+    ) -> std::ops::Range<usize> {
+        self.laid_out(measurer, |layout, size| {
+            let visible = last_visible_offset(layout, size);
+            if visible < 1 {
+                return 0..0;
+            }
+            let line = layout.get_line_for_offset(offset.min(visible - 1));
+            layout.get_line_start(line)..layout.get_line_end(line, true)
+        })
+        .unwrap_or(0..0)
+    }
+
+    fn last_visible_offset(&self, measurer: &compose_ui::platform::SharedTextMeasurer) -> usize {
+        self.laid_out(measurer, last_visible_offset).unwrap_or(0)
+    }
+
+    fn line_height(
+        &self,
+        offset: usize,
+        measurer: &compose_ui::platform::SharedTextMeasurer,
+    ) -> f32 {
+        if self.text.as_str().is_empty() {
+            return 0.0;
         }
-        let offset = offset.min(layout.get_line_end(last, true));
-        let size = compose_ui::Size::new(size.width as f32, size.height as f32);
-        crate::selection_handles::selection_handle_coordinates(
-            &*layout,
-            self.text.as_str(),
-            offset,
-            (start, crossed),
-            size,
-        )
+        let max_lines = self.options.max_lines.max(1) as usize;
+        self.laid_out(measurer, |layout, _| {
+            let lines = layout.line_count();
+            if lines == 0 {
+                return 0.0;
+            }
+            let line = layout.get_line_for_offset(offset).min(max_lines - 1).min(lines - 1);
+            if offset > layout.get_line_end(line, false) {
+                return 0.0;
+            }
+            layout.get_line_height(line)
+        })
+        .unwrap_or(0.0)
     }
 
     fn direction_at(

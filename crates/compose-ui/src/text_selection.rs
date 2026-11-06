@@ -65,6 +65,30 @@ pub trait Selectable {
     ) -> ResolvedTextDirection {
         ResolvedTextDirection::Ltr
     }
+    /// Character `offset`'s box, as `getBoundingBox`: the offset kept within the text (past it,
+    /// its last character's); empty for an empty text or before it's laid out.
+    fn bounding_box(&self, _offset: usize, _measurer: &SharedTextMeasurer) -> Rect {
+        Rect::ZERO
+    }
+    /// The line around `offset`, as `getRangeOfLineContaining`: from its start to its visible
+    /// end, the offset kept to what's shown; empty for an empty text.
+    fn range_of_line_containing(
+        &self,
+        _offset: usize,
+        _measurer: &SharedTextMeasurer,
+    ) -> Range<usize> {
+        0..0
+    }
+    /// The end of what's shown, as `getLastVisibleOffset`: the last line shown's visible end
+    /// (the most lines, or the height, cut the rest).
+    fn last_visible_offset(&self, _measurer: &SharedTextMeasurer) -> usize {
+        0
+    }
+    /// The height of the line at `offset`, as `getLineHeight`: none past the lines shown or an
+    /// empty text.
+    fn line_height(&self, _offset: usize, _measurer: &SharedTextMeasurer) -> f32 {
+        0.0
+    }
 }
 
 /// What a press selects, and a drag after it extends.
@@ -684,6 +708,69 @@ impl UiTree {
                 });
             if changed {
                 self.invalidate_draw_of(entry.node);
+            }
+        }
+    }
+
+    /// The bounds of what's selected in `container`, in its coordinates, as Compose's
+    /// `getSelectedRegionRect` (where the text toolbar goes): for each text the selection covers
+    /// a part of, its first and last selected characters' boxes, all together. `None` without a
+    /// selection there, or with a collapsed one.
+    #[doc(hidden)]
+    pub fn selected_region_rect(&mut self, container: NodeId) -> Option<Rect> {
+        let selection = self.text_selection.filter(|selection| selection.container == container)?;
+        let mut layer = 0;
+        for entry in self.get(container)?.chain.iter() {
+            if entry.node.downcast_ref::<SelectionContainerNode>().is_some() {
+                break;
+            }
+            if entry.kinds.any(NodeKinds::LAYOUT) {
+                layer += 1;
+            }
+        }
+        let origin = self.layer_origin(container, layer);
+        let entries = self.selectables(container);
+        let span = Self::span(&selection, &entries)?;
+        let mut region: Option<Rect> = None;
+        for (order, entry) in entries.iter().enumerate() {
+            let Some(range) = range_of(span, order) else { continue };
+            let text = self.selectable_text(entry.node, entry.index);
+            let range = clamp(&text, range);
+            if range.is_empty() {
+                continue;
+            }
+            let last = text[..range.end].char_indices().next_back().map_or(0, |(at, _)| at);
+            let Some((value, (measurer, _))) = self.node_and_measurer(entry.node) else { continue };
+            let Some(selectable) = value.chain[entry.index].selectable() else { continue };
+            for offset in [range.start, last] {
+                let found =
+                    selectable.bounding_box(offset, measurer).translate(entry.origin - origin);
+                region = Some(match region {
+                    Some(region) => Rect::new(
+                        region.left.min(found.left),
+                        region.top.min(found.top),
+                        region.right.max(found.right),
+                        region.bottom.max(found.bottom),
+                    ),
+                    None => found,
+                });
+            }
+        }
+        region
+    }
+
+    /// Runs `ask` with the `Selectable` of `node` (its first), if it has one. For tests.
+    #[doc(hidden)]
+    pub fn with_selectable(
+        &mut self,
+        node: NodeId,
+        ask: &mut dyn FnMut(&mut dyn Selectable, &SharedTextMeasurer),
+    ) {
+        let Some((value, (measurer, _))) = self.node_and_measurer(node) else { return };
+        for entry in value.chain.iter_mut() {
+            if let Some(selectable) = entry.selectable() {
+                ask(selectable, measurer);
+                return;
             }
         }
     }
