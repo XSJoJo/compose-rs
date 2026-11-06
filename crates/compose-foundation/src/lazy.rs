@@ -1,11 +1,9 @@
 //! Lazy lists, as Compose's `LazyColumn` and `LazyRow`: only the items in view are placed and
 //! drawn; they, a few next to them and the focused one are composed and measured.
 //!
-//! Compose composes items while measuring (subcomposition). Here the list composes a range of
-//! items, and its measurement, which fills the viewport from the scroll position, writes the
-//! range it needs when the composed one falls short; the host then recomposes and measures again
-//! within the same frame (`UiHost::frame`), so scrolling shows no empty frame. The items are
-//! composed by a restartable composable of their own, each item one too: a scroll recomposes
+//! As Compose's, the list composes its items while measuring, each in a subcomposition of its own
+//! (`slots`, C8, D1312): its measurement, which fills the viewport from the scroll position,
+//! composes an item when it reaches it, so scrolling shows no empty frame and a scroll recomposes
 //! neither the list's caller nor the items that stay.
 //!
 //! After each scroll, the next items in the scroll direction are composed and measured between
