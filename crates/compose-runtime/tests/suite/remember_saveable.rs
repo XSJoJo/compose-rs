@@ -119,6 +119,37 @@ fn the_registered_value_saves_the_value_with_its_saver() {
     assert_eq!(saved_values(&registry), vec![vec![SavedValue::Int(4)]]);
 }
 
+#[test]
+fn a_skippable_childs_value_moves_to_the_registry_provided_next() {
+    // The local is static, as Compose's: another registry provided recomposes the provider's
+    // whole content, a child with nothing else changed included, and its value moves.
+    #[composable]
+    fn Child(recompositions: Rc<Cell<u32>>) {
+        recompositions.set(recompositions.get() + 1);
+        remember_saveable(|| 1);
+    }
+    let (first, second) = (SaveableStateRegistry::new(None), SaveableStateRegistry::new(None));
+    let use_second = mutable_state_of(false);
+    let recompositions = Rc::new(Cell::new(0));
+    let (flag, f, s, r) =
+        (use_second.handle(), first.clone(), second.clone(), recompositions.clone());
+    let composition = Composition::new(NodeTree::<()>::new());
+    composition.set_content(move || {
+        let registry = if flag.get() { s.clone() } else { f.clone() };
+        let r = r.clone();
+        CompositionLocalProvider(
+            LOCAL_SAVEABLE_STATE_REGISTRY.provides(Some(registry)),
+            move || Child(r.clone()),
+        );
+    });
+    assert_eq!(recompositions.get(), 1);
+    use_second.set(true);
+    composition.recompose();
+    assert_eq!(recompositions.get(), 2);
+    assert!(!first.has_providers());
+    assert_eq!(saved_values(&second), vec![vec![SavedValue::Int(1)]]);
+}
+
 // Compose: compose/runtime/runtime-saveable/src/androidDeviceTest/kotlin/androidx/compose/runtime/saveable/RememberSaveableTest.kt, unregistersFromPrevProviderAndRegistersToTheNewOne
 #[test]
 fn a_value_moves_to_the_registry_provided_next() {

@@ -221,7 +221,9 @@ fn the_previous_page_is_restored_after_the_host_saved() {
 #[test]
 fn nothing_is_saved_without_saveable_state_inside() {
     let show_first = mutable_state_of(true);
-    let registry = SaveableStateRegistry::new(None);
+    // Compose's `SaveableStateRegistry(null) { true }`: a registry that checks, so the holder's
+    // saver runs when it registers.
+    let registry = SaveableStateRegistry::with_can_be_saved(None, |_| true);
     let (show, r) = (show_first.handle(), registry.clone());
     let composition = Composition::new(NodeTree::<()>::new());
     composition.set_content(move || {

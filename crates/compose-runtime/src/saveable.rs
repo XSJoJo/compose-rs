@@ -616,9 +616,11 @@ impl RegistryEntry {
 }
 
 /// The registry `remember_saveable` uses, as Compose's `LocalSaveableStateRegistry`: none
-/// outside a host that saves state (values are then only remembered).
+/// outside a host that saves state (values are then only remembered). Static, as Compose's
+/// (`staticCompositionLocalOf`): reads record nothing, and another registry provided
+/// recomposes the provider's whole content.
 pub static LOCAL_SAVEABLE_STATE_REGISTRY: CompositionLocal<Option<SaveableStateRegistry>> =
-    CompositionLocal::new("LocalSaveableStateRegistry", || None);
+    CompositionLocal::new_static("LocalSaveableStateRegistry", || None);
 
 /// A hash of the keys of the groups from the composition's root to the composable composing
 /// now, as Compose's `currentCompositeKeyHash`: the same at the same place of the same
