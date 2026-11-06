@@ -56,17 +56,19 @@ impl ObservableComposition {
     /// if it's still the one set.
     pub fn set_observer(&self, observer: impl CompositionObserver) -> CompositionObserverHandle {
         let observer: Rc<dyn CompositionObserver> = Rc::new(observer);
-        let token = with_runtime(|runtime| {
+        let (token, replaced) = with_runtime(|runtime| {
             let token = runtime.scopes.observer_set();
-            if let Some(data) = runtime.compositions.get_mut(self.id) {
-                if data.observer.replace((token, observer)).is_some() {
-                    runtime.scopes.observer_removed();
-                }
-            } else {
+            let replaced = match runtime.compositions.get_mut(self.id) {
+                Some(data) => data.observer.replace((token, observer)),
+                None => Some((token, observer)),
+            };
+            if replaced.is_some() {
                 runtime.scopes.observer_removed();
             }
-            token
+            (token, replaced)
         });
+        // Outside the borrow: an observer's `Drop` is user code.
+        drop(replaced);
         CompositionObserverHandle { composition: self.id, token, _not_send: PhantomData }
     }
 }

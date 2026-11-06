@@ -108,9 +108,22 @@ impl Scopes {
         }
     }
 
-    /// Logs a scope event, if compositions are observed.
-    #[inline]
+    /// Logs a scope event, if compositions are observed: a pass with none pays one test.
+    #[inline(always)]
     pub fn log(&mut self, composition: u32, scope: ScopeId, kind: crate::tooling::ScopeEventKind) {
+        if self.log.is_some() {
+            self.log_observed(composition, scope, kind);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn log_observed(
+        &mut self,
+        composition: u32,
+        scope: ScopeId,
+        kind: crate::tooling::ScopeEventKind,
+    ) {
         if let Some(log) = &mut self.log {
             log.push(crate::tooling::ScopeEvent { composition, scope, kind, observer: None });
         }
@@ -176,7 +189,7 @@ impl Scopes {
     pub fn free(&mut self, id: ScopeId) {
         if self.log.is_some() {
             let composition = self.entries[id.index as usize].composition;
-            self.log(composition, id, crate::tooling::ScopeEventKind::Disposed);
+            self.log_observed(composition, id, crate::tooling::ScopeEventKind::Disposed);
         }
         let entry = &mut self.entries[id.index as usize];
         debug_assert_eq!(entry.generation, id.generation, "freeing a stale scope");

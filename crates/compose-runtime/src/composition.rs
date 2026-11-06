@@ -828,8 +828,10 @@ impl Pass {
                 Some(_) => crate::tooling::observer_of(&runtime.compositions, id.index),
                 None => None,
             };
-            if let Some(data) = runtime.compositions.get_mut(id) {
-                data.pass_observer = observer.clone();
+            if let Some(observer) = &observer
+                && let Some(data) = runtime.compositions.get_mut(id)
+            {
+                data.pass_observer = Some(observer.clone());
             }
             // A late pass is for placeholders: what's above is for its next pass.
             let providers_changed = kind != PassKind::Late
@@ -1074,7 +1076,9 @@ impl Pass {
     /// changes: what it made is initialized, what it wrote is everybody's. The composition counts
     /// as finishing from here until [`apply_work`].
     fn end_composing(&mut self, applier: Rc<RefCell<dyn ErasedApplier>>) -> Composed {
-        if let Some(observer) = self.observer.take() {
+        // Kept till the borrow below is over: what drops last runs the observer's `Drop`.
+        let observer = self.observer.take();
+        if let Some(observer) = &observer {
             crate::tooling::flush();
             observer.on_end_composition(&crate::tooling::ObservableComposition { id: self.id });
         }
@@ -1096,9 +1100,12 @@ impl Pass {
             let data = runtime.compositions.get_mut(self.id).expect("a live composition");
             data.composing = false;
             data.finishing = true;
-            data.pass_observer = None;
+            if observer.is_some() {
+                data.pass_observer = None;
+            }
             (std::mem::take(&mut data.deferred), freeing, data.table.movable.removed.take())
         });
+        drop(observer);
         // From here on the slot table is consistent: a panic in an effect doesn't poison it.
         self.finished = true;
         let finishing = Finishing { id: self.id, freeing };
@@ -1684,7 +1691,8 @@ impl Drop for Pass {
         // A panic unwound through the pass. Nothing can be trusted to continue it; keep the
         // slot table for disposal, which frees everything exactly once. Its observer hears its end
         // still, as Compose's `finally`.
-        if let Some(observer) = self.observer.take() {
+        let observer = self.observer.take();
+        if let Some(observer) = &observer {
             let id = self.id;
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 crate::tooling::flush();
@@ -1729,6 +1737,7 @@ impl Drop for Pass {
                 data.pass_observer = None;
             }
         });
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(observer)));
         // What it wrote applies, as `composing`'s `finally`, with the pass over: observers and
         // values' `Drop`s are user code, which may recompose, or panic with this one unwinding. A
         // conflict's error doesn't replace this panic.
