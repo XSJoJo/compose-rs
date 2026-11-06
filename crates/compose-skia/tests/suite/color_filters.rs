@@ -96,3 +96,34 @@ fn a_layer_and_an_image_draw_through_their_filters() {
     assert_eq!(renderer.pixel(2, 5), Color::BLUE);
     assert_eq!(renderer.pixel(7, 5), Color::GREEN);
 }
+
+/// A transparent paint is drawn when it clears or goes through a filter: either can draw
+/// something (D1900); a plain transparent one is left out.
+#[test]
+fn a_transparent_paint_that_clears_or_is_filtered_is_recorded() {
+    use compose::foundation::layout::Box;
+    use compose::test::*;
+    use compose::ui::{IntSize, Modifier, UnitExt};
+    compose::test::set_capture_renderer(compose_skia::raster_colors);
+    let mut ui = ComposeTestRule::sized(IntSize::new(20, 20), || {
+        Box!(
+            modifier = Modifier.test_tag("drawn").size(10.dp()).background(Color::RED).draw_behind(
+                |scope| {
+                    let bounds = scope.bounds();
+                    scope.draw_rect(bounds, Paint::fill(Color::TRANSPARENT));
+                    let left = Rect::new(0.0, 0.0, 5.0, 10.0);
+                    let clear = Paint::fill(Color::TRANSPARENT).with_blend_mode(BlendMode::Clear);
+                    scope.draw_rect(left, clear);
+                    let tint = ColorFilter::tint_with(Color::BLUE, BlendMode::Src);
+                    let tinted =
+                        scope.paint_with_color_filter(Paint::fill(Color::TRANSPARENT), Some(&tint));
+                    scope.draw_rect(Rect::new(5.0, 0.0, 10.0, 10.0), tinted);
+                }
+            )
+        );
+    });
+    let dump = ui.host().display_list().dump();
+    assert_eq!(dump.matches("#00000000").count(), 2, "{dump}");
+    assert!(dump.contains("blend Clear") && dump.contains("tint #FF0000FF Src"), "{dump}");
+    ui.on_node_with_tag("drawn").capture_to_image().assert_pixel_color(Color::BLUE, 7, 5);
+}

@@ -542,7 +542,10 @@ fn a_painter_icon_is_its_painters_size_or_24_dp() {
 fn an_icons_tint_producer_tints_it_when_drawn() {
     let tint = mutable_state_of(Color::RED);
     let handle = tint.handle();
+    let compositions = Rc::new(Cell::new(0));
+    let counted = compositions.clone();
     let mut ui = painted(move || {
+        counted.set(counted.get() + 1);
         let producer = remember(|| ColorProducer(Rc::new(move || handle.get())));
         PainterIconWithTintProducer!(
             Painter::new(ColorPainter::new(Color::BLACK)),
@@ -557,6 +560,50 @@ fn an_icons_tint_producer_tints_it_when_drawn() {
     tint.set(Color::GREEN);
     ui.wait_for_idle();
     capture(&mut ui).assert_pixel_color(Color::GREEN, 12, 12);
+    assert_eq!(compositions.get(), 1, "the tint is read when drawing, not composing");
+}
+
+/// A new alpha, or a new painter of the same intrinsic size, draws the node again without
+/// measuring it; a new intrinsic size measures it, as Compose's `PainterNode` invalidates itself.
+#[test]
+fn a_painter_node_is_measured_again_only_for_new_intrinsics() {
+    let alpha = mutable_state_of(1.0f32);
+    let side = mutable_state_of(10.0f32);
+    let (alpha_handle, side_handle) = (alpha.handle(), side.handle());
+    let measures = Rc::new(Cell::new(0));
+    let counted = measures.clone();
+    let mut ui = painted(move || {
+        let counted = counted.clone();
+        let counting = remember(move || {
+            Modifier.layout(move |scope, measurable, constraints| {
+                counted.set(counted.get() + 1);
+                let placeable = scope.measure(measurable, constraints);
+                scope.place(&placeable, 0, 0);
+                scope.layout(placeable.width, placeable.height)
+            })
+        });
+        let side = side_handle.get();
+        Box!(
+            modifier = counting.test_tag(TAG).paint_with(
+                test_painter(side, side),
+                true,
+                Alignment::CENTER,
+                ContentScale::Inside,
+                alpha_handle.get(),
+                None::<ColorFilter>
+            )
+        );
+    });
+    let first = measures.get();
+    alpha.set(0.5);
+    ui.wait_for_idle();
+    assert_eq!(measures.get(), first, "a new alpha and painter of the same size");
+    let faded = capture(&mut ui).pixel(5, 5);
+    assert!(faded.alpha() < 255 || faded != Color::RED, "drawn again: {faded:?}");
+    side.set(20.0);
+    ui.wait_for_idle();
+    assert!(measures.get() > first, "a new intrinsic size");
+    assert_eq!(capture(&mut ui).size(), IntSize::new(20, 20));
 }
 
 /// 100 px of blue with a 50 px red square in its middle, as the test's source image.

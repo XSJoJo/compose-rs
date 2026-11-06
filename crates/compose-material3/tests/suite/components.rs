@@ -62,7 +62,7 @@ fn every_icon_parses() {
         search(),
         star(),
     ] {
-        assert!(!icon.paths[0].0.commands().is_empty(), "{}", icon.name);
+        assert!(!icon.solid_fills().expect("filled")[0].0.commands().is_empty(), "{}", icon.name());
     }
 }
 

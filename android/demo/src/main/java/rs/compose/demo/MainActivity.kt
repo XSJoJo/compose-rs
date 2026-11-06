@@ -38,7 +38,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 Surface(Modifier.fillMaxSize()) {
                     Column(Modifier.safeDrawingPadding()) {
-                        val apps = listOf("gallery", "todo", "counter")
+                        val apps = listOf("gallery", "todo", "counter", "graphics")
                         var selected by rememberSaveable { mutableIntStateOf(apps.indexOf(start).coerceAtLeast(0)) }
                         // Kotlin Compose: the tabs. compose-rs: what's below them.
                         TabRow(selectedTabIndex = selected) {

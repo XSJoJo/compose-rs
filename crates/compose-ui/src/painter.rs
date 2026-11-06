@@ -357,15 +357,41 @@ struct PainterElement {
     color_filter: Option<ColorFilter>,
 }
 
-impl ModifierNodeElement for PainterElement {
-    type Node = PainterElement;
+/// `Modifier.paint`'s node, as Compose's `PainterNode`: it invalidates itself on an update, its
+/// measurement only when its painter's intrinsics change (`should_auto_invalidate` is false),
+/// so a new alpha or filter (an animated tint) draws it again without measuring it.
+struct PainterNode {
+    params: PainterElement,
+    delegates: crate::delegation::Delegates,
+    /// An update changed what its measurement reads.
+    remeasure: bool,
+}
 
-    fn create(&self) -> PainterElement {
-        self.clone()
+impl std::ops::Deref for PainterNode {
+    type Target = PainterElement;
+    fn deref(&self) -> &PainterElement {
+        &self.params
+    }
+}
+
+impl ModifierNodeElement for PainterElement {
+    type Node = PainterNode;
+
+    fn create(&self) -> PainterNode {
+        PainterNode {
+            params: self.clone(),
+            delegates: crate::delegation::Delegates::new(),
+            remeasure: false,
+        }
     }
 
-    fn update(&self, node: &mut PainterElement) {
-        *node = self.clone();
+    fn update(&self, node: &mut PainterNode) {
+        let intrinsics_changed = node.size_to_intrinsics != self.size_to_intrinsics
+            || (self.size_to_intrinsics
+                && !same_size(node.painter.intrinsic_size(), self.painter.intrinsic_size()));
+        node.remeasure |= intrinsics_changed || node.content_scale != self.content_scale;
+        node.params = self.clone();
+        node.delegates.ask_for_context();
     }
 
     fn same(&self, other: &Self) -> bool {
@@ -461,7 +487,13 @@ impl PainterElement {
     }
 }
 
-impl ModifierNode for PainterElement {
+/// Equal sizes, an unspecified (NaN) side equal to another.
+fn same_size(a: Size, b: Size) -> bool {
+    let side = |x: f32, y: f32| x == y || (x.is_nan() && y.is_nan());
+    side(a.width, b.width) && side(a.height, b.height)
+}
+
+impl ModifierNode for PainterNode {
     fn as_layout(&mut self) -> Option<&mut dyn LayoutModifierNode> {
         Some(self)
     }
@@ -469,9 +501,24 @@ impl ModifierNode for PainterElement {
     fn as_draw(&mut self) -> Option<&mut dyn DrawModifierNode> {
         Some(self)
     }
+
+    fn delegates(&mut self) -> Option<&mut crate::delegation::Delegates> {
+        Some(&mut self.delegates)
+    }
+
+    fn should_auto_invalidate(&self) -> bool {
+        false
+    }
+
+    fn on_update_with_context(&mut self, context: &mut crate::node_context::NodeContext<'_>) {
+        if std::mem::take(&mut self.remeasure) {
+            context.invalidate_measurement();
+        }
+        context.invalidate_draw();
+    }
 }
 
-impl LayoutModifierNode for PainterElement {
+impl LayoutModifierNode for PainterNode {
     fn measure(
         &mut self,
         scope: &mut MeasureScope<'_>,
@@ -545,7 +592,7 @@ impl LayoutModifierNode for PainterElement {
     }
 }
 
-impl DrawModifierNode for PainterElement {
+impl DrawModifierNode for PainterNode {
     /// The painter at its intrinsic size scaled into the node, placed by the alignment, as
     /// Compose's `PainterNode.draw`; the content over it.
     fn draw(&mut self, scope: &mut DrawScope<'_>) {
