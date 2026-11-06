@@ -152,6 +152,8 @@ struct Shown {
     accessibility_focus: Option<compose_ui::platform::NodeId>,
     /// The mouse pointer's look last set.
     pointer_icon: compose_ui::PointerIcon,
+    /// The cursor made of the last bitmap icon, kept while it's the one shown.
+    custom_cursor: Option<winit::window::CustomCursor>,
     /// The properties last applied to the winit window.
     title: String,
     resizable: bool,
@@ -350,7 +352,8 @@ impl App {
                 ime_area: None,
                 accessibility,
                 accessibility_focus: None,
-                pointer_icon: compose_ui::PointerIcon::Default,
+                pointer_icon: compose_ui::PointerIcon::DEFAULT,
+                custom_cursor: None,
                 title,
                 resizable,
                 size,
@@ -376,6 +379,8 @@ impl App {
         shown.last_frame = start;
         let pacing = std::mem::take(&mut shown.pacing);
         let stats = shown.host.frame();
+        // What the frame changed under a resting pointer (its icon, a node come or gone).
+        update_pointer_icon(shown, event_loop);
         let composed = Instant::now();
         let size = shown.window.inner_size();
         let (Some(width), Some(height)) =
@@ -557,22 +562,7 @@ impl ApplicationHandler<UserEvent> for App {
                     input::Outcome::Handled => {
                         self.first_input.get_or_insert_with(Instant::now);
                         // The pointer's look where it now is.
-                        let icon = shown.host.pointer_icon();
-                        if icon != shown.pointer_icon {
-                            shown.pointer_icon = icon;
-                            shown.window.set_cursor(match icon {
-                                compose_ui::PointerIcon::Default => {
-                                    winit::window::CursorIcon::Default
-                                }
-                                compose_ui::PointerIcon::Text => winit::window::CursorIcon::Text,
-                                compose_ui::PointerIcon::Hand => winit::window::CursorIcon::Pointer,
-                                compose_ui::PointerIcon::Crosshair => {
-                                    winit::window::CursorIcon::Crosshair
-                                }
-                                // An icon added later (the enum is non-exhaustive).
-                                _ => winit::window::CursorIcon::Default,
-                            });
-                        }
+                        update_pointer_icon(shown, event_loop);
                     }
                     input::Outcome::Ignored => {}
                 }
@@ -797,6 +787,95 @@ fn stop_for_closing(host: &UiHost) {
 /// The window's configuration for its content (`LOCAL_CONFIGURATION`): its size in dp, its
 /// density, and the system's appearance as winit reports it (light when unknown). Desktop
 /// windows have no insets: they stay zero.
+/// Sets the window's cursor to the icon the host has where the mouse is, if it changed (D1676).
+fn update_pointer_icon(shown: &mut Shown, event_loop: &ActiveEventLoop) {
+    let icon = shown.host.pointer_icon();
+    if icon == shown.pointer_icon {
+        return;
+    }
+    shown.custom_cursor = None;
+    if let Some((bitmap, hot_spot)) = icon.bitmap() {
+        let source = winit::window::CustomCursor::from_rgba(
+            unpremultiplied(bitmap.pixels()),
+            bitmap.width().min(u16::MAX as u32) as u16,
+            bitmap.height().min(u16::MAX as u32) as u16,
+            hot_spot.x.max(0.0) as u16,
+            hot_spot.y.max(0.0) as u16,
+        );
+        match source {
+            Ok(source) => {
+                let cursor = event_loop.create_custom_cursor(source);
+                shown.window.set_cursor_visible(true);
+                shown.window.set_cursor(cursor.clone());
+                shown.custom_cursor = Some(cursor);
+            }
+            // Too big for the platform, or a hot spot outside it: the arrow.
+            Err(error) => {
+                log::warn!("compose-desktop: a pointer icon winit can't show: {error}");
+                shown.window.set_cursor_visible(true);
+                shown.window.set_cursor(winit::window::CursorIcon::Default);
+            }
+        }
+    } else {
+        let pointer_icon_type =
+            icon.pointer_icon_type().unwrap_or(compose_ui::PointerIcon::TYPE_ARROW);
+        match cursor_of(pointer_icon_type) {
+            Some(cursor) => {
+                shown.window.set_cursor_visible(true);
+                shown.window.set_cursor(cursor);
+            }
+            None => shown.window.set_cursor_visible(false),
+        }
+    }
+    shown.pointer_icon = icon;
+}
+
+/// The cursor of an Android pointer icon type, as the desktop shows it; `None` for
+/// `TYPE_NULL`, a hidden cursor. A type without a cursor here (handwriting, one added later)
+/// is the arrow.
+fn cursor_of(pointer_icon_type: i32) -> Option<winit::window::CursorIcon> {
+    use compose_ui::PointerIcon;
+    use winit::window::CursorIcon;
+    Some(match pointer_icon_type {
+        PointerIcon::TYPE_NULL => return None,
+        PointerIcon::TYPE_CONTEXT_MENU => CursorIcon::ContextMenu,
+        PointerIcon::TYPE_HAND => CursorIcon::Pointer,
+        PointerIcon::TYPE_HELP => CursorIcon::Help,
+        PointerIcon::TYPE_WAIT => CursorIcon::Wait,
+        PointerIcon::TYPE_CELL => CursorIcon::Cell,
+        PointerIcon::TYPE_CROSSHAIR => CursorIcon::Crosshair,
+        PointerIcon::TYPE_TEXT => CursorIcon::Text,
+        PointerIcon::TYPE_VERTICAL_TEXT => CursorIcon::VerticalText,
+        PointerIcon::TYPE_ALIAS => CursorIcon::Alias,
+        PointerIcon::TYPE_COPY => CursorIcon::Copy,
+        PointerIcon::TYPE_NO_DROP => CursorIcon::NoDrop,
+        PointerIcon::TYPE_ALL_SCROLL => CursorIcon::AllScroll,
+        PointerIcon::TYPE_HORIZONTAL_DOUBLE_ARROW => CursorIcon::EwResize,
+        PointerIcon::TYPE_VERTICAL_DOUBLE_ARROW => CursorIcon::NsResize,
+        PointerIcon::TYPE_TOP_RIGHT_DIAGONAL_DOUBLE_ARROW => CursorIcon::NeswResize,
+        PointerIcon::TYPE_TOP_LEFT_DIAGONAL_DOUBLE_ARROW => CursorIcon::NwseResize,
+        PointerIcon::TYPE_ZOOM_IN => CursorIcon::ZoomIn,
+        PointerIcon::TYPE_ZOOM_OUT => CursorIcon::ZoomOut,
+        PointerIcon::TYPE_GRAB => CursorIcon::Grab,
+        PointerIcon::TYPE_GRABBING => CursorIcon::Grabbing,
+        _ => CursorIcon::Default,
+    })
+}
+
+/// An image's premultiplied RGBA pixels with straight alpha, as winit's cursors take them.
+fn unpremultiplied(pixels: &[u8]) -> Vec<u8> {
+    let mut straight = pixels.to_vec();
+    for pixel in straight.as_chunks_mut::<4>().0 {
+        let alpha = pixel[3] as u32;
+        if alpha != 0 && alpha != 255 {
+            for channel in &mut pixel[..3] {
+                *channel = ((*channel as u32 * 255 + alpha / 2) / alpha).min(255) as u8;
+            }
+        }
+    }
+    straight
+}
+
 fn update_configuration(host: &mut UiHost, window: &winit::window::Window) {
     let physical = window.inner_size();
     let dark = window.theme() == Some(winit::window::Theme::Dark);
@@ -811,6 +890,31 @@ fn update_configuration(host: &mut UiHost, window: &winit::window::Window) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Compose's built-in icons are the desktop's arrow, I-beam, hand and crosshair; `TYPE_NULL`
+    /// hides the cursor and a type the desktop has no cursor for is the arrow (D1676).
+    #[test]
+    fn pointer_icon_types_are_the_desktop_s_cursors() {
+        use compose_ui::PointerIcon;
+        use winit::window::CursorIcon;
+        let cursor = |icon: PointerIcon| cursor_of(icon.pointer_icon_type().unwrap());
+        assert_eq!(cursor(PointerIcon::DEFAULT), Some(CursorIcon::Default));
+        assert_eq!(cursor(PointerIcon::TEXT), Some(CursorIcon::Text));
+        assert_eq!(cursor(PointerIcon::HAND), Some(CursorIcon::Pointer));
+        assert_eq!(cursor(PointerIcon::CROSSHAIR), Some(CursorIcon::Crosshair));
+        assert_eq!(cursor_of(PointerIcon::TYPE_GRABBING), Some(CursorIcon::Grabbing));
+        assert_eq!(cursor_of(PointerIcon::TYPE_NULL), None);
+        assert_eq!(cursor_of(PointerIcon::TYPE_HANDWRITING), Some(CursorIcon::Default));
+        assert_eq!(cursor_of(4242), Some(CursorIcon::Default));
+    }
+
+    /// A bitmap icon's pixels go to winit with straight alpha: opaque and clear ones as they
+    /// are, a half-transparent one divided by its alpha.
+    #[test]
+    fn a_bitmap_icon_s_pixels_are_unpremultiplied() {
+        let pixels = [10, 20, 30, 255, 0, 0, 0, 0, 64, 32, 0, 128];
+        assert_eq!(unpremultiplied(&pixels), vec![10, 20, 30, 255, 0, 0, 0, 0, 128, 64, 0, 128]);
+    }
 
     /// Every way a window opens without naming optimizations gets the recommended set (D610):
     /// `WindowOptions::default()` (`run_app`'s), `application`'s windows without

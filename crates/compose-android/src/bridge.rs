@@ -820,6 +820,8 @@ struct Host {
     /// Shown with performance hints enabled: its frames report the RenderThread's work
     /// (`performance_hint.rs`, D390).
     hint: bool,
+    /// The pointer icons the view was last told (D1678).
+    pointer_icons: crate::pointer_icon::ToldIcons,
 }
 
 /// The host behind a pointer Kotlin keeps.
@@ -1095,6 +1097,7 @@ fn create(
         input_connections: Default::default(),
         touch_buffers: TouchBuffers::default(),
         hint: false,
+        pointer_icons: Default::default(),
     });
     Box::into_raw(host) as jlong
 }
@@ -1397,6 +1400,8 @@ mod flags {
     pub const SEMANTICS_AT_ONCE: i64 = 2048;
     /// The keyboard has something to hear of the text or the cursor: the view asks what.
     pub const INPUT_METHOD_UPDATE: i64 = 4096;
+    /// The mouse's or a hovering stylus's icon changed: the view asks for them (D1678).
+    pub const POINTER_ICON: i64 = 8192;
     /// Where the timer's milliseconds start.
     pub const TIMER_SHIFT: u32 = 16;
 }
@@ -1465,6 +1470,10 @@ pub extern "system" fn Java_rs_compose_android_ComposeRsNative_frame(
     }
     if host.ui.has_prefetch_work() || host.ui.has_draw_ahead_work() {
         result |= flags::PREFETCH;
+    }
+    // A node come, gone or changed under a resting pointer.
+    if host.pointer_icons.take_changes(&host.ui) {
+        result |= flags::POINTER_ICON;
     }
     result | next_timer_bits()
 }
@@ -1692,7 +1701,8 @@ fn motion_events(sample: &MotionSample, ints: &[i32], floats: &[f32], out: &mut 
 /// `MotionEvent`'s pointers together (`MotionSample.action`); of the view's reused arrays, the first
 /// `count` pointers' id and `MotionEvent.TOOL_TYPE` in `ints` and x, y and pressure in `floats`;
 /// `buttons` its `buttonState`, `meta` its `metaState`; `age` how long ago it happened (nanoseconds),
-/// so a batch of samples keeps their times (a fling's velocity comes from them).
+/// so a batch of samples keeps their times (a fling's velocity comes from them). Returns 1 if the
+/// pointer icons changed (the view asks for them, D1678), else 0.
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
 pub extern "system" fn Java_rs_compose_android_ComposeRsNative_touches<'local>(
@@ -1707,7 +1717,7 @@ pub extern "system" fn Java_rs_compose_android_ComposeRsNative_touches<'local>(
     buttons: jint,
     meta: jint,
     age: jlong,
-) {
+) -> jint {
     // SAFETY: a live host, on the main thread.
     let host = unsafe { self::host(host) };
     let count = count.max(0) as usize;
@@ -1725,18 +1735,73 @@ pub extern "system" fn Java_rs_compose_android_ComposeRsNative_touches<'local>(
         motion_events(&sample, int_values, float_values, events);
     }
     host.ui.send_pointers(events);
+    host.pointer_icons.take_changes(&host.ui) as jint
 }
 
-/// `ComposeRsNative.hoverExit(host)`: the mouse left the view.
+/// `ComposeRsNative.hoverExit(host)`: the mouse left the view. Returns 1 if the pointer icons
+/// changed, as `touches`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_rs_compose_android_ComposeRsNative_hoverExit(
     _env: EnvUnowned,
     _class: JClass,
     host: jlong,
-) {
+) -> jint {
     // SAFETY: a live host, on the main thread.
     let host = unsafe { self::host(host) };
     host.ui.send_pointer_left();
+    host.pointer_icons.take_changes(&host.ui) as jint
+}
+
+/// `ComposeRsNative.stylusHoverExit(host)`: a hovering stylus went out of range (D1677). Returns
+/// 1 if the pointer icons changed, as `touches`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_rs_compose_android_ComposeRsNative_stylusHoverExit(
+    _env: EnvUnowned,
+    _class: JClass,
+    host: jlong,
+) -> jint {
+    // SAFETY: a live host, on the main thread.
+    let host = unsafe { self::host(host) };
+    host.ui.send_stylus_left();
+    host.pointer_icons.take_changes(&host.ui) as jint
+}
+
+/// `ComposeRsNative.pointerIcon(host, stylus)`: the mouse's icon (a hovering stylus's) as last
+/// told: Android's type, `BITMAP` (-2, then `pointerIconBitmap`) or `NONE` (-1: a stylus over
+/// no icon) (D1678).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_rs_compose_android_ComposeRsNative_pointerIcon(
+    _env: EnvUnowned,
+    _class: JClass,
+    host: jlong,
+    stylus: jboolean,
+) -> jint {
+    // SAFETY: a live host, on the main thread.
+    let host = unsafe { self::host(host) };
+    crate::pointer_icon::code(host.pointer_icons.icon(stylus))
+}
+
+/// `ComposeRsNative.pointerIconBitmap(host, stylus, shape)`: a bitmap icon's premultiplied RGBA
+/// pixels, its width, height and hot spot written into `shape`; null if the icon isn't one.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_rs_compose_android_ComposeRsNative_pointerIconBitmap<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    host: jlong,
+    stylus: jboolean,
+    shape: JFloatArray<'local>,
+) -> JByteArray<'local> {
+    // SAFETY: a live host, on the main thread.
+    let host = unsafe { self::host(host) };
+    let Some((pixels, values)) = crate::pointer_icon::bitmap(host.pointer_icons.icon(stylus))
+    else {
+        return JByteArray::default();
+    };
+    with_env(&mut env, |env| {
+        shape.set_region(env, 0, &values)?;
+        env.byte_array_from_slice(pixels)
+    })
+    .unwrap_or_default()
 }
 
 /// `ComposeRsNative.scroll(host, x, y, dx, dy, meta)`: a mouse wheel at (`x`, `y`), by pixels.

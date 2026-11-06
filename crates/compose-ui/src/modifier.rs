@@ -1598,9 +1598,10 @@ pub trait PointerInputModifierNode {
     fn waits_for_gesture(&self, _press: &PointerEvent) -> bool {
         false
     }
-    /// The mouse pointer's look over it, as `Modifier.pointerHoverIcon` (the innermost on the
-    /// hovered path wins).
-    fn hover_icon(&self) -> Option<crate::input::PointerIcon> {
+    /// The pointer's look over it, as `Modifier.pointerHoverIcon` and `stylusHoverIcon`: the
+    /// innermost on the hovered path wins, unless one around it overrides its descendants
+    /// (D1676).
+    fn hover_icon(&self) -> Option<&crate::pointer_icon::HoverIcon> {
         None
     }
 }

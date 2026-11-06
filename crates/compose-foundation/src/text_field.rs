@@ -113,7 +113,7 @@ pub fn BasicTextField(
         modifier
             .semantics_with(true, |_| {})
             .then_custom(FocusOnTap { interaction_source: press_source })
-            .pointer_hover_icon(compose_ui::PointerIcon::Text),
+            .pointer_hover_icon(compose_ui::PointerIcon::TEXT),
         crate::Alignment::TOP_START,
         // The decoration's size is the field's: a field given a size passes it on.
         true,
@@ -231,7 +231,7 @@ pub fn BasicTextFieldOfState(
         modifier
             .semantics_with(true, |_| {})
             .then_custom(FocusOnTap { interaction_source: press_source })
-            .pointer_hover_icon(compose_ui::PointerIcon::Text),
+            .pointer_hover_icon(compose_ui::PointerIcon::TEXT),
         crate::Alignment::TOP_START,
         true,
         compose_runtime::callback(move |_| decorator(inner_text_field.clone())),

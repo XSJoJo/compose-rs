@@ -808,55 +808,6 @@ impl Emitter {
     }
 }
 
-/// `Modifier.pointer_hover_icon`'s node: hit by the mouse, it sets the pointer's look.
-struct HoverIconElement(crate::input::PointerIcon);
-
-struct HoverIconNode(crate::input::PointerIcon);
-
-impl crate::modifier::ModifierNodeElement for HoverIconElement {
-    type Node = HoverIconNode;
-    fn create(&self) -> HoverIconNode {
-        HoverIconNode(self.0)
-    }
-    fn update(&self, node: &mut HoverIconNode) {
-        node.0 = self.0;
-    }
-    fn same(&self, other: &Self) -> bool {
-        other.0 == self.0
-    }
-    fn name(&self) -> &'static str {
-        "pointer_hover_icon"
-    }
-}
-
-impl crate::modifier::ModifierNode for HoverIconNode {
-    fn as_pointer_input(&mut self) -> Option<&mut dyn crate::modifier::PointerInputModifierNode> {
-        Some(self)
-    }
-}
-
-impl crate::modifier::PointerInputModifierNode for HoverIconNode {
-    fn on_pointer_event(
-        &mut self,
-        _event: &mut crate::input::PointerEvent,
-        _pass: crate::input::PointerEventPass,
-        _bounds: crate::unit::IntSize,
-        _context: &mut crate::input::EventContext<'_>,
-    ) {
-    }
-
-    fn hover_icon(&self) -> Option<crate::input::PointerIcon> {
-        Some(self.0)
-    }
-}
-
-impl crate::modifier::Modifier {
-    /// The mouse pointer looks like `icon` over the node, as `Modifier.pointerHoverIcon`.
-    pub fn pointer_hover_icon(self, icon: crate::input::PointerIcon) -> crate::modifier::Modifier {
-        self.then_custom(HoverIconElement(icon))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

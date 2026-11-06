@@ -147,6 +147,13 @@ fn emit_text(
         selectable,
         selection_color,
     };
+    // A selectable text shows the I-beam, inside what the caller's modifier says, as Compose's
+    // `SelectionController.modifier`.
+    let modifier = if selectable {
+        modifier.pointer_hover_icon(compose_ui::PointerIcon::TEXT)
+    } else {
+        modifier
+    };
     Layout(modifier.then_custom(element), empty_measure_policy(), compose_runtime::callback(|| {}));
 }
 

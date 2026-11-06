@@ -69,26 +69,6 @@ impl PointerEventType {
     }
 }
 
-/// The mouse pointer's look, as Compose's `PointerIcon`.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
-#[non_exhaustive]
-pub enum PointerIcon {
-    /// The arrow.
-    #[default]
-    Default,
-    /// The I-beam, over text that can be edited or selected.
-    Text,
-    /// A hand, over what can be clicked.
-    Hand,
-    Crosshair,
-}
-
-impl compose_runtime::ComposeArg for PointerIcon {
-    fn same(&self, other: &Self) -> bool {
-        self == other
-    }
-}
-
 /// What a unit of a `Scroll` event's delta is worth in the scrollable it reaches, as Compose's
 /// `ScrollConfig`: a host's wheel has its platform's step (D1450).
 /// The desktop variants are **unverified** against Compose Desktop, whose source isn't in
@@ -605,6 +585,8 @@ pub(crate) struct Requests {
     /// of it: a rect in its chain entry's layer (`EventContext::bring_rect_into_view`), or all of
     /// it. Shown together, as Compose's `ContentInViewNode` queues them (D1145).
     pub(crate) bring_into_view: BringIntoViewRequests,
+    /// A hover icon node was hovered (D1676).
+    pub(crate) hover_icons: bool,
 }
 
 impl EventContext<'_> {

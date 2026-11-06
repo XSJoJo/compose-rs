@@ -117,7 +117,10 @@ internal object ComposeRsNative {
     /** Gives up drawing ahead the items waiting: the frames placing them draw them. */
     @JvmStatic external fun cancelDrawAhead(host: Long)
 
-    /** Action 0 down, 1 move, 2 up, 3 a mouse's other button, 4 hover; [age]: how long ago (ns). */
+    /**
+     * Action 0 down, 1 move, 2 up, 3 a mouse's other button, 4 hover; [age]: how long ago (ns).
+     * Returns 1 if the pointer icons changed (the view asks for them, [pointerIcon]), else 0.
+     */
     @JvmStatic external fun touches(
         host: Long,
         action: Int,
@@ -128,11 +131,33 @@ internal object ComposeRsNative {
         buttons: Int,
         meta: Int,
         age: Long,
-    )
+    ): Int
 
     @JvmStatic external fun touchCancel(host: Long, pointer: Int, tool: Int)
 
-    @JvmStatic external fun hoverExit(host: Long)
+    /** The mouse left the view; returns 1 if the pointer icons changed, as [touches]. */
+    @JvmStatic external fun hoverExit(host: Long): Int
+
+    /** A hovering stylus went out of range; returns 1 if the pointer icons changed. */
+    @JvmStatic external fun stylusHoverExit(host: Long): Int
+
+    /**
+     * The mouse's pointer icon ([stylus]: a hovering stylus's) as last told: an Android type
+     * (`PointerIcon.TYPE_*`), [POINTER_ICON_BITMAP] or [POINTER_ICON_NONE].
+     */
+    @JvmStatic external fun pointerIcon(host: Long, stylus: Boolean): Int
+
+    /**
+     * A bitmap icon's premultiplied RGBA pixels, its width, height and hot spot x and y written
+     * into [shape]; null if it isn't one.
+     */
+    @JvmStatic external fun pointerIconBitmap(host: Long, stylus: Boolean, shape: FloatArray): ByteArray?
+
+    /** [pointerIcon] for no icon: a stylus over none (the view's own then). */
+    const val POINTER_ICON_NONE = -1
+
+    /** [pointerIcon] for a bitmap: [pointerIconBitmap] has it. */
+    const val POINTER_ICON_BITMAP = -2
 
     @JvmStatic
     external fun key(
@@ -329,6 +354,7 @@ internal object Frame {
     const val OWNER_CLEAR = 1024L
     const val SEMANTICS_AT_ONCE = 2048L
     const val INPUT_METHOD_UPDATE = 4096L
+    const val POINTER_ICON = 8192L
 
     /** The milliseconds to the next timer, or -1. */
     fun nextTimer(result: Long): Long = (result shr 16) - 1

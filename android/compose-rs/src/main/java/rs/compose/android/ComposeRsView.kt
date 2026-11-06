@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.res.Configuration
 import android.text.format.DateFormat
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Rect
 import android.graphics.Matrix
@@ -23,8 +24,10 @@ import android.text.TextUtils
 import android.util.Log
 import android.view.Choreographer
 import android.view.HapticFeedbackConstants
+import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.PointerIcon
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewTreeObserver
@@ -707,6 +710,7 @@ class ComposeRsView @JvmOverloads constructor(
             anotherEditor,
         )
         if (result and Frame.INPUT_METHOD_UPDATE != 0L) updateInputMethod()
+        if (result and Frame.POINTER_ICON != 0L) updatePointerIcons()
         // What the content asked of the keyboard (after the frame's events, which woke it).
         if (anotherEditor) {
             // Not this view's keyboard to show or hide.
@@ -978,7 +982,7 @@ class ComposeRsView @JvmOverloads constructor(
                 touchFloats[index * 3 + 2] = event.getHistoricalPressure(index, sample)
             }
         }
-        ComposeRsNative.touches(
+        val iconsChanged = ComposeRsNative.touches(
             host,
             action,
             event.actionIndex,
@@ -989,6 +993,48 @@ class ComposeRsView @JvmOverloads constructor(
             event.metaState,
             age,
         )
+        if (iconsChanged != 0) updatePointerIcons()
+    }
+
+    // ---- Pointer icons, as `AndroidComposeView`'s `PointerIconService` (D1678) ---------------
+
+    /** A hovering stylus's icon, given in [onResolvePointerIcon]; null over none. */
+    private var stylusPointerIcon: PointerIcon? = null
+
+    /** The mouse's icon becomes the view's, a stylus's is kept for [onResolvePointerIcon]. */
+    private fun updatePointerIcons() {
+        if (host == 0L) return
+        val mouse = pointerIconOf(stylus = false) ?: PointerIcon.getSystemIcon(context, PointerIcon.TYPE_DEFAULT)
+        if (pointerIcon != mouse) pointerIcon = mouse
+        stylusPointerIcon = pointerIconOf(stylus = true)
+    }
+
+    /** The icon Rust last told: a system icon of its type, or its bitmap; null for none. */
+    private fun pointerIconOf(stylus: Boolean): PointerIcon? {
+        val code = ComposeRsNative.pointerIcon(host, stylus)
+        // A type the platform refuses (`TYPE_CUSTOM`'s like) is the default's.
+        if (code >= 0) return runCatching { PointerIcon.getSystemIcon(context, code) }.getOrNull()
+        if (code != ComposeRsNative.POINTER_ICON_BITMAP) return null
+        val shape = FloatArray(4)
+        val pixels = ComposeRsNative.pointerIconBitmap(host, stylus, shape) ?: return null
+        val width = shape[0].toInt()
+        val height = shape[1].toInt()
+        if (width <= 0 || height <= 0) return null
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        bitmap.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(pixels))
+        return PointerIcon.create(bitmap, shape[2], shape[3])
+    }
+
+    /** A hovering stylus's icon where it is, as `AndroidComposeView.onResolvePointerIcon`. */
+    override fun onResolvePointerIcon(event: MotionEvent, pointerIndex: Int): PointerIcon? {
+        val toolType = event.getToolType(pointerIndex)
+        if (!event.isFromSource(InputDevice.SOURCE_MOUSE) &&
+            event.isFromSource(InputDevice.SOURCE_STYLUS) &&
+            (toolType == MotionEvent.TOOL_TYPE_STYLUS || toolType == MotionEvent.TOOL_TYPE_ERASER)
+        ) {
+            stylusPointerIcon?.let { return it }
+        }
+        return super.onResolvePointerIcon(event, pointerIndex)
     }
 
     // ---- A mouse's hover exit, as `AndroidComposeView`: a press comes with one -----------------
@@ -997,7 +1043,7 @@ class ComposeRsView @JvmOverloads constructor(
     private var hoverExitPending = false
     private val sendHoverExit = Runnable {
         hoverExitPending = false
-        if (host != 0L) ComposeRsNative.hoverExit(host)
+        if (host != 0L && ComposeRsNative.hoverExit(host) != 0) updatePointerIcons()
     }
 
     /** What came next is what the hover exit was for if [dropped]; else it goes first. */
@@ -1045,8 +1091,24 @@ class ComposeRsView @JvmOverloads constructor(
         return true
     }
 
-    /** A mouse moving with no button down: what's under it hears `Enter` and `Exit`. */
+    /**
+     * A mouse moving with no button down: what's under it hears `Enter` and `Exit`. A stylus's
+     * hover too, its exit at once (it has no press waiting to follow, D1677).
+     */
     override fun onHoverEvent(event: MotionEvent): Boolean {
+        val tool = event.getToolType(0)
+        if (host != 0L && (tool == MotionEvent.TOOL_TYPE_STYLUS || tool == MotionEvent.TOOL_TYPE_ERASER)) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
+                    sendTouches(event, 4, -1, 0L)
+                    return true
+                }
+                MotionEvent.ACTION_HOVER_EXIT -> {
+                    if (ComposeRsNative.stylusHoverExit(host) != 0) updatePointerIcons()
+                    return true
+                }
+            }
+        }
         if (host != 0L && event.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE) {
             when (event.actionMasked) {
                 MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {

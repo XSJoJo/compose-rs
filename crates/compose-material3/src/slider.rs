@@ -350,7 +350,7 @@ impl SliderDefaults {
             modifier
                 .size(thumb_size)
                 .hoverable(interaction_source)
-                .pointer_hover_icon(PointerIcon::Hand),
+                .pointer_hover_icon(PointerIcon::HAND),
             Alignment::CENTER,
             false,
             compose_runtime::callback(move |_| {
