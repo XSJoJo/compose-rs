@@ -492,3 +492,53 @@ fn in_a_scroll_ctrl_and_the_wheel_zoom_and_the_wheel_alone_scrolls() {
     assert_eq!(seen.scale.get(), 1.0);
     assert!(scroll.value() > 0);
 }
+
+// The review's: a Ctrl-wheel while disabled is dropped, not applied once enabled again.
+#[test]
+fn a_ctrl_wheel_while_disabled_leaves_nothing_for_later() {
+    let (seen, state) = recording();
+    let enabled = mutable_state_of(true);
+    let read = enabled.handle();
+    let given = state.clone();
+    let mut ui = show(move || Modifier.transformable(given.clone(), false, read.get()));
+    // A mouse over it while enabled: its wheel's detection is there from now on.
+    ui.on_node_with_tag(TAG).perform_mouse_input(|mouse| mouse.move_to(Offset::new(20.0, 30.0)));
+    enabled.set(false);
+    ui.wait_for_idle();
+    wheel(&mut ui, TWICE, true);
+    enabled.set(true);
+    ui.wait_for_idle();
+    ui.on_node_with_tag(TAG).perform_mouse_input(|mouse| mouse.move_to(Offset::new(40.0, 50.0)));
+    assert_eq!((seen.scale.get(), seen.calls.get()), (1.0, 0));
+}
+
+// The review's: three fingers, one moving, pin the rotation's weights.
+#[test]
+fn three_fingers_turning_unevenly_weigh_by_their_distance() {
+    let change = |id: u64, before: Offset, now: Offset| {
+        compose_ui::PointerInputChange::new(
+            compose_ui::PointerId(id),
+            16,
+            now,
+            true,
+            0,
+            before,
+            true,
+            false,
+        )
+    };
+    let event = compose_ui::PointerEvents::new(vec![
+        change(1, Offset::new(0.0, 0.0), Offset::new(0.0, 0.0)),
+        change(2, Offset::new(100.0, 0.0), Offset::new(100.0, 0.0)),
+        change(3, Offset::new(50.0, 90.0), Offset::new(80.0, 180.0)),
+    ]);
+    let near = |actual: f32, expected: f32| (actual - expected).abs() < 1e-4;
+    assert_eq!(event.calculate_pan(), Offset::new(10.0, 30.0));
+    assert!(near(event.calculate_zoom(), 1.5775145), "{}", event.calculate_zoom());
+    assert!(near(event.calculate_rotation(), -6.5365746), "{}", event.calculate_rotation());
+    assert!(
+        near(event.calculate_centroid_size(false), 58.873013),
+        "{}",
+        event.calculate_centroid_size(false)
+    );
+}
