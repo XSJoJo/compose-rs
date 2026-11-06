@@ -644,6 +644,7 @@ impl ColorSpaces {
     pub const BT2020_HLG: NamedRgb = NamedRgb(17);
     pub const BT2020_PQ: NamedRgb = NamedRgb(18);
     pub const OKLAB: NamedColorSpace = NamedColorSpace(19);
+    pub(crate) const OKLAB_ID: i32 = 19;
 
     /// The named space of `id`, as Compose's internal `getColorSpace`.
     pub fn get(id: usize) -> Option<&'static ColorSpace> {
@@ -671,6 +672,22 @@ impl ColorSpaces {
             })
         })
     }
+}
+
+/// sRGB adapted to D50, as the connectors between sRGB and Oklab use it.
+pub(crate) fn srgb_d50() -> &'static RgbData {
+    static ADAPTED: LazyLock<ColorSpace> =
+        LazyLock::new(|| ColorSpaces::SRGB.adapt(Illuminant::D50));
+    ADAPTED.rgb_data().expect("compose-ui: sRGB adapted is an RGB space")
+}
+
+/// sRGB's EOTF of each byte's value (`byte / 255`), as [`srgb_d50`]'s `eotf` gives it.
+pub(crate) fn srgb_d50_decoded() -> &'static [f32; 256] {
+    static DECODED: LazyLock<[f32; 256]> = LazyLock::new(|| {
+        let srgb = srgb_d50();
+        std::array::from_fn(|byte| srgb.eotf(f64::from(byte as f32 / 255.0)) as f32)
+    });
+    &DECODED
 }
 
 /// `value` kept in `minimum` to `maximum`, as Kotlin's `fastCoerceIn` (a NaN stays NaN).
@@ -930,7 +947,7 @@ fn oklab_matrices() -> &'static OklabMatrices {
     &MATRICES
 }
 
-fn oklab_to_xyz(values: &mut [f32]) {
+pub(crate) fn oklab_to_xyz(values: &mut [f32]) {
     let matrices = oklab_matrices();
     values[0] = coerce_in(values[0], 0.0, 1.0);
     values[1] = coerce_in(values[1], -0.5, 0.5);
@@ -942,7 +959,7 @@ fn oklab_to_xyz(values: &mut [f32]) {
     mul3x3_in_place(&matrices.inverse_m1, values);
 }
 
-fn xyz_to_oklab(values: &mut [f32]) {
+pub(crate) fn xyz_to_oklab(values: &mut [f32]) {
     mul3x3_in_place(&oklab_matrices().m1, values);
     for value in &mut values[..3] {
         *value = fast_cbrt(*value);

@@ -194,6 +194,12 @@ impl Color {
         }
     }
 
+    /// Whether its alpha is 0, read from its bits: for the checks of every drawing.
+    #[inline]
+    pub(crate) const fn alpha_is_zero(self) -> bool {
+        if self.is_packed_srgb() { self.0 >> 56 == 0 } else { (self.0 >> 6) & 0x3ff == 0 }
+    }
+
     /// Its color space, as `colorSpace`.
     pub fn color_space(self) -> &'static ColorSpace {
         let id = (self.0 & 0x3f) as usize;
@@ -331,7 +337,9 @@ impl Color {
 
     /// This color drawn over `background`, in the background's space, as `compositeOver`.
     pub fn composite_over(self, background: Color) -> Color {
-        let foreground = self.convert(background.color_space());
+        // Two sRGB colors: no conversion and no space to look up (the same numbers).
+        let srgb = self.is_packed_srgb() && background.is_packed_srgb();
+        let foreground = if srgb { self } else { self.convert(background.color_space()) };
         let background_alpha = background.alpha();
         let foreground_alpha = foreground.alpha();
         let alpha = foreground_alpha + background_alpha * (1.0 - foreground_alpha);
@@ -343,13 +351,16 @@ impl Color {
                     / alpha
             }
         };
-        Color::unchecked(
+        let (red, green, blue) = (
             component(foreground.red(), background.red()),
             component(foreground.green(), background.green()),
             component(foreground.blue(), background.blue()),
-            alpha,
-            background.color_space(),
-        )
+        );
+        if srgb {
+            Color::pack_srgb(red, green, blue, alpha)
+        } else {
+            Color::unchecked(red, green, blue, alpha, background.color_space())
+        }
     }
 
     /// `self` if specified, else `other`, as `takeOrElse`.
@@ -366,6 +377,13 @@ impl Color {
     /// as Compose's `lerp(Color, Color, Float)`; `fraction` is kept in 0 to 1. The interpolated
     /// Oklab color is packed (as half floats) before it's converted, as Compose's.
     pub fn lerp(start: Color, stop: Color, fraction: f32) -> Color {
+        if start.is_packed_srgb() && stop.is_packed_srgb() {
+            return Color::lerp_srgb(start, stop, fraction);
+        }
+        // What the connectors give for two unspecified colors (a text style's background).
+        if start.is_unspecified() && stop.is_unspecified() {
+            return Color::UNSPECIFIED;
+        }
         let oklab = &*ColorSpaces::OKLAB;
         let start_color = start.convert(oklab);
         let end_color = stop.convert(oklab);
@@ -379,6 +397,45 @@ impl Color {
             oklab,
         );
         interpolated.convert(stop.color_space())
+    }
+
+    /// [`Color::lerp`] of two sRGB colors (animations' usual case): the steps the connectors
+    /// take, without looking them or the spaces up. Each color to Oklab through sRGB adapted
+    /// to D50, packed as an Oklab color (kept in Oklab's range, half floats); the mix packed
+    /// unchecked; back to sRGB.
+    fn lerp_srgb(start: Color, stop: Color, fraction: f32) -> Color {
+        let srgb = crate::colorspace::srgb_d50();
+        let oklab_id = ColorSpaces::OKLAB_ID;
+        let decoded = crate::colorspace::srgb_d50_decoded();
+        let to_oklab = |color: Color| {
+            // The EOTF of a byte, from a table of the same values `to_xyz_values` computes.
+            let argb = color.to_argb();
+            let [r, g, b] = [16, 8, 0].map(|shift| decoded[((argb >> shift) & 0xFF) as usize]);
+            let mut values = crate::colorspace::mul3x3_float3(&srgb.transform, r, g, b);
+            crate::colorspace::xyz_to_oklab(&mut values);
+            Color::pack_wide(
+                float_to_half(coerce_in(values[0], 0.0, 1.0)),
+                float_to_half(coerce_in(values[1], -0.5, 0.5)),
+                float_to_half(coerce_in(values[2], -0.5, 0.5)),
+                coerce_in(color.alpha(), 0.0, 1.0),
+                oklab_id,
+            )
+        };
+        let (start, stop) = (to_oklab(start), to_oklab(stop));
+        let t = coerce_in(fraction, 0.0, 1.0);
+        let mix = |start: f32, stop: f32| crate::unit::lerp_f32(start, stop, t);
+        let alpha = mix(start.alpha(), stop.alpha());
+        let interpolated = Color::pack_wide(
+            float_to_half(mix(start.red(), stop.red())),
+            float_to_half(mix(start.green(), stop.green())),
+            float_to_half(mix(start.blue(), stop.blue())),
+            if alpha.is_nan() { alpha } else { alpha.clamp(0.0, 1.0) },
+            oklab_id,
+        );
+        let mut values = [interpolated.red(), interpolated.green(), interpolated.blue()];
+        crate::colorspace::oklab_to_xyz(&mut values);
+        let [red, green, blue] = srgb.xyz_to_values(values[0], values[1], values[2]);
+        Color::new(red, green, blue, interpolated.alpha())
     }
 
     /// This color with its alpha multiplied by `alpha` (when not NaN and below 1), as

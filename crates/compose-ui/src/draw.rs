@@ -14,7 +14,7 @@ use crate::unit::{Density, Offset, Rect, Size};
 /// draw a transparent color). Its drawing isn't recorded, as Skia drops it
 /// (`SkPaint::nothingToDraw`): a frame doesn't copy, send and replay it.
 fn draws_nothing(paint: &Paint) -> bool {
-    paint.color.alpha() == 0.0 && paint.shader.is_none() && paint.is_plain()
+    paint.color.alpha_is_zero() && paint.shader.is_none() && paint.is_plain()
 }
 
 /// What a draw node draws with, as `DrawScope`: its size, in pixels, and the display list.
@@ -285,7 +285,8 @@ impl DrawScope<'_> {
         color_filter: Option<&ColorFilter>,
     ) {
         // A transparent `SrcIn` tint draws nothing.
-        if color_filter.and_then(ColorFilter::src_in_tint).is_some_and(|tint| tint.alpha() == 0.0) {
+        if color_filter.and_then(ColorFilter::src_in_tint).is_some_and(|tint| tint.alpha_is_zero())
+        {
             return;
         }
         let color_filter = color_filter.map(|filter| self.list.push_color_filter(*filter));

@@ -245,7 +245,7 @@ fn only_srgb_is_srgb() {
     );
     assert!(again.is_srgb());
     // sRGB's curve over another range isn't.
-    let srgb = ColorSpaces::SRGB.clone();
+    let srgb: Rgb = (*ColorSpaces::SRGB).clone();
     let below = Rgb::from_primaries(
         "Below",
         &SRGB_PRIMARIES_XY,

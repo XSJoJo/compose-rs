@@ -116,6 +116,32 @@ fn lerp_runs_through_oklab() {
     }
 }
 
+// Compose: compose/ui/ui-graphics/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/ColorTest.kt, lerp
+/// Translucent sRGB colors (lerp's shortcut for two sRGB colors) mix as through the connectors.
+#[test]
+fn lerp_of_translucent_colors_goes_through_oklab_too() {
+    let colors = [0x80FF_0000u32, 0x3300_FF80, 0xFF12_3456, 0x00FF_FFFF, 0xC0AB_CDEF];
+    for start in colors.map(Color::from_argb) {
+        for stop in colors.map(Color::from_argb) {
+            for step in 0..=20 {
+                let t = step as f32 / 20.0;
+                let (from, to) =
+                    (start.convert(&ColorSpaces::OKLAB), stop.convert(&ColorSpaces::OKLAB));
+                let mix = |a: f32, b: f32| (1.0 - t) * a + t * b;
+                let expected = Color::new_with(
+                    mix(from.red(), to.red()),
+                    mix(from.green(), to.green()),
+                    mix(from.blue(), to.blue()),
+                    mix(from.alpha(), to.alpha()),
+                    &ColorSpaces::OKLAB,
+                )
+                .convert(&ColorSpaces::SRGB);
+                assert_eq!(Color::lerp(start, stop, t), expected, "{start:?} to {stop:?} at {t}");
+            }
+        }
+    }
+}
+
 // Compose: compose/ui/ui-graphics/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/ColorTest.kt, lerpValues
 #[test]
 fn lerp_from_red_to_blue_gives_composes_values() {
