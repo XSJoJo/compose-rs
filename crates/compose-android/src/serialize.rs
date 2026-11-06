@@ -243,12 +243,7 @@ impl Writer {
     /// is what `Replayer.kt` keeps its `Shader` objects by.
     fn shader(&mut self, shader: &Shader, alpha: f32) {
         let gradient = shader.gradient();
-        let tile_mode = match gradient.tile_mode {
-            TileMode::Clamp => 0,
-            TileMode::Repeated => 1,
-            TileMode::Mirror => 2,
-            TileMode::Decal => 3,
-        };
+        let tile_mode = tile_mode_byte(gradient.tile_mode);
         match shader {
             Shader::LinearGradient { from, to, .. } => {
                 self.u8(shader::LINEAR);
@@ -307,6 +302,16 @@ impl Writer {
                 self.radii(radii);
             }
         }
+    }
+}
+
+/// A tile mode's byte: 0 clamp, 1 repeated, 2 mirror, 3 decal.
+fn tile_mode_byte(tile_mode: TileMode) -> u8 {
+    match tile_mode {
+        TileMode::Clamp => 0,
+        TileMode::Repeated => 1,
+        TileMode::Mirror => 2,
+        TileMode::Decal => 3,
     }
 }
 
@@ -973,7 +978,12 @@ pub mod layer_entry {
     pub const SPOT: usize = 74;
     pub const COMPOSITING: usize = 78;
     pub const BOUNDS: usize = 79;
-    pub const END: usize = 95;
+    /// Its render effect: a kind (0 none, 1 a blur), the blur's radii (f32 each) and its edge
+    /// treatment (a tile mode: 0 clamp, 1 repeated, 2 mirror, 3 decal).
+    pub const EFFECT: usize = 95;
+    pub const EFFECT_RADII: usize = 96;
+    pub const EFFECT_TILE: usize = 104;
+    pub const END: usize = 105;
 }
 
 /// A `LAYERS` entry's outline kind, as `Replayer.kt` reads it.
@@ -1158,6 +1168,20 @@ fn write_layer(
     out.color(layer.spot_shadow_color);
     out.u8(compositing_of(groups, index, cache));
     out.rect(&layer.bounds);
+    match layer.render_effect {
+        None => {
+            out.u8(0);
+            out.f32(0.0);
+            out.f32(0.0);
+            out.u8(0);
+        }
+        Some(compose_ui::RenderEffect::Blur { radius_x, radius_y, edge_treatment }) => {
+            out.u8(1);
+            out.f32(radius_x);
+            out.f32(radius_y);
+            out.u8(tile_mode_byte(edge_treatment));
+        }
+    }
     debug_assert_eq!(out.bytes.len() - start, layer_entry::END - layer_entry::CLIP);
 }
 
@@ -1475,6 +1499,13 @@ fn write_op(
             out.rect(bounds);
             out.f32(*alpha);
         }
+        // A render effect is a group's, which its render node applies (its `LAYERS` entry):
+        // drawn in place, it's a plain layer.
+        DrawOp::SaveLayerEffect { bounds, .. } => {
+            out.u8(tag::SAVE_LAYER_ALPHA);
+            out.rect(bounds);
+            out.f32(1.0);
+        }
         DrawOp::SaveLayer { bounds, alpha, color_filter, blend_mode } => {
             out.u8(tag::SAVE_LAYER);
             out.rect(bounds);
@@ -1656,13 +1687,20 @@ mod tests {
             "/../../android/compose-rs/src/main/java/rs/compose/android/Replayer.kt"
         );
         let kotlin = std::fs::read_to_string(path).expect("the replayer");
-        let constant = |name: &str| -> u8 {
+        let number = |name: &str| -> usize {
             let line = kotlin
                 .lines()
                 .find(|line| line.trim().starts_with(&format!("const val {name} = ")))
                 .unwrap_or_else(|| panic!("{name} in Replayer.kt"));
             line.rsplit(' ').next().unwrap().parse().unwrap()
         };
+        let constant = |name: &str| number(name) as u8;
+        assert_eq!(number("LAYER_ENTRY_BYTES"), LAYER_ENTRY_BYTES);
+        assert_eq!(number("ENTRY_BOUNDS"), layer_entry::BOUNDS);
+        assert_eq!(number("ENTRY_EFFECT"), layer_entry::EFFECT);
+        assert_eq!(number("ENTRY_EFFECT_RADII"), layer_entry::EFFECT_RADII);
+        assert_eq!(number("ENTRY_EFFECT_TILE"), layer_entry::EFFECT_TILE);
+        assert_eq!(number("ENTRY_END"), layer_entry::END);
         assert_eq!(constant("SAVE_LAYER"), tag::SAVE_LAYER);
         assert_eq!(constant("DRAW_IMAGE"), tag::DRAW_IMAGE);
         assert_eq!(constant("FILTER_NONE"), color_filter::NONE);

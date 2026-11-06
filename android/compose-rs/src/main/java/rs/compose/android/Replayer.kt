@@ -16,6 +16,7 @@ import android.graphics.PorterDuff
 import android.graphics.RadialGradient
 import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.RenderEffect
 import android.graphics.RenderNode
 import android.graphics.Shader
 import android.graphics.SweepGradient
@@ -950,7 +951,7 @@ internal class Replayer(var text: TextMeasurer) {
      */
     private fun setLayer(group: Group, buffer: ByteBuffer, at: Int, old: ByteArray?) {
         val node = group.node
-        if (changed(old, ENTRY_BOUNDS, ENTRY_END)) {
+        if (changed(old, ENTRY_BOUNDS, ENTRY_EFFECT)) {
             group.setPosition(
                 ceil(buffer.floatAt(at + ENTRY_BOUNDS + 8)).toInt(),
                 ceil(buffer.floatAt(at + ENTRY_BOUNDS + 12)).toInt(),
@@ -1016,6 +1017,26 @@ internal class Replayer(var text: TextMeasurer) {
                     node.setHasOverlappingRendering(true)
                 }
             }
+        }
+        // A blur, as Compose's `BlurEffect` on its layer's render node: API 31's render
+        // effects; below, none, as Compose's.
+        if (changed(old, ENTRY_EFFECT, ENTRY_END) && Build.VERSION.SDK_INT >= 31) {
+            val effect = if (buffer.get(at + ENTRY_EFFECT).toInt() == EFFECT_BLUR) {
+                val tile = when (buffer.get(at + ENTRY_EFFECT_TILE).toInt()) {
+                    1 -> Shader.TileMode.REPEAT
+                    2 -> Shader.TileMode.MIRROR
+                    3 -> Shader.TileMode.DECAL
+                    else -> Shader.TileMode.CLAMP
+                }
+                RenderEffect.createBlurEffect(
+                    buffer.floatAt(at + ENTRY_EFFECT_RADII),
+                    buffer.floatAt(at + ENTRY_EFFECT_RADII + 4),
+                    tile,
+                )
+            } else {
+                null
+            }
+            node.setRenderEffect(effect)
         }
     }
 
@@ -1131,6 +1152,7 @@ internal class Replayer(var text: TextMeasurer) {
         node.setSpotShadowColor(BLACK)
         node.setUseCompositingLayer(false, null)
         node.setHasOverlappingRendering(true)
+        if (Build.VERSION.SDK_INT >= 31) node.setRenderEffect(null)
     }
 
     /**
@@ -1668,9 +1690,10 @@ internal class Replayer(var text: TextMeasurer) {
         /**
          * The bytes of a `LAYERS` entry (`serialize.rs`): its key, 8 floats, whether it clips,
          * its outline's kind, bounds and radii, its elevation, its shadows' colors, its
-         * compositing, its bounds: 8 + 8 * 4 + 1 + 1 + 4 * 4 + 4 * 4 + 4 + 4 + 4 + 1 + 4 * 4.
+         * compositing, its bounds, its render effect (kind, radii, tile mode):
+         * 8 + 8 * 4 + 1 + 1 + 4 * 4 + 4 * 4 + 4 + 4 + 4 + 1 + 4 * 4 + 1 + 4 * 2 + 1.
          */
-        const val LAYER_ENTRY_BYTES = 103
+        const val LAYER_ENTRY_BYTES = 113
         // Where each property is in a `LAYERS` entry, after its key (`serialize::layer_entry`).
         const val ENTRY_ALPHA = 0
         const val ENTRY_PIVOT = 4
@@ -1686,7 +1709,11 @@ internal class Replayer(var text: TextMeasurer) {
         const val ENTRY_SPOT = 74
         const val ENTRY_COMPOSITING = 78
         const val ENTRY_BOUNDS = 79
-        const val ENTRY_END = 95
+        const val ENTRY_EFFECT = 95
+        const val ENTRY_EFFECT_RADII = 96
+        const val ENTRY_EFFECT_TILE = 104
+        const val ENTRY_END = 105
+        const val EFFECT_BLUR = 1
         const val OUTLINE_NONE = 0
         const val OUTLINE_PATH = 3
         const val COMPOSITING_AUTO = 0

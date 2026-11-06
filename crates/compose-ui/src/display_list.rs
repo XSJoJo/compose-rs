@@ -41,6 +41,13 @@ pub enum DrawOp {
         color_filter: Option<ColorFilterIndex>,
         blend_mode: BlendMode,
     },
+    /// Saves, and draws what follows into a layer composited through `effect` (a blur) at the
+    /// matching restore, as a graphics layer's render effect: bounded by `bounds`, unless its
+    /// edge treatment lets the effect reach past them (`Decal`).
+    SaveLayerEffect {
+        bounds: Rect,
+        effect: crate::graphics_layer::RenderEffect,
+    },
     /// Transforms what follows (until the matching restore of an earlier save): scaled by
     /// `scale` and rotated by `rotation` degrees (clockwise) around `pivot`, then moved by
     /// `translation`, as a graphics layer.
@@ -373,6 +380,7 @@ impl FlatDisplayList {
                     writeln!(out, "paragraph {} at {} {}", handle.0, offset.x, offset.y)
                 }
                 DrawOp::SaveLayerAlpha { alpha, .. } => writeln!(out, "save layer alpha {alpha}"),
+                DrawOp::SaveLayerEffect { effect, .. } => writeln!(out, "save layer {effect:?}"),
                 DrawOp::SaveLayer { alpha, color_filter, blend_mode, .. } => writeln!(
                     out,
                     "save layer alpha {alpha}{}{}",
@@ -431,8 +439,13 @@ impl FlatDisplayList {
                     offset.y
                 ),
             };
-            if matches!(op, DrawOp::Save | DrawOp::SaveLayerAlpha { .. } | DrawOp::SaveLayer { .. })
-            {
+            if matches!(
+                op,
+                DrawOp::Save
+                    | DrawOp::SaveLayerAlpha { .. }
+                    | DrawOp::SaveLayer { .. }
+                    | DrawOp::SaveLayerEffect { .. }
+            ) {
                 depth += 1;
             }
         }
@@ -451,7 +464,9 @@ pub fn single_drawing(ops: &[DrawOp]) -> Option<usize> {
     let mut drawings = 0;
     for (index, op) in ops.iter().enumerate() {
         match op {
-            DrawOp::SaveLayerAlpha { .. } | DrawOp::SaveLayer { .. } => return None,
+            DrawOp::SaveLayerAlpha { .. }
+            | DrawOp::SaveLayer { .. }
+            | DrawOp::SaveLayerEffect { .. } => return None,
             DrawOp::Save => depth += 1,
             DrawOp::Restore if depth == 0 => return (drawings == 1).then_some(index),
             DrawOp::Restore => depth -= 1,

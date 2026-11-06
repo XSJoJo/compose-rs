@@ -403,6 +403,7 @@ impl DrawScope<'_> {
             compositing_strategy: strategy,
             bounds: Rect::new(origin.x, origin.y, origin.x + size.width, origin.y + size.height),
             density: cell.density.get(),
+            render_effect: None,
         };
         for op in layer_properties.operations() {
             match op {

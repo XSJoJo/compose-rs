@@ -737,6 +737,7 @@ fn a_record_is_its_content_its_layer_an_entry() {
         compositing_strategy: CompositingStrategy::Auto,
         bounds: Rect::new(0.0, 0.0, 4.0, 4.0),
         density: 1.0,
+        render_effect: None,
     };
     list.groups.push(group(9, 3, Some(layer), content));
     let (mut resources, mut out) = (Resources::default(), Writer::default());

@@ -452,6 +452,35 @@ fn draw_op(
         DrawOp::SaveLayerAlpha { bounds, alpha } => {
             canvas.save_layer_alpha_f(rect(bounds), alpha.clamp(0.0, 1.0));
         }
+        DrawOp::SaveLayerEffect { bounds, effect } => {
+            let compose_ui::RenderEffect::Blur { radius_x, radius_y, edge_treatment } = *effect;
+            // As Compose Desktop's `BlurEffect`: Skia's radius to sigma.
+            let sigma = |radius: f32| if radius > 0.0 { radius * 0.57735 + 0.5 } else { 0.0 };
+            let decal = edge_treatment == compose_ui::TileMode::Decal;
+            let tile_mode = match edge_treatment {
+                compose_ui::TileMode::Clamp => skia_safe::TileMode::Clamp,
+                compose_ui::TileMode::Repeated => skia_safe::TileMode::Repeat,
+                compose_ui::TileMode::Mirror => skia_safe::TileMode::Mirror,
+                compose_ui::TileMode::Decal => skia_safe::TileMode::Decal,
+            };
+            let bounds = rect(bounds);
+            // Its edges repeated from the layer's bounds; a decal's blur reaches past them.
+            let crop = (!decal).then_some(bounds);
+            let filter = skia_safe::image_filters::blur(
+                (sigma(radius_x), sigma(radius_y)),
+                tile_mode,
+                None,
+                crop.map(skia_safe::image_filters::CropRect::from),
+            );
+            let mut paint = skia_safe::Paint::default();
+            paint.set_image_filter(filter);
+            let record = skia_safe::canvas::SaveLayerRec::default().paint(&paint);
+            if decal {
+                canvas.save_layer(&record);
+            } else {
+                canvas.save_layer(&record.bounds(&bounds));
+            }
+        }
         DrawOp::SaveLayer { bounds, alpha, color_filter, blend_mode } => {
             let mut paint = skia_safe::Paint::default();
             paint.set_alpha_f(alpha.clamp(0.0, 1.0));

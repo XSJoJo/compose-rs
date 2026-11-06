@@ -53,6 +53,55 @@ pub enum CompositingStrategy {
     ModulateAlpha,
 }
 
+/// What a layer's content goes through as it's composited, as Compose's `RenderEffect`: a blur
+/// of `radius_x` by `radius_y` pixels, as `BlurEffect`, its edges read by `edge_treatment` (a
+/// `TileMode`: `Clamp` repeats the layer's edge pixels into the blur, `Decal` blurs from
+/// transparent, the blur reaching past the layer).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum RenderEffect {
+    Blur { radius_x: f32, radius_y: f32, edge_treatment: crate::brush::TileMode },
+}
+
+impl RenderEffect {
+    /// As `BlurEffect(radiusX, radiusY, edgeTreatment)`.
+    pub fn blur(
+        radius_x: f32,
+        radius_y: f32,
+        edge_treatment: crate::brush::TileMode,
+    ) -> RenderEffect {
+        RenderEffect::Blur { radius_x, radius_y, edge_treatment }
+    }
+}
+
+/// How a blur treats its content's edges, as Compose's `BlurredEdgeTreatment`: clipped to a
+/// shape, its edge pixels repeated into the blur, or (`UNBOUNDED`) blurred from transparent past
+/// the bounds.
+#[derive(Clone, PartialEq, Debug)]
+pub struct BlurredEdgeTreatment {
+    pub shape: Option<Shape>,
+}
+
+impl BlurredEdgeTreatment {
+    /// As `BlurredEdgeTreatment.Rectangle`.
+    pub const RECTANGLE: BlurredEdgeTreatment =
+        BlurredEdgeTreatment { shape: Some(Shape::Rectangle) };
+    /// As `BlurredEdgeTreatment.Unbounded`.
+    pub const UNBOUNDED: BlurredEdgeTreatment = BlurredEdgeTreatment { shape: None };
+
+    /// Clipped to `shape`, as `BlurredEdgeTreatment(shape)`.
+    pub fn new(shape: Shape) -> BlurredEdgeTreatment {
+        BlurredEdgeTreatment { shape: Some(shape) }
+    }
+
+    fn tile_mode(&self) -> crate::brush::TileMode {
+        if self.shape.is_some() {
+            crate::brush::TileMode::Clamp
+        } else {
+            crate::brush::TileMode::Decal
+        }
+    }
+}
+
 /// The shadows' default color, as Compose's `DefaultShadowColor`.
 pub const DEFAULT_SHADOW_COLOR: Color = Color::BLACK;
 
@@ -81,6 +130,8 @@ pub struct GraphicsLayerScope {
     /// Clips the content to `shape`.
     pub clip: bool,
     pub compositing_strategy: CompositingStrategy,
+    /// What its content goes through as it's composited, as `renderEffect` (a blur).
+    pub render_effect: Option<RenderEffect>,
     /// The layer's size, set before its block runs (as `GraphicsLayerScope.size`).
     pub size: Size,
     /// The density, set before its block runs (Compose's scope is a `Density`).
@@ -103,6 +154,7 @@ impl Default for GraphicsLayerScope {
             shape: Shape::Rectangle,
             clip: false,
             compositing_strategy: CompositingStrategy::Auto,
+            render_effect: None,
             size: Size::ZERO,
             density: Density::default(),
         }
@@ -486,6 +538,8 @@ pub struct LayerProperties {
     pub bounds: Rect,
     /// Pixels per dp: desktop's shadow light is placed in dp (`operations`).
     pub density: f32,
+    /// What its content goes through, its layer's `render_effect`.
+    pub render_effect: Option<RenderEffect>,
 }
 
 impl LayerProperties {
@@ -518,6 +572,7 @@ impl LayerProperties {
             compositing_strategy: layer.compositing_strategy,
             bounds,
             density: layer.density.density,
+            render_effect: layer.render_effect,
         }
     }
 
@@ -581,15 +636,20 @@ impl LayerProperties {
             Outline::Rounded(rect, radii) => DrawOp::ClipRoundRect(rect, radii),
             Outline::Generic(path, offset) => DrawOp::ClipPath { path, offset },
         });
+        let effect = self
+            .render_effect
+            .map(|effect| DrawOp::SaveLayerEffect { bounds: self.bounds, effect });
         let alpha = self
             .offscreen()
             .then_some(DrawOp::SaveLayerAlpha { bounds: self.bounds, alpha: self.alpha });
-        [save, transform, shadow, clip, alpha].into_iter().flatten()
+        [save, transform, shadow, clip, effect, alpha].into_iter().flatten()
     }
 
     /// How many restores end its [`operations`](LayerProperties::operations).
     pub fn restores(&self) -> u8 {
-        u8::from(self.transforms() || self.clip || self.casts_shadow()) + u8::from(self.offscreen())
+        u8::from(self.transforms() || self.clip || self.casts_shadow())
+            + u8::from(self.offscreen())
+            + u8::from(self.render_effect.is_some())
     }
 }
 
@@ -708,6 +768,34 @@ impl Modifier {
 
     /// Draws the content with `alpha` opacity, as `Modifier.alpha`: a layer clipping to its
     /// bounds, none at 1, as Compose's (`graphicsLayer(alpha = alpha, clip = true)`).
+    /// Blurs the content by `radius` both ways, its edges a rectangle's, as `Modifier.blur(radius)`.
+    pub fn blur(self, radius: crate::unit::Dp) -> Modifier {
+        self.blur_with(radius, radius, BlurredEdgeTreatment::RECTANGLE)
+    }
+
+    /// Blurs the content by `radius_x` and `radius_y`, its edges by `edge_treatment`, as
+    /// `Modifier.blur(radiusX, radiusY, edgeTreatment)`: a graphics layer with a blur effect,
+    /// clipped to the treatment's shape (its edge pixels repeated into the blur) or not
+    /// (blurring from transparent, past the bounds). None for a radius that isn't above 0, as
+    /// Compose's.
+    pub fn blur_with(
+        self,
+        radius_x: crate::unit::Dp,
+        radius_y: crate::unit::Dp,
+        edge_treatment: BlurredEdgeTreatment,
+    ) -> Modifier {
+        if !(radius_x.0 > 0.0 && radius_y.0 > 0.0) {
+            return self;
+        }
+        let tile_mode = edge_treatment.tile_mode();
+        self.graphics_layer(move |layer| {
+            let (x, y) = (layer.density.to_px(radius_x), layer.density.to_px(radius_y));
+            layer.render_effect = (x > 0.0 && y > 0.0).then(|| RenderEffect::blur(x, y, tile_mode));
+            layer.clip = edge_treatment.shape.is_some();
+            layer.shape = edge_treatment.shape.clone().unwrap_or(Shape::Rectangle);
+        })
+    }
+
     pub fn alpha(self, alpha: f32) -> Modifier {
         if alpha == 1.0 {
             return self;

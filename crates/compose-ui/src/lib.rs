@@ -230,7 +230,8 @@ pub use graphics::{
     RECTANGLE_SHAPE, Shadow, Shape, Stroke, StrokeCap, StrokeJoin,
 };
 pub use graphics_layer::{
-    CompositingStrategy, DEFAULT_SHADOW_COLOR, GraphicsLayerScope, TransformOrigin,
+    BlurredEdgeTreatment, CompositingStrategy, DEFAULT_SHADOW_COLOR, GraphicsLayerScope,
+    RenderEffect, TransformOrigin,
 };
 pub use graphics_layer_object::{GraphicsLayer, remember_graphics_layer};
 pub use host::LOCAL_DENSITY;

@@ -181,7 +181,10 @@ fn painted(
     };
     for op in &list.ops {
         match op {
-            DrawOp::Save | DrawOp::SaveLayerAlpha { .. } | DrawOp::SaveLayer { .. } => {
+            DrawOp::Save
+            | DrawOp::SaveLayerAlpha { .. }
+            | DrawOp::SaveLayer { .. }
+            | DrawOp::SaveLayerEffect { .. } => {
                 saved.push(clip)
             }
             DrawOp::Restore => clip = saved.pop().unwrap_or(everything),
