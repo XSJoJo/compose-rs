@@ -163,7 +163,7 @@ The table's suite references (`lazy_api.rs`, `fling.rs`, …) are files in `crat
 
 | Path | Tests | Covers | Status |
 |---|---|---|---|
-| compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/layout/LazyLayoutStateRestorationTest.kt | 6 | Saveable state of items (also nested, custom keys, reorders) restored | ported (`lazy_state_restoration.rs`: all 6, on `LazyColumn`, as `LazyLayout` isn't public: lazy-layout-public) |
+| compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/layout/LazyLayoutStateRestorationTest.kt | 6 | Saveable state of items (also nested, custom keys, reorders) restored | ported (`lazy_state_restoration.rs`: all 6, on `LazyLayout`, D1325; `itemsStateRestoredOnlyForVisibleItemsWhenStateSaved_100items` keeps the state of the items not composed when saved, compose-rs's holder, D290) |
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/layout/LazyLayoutTest.kt | 19 | The public `LazyLayout`: item provider, measure scope, `LazyLayoutPrefetchState` scheduling and cancelling, approach | ported (`lazy_layout.rs`: the composing, measuring and reuse cases, 10, `nodeIsReusedWhenRemovedFirst` ignored as Compose's, D1323; the prefetch cases, 7, D1324, `disposePrefetchedItemWhileStillNeededInApproach` to compose-rs's pass that's now composing an active slot, which a cancelled prefetch leaves; n/a: `prefetchItemWithCustomExecutor`, the deprecated `PrefetchScheduler` parameter) |
 | compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/lazy/MutableIntervalListTest.kt | 19 | `MutableIntervalList` add and search | ported (`lazy/layout.rs`'s `interval_list_tests`: all 19, D1322) |
 | compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/lazy/layout/CacheWindowLogicTest.kt | 1 | Lane resize resets the cache-window strategy | ported (`cache_window.rs`, `a_change_of_lanes_starts_the_window_over`) |
@@ -376,7 +376,7 @@ From `compose/foundation/foundation-layout/api/current.txt` and `compose/foundat
 - **grid-parity:** done, `animate_item` with it (D1472), D1451; `overscrollEffect` D1464.
 - **cache-window:** done for lists, grids (D892) and staggered grids (D1469).
 - **lazy-semantics:** `CollectionInfo`, `ScrollToIndex` and `scrollByOffset` are done on lists, grids and pagers (D1468), a traversal group too. Left: `CollectionItemInfo` and `IndexForKey`, for `performScrollToKey`.
-- **pinnable:** (Started, D1282: `LOCAL_PINNABLE_CONTAINER`, `PinnableContainer` and `PinnedHandle` in ui, lazy items pinned one at a time by what's focusable; the rest of this waits.) `LocalPinnableContainer`/`PinnableContainer` (ui) honoured by lazy items, `LazyLayoutPinnableItem`, `LazyLayoutPinnedItemList`.
+- **pinnable:** (Started, D1282: `LOCAL_PINNABLE_CONTAINER`, `PinnableContainer` and `PinnedHandle` in ui, lazy items pinned one at a time by what's focusable; `LazyLayoutPinnableItem`, `LazyLayoutPinnedItemList` and `PinnedItem` public, D1325, the lists keeping their own `ItemPin` for now; the rest of this waits.) `LocalPinnableContainer`/`PinnableContainer` (ui) honoured by lazy items.
 - **beyond-bounds-api:** ui's `BeyondBoundsLayout` (`ModifierLocalBeyondBoundsLayout`, `layout(direction) {}`) answered by lazy layouts. compose-rs answers focus searches only.
 - **animate-item:** `Modifier::animate_item` and `animate_item_with(scope, fade_in_spec, placement_spec, fade_out_spec)` (`AnimateItemModifier`), D1472: lists, grids and staggered grids (`LazyStaggeredGridItemScope`) done. In lookahead scopes all three (D1226). Left: their Compose lookahead tests, the rows' remaining tests.
 - **lazy-layout-public:**
@@ -562,7 +562,7 @@ Each entry gives the Compose API, what it does, the test files that need it (by 
 32. **lazy-layout-public.**
     - API: `LazyLayout` and its provider, measure scope and prefetch-state API, `MutableIntervalList`.
     - Tests: LazyLayoutTest, MutableIntervalListTest.
-    - Depends on: a public `LazyLayout` on the lazy layouts' subcomposition (D1312, C8's stage 4). Design, steps and tests: [lazy-layout-api.md](design/lazy-layout-api.md) (being built: step 1, the interval lists, is in, D1322; step 2, `LazyLayout` and its provider, D1323; step 3, its prefetch state, D1324).
+    - Depends on: a public `LazyLayout` on the lazy layouts' subcomposition (D1312, C8's stage 4). Design, steps and tests: [lazy-layout-api.md](design/lazy-layout-api.md) (being built: step 1, the interval lists, is in, D1322; step 2, `LazyLayout` and its provider, D1323; step 3, its prefetch state, D1324; step 4, pinning, D1325).
     - Size: XL. Experimental: partly (`NestedPrefetchScope`, the `onNestedPrefetch` constructor).
 33. **system-gesture-exclusion.**
     - API: `Modifier.systemGestureExclusion`.

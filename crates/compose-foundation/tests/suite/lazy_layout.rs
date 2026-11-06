@@ -793,3 +793,161 @@ fn an_item_the_pass_thats_now_composes_outlives_a_cancelled_prefetch_of_it() {
     assert_eq!((lives.composed.get(), lives.disposed.get()), (1, 1));
     ui.on_node_with_tag("0").assert_is_displayed();
 }
+
+/// The containers items 0 to 9 of `pinning_layout` are composed in, by index.
+type Containers = Rc<RefCell<Vec<Option<Rc<dyn compose_ui::PinnableContainer>>>>>;
+
+/// A layout of ten 10-pixel items in a column, those from `first` to `first + 2` shown and the
+/// pinned ones composed and placed after them, each item a `LazyLayoutPinnableItem` noting its
+/// container in `containers`, as Compose's lists' items.
+fn pinning_layout(
+    first: MutableState<usize>,
+    pinned: LazyLayoutPinnedItemList,
+    containers: Containers,
+) -> ComposeTestRule {
+    struct Pinnable {
+        pinned: LazyLayoutPinnedItemList,
+        containers: Containers,
+    }
+    impl LazyLayoutItemProvider for Pinnable {
+        fn item_count(&self) -> usize {
+            10
+        }
+        fn item(&self, index: usize, key: u64) {
+            let containers = self.containers.clone();
+            LazyLayoutPinnableItem!(key, index, self.pinned.clone(), move || {
+                containers.borrow_mut()[index] = compose_ui::LOCAL_PINNABLE_CONTAINER.current();
+                Box!(modifier = Modifier.size((10.dp(), 10.dp())).test_tag(index.to_string()));
+            });
+        }
+    }
+    let items: Rc<dyn LazyLayoutItemProvider> =
+        Rc::new(Pinnable { pinned: pinned.clone(), containers });
+    let mut ui = ComposeTestRule::sized(IntSize::new(200, 200), move || {
+        let items = items.clone();
+        let pinned = pinned.clone();
+        LazyLayout!(
+            move || items.clone(),
+            measure_policy = remember(|| lazy_layout_measure_policy(move |scope, constraints| {
+                let shown = first.get()..first.get() + 3;
+                let mut wanted: Vec<usize> = shown.clone().collect();
+                for item in pinned.to_vec() {
+                    if !shown.contains(&item.index()) {
+                        wanted.push(item.index());
+                    }
+                }
+                let mut y = 0;
+                let mut placeables = Vec::new();
+                for index in wanted {
+                    for layout in scope.compose(index) {
+                        placeables.push(scope.measure(layout, constraints.loosen()));
+                    }
+                }
+                for placeable in &placeables {
+                    scope.place(placeable, 0, y);
+                    y += placeable.height;
+                }
+                scope.layout(100, 100)
+            }))
+        );
+    });
+    ui.wait_for_idle();
+    ui
+}
+
+fn containers() -> Containers {
+    Rc::new(RefCell::new(vec![None; 10]))
+}
+
+fn container(containers: &Containers, index: usize) -> Rc<dyn compose_ui::PinnableContainer> {
+    containers.borrow()[index].clone().expect("the item was composed")
+}
+
+// Adapted from Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/list/LazyListPinnableContainerTest.kt, pinnedItemIsComposedAndPlacedWhenScrolledOut and pinnedItemCanBeUnpinned
+#[test]
+fn a_pinned_item_stays_in_the_list_and_composed_until_released() {
+    let first = mutable_state_of(0usize);
+    let pinned = LazyLayoutPinnedItemList::new();
+    let seen = containers();
+    let mut ui = pinning_layout(first.handle(), pinned.clone(), seen.clone());
+    let handle = container(&seen, 1).pin();
+    assert_eq!(pinned.len(), 1);
+    let item = &pinned.to_vec()[0];
+    assert_eq!((item.index(), item.key()), (1, get_default_lazy_layout_key(1)));
+    first.set(5);
+    ui.wait_for_idle();
+    ui.on_node_with_tag("1").assert_exists();
+    ui.on_node_with_tag("0").assert_does_not_exist();
+    handle.release();
+    assert!(pinned.is_empty());
+    ui.wait_for_idle();
+    ui.on_node_with_tag("1").assert_does_not_exist();
+}
+
+// Adapted from Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/list/LazyListPinnableContainerTest.kt, pinnedMultipleTimes
+#[test]
+fn an_item_pinned_twice_stays_until_both_are_released() {
+    let first = mutable_state_of(0usize);
+    let pinned = LazyLayoutPinnedItemList::new();
+    let seen = containers();
+    let _ui = pinning_layout(first.handle(), pinned.clone(), seen.clone());
+    let one = container(&seen, 0).pin();
+    let two = container(&seen, 0).pin();
+    assert_eq!(pinned.len(), 1);
+    one.release();
+    assert_eq!(pinned.len(), 1);
+    two.release();
+    assert!(pinned.is_empty());
+}
+
+/// A container counting what's pinned in it.
+#[derive(Default)]
+struct CountingContainer(Rc<Cell<i32>>);
+
+impl compose_ui::PinnableContainer for CountingContainer {
+    fn pin(&self) -> compose_ui::PinnedHandle {
+        self.0.set(self.0.get() + 1);
+        let count = self.0.clone();
+        compose_ui::PinnedHandle::new(move || count.set(count.get() - 1))
+    }
+}
+
+// Adapted from Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/list/LazyListPinnableContainerTest.kt, pinningIsPropagatedToParentContainer and pinnedItemIsRemovedWhenNotVisible
+#[test]
+fn pinning_an_item_pins_the_container_around_it_and_leaving_lets_both_go() {
+    let parent_pins = Rc::new(Cell::new(0));
+    let parent: Rc<dyn compose_ui::PinnableContainer> =
+        Rc::new(CountingContainer(parent_pins.clone()));
+    let pinned = LazyLayoutPinnedItemList::new();
+    let shown = mutable_state_of(true);
+    let live = Rc::new(Cell::new(false));
+    let (list, showing, alive) = (pinned.clone(), shown.handle(), live.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(200, 200), move || {
+        if !showing.get() {
+            return;
+        }
+        let list = list.clone();
+        let alive = alive.clone();
+        CompositionLocalProvider(
+            compose_ui::LOCAL_PINNABLE_CONTAINER.provides(Some(parent.clone())),
+            move || {
+                let alive = alive.clone();
+                LazyLayoutPinnableItem!(7, 0, list.clone(), move || {
+                    let container = compose_ui::LOCAL_PINNABLE_CONTAINER.current();
+                    alive.set(container.is_some());
+                    let _ = remember(move || Rc::new(container.map(|it| it.pin())));
+                });
+            },
+        );
+    });
+    ui.wait_for_idle();
+    assert!(live.get());
+    assert_eq!(pinned.len(), 1);
+    assert_eq!(pinned.to_vec()[0].key(), 7);
+    assert_eq!(parent_pins.get(), 1);
+    // Gone from the composition: out of the list, the parent released.
+    shown.set(false);
+    ui.wait_for_idle();
+    assert!(pinned.is_empty());
+    assert_eq!(parent_pins.get(), 0);
+}

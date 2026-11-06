@@ -4,6 +4,7 @@
 use std::cell::Cell;
 
 mod lazy_layout;
+mod pinnable;
 mod prefetch_state;
 
 pub use super::animate_scroll::LazyLayoutScrollScope;
@@ -12,6 +13,7 @@ pub use lazy_layout::{
     LazyLayout, LazyLayoutItemProvider, LazyLayoutMeasurePolicy, LazyLayoutMeasureScope,
     get_default_lazy_layout_key, lazy_layout_measure_policy,
 };
+pub use pinnable::{LazyLayoutPinnableItem, LazyLayoutPinnedItemList, PinnedItem};
 pub use prefetch_state::{LazyLayoutPrefetchState, PrefetchHandle, PrefetchResultScope};
 
 /// Runs of items, each holding a value, found by an item's index, as Compose's `IntervalList`:
