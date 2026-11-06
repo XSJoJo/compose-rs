@@ -151,6 +151,7 @@ mod shape_parity;
 mod snapping;
 mod stretch_overscroll;
 mod subcompose_layout;
+mod text_field_basic;
 mod text_field_default_width;
 mod text_field_output;
 mod text_field_output_input_method;

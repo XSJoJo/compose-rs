@@ -945,7 +945,7 @@ impl UiTree {
             }
         }
         if let Some(node) = requests.bring_into_view {
-            self.bring_focused_into_view(node);
+            self.bring_focused_into_view(node, requests.bring_into_view_rect);
         }
         actions.append(&mut self.pending_actions);
     }
