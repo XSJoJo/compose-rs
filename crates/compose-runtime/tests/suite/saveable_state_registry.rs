@@ -1,6 +1,6 @@
 //! Compose's `SaveableStateRegistryTest` and `AutoSaverTest`: registering, unregistering,
 //! saving and restoring values. Keys are `u64` composite hashes (no empty or blank keys to
-//! reject), and values are `SavedValue`s, saveable by type (no `canBeSaved` callback).
+//! reject), and values are `SavedValue`s, which a registry's `can_be_saved` function may refuse.
 
 use compose_runtime::saveable::*;
 
@@ -124,6 +124,33 @@ fn unregistering_one_of_a_keys_values() {
     let restored = SaveableStateRegistry::new(Some(registry.perform_save()));
     assert_eq!(restored.consume_restored(KEY), Some(int(1)));
     assert_eq!(restored.consume_restored(KEY), Some(int(3)));
+}
+
+// Compose: compose/runtime/runtime-saveable/src/androidHostTest/kotlin/androidx/compose/runtime/saveable/SaveableStateRegistryTest.kt, canBeSavedIsCallingOurCallback
+#[test]
+fn can_be_saved_asks_the_registrys_function() {
+    let called = std::rc::Rc::new(std::cell::Cell::new(false));
+    let c = called.clone();
+    let registry = SaveableStateRegistry::with_can_be_saved(None, move |value| {
+        c.set(true);
+        matches!(value, SavedValue::Text(_))
+    });
+    assert!(!registry.can_be_saved(&int(1)));
+    assert!(called.get());
+    called.set(false);
+    assert!(registry.can_be_saved(&text("test")));
+    assert!(called.get());
+    // Without a function, every saved value can be saved.
+    assert!(SaveableStateRegistry::new(None).can_be_saved(&int(1)));
+}
+
+// Compose: compose/runtime/runtime-saveable/src/androidHostTest/kotlin/androidx/compose/runtime/saveable/SaveableStateRegistryTest.kt, valueWhichCantBeSavedIsNotAllowed
+#[test]
+#[should_panic(expected = "cannot be saved using the current SaveableStateRegistry")]
+fn a_value_which_cant_be_saved_is_not_allowed() {
+    let registry = SaveableStateRegistry::with_can_be_saved(None, |_| false);
+    registry.register_provider(KEY, || Some(int(1)));
+    registry.perform_save();
 }
 
 // ---- list_saver and map_saver -----------------------------------------------------------------

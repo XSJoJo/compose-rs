@@ -3,6 +3,7 @@
 
 extern crate compose_runtime as compose;
 
+mod activity_recreation;
 mod alignment_line;
 mod anchored_draggable;
 mod bring_into_view;

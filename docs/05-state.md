@@ -80,6 +80,16 @@ Rows receive `Rc<Todo>`. `same` is `Rc::ptr_eq`, so after an add or remove re-ru
 - **`sub_list(range)`** is a live view, with the list's operations; a structural change other than through it makes it panic, as Compose's `ConcurrentModificationException`. **`list_iterator(index)`** is Compose's `listIterator`, over what the list was when made, moving both ways and, over a whole list, writing where it is; a sublist's only reads. A sublist's `len` and a cursor's `has_next` read nothing of the list.
 - **Saved:** `remember_saveable` keeps a list or set of `Saveable` elements; `list_saver` and `map_saver` are Compose's `listSaver` and `mapSaver` (D762).
 
+## Saved state
+
+`remember_saveable` (`compose_runtime::saveable`) is Compose's `rememberSaveable`, its holder a remember observer registered with the `SaveableStateRegistry` provided (`LOCAL_SAVEABLE_STATE_REGISTRY`) under the composite key hash of its place (D290). Each pass it runs again, it does what Compose's `SaveableHolder.update` does (D1950):
+
+- **The saver** passed is stored: the latest one saves.
+- **The registry** provided is read and compared with the one the value is registered with; another one, at the end of the pass, takes the registration (none, if the value started without a registry, as in Compose).
+- **Inputs** (`remember_saveable_keyed(inputs, init)`, `remember_saveable_keyed_with`) not `same` as last time compute the value again with `init`, the saved value not taken again, and the registration kept, so the value's place among those of its key stays. The replaced value is dropped when the pass applies, by an effect recorded only then.
+
+A registry made with `SaveableStateRegistry::with_can_be_saved(restored, f)` refuses the values `f` refuses, as Compose's `canBeSaved`: one panics when it registers or is saved. A registry of `new` accepts every `SavedValue`, and nothing is asked. A `SaveableStateHolder`'s providers take their parent's function, and the holder's `keys()` are the numbers its keys are kept under (`state_key`), observed, made when first read; content that left with nothing saved is in them only if they were read before (D1951).
+
 ## Flows
 
 `snapshot_flow(|| …)` (`compose_runtime::flow`, as `snapshotFlow`) is a `futures_core::Stream` of what the block gives: its result at the first poll, then each different result after a change applied to what it read, coalescing the changes between polls; `flow::next(&mut stream).await` takes an item (D768). `snapshot_flow_with(&manager, …)` shares a `SnapshotFlowManager`'s apply observer. `collect_as_state(key, initial, || stream)` is state following a stream, any library's, as `Flow.collectAsState(initial)`: `key` says when it's another stream, as Rust's have no identity. `flow::MutableStateFlow` is kotlinx's, a value background threads set, and `state_flow.collect_as_state()` follows it.

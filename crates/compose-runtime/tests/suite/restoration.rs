@@ -16,15 +16,16 @@ use compose_runtime::saveable::SavedState;
 use compose_runtime::*;
 
 /// Composes content under a saveable state registry, and recreates it from the saved state, as
-/// `StateRestorationTester`.
-struct RestorationTester {
+/// `StateRestorationTester`. Shared with the other saveable suites (remember_saveable.rs,
+/// saveable_state_holder.rs).
+pub(crate) struct RestorationTester {
     content: Rc<dyn Fn()>,
     registry: SaveableStateRegistry,
     composition: Option<Composition>,
 }
 
 impl RestorationTester {
-    fn set_content(content: impl Fn() + 'static) -> RestorationTester {
+    pub(crate) fn set_content(content: impl Fn() + 'static) -> RestorationTester {
         let mut tester = RestorationTester {
             content: Rc::new(content),
             registry: SaveableStateRegistry::new(None),
@@ -47,14 +48,25 @@ impl RestorationTester {
         self.composition = Some(composition);
     }
 
-    /// Recomposes what's pending, as `runOnIdle`.
-    fn run_on_idle(&self) {
-        self.composition.as_ref().expect("composed").recompose();
+    /// Recomposes until nothing is pending, as `runOnIdle`.
+    pub(crate) fn run_on_idle(&self) {
+        let composition = self.composition.as_ref().expect("composed");
+        for _ in 0..16 {
+            if !composition.recompose() {
+                return;
+            }
+        }
+        panic!("the content kept recomposing");
+    }
+
+    /// The registry the content saves into now, as the activity's.
+    pub(crate) fn registry(&self) -> &SaveableStateRegistry {
+        &self.registry
     }
 
     /// Saves the state, disposes the content and composes it again restoring it, as
     /// `emulateSavedInstanceStateRestore`.
-    fn emulate_saved_instance_state_restore(&mut self) {
+    pub(crate) fn emulate_saved_instance_state_restore(&mut self) {
         self.run_on_idle();
         let bytes = self.registry.perform_save().to_bytes();
         self.composition = None;

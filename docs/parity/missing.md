@@ -26,7 +26,7 @@ These are on local branches, so they're not lost, but each still has to finish i
 - **Shared elements and `animateBounds`** (about 95), which wait on lookahead.
 - **`Modifier.onLayoutRectChanged` and its callbacks** (about 160).
 - **Android view interop**, `AndroidView` and hosting (about 280).
-- **Runtime:** error traces of what runs after a pass (11).
+- **Runtime:** error traces of what runs after a pass (11). Saved state's gaps are in (D1950, D1951): `rememberSaveable`'s inputs, the latest saver, a registry's `canBeSaved`, the holder's `keys`; left there: `rememberSerializable` (5, waiting on serde, a decision for the user) and `SaverScope`.
 
 ### 3. Graphics
 - **`GraphicsLayer` as an object** (about 95), **color spaces** (about 70), offscreen canvas and bitmaps.
