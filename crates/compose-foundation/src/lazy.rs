@@ -374,6 +374,7 @@ impl LazyListInner {
                 composer.keep(scope, item);
             }
         }
+        self.prefetch.settle_precomposed(range, &|item| composer.has(item));
         #[cfg(debug_assertions)]
         composer.check_keys();
     }

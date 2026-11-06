@@ -166,6 +166,10 @@ pub(super) struct Prefetch {
     /// it (Compose traverses the precomposed item's nodes for them, `traversablePrefetchState`).
     pub(super) composing_item: Cell<Option<u64>>,
     nested: RefCell<HashMap<u64, Vec<Weak<LazyListInner>>>>,
+    /// Slots precomposed by requests let go while their items are still in the limits: they stay
+    /// precomposed, as they stayed composed in the composed range, until a measurement takes them
+    /// or they're out of the limits (`settle_precomposed`).
+    kept_slots: RefCell<Vec<(usize, PrecomposedSlotHandle)>>,
     /// The scheduler the last layout prefetched with.
     scheduler: RefCell<Option<PrefetchScheduler>>,
 }
@@ -203,6 +207,7 @@ impl Prefetch {
             idle: Cell::default(),
             composing_item: Cell::new(None),
             nested: RefCell::default(),
+            kept_slots: RefCell::default(),
             scheduler: RefCell::new(None),
         }
     }
@@ -801,6 +806,36 @@ impl Prefetch {
         self.metrics.borrow().get(&content_type).copied().unwrap_or_default()
     }
 
+    /// At a measurement's end: the slots kept precomposed out of the limits now go, and those it
+    /// composed are its own.
+    pub(super) fn settle_precomposed(&self, limits: (usize, usize), composed: &dyn Fn(usize) -> bool) {
+        let mut kept = self.kept_slots.borrow_mut();
+        if kept.is_empty() {
+            return;
+        }
+        // The window's items too: its units, a grid's lines, in items.
+        let units = self.units.borrow();
+        let items_of = |unit: usize| match units.as_deref() {
+            Some(units) => units.items_of(unit),
+            None => Some(unit..unit + 1),
+        };
+        let window = self.window_bounds().and_then(|(first, last)| {
+            Some((items_of(first)?.start, items_of(last)?.end))
+        });
+
+        kept.retain(|(item, handle)| {
+            if composed(*item) {
+                return false;
+            }
+            let stays = (limits.0..limits.1).contains(item)
+                || window.is_some_and(|(first, end)| (first..end).contains(item));
+            if !stays {
+                handle.dispose();
+            }
+            stays
+        });
+    }
+
     /// A layout of the list starts: an item composed before it is no longer the item composing,
     /// so no inner scope restarted later notes its lists under it.
     pub(super) fn layout_started(&self) {
@@ -1364,14 +1399,15 @@ impl Handle {
                 }
             }
         }
-        let _ = prefetch;
         // Not applied, it's cancelled; applied, its slot goes to those kept for reuse, unless a
         // measurement took it.
         if let Some(paused) = self.paused.borrow_mut().take() {
             paused.cancel();
         }
+        // Applied, its slot stays precomposed until the next measurement says whether it's in the
+        // limits (`settle_precomposed`), as it stayed composed in the composed range.
         if let Some(precomposed) = self.precomposed.borrow_mut().take() {
-            precomposed.dispose();
+            prefetch.kept_slots.borrow_mut().push((self.item, precomposed));
         }
     }
 
