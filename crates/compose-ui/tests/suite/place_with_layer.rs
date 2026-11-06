@@ -445,3 +445,38 @@ fn local_positions_and_bounds_go_through_the_placement_s_layer() {
     let bounds = child.bounds_in_root();
     assert_eq!((bounds.left, bounds.top, bounds.right, bounds.bottom), (5.0, 5.0, 25.0, 25.0));
 }
+
+/// A graphics layer where a placed layer starts stays its own group once the placed one goes, the
+/// last of the tree's: the chain's layers are worked out as before placing with a layer.
+#[test]
+fn a_graphics_layer_where_a_dropped_placed_layer_started_stays_a_group() {
+    let layered = mutable_state_of(true);
+    let handle = layered.handle();
+    let modifier = Modifier
+        .then(painted("outer", Color::BLUE))
+        .layout(move |scope, measurable, constraints| {
+            let placeable = scope.measure(measurable, constraints);
+            scope.layout_with(placeable.width, placeable.height, move |placement| {
+                if handle.get() {
+                    placement.place_with_layer(
+                        &placeable,
+                        0,
+                        0,
+                        |layer: &mut GraphicsLayerScope| layer.alpha = 0.5,
+                    );
+                } else {
+                    placement.place(&placeable, 0, 0);
+                }
+            })
+        })
+        .graphics_layer(|layer| layer.alpha = 0.75)
+        .then(painted("inner", Color::RED))
+        .size(10.dp());
+    let mut host = host(move || Leaf(modifier.clone()));
+    assert_eq!(keys(&host.display_list()).len(), 2);
+    layered.set(false);
+    host.frame();
+    let list = host.display_list();
+    let [inner] = keys(&list)[..] else { panic!("one group\n{}", list.dump()) };
+    assert_eq!(group(&list, inner).layer.expect("a layer").alpha, 0.75);
+}

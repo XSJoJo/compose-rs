@@ -218,6 +218,75 @@ impl UiTree {
         self.note_updated_layer(node);
     }
 
+    /// `refresh_layers` while no node has a layer placed with one: the code the chain's refresh
+    /// had before them (D1909).
+    fn refresh_layers_plain(&mut self, node: NodeId) -> bool {
+        let value = self.node_mut(node);
+        // A repaint boundary keeps what it draws: its layer's properties apart if its first
+        // drawing modifier is a graphics layer (which makes it one, as each of Compose's
+        // graphics layers is a layer). Each other graphics layer is a group of its own inside
+        // the node's drawing (an inner layer, D522).
+        let is_layer = |entry: &ChainEntry| entry.kinds.any(NodeKinds::GRAPHICS_LAYER);
+        let layer_entry = if value.kinds.any(NodeKinds::GRAPHICS_LAYER) {
+            value
+                .chain
+                .iter()
+                .position(is_layer)
+                .filter(|&index| {
+                    value.chain[..index].iter().all(|entry| !entry.kinds.any(NodeKinds::DRAW))
+                })
+                .map(|index| index as u16)
+        } else {
+            None
+        };
+        let boundary = layer_entry.is_some() || value.kinds.any(NodeKinds::REPAINT_BOUNDARY);
+        let inner: SmallVec<[u16; 2]> = if value.kinds.any(NodeKinds::GRAPHICS_LAYER) {
+            (0..value.chain.len())
+                .filter(|&index| is_layer(&value.chain[index]) && layer_entry != Some(index as u16))
+                .map(|index| index as u16)
+                .collect()
+        } else {
+            SmallVec::new()
+        };
+        if !inner.is_empty() || !value.inner_layers.is_empty() {
+            let mut layers = std::mem::take(&mut value.inner_layers);
+            // Kept by chain index: the same render node for the same layer.
+            layers.retain(|layer| {
+                // A placed layer's went with the last placed layer.
+                let keep = layer.placement.is_none() && inner.contains(&layer.entry);
+                if !keep {
+                    self.inner_layer_owners.remove(&layer.key);
+                }
+                keep
+            });
+            for &entry in &inner {
+                if !layers.iter().any(|layer| layer.entry == entry) {
+                    self.next_inner_layer += 1;
+                    let key = INNER_LAYER_KEY | self.next_inner_layer;
+                    self.inner_layer_owners.insert(key, node);
+                    layers.push(InnerLayer::new(entry, key));
+                }
+            }
+            layers.sort_by_key(|layer| layer.entry);
+            self.node_mut(node).inner_layers = layers;
+        }
+        let value = self.node_mut(node);
+        let parent_draws_differently = boundary != value.retained.is_some();
+        match &mut value.retained {
+            Some(retained) if boundary => {
+                retained.layer_entry = layer_entry;
+                retained.placed_layer = false;
+                retained.dirty = true;
+                retained.layer_dirty = true;
+            }
+            _ if boundary => {
+                value.retained = Some(Box::new(RetainedDrawing::new(layer_entry, false)))
+            }
+            _ => value.retained = None,
+        }
+        parent_draws_differently
+    }
+
     /// Works out `node`'s repaint boundary and inner layers from its chain and the layers it was
     /// placed with. Returns whether its parent draws it otherwise (it became a boundary, or no
     /// longer is).
@@ -228,6 +297,9 @@ impl UiTree {
     /// D1909). Each other graphics layer is a group of its own inside the node's drawing (an
     /// inner layer, D522), and so is each layer a layout modifier placed with a layer.
     pub(crate) fn refresh_layers(&mut self, node: NodeId) -> bool {
+        if self.placed_layer_nodes == 0 {
+            return self.refresh_layers_plain(node);
+        }
         let value = self.node_mut(node);
         // Those of layers the chain no longer has go.
         let layers = value.layout_indices.len() + 1;

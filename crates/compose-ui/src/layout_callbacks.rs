@@ -311,6 +311,57 @@ impl UiTree {
     /// told; with `keep`, a state's change, what it computes for the node's group is what the
     /// frame's drawing uses, observed as there.
     pub(crate) fn note_layer_change(&mut self, node: NodeId, keep: bool) {
+        if self.placed_layer_nodes != 0 {
+            self.note_layer_change_placed(node, keep);
+            return;
+        }
+        if self.positioned.is_empty() && self.coordinate_readers.is_empty() && self.rects.is_none()
+        {
+            return;
+        }
+        let Some(value) = self.get(node) else { return };
+        if value.layer_moved || value.deactivated || !value.kinds.any(NodeKinds::GRAPHICS_LAYER) {
+            return;
+        }
+        let group_layer = value.retained.as_ref().and_then(|retained| retained.layer_entry);
+        let listeners = self.position_listeners;
+        let mut moved = false;
+        for index in 0..value.chain.len() {
+            let value = self.node(node);
+            let Some(graphics) = value.chain[index].node.downcast_ref::<GraphicsLayerNode>() else {
+                continue;
+            };
+            if !graphics.told_a_node(listeners) {
+                continue;
+            }
+            if keep && group_layer == Some(index as u16) {
+                let observer = self.observer.clone();
+                let Some(properties) = self.layer_properties(node, observer.as_deref()) else {
+                    continue;
+                };
+                let value = self.node(node);
+                let graphics =
+                    value.chain[index].node.downcast_ref::<GraphicsLayerNode>().expect("a layer");
+                moved |= graphics.transform_changed(&properties);
+                let (density, direction) = (value.density, value.layout_direction);
+                let retained = self.node_mut(node).retained.as_mut().expect("its group");
+                retained.layer_ahead = Some((properties, density, direction));
+            } else {
+                moved |=
+                    graphics.transform_changed(&self.properties_of_layer(node, index, graphics));
+            }
+        }
+        if moved {
+            self.node_mut(node).layer_moved = true;
+            self.layers_moved.push(node);
+            self.place_readers_under(node);
+        }
+    }
+
+    /// `note_layer_change` while a node has a layer placed with one (D1909).
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn note_layer_change_placed(&mut self, node: NodeId, keep: bool) {
         if self.positioned.is_empty() && self.coordinate_readers.is_empty() && self.rects.is_none()
         {
             return;
@@ -387,6 +438,66 @@ impl UiTree {
     /// it is in this layout, as Compose's run when they're placed: a query runs none. The one
     /// that's its node's group's keeps its answer for the draw; an inner layer's runs again there.
     pub(crate) fn run_new_layers(&mut self) {
+        if self.placed_layer_nodes != 0 {
+            self.run_new_layers_placed();
+            return;
+        }
+        let observer = self.observer.clone();
+        for node in std::mem::take(&mut self.new_layers) {
+            let Some(value) = self.get(node).filter(|value| !value.deactivated) else { continue };
+            // Not measured yet: its size is for a later run, this layout's.
+            if value.constraints.is_none() {
+                self.new_layers.push(node);
+                continue;
+            }
+            let group_layer = value.retained.as_ref().and_then(|retained| retained.layer_entry);
+            for index in 0..value.chain.len() {
+                let value = self.node(node);
+                let Some(graphics) = value.chain[index].node.downcast_ref::<GraphicsLayerNode>()
+                else {
+                    continue;
+                };
+                if !graphics.has_block() {
+                    continue;
+                }
+                let (density, direction) = (value.density, value.layout_direction);
+                if group_layer == Some(index as u16) {
+                    if value.retained.as_ref().is_some_and(|it| it.layer_ahead.is_some()) {
+                        continue;
+                    }
+                    let Some(properties) = self.layer_properties(node, observer.as_deref()) else {
+                        continue;
+                    };
+                    let retained = self.node_mut(node).retained.as_mut().expect("its group");
+                    retained.layer_ahead = Some((properties, density, direction));
+                    continue;
+                }
+                let slot = value.inner_layers.iter().position(|it| it.entry as usize == index);
+                if slot.is_some_and(|slot| value.inner_layers[slot].ahead.is_some()) {
+                    continue;
+                }
+                // Observed apart from what the layer's recording reads: the drawing takes this
+                // run, its observation being of the content then.
+                let key =
+                    crate::tree::observation_key(node, crate::tree::Observation::InnerLayerBlock);
+                let properties = match &observer {
+                    Some(observer) => {
+                        observer.observe(key, || self.properties_of_layer(node, index, graphics))
+                    }
+                    None => self.properties_of_layer(node, index, graphics),
+                };
+                if let Some(slot) = slot {
+                    self.node_mut(node).inner_layers[slot].ahead =
+                        Some((properties, density, direction));
+                }
+            }
+        }
+    }
+
+    /// `run_new_layers` while a node has a layer placed with one (D1909).
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn run_new_layers_placed(&mut self) {
         let observer = self.observer.clone();
         for node in std::mem::take(&mut self.new_layers) {
             let Some(value) = self.get(node).filter(|value| !value.deactivated) else { continue };
@@ -897,6 +1008,39 @@ impl UiTree {
     /// Adds `id`'s clipping modifiers' rectangles to `clips`, innermost first; those before chain
     /// entry `before_entry` if it's given.
     fn clips_of_node(&mut self, id: NodeId, before_entry: Option<usize>, clips: &mut Vec<Rect>) {
+        if self.placed_layer_nodes != 0 {
+            self.clips_of_node_placed(id, before_entry, clips);
+            return;
+        }
+        let at = clips.len();
+        let mut layer_of_entry = 0;
+        for index in 0..self.node(id).chain.len() {
+            if before_entry.is_some_and(|before| index >= before) {
+                break;
+            }
+            let value = self.node_mut(id);
+            let size = value.layers[layer_of_entry].size;
+            let density = value.density;
+            let is_layout = value.chain[index].kinds.any(NodeKinds::LAYOUT);
+            if value.chain[index].hit_clip_at(size.into(), density).is_some() {
+                clips.push(self.rect_in_root(id, layer_of_entry, Some(index), size));
+            }
+            if is_layout {
+                layer_of_entry += 1;
+            }
+        }
+        clips[at..].reverse();
+    }
+
+    /// `clips_of_node` while a node has a layer placed with one (D1909).
+    #[cold]
+    #[inline(never)]
+    fn clips_of_node_placed(
+        &mut self,
+        id: NodeId,
+        before_entry: Option<usize>,
+        clips: &mut Vec<Rect>,
+    ) {
         let value = self.node(id);
         if value.has_placed_layers() {
             self.clips_of_placed_node(id, before_entry, clips);
