@@ -960,6 +960,11 @@ fn apply(id: CompositionId, state: &Rc<Cell<PausedState>>) {
         cancel(id, state, false);
         return;
     }
+    with_runtime(|runtime| {
+        if let Some(data) = runtime.compositions.get_mut(id) {
+            data.passes = data.passes.wrapping_add(1);
+        }
+    });
     let taken = with_runtime(|runtime| {
         if runtime.active.is_some() {
             misuse(ComposeError::PassInProgress)

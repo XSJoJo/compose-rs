@@ -196,6 +196,17 @@ impl Composition {
         with_runtime(|runtime| self.invalid_in_tree(runtime))
     }
 
+    /// [`has_sent_invalidations`](Self::has_sent_invalidations), and how many passes it ran (and
+    /// paused compositions it applied): what changed its nodes, if that's another count.
+    pub fn measure_state(&self) -> (bool, u64) {
+        with_runtime(|runtime| {
+            runtime
+                .compositions
+                .get(self.id)
+                .map_or((true, 0), |data| (data.has_invalidations(), data.passes))
+        })
+    }
+
     /// Whether a scope of this composition itself is invalid, as of the changes sent so far, as
     /// Compose's `hasInvalidations`: what a measurement asks per item (the turn's changes were
     /// sent before the layout; compositions under it are their own measurements' to compose).
@@ -822,6 +833,7 @@ impl Pass {
             if mode == Mode::Walk && !sentinel.dirty && !resume {
                 return None;
             }
+            data.passes = data.passes.wrapping_add(1);
             // Its root, a node of its parent's, gone with what was there: nothing can show.
             if mode == Mode::Walk && !resume && data.parent.is_some() && !root_is_there(runtime, id)
             {

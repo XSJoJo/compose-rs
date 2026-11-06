@@ -164,6 +164,8 @@ struct Slot {
     force_recompose: bool,
     force_reuse: bool,
     active: bool,
+    /// Its first layout as its composition's passes left it, and their count then.
+    first: Option<(u64, Option<Measurable>)>,
 }
 
 #[derive(Default)]
@@ -781,6 +783,7 @@ fn add_slot(inner: &mut Subcompositions, tree: &mut UiTree, host: NodeId, key: S
             force_recompose: false,
             force_reuse: false,
             active: true,
+            first: None,
         },
     );
 }
@@ -987,25 +990,34 @@ impl SubcomposeMeasureScope<'_, '_> {
         probe: &T,
         make: impl FnOnce() -> (T, Callback),
     ) -> Option<Measurable> {
-        let node = match self.take_in_place(probe, None) {
-            Some(node) => node,
+        let (node, at, passes) = match self.take_in_place(probe, None) {
+            Some(InPlace { first: Some(first), .. }) => return first,
+            Some(InPlace { node, at, passes, .. }) => (node, at, Some(passes)),
             None => {
                 let (slot_id, content) = make();
-                self.compose_into_slot(slot_id, content)
+                let node = self.compose_into_slot(slot_id, content);
+                (node, self.state.inner.borrow().current_index - 1, None)
             }
         };
-        let tree = self.scope.base.tree.enter();
-        tree.first_virtual_measurable(node)
+        let first = {
+            let tree = self.scope.base.tree.enter();
+            tree.first_virtual_measurable(node)
+        };
+        // Kept while its composition's passes stay the same: only they change its nodes.
+        let composition = self.state.inner.borrow().slots[at].composition.clone();
+        let passes = passes.or_else(|| composition.map(|it| it.measure_state().1));
+        self.state.inner.borrow_mut().slots[at].first = passes.map(|passes| (passes, first));
+        first
     }
 
     /// The slot at this measurement's next place, if it's `slot_id`'s and nothing's to compose
-    /// in it (its content `content`, if given): taken as it is, its virtual node.
+    /// in it (its content `content`, if given): taken as it is.
     fn take_in_place(
         &mut self,
         slot_id: &dyn SlotId,
         content: Option<&Callback>,
-    ) -> Option<NodeId> {
-        let (composition, node) = {
+    ) -> Option<InPlace> {
+        let (composition, node, at, cached) = {
             let inner = self.state.inner.borrow();
             let current = inner.current_index;
             let active_end = inner.slots.len() - inner.precomposed_count - inner.reusable_count;
@@ -1020,14 +1032,16 @@ impl SubcomposeMeasureScope<'_, '_> {
             if !same {
                 return None;
             }
-            (slot.composition.clone()?, slot.node)
+            (slot.composition.clone()?, slot.node, current, slot.first)
         };
         // The changes of the turn were sent before the layout: what's invalid is known.
-        if composition.has_sent_invalidations() {
+        let (invalid, passes) = composition.measure_state();
+        if invalid {
             return None;
         }
         self.state.inner.borrow_mut().current_index += 1;
-        Some(node)
+        let first = cached.filter(|(at, _)| *at == passes).map(|(_, first)| first);
+        Some(InPlace { node, at, passes, first })
     }
 
     /// The slot of `slot_id` at this measurement's next place, its content composed if it has to
@@ -1039,7 +1053,7 @@ impl SubcomposeMeasureScope<'_, '_> {
     ) -> NodeId {
         // The common case, a measurement asking for what the last one did in the same order: the
         // slot at `current`, its content the same and nothing to compose, is taken as it is.
-        if let Some(node) = self.take_in_place(&slot_id, Some(&content)) {
+        if let Some(InPlace { node, .. }) = self.take_in_place(&slot_id, Some(&content)) {
             return node;
         }
         let state = self.state.clone();
@@ -1091,6 +1105,15 @@ impl SubcomposeMeasureScope<'_, '_> {
         state.compose_slot(current, content, Some(tree), false);
         state.inner.borrow().slots[current].node
     }
+}
+
+/// A slot taken in place: its virtual node, its place, its composition's passes, and its first
+/// layout if that's known for them.
+struct InPlace {
+    node: NodeId,
+    at: usize,
+    passes: u64,
+    first: Option<Option<Measurable>>,
 }
 
 /// Measures a `SubcomposeLayout`, as a [`MeasurePolicy`] does a `Layout`.
