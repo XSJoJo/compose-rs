@@ -71,5 +71,4 @@ Written and tested on the host, but not yet confirmed on a phone:
 ## Known costs against Compose's shape
 
 - A focus change in a text field costs about 10 % more than before the decoration box work, and a keystroke about 5 %.
-- Building a semantics tree with a decorated text field walks its decoration once more for the field's semantics on the decorated node (D2003): about 1.7 % of a keystroke in a test that finds the field through the tree, nothing on a phone's key path.
 - Movable content moved across compositions re-runs its body, and doesn't move between different trees, such as into a `Dialog` (D1308).
