@@ -25,7 +25,7 @@ These are on local branches, so they're not lost, but each still has to finish i
 - **Place-with-layer** in compose-ui (`placeWithLayer`, what `offset_with` wants too). Until it lands, `animate_item` has a visible bug: modifiers before it in the chain neither move nor fade (D1472), and lookahead scopes aren't told apart; its grid and staggered tests are partly ported.
 - **Shared elements and `animateBounds`** (about 95), which wait on lookahead.
 - **`Modifier.onLayoutRectChanged` and its callbacks** (about 160).
-- **`FlexBox`** (about 95) and **the grid layout** (about 80).
+- **The grid layout** (about 80). `FlexBox` is in (D1367).
 - **Android view interop**, `AndroidView` and hosting (about 280).
 - **Runtime:** composition observers (about 28), error traces (about 33), composition data (about 15).
 

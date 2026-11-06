@@ -4,6 +4,7 @@
 //! `Modifier` (docs/06-ui.md).
 
 mod arrangement;
+mod flex;
 mod flow;
 mod window_insets;
 
@@ -24,6 +25,11 @@ pub use arrangement::{
     HorizontalOrVerticalArrangement, SpacedBy, VerticalArrangement, VerticalArrangementPolicy,
 };
 pub use compose_ui::{BoxScope, ColumnScope, PaddingValues, RowScope, SizeSpec};
+pub use flex::{
+    FlexAlignContent, FlexAlignItems, FlexAlignSelf, FlexBasis, FlexBox, FlexBoxConfig,
+    FlexBoxConfigScope, FlexBoxModifiers, FlexBoxScope, FlexConfig, FlexConfigScope, FlexDirection,
+    FlexJustifyContent, FlexWrap,
+};
 pub use flow::{FlowColumn, FlowColumnScope, FlowLayoutModifiers, FlowRow, FlowRowScope};
 pub use window_insets::{
     ConsumedInsets, InsetsLength, MutableWindowInsets, WindowInsets, WindowInsetsModifiers,
