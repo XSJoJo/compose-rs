@@ -36,7 +36,37 @@ pub enum PointerEventType {
     Enter,
     /// A mouse left it, or the window, as `PointerEventType.Exit`.
     Exit,
+    /// A trackpad's pinch begins, changes the scale by the change's `scale_factor`, and ends, as
+    /// `ScaleStart`, `ScaleChange` and `ScaleEnd`: the pointer stays where the cursor is.
+    ScaleStart,
+    ScaleChange,
+    ScaleEnd,
+    /// A trackpad's two-finger pan begins, moves by the change's `pan_offset`, and ends, as
+    /// `PanStart`, `PanMove` and `PanEnd`: the pointer stays where the cursor is, hovering.
+    PanStart,
+    PanMove,
+    PanEnd,
     Unknown,
+}
+
+impl PointerEventType {
+    /// A trackpad's pan: `PanStart`, `PanMove` or `PanEnd`.
+    pub fn is_pan(self) -> bool {
+        matches!(
+            self,
+            PointerEventType::PanStart | PointerEventType::PanMove | PointerEventType::PanEnd
+        )
+    }
+
+    /// A trackpad's pinch: `ScaleStart`, `ScaleChange` or `ScaleEnd`.
+    pub fn is_scale(self) -> bool {
+        matches!(
+            self,
+            PointerEventType::ScaleStart
+                | PointerEventType::ScaleChange
+                | PointerEventType::ScaleEnd
+        )
+    }
 }
 
 /// The mouse pointer's look, as Compose's `PointerIcon`.
@@ -112,6 +142,11 @@ pub struct PointerEvent {
     /// A `Scroll` event from a high-resolution wheel or a trackpad, following the fingers: it
     /// applies at once, not animated, as Compose's `isPreciseWheelScroll`.
     pub precise_wheel: bool,
+    /// How far a trackpad's `PanMove` pans, in pixels, as `PointerInputChange.panOffset`.
+    pub pan_offset: Offset,
+    /// How much a trackpad's `ScaleChange` scales (1 is no change), as
+    /// `PointerInputChange.scaleFactor`.
+    pub scale_factor: f32,
     /// Set by a handler that used the event: handlers after it should ignore it, as
     /// `PointerInputChange.consume()`.
     pub consumed: bool,
@@ -138,9 +173,25 @@ impl PointerEvent {
             scroll_delta: Offset::ZERO,
             wheel_step: WheelStep::Pixels,
             precise_wheel: false,
+            pan_offset: Offset::ZERO,
+            scale_factor: 1.0,
             consumed: false,
             time_nanos: 0,
         }
+    }
+
+    /// A trackpad's pan event (`PanStart`, `PanMove` or `PanEnd`) where the cursor is, panning by
+    /// `offset`.
+    pub fn pan(kind: PointerEventType, position: Offset, offset: Offset) -> PointerEvent {
+        debug_assert!(kind.is_pan());
+        PointerEvent { pan_offset: offset, ..PointerEvent::new(kind, position, false) }
+    }
+
+    /// A trackpad's pinch event (`ScaleStart`, `ScaleChange` or `ScaleEnd`) where the cursor is,
+    /// scaling by `factor`.
+    pub fn scale(kind: PointerEventType, position: Offset, factor: f32) -> PointerEvent {
+        debug_assert!(kind.is_scale());
+        PointerEvent { scale_factor: factor, ..PointerEvent::new(kind, position, false) }
     }
 
     /// The primary mouse button pressed at `position`.

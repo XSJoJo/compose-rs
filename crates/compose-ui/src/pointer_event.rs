@@ -169,6 +169,13 @@ pub struct HistoricalChange {
     pub pan_offset: Offset,
 }
 
+impl HistoricalChange {
+    /// A move at `position` at `uptime_millis`, as `HistoricalChange(uptimeMillis, position)`.
+    pub fn new(uptime_millis: u64, position: Offset) -> HistoricalChange {
+        HistoricalChange { uptime_millis, position, scale_factor: 1.0, pan_offset: Offset::ZERO }
+    }
+}
+
 /// A change of one pointer, as Compose's `PointerInputChange`. Its copies (`clone`, as `copy`) share
 /// whether it's consumed; the fields can then be changed.
 #[derive(Clone)]

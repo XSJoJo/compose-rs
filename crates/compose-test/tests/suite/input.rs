@@ -839,7 +839,8 @@ fn a_release_inside_the_window_hovers_again() {
 }
 
 // Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/MoveTest.kt
-/// Moves hover: the node hears the mouse come in and move; an exit sends it away.
+/// Moves hover: the node hears the mouse come in (the move that brings it is its `Enter`, as
+/// Compose's `HitPathTracker` makes it) and move; an exit sends it away.
 #[test]
 fn a_mouse_moves_in_and_out() {
     let (mut ui, events) = recording_box(Offset::ZERO);
@@ -851,16 +852,9 @@ fn a_mouse_moves_in_and_out() {
     });
     let recorded = events.borrow().clone();
     let summary: Vec<PointerEventType> = recorded.iter().map(|e| e.kind).collect();
-    assert_eq!(
-        summary,
-        [
-            PointerEventType::Enter,
-            PointerEventType::Move,
-            PointerEventType::Move,
-            PointerEventType::Exit
-        ]
-    );
-    assert_eq!(recorded[2].millis - recorded[1].millis, 16);
+    assert_eq!(summary, [PointerEventType::Enter, PointerEventType::Move, PointerEventType::Exit]);
+    assert_eq!(recorded[0].position, Offset::new(10.0, 10.0));
+    assert_eq!(recorded[1].millis - recorded[0].millis, 16);
 }
 
 // Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/ScrollTest.kt

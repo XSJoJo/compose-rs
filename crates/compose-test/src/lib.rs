@@ -20,6 +20,7 @@ mod bounds;
 mod capture;
 mod configuration_override;
 mod edge_effects;
+mod indirect;
 mod injection;
 mod interaction;
 mod matcher;
@@ -41,9 +42,10 @@ pub use capture::{
 };
 pub use configuration_override::DeviceConfigurationOverride;
 pub use edge_effects::{FakeEdgeEffect, FakeEdgeEffects};
+pub use indirect::IndirectPointerInjectionScope;
 pub use injection::{
     InjectionScope, KeyInjectionScope, MouseButton, MouseInjectionScope, ScrollWheel,
-    TouchInjectionScope,
+    TouchInjectionScope, TrackpadButton, TrackpadInjectionScope,
 };
 pub use interaction::{SemanticsNodeInteraction, SemanticsNodeInteractionCollection};
 pub use matcher::{

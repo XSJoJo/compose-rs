@@ -944,6 +944,28 @@ impl UiHost {
         self.wake_if_dirty();
     }
 
+    /// Dispatches an indirect pointer event (a touch-navigation device's) to what has the focus,
+    /// as Compose's `RootForTest.sendIndirectPointerEvent`: a fling no node consumed moves the
+    /// focus (D1675). Returns whether a node consumed a change.
+    pub fn send_indirect_pointer(
+        &mut self,
+        event: crate::indirect_pointer::IndirectPointerEvent,
+    ) -> bool {
+        let _turn = compose_runtime::platform::Turn::begin();
+        let (consumed, actions) = self.with_tree(|tree| tree.dispatch_indirect_pointer(&event));
+        Self::run(actions);
+        self.wake_if_dirty();
+        consumed
+    }
+
+    /// The device's stream was cancelled (`ACTION_CANCEL`): what has the focus is told.
+    pub fn cancel_indirect_pointer(&mut self) {
+        let _turn = compose_runtime::platform::Turn::begin();
+        let actions = self.with_tree(|tree| tree.cancel_indirect_pointer());
+        Self::run(actions);
+        self.wake_if_dirty();
+    }
+
     /// Dispatches a key event to the focused node; returns whether it was consumed. Escape
     /// that nothing focused takes goes back (`on_back_pressed`), as a dialog window takes it
     /// on desktop.
