@@ -72,7 +72,7 @@ fn tell(
     id: CompositionId,
     registered: bool,
 ) {
-    let composition = ObservableComposition { id };
+    let composition = ObservableComposition::of(id);
     for observer in observers {
         if registered {
             observer.on_composition_registered(&composition);

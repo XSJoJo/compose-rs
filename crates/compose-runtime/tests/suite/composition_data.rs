@@ -492,3 +492,121 @@ fn a_disposed_subcomposition_leaves_the_table() {
     test.advance();
     assert!(table.borrow().is_empty());
 }
+
+// ---- What review found ------------------------------------------------------------------------
+
+/// Compiles only for a type that isn't `Send`: with both impls applying, the call is ambiguous.
+trait AmbiguousIfSend<A> {
+    fn not_send() {}
+}
+impl<T: ?Sized> AmbiguousIfSend<()> for T {}
+impl<T: ?Sized + Send> AmbiguousIfSend<u8> for T {}
+
+/// The handles read this thread's runtime: on another thread they'd read its own, or out of range.
+#[test]
+fn the_handles_stay_on_their_thread() {
+    <CompositionInstance as AmbiguousIfSend<_>>::not_send();
+    <CompositionGroup as AmbiguousIfSend<_>>::not_send();
+    <GroupIdentity as AmbiguousIfSend<_>>::not_send();
+    <CompositionGroups as AmbiguousIfSend<_>>::not_send();
+    <ObservableComposition as AmbiguousIfSend<_>>::not_send();
+}
+
+/// A child composed in its parent's body reads the parent, whose pass waits for it, as Compose
+/// refuses only while a writer is open; what it read is stale once the parent's pass goes on.
+#[test]
+fn a_child_composed_in_its_parents_body_reads_the_parent() {
+    let read: Rc<RefCell<Option<(usize, CompositionGroup)>>> = Rc::default();
+    let parent = Composition::new(ViewApplier::new());
+    let parent_data = parent.composition_data();
+    let r = read.clone();
+    parent.set_content(move || {
+        key(1, || {});
+        let context = remember_composition_context();
+        let child =
+            remember(move || Rc::new(Composition::with_parent(ViewApplier::new(), context)));
+        let r = r.clone();
+        child.set_content(move || {
+            let groups: Vec<CompositionGroup> = parent_data.composition_groups().collect();
+            *r.borrow_mut() = Some((groups.len(), groups[0]));
+        });
+        key(2, || {});
+    });
+    let (count, root) = read.borrow_mut().take().expect("the child read its parent");
+    assert_eq!(count, 1, "the parent's content group");
+    let panicked = catch_unwind(AssertUnwindSafe(|| root.group_size())).expect_err("stale");
+    let message = panicked.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(message.contains("modified"), "{message}");
+    parent.dispose();
+}
+
+static LOCAL_NUMBER: CompositionLocal<i32> = CompositionLocal::new("data.number", || 0);
+
+/// A provider's group keeps its version where a node's group keeps its node: it has no node.
+#[test]
+fn only_node_groups_have_nodes() {
+    let mut test = composition_test();
+    test.compose(|| {
+        CompositionLocalProvider(LOCAL_NUMBER.provides(1), || Text("provided"));
+    });
+    let nodes: Vec<NodeRef> =
+        find_all(&test.composition().composition_data(), &|group| group.node().is_some())
+            .iter()
+            .filter_map(CompositionGroup::node)
+            .collect();
+    assert_eq!(nodes.len(), 1, "the text's");
+    let text = test.with_views(|views| {
+        views.tree.get(nodes[0]).and_then(|view| view.attribute("text")).map(String::from)
+    });
+    assert_eq!(text.as_deref(), Some("provided"));
+}
+
+/// Finding through a group read before a pass panics, as its other reads do.
+#[test]
+fn finding_through_a_stale_group_panics() {
+    let mut test = composition_test();
+    let count = mutable_state_of(3);
+    let c = count.handle();
+    test.compose(move || Ten(c));
+    let data = test.composition().composition_data();
+    let ten =
+        find_all(&data, &|group| group.source_info().is_some_and(|info| info.ends_with("::Ten")))
+            [0];
+    let identity = find_all(&ten, &|group| group.data_key().is_some())[0].identity();
+    assert!(ten.find(identity).is_some());
+    count.set(4);
+    test.advance();
+    assert!(catch_unwind(AssertUnwindSafe(|| ten.find(identity))).is_err());
+    // Read again, it's found.
+    assert!(test.composition().composition_data().find(identity).is_some());
+}
+
+/// A subcomposition in movable content that moves stays in the table, its context group found at
+/// its new place.
+#[test]
+fn a_subcomposition_moved_with_its_content_stays_inspected() {
+    let first = mutable_state_of(true);
+    let f = first.handle();
+    let movable = movable_content_of(|| TestSubcomposition!(|| Text("Some value")));
+    let (mut test, table) = compose_inspected(move || {
+        let movable = movable.clone();
+        if f.get() {
+            key(1, &*movable);
+        } else {
+            // A closure: `Linear` takes one, sized.
+            #[allow(clippy::redundant_closure)]
+            key(2, || Linear!(move || movable()));
+        }
+    });
+    let instance = one_of(&table);
+    let before = instance.find_context_group().expect("a context group").identity();
+    first.set(false);
+    test.advance();
+    assert_eq!(table.borrow().len(), 1);
+    assert_eq!(one_of(&table), instance, "the same composition");
+    let after = instance.find_context_group().expect("found where it moved");
+    let parent = instance.parent().expect("a parent");
+    assert_eq!(parent.find(after.identity()).map(|group| group.identity()), Some(after.identity()));
+    // The group itself moved: the same group, now under the linear.
+    assert_eq!(after.identity(), before);
+}

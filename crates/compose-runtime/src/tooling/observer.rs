@@ -55,9 +55,15 @@ pub trait CompositionObserver: 'static {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ObservableComposition {
     pub(crate) id: CompositionId,
+    /// The thread's: it names a composition of this thread's runtime.
+    _not_send: PhantomData<*const ()>,
 }
 
 impl ObservableComposition {
+    pub(crate) fn of(id: CompositionId) -> ObservableComposition {
+        ObservableComposition { id, _not_send: PhantomData }
+    }
+
     /// Sets the composition's observer, replacing any, as `setObserver`: it hears this composition
     /// and those under it that have none of their own. The handle removes it, disposed or dropped,
     /// if it's still the one set.
@@ -258,7 +264,7 @@ pub(crate) fn begin_pass(
         }
         Some(observer)
     })?;
-    observer.on_begin_composition(&ObservableComposition { id });
+    observer.on_begin_composition(&ObservableComposition::of(id));
     if let Some(snapshot) = snapshot {
         snapshot.push_read_frame(read_observer(id, observer.clone()));
     }
@@ -273,7 +279,7 @@ pub(crate) fn end_pass(
 ) -> Option<Rc<dyn CompositionObserver>> {
     let observer = observer.take()?;
     flush();
-    observer.on_end_composition(&ObservableComposition { id });
+    observer.on_end_composition(&ObservableComposition::of(id));
     Some(observer)
 }
 

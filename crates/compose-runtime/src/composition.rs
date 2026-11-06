@@ -134,7 +134,7 @@ impl Composition {
     /// It, as an observer names it (`tooling::ObservableComposition`).
     #[cfg(feature = "composition-observer")]
     pub fn observable(&self) -> crate::tooling::ObservableComposition {
-        crate::tooling::ObservableComposition { id: self.id }
+        crate::tooling::ObservableComposition::of(self.id)
     }
 
     /// Its slot table as tools read it, as `Composer.compositionData` (`tooling`).
@@ -780,6 +780,13 @@ impl OuterPass {
     }
 
     fn restore(self, runtime: &mut Runtime) {
+        // Its pass goes on writing: what tools read of it meanwhile is stale (`tooling`).
+        #[cfg(feature = "composition-data")]
+        if let Some(data) =
+            self.active.and_then(|active| runtime.compositions.get_mut(active.composition))
+        {
+            crate::tooling::writing(data);
+        }
         runtime.active = self.active;
         runtime.frames = self.frames;
         runtime.abandoned_groups = self.abandoned_groups;
