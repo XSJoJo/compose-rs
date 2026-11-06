@@ -267,7 +267,9 @@ impl TextFieldNode {
                     }
                     begin => {
                         let start = match begin {
-                            Some(begin) => begin,
+                            // Kept in a text edited since the drag began (Compose's
+                            // `TextFieldConcurrencyTest`).
+                            Some(begin) => super::floor_char_boundary(&self.text, begin),
                             None => self.tap_offset_in(measurer, paragraph, long.at).0,
                         };
                         if begin.is_none() && start == end {

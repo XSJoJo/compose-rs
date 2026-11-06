@@ -197,6 +197,7 @@ mod text_hover_icon;
 mod text_input;
 mod text_reuse;
 mod text_selection_colors;
+mod text_selection_gestures;
 mod transform_gesture_detector;
 mod transformable;
 mod visibility_changed;
