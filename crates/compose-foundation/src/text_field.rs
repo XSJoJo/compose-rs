@@ -4049,4 +4049,94 @@ mod tests {
         let wide = Rect::new(10.0, 0.0, 12.0, 20.0);
         assert_eq!(cursor_to_reveal(wide, true, true), wide);
     }
+
+    /// A focus target telling the decoration around it of its gains only, as the field's node
+    /// does of both: what a field that never told of its loss would leave the decoration with.
+    struct TellsGains;
+    struct TellsGainsNode;
+
+    impl ModifierNodeElement for TellsGains {
+        type Node = TellsGainsNode;
+        fn create(&self) -> TellsGainsNode {
+            TellsGainsNode
+        }
+        fn update(&self, _node: &mut TellsGainsNode) {}
+        fn same(&self, _other: &Self) -> bool {
+            true
+        }
+    }
+
+    impl ModifierNode for TellsGainsNode {
+        fn as_focus_event(&mut self) -> Option<&mut dyn compose_ui::FocusEventModifierNode> {
+            Some(self)
+        }
+    }
+
+    impl compose_ui::FocusEventModifierNode for TellsGainsNode {
+        fn on_focus_event(
+            &mut self,
+            state: compose_ui::FocusState,
+            context: &mut EventContext<'_>,
+        ) {
+            if state.is_focused() {
+                tell_decoration(true, context);
+            }
+        }
+    }
+
+    /// The decoration forgets the field's focus when nothing below it is focused any more, though
+    /// the field didn't tell it (D2000's backstop): focused again, it's shown whole again.
+    // Compose: compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/text/input/internal/TextFieldDecoratorModifier.kt, onFocusEvent (no test of its own)
+    #[test]
+    fn the_decoration_forgets_a_focus_lost_below_it_untold() {
+        use crate::gestures::ScrollableState;
+        use crate::layout::{Arrangement, Box, Column};
+        use crate::{Alignment, ScrollModifiers};
+        use compose_runtime::callback;
+        use compose_test::*;
+        use compose_ui::UnitExt;
+        fn spacer(height: i32) {
+            let none = callback(|_| {});
+            Box(Modifier.height(height.dp()), Alignment::TOP_START, false, none);
+        }
+
+        let scroll_state =
+            **std::boxed::Box::leak(std::boxed::Box::new(crate::ScrollState::new(0)));
+        let mut ui = compose_test(move || {
+            let column = Modifier.height(100.dp()).vertical_scroll(scroll_state);
+            Column(
+                column,
+                Arrangement::TOP,
+                Alignment::START,
+                callback(move |_| {
+                    spacer(70);
+                    // The decoration: the target, then 30 dp more, so it's 20 dp past the view.
+                    let decoration = Modifier.then_custom(FocusOnTap { interaction_source: None });
+                    let content = callback(move |_| {
+                        let target = Modifier
+                            .height(20.dp())
+                            .then_custom(TellsGains)
+                            .focus_target()
+                            .test_tag("target");
+                        Box(target, Alignment::TOP_START, false, callback(|_| {}));
+                        spacer(30);
+                    });
+                    Column(decoration, Arrangement::TOP, Alignment::START, content);
+                    spacer(300);
+                }),
+            );
+        });
+        ui.on_node_with_tag("target").request_focus();
+        ui.wait_for_idle();
+        assert!(scroll_state.value() > 0, "shown whole the first time");
+        // The focus goes, untold; the view back at the top.
+        ui.host().clear_focus();
+        ui.wait_for_idle();
+        scroll_state.dispatch_raw_delta(-(scroll_state.value() as f32));
+        ui.wait_for_idle();
+        assert_eq!(scroll_state.value(), 0);
+        ui.on_node_with_tag("target").request_focus();
+        ui.wait_for_idle();
+        assert!(scroll_state.value() > 0, "shown whole again");
+    }
 }
