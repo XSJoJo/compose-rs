@@ -16,13 +16,14 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::marker::PhantomData;
 use std::rc::Rc;
 
 use crate::CompositionLocal;
 use crate::applier::NodeRef;
 use crate::composer::Identity;
 use crate::error::{ComposeError, misuse};
-use crate::runtime::{CompositionData as Data, CompositionId, with_runtime};
+use crate::runtime::{ActivePass, CompositionData as Data, CompositionId, with_runtime};
 use crate::slot_table::{GroupKind, NONE, SENTINEL, SlotTable, SlotValue};
 
 /// What composition tracked, read as a tree of groups, as Compose's `CompositionData`: a
@@ -56,6 +57,7 @@ pub trait CompositionData {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct CompositionInstance {
     id: CompositionId,
+    _not_send: NotSend,
 }
 
 /// A group of a composition's slot table, as Compose's `CompositionGroup`: a composable's, a
@@ -66,6 +68,7 @@ pub struct CompositionGroup {
     group: u32,
     /// The table's writes when it was read.
     writes: u64,
+    _not_send: NotSend,
 }
 
 /// What names a group across passes, as `CompositionGroup.identity`: Compose's anchor. It stays
@@ -76,6 +79,7 @@ pub struct GroupIdentity {
     group: u32,
     /// Its keys: an index given to another group since doesn't name that one.
     keys: (u64, u64),
+    _not_send: NotSend,
 }
 
 /// The groups of a composition or of a group, as an iterator.
@@ -83,7 +87,11 @@ pub struct CompositionGroups {
     id: CompositionId,
     next: u32,
     writes: u64,
+    _not_send: NotSend,
 }
+
+/// The thread's: what a handle reads is this thread's runtime.
+type NotSend = PhantomData<*const ()>;
 
 /// The compositions made under a place, as Compose's `LocalInspectionTables` holds.
 pub type InspectionTables = Rc<RefCell<HashSet<CompositionInstance>>>;
@@ -101,13 +109,13 @@ pub static LOCAL_INSPECTION_TABLES: CompositionLocal<Option<InspectionTables>> =
 pub fn current_composition_data() -> CompositionInstance {
     with_runtime(|runtime| {
         let index = runtime.check_composing();
-        CompositionInstance { id: runtime.compositions.id_at(index) }
+        CompositionInstance { id: runtime.compositions.id_at(index), _not_send: PhantomData }
     })
 }
 
 impl CompositionInstance {
     pub(crate) fn of(id: CompositionId) -> CompositionInstance {
-        CompositionInstance { id }
+        CompositionInstance { id, _not_send: PhantomData }
     }
 
     /// The composition whose place it's under, as `parent`: `None` for a root.
@@ -115,7 +123,10 @@ impl CompositionInstance {
         with_runtime(|runtime| {
             let compositions = &runtime.compositions;
             let place = compositions.get(self.id)?.parent?;
-            compositions.contexts.parent_of(place).map(|id| CompositionInstance { id })
+            compositions
+                .contexts
+                .parent_of(place)
+                .map(|id| CompositionInstance { id, _not_send: PhantomData })
         })
     }
 
@@ -126,7 +137,12 @@ impl CompositionInstance {
             let compositions = &runtime.compositions;
             let place = compositions.get(self.id)?.parent?;
             let (id, data, group) = compositions.context_at(place)?;
-            Some(CompositionGroup { id, group, writes: readable(data) })
+            Some(CompositionGroup {
+                id,
+                group,
+                writes: readable(runtime.active, id, data),
+                _not_send: PhantomData,
+            })
         })
     }
 }
@@ -137,9 +153,12 @@ impl CompositionData for CompositionInstance {
             Some(data) => CompositionGroups {
                 id: self.id,
                 next: data.table[SENTINEL].first_child,
-                writes: readable(data),
+                writes: readable(runtime.active, self.id, data),
+                _not_send: PhantomData,
             },
-            None => CompositionGroups { id: self.id, next: NONE, writes: 0 },
+            None => {
+                CompositionGroups { id: self.id, next: NONE, writes: 0, _not_send: PhantomData }
+            }
         })
     }
 
@@ -202,6 +221,7 @@ impl CompositionGroup {
             id: self.id,
             group,
             keys: (table[group].key, table[group].data_key),
+            _not_send: PhantomData,
         })
     }
 
@@ -228,7 +248,9 @@ impl CompositionGroup {
         with_runtime(|runtime| {
             let data = runtime.compositions.get(self.id);
             match data {
-                Some(data) if readable(data) == self.writes => f(data, &data.table, self.group),
+                Some(data) if readable(runtime.active, self.id, data) == self.writes => {
+                    f(data, &data.table, self.group)
+                }
                 _ => misuse(ComposeError::ConcurrentModification),
             }
         })
@@ -238,7 +260,7 @@ impl CompositionGroup {
 impl CompositionData for CompositionGroup {
     fn composition_groups(&self) -> CompositionGroups {
         let next = self.read(|_, table, group| table[group].first_child);
-        CompositionGroups { id: self.id, next, writes: self.writes }
+        CompositionGroups { id: self.id, next, writes: self.writes, _not_send: PhantomData }
     }
 
     fn is_empty(&self) -> bool {
@@ -257,22 +279,30 @@ impl Iterator for CompositionGroups {
     fn next(&mut self) -> Option<CompositionGroup> {
         // Checked at the end too, as Compose's `hasNext`; a composition gone had none to give.
         with_runtime(|runtime| match runtime.compositions.get(self.id) {
-            Some(data) if readable(data) == self.writes => {}
+            Some(data) if readable(runtime.active, self.id, data) == self.writes => {}
             None if self.next == NONE => {}
             _ => misuse(ComposeError::ConcurrentModification),
         });
         if self.next == NONE {
             return None;
         }
-        let group = CompositionGroup { id: self.id, group: self.next, writes: self.writes };
+        let group = CompositionGroup {
+            id: self.id,
+            group: self.next,
+            writes: self.writes,
+            _not_send: PhantomData,
+        };
         self.next = group.read(|_, table, group| table[group].next_sibling);
         Some(group)
     }
 }
 
-/// The count of `data`'s table's writes, refusing a table being written.
-fn readable(data: &Data) -> u64 {
-    if data.composing {
+/// The count of the writes of `id`'s table, `data`, refusing it while the pass under way writes
+/// it, as Compose's while a writer is open. A composition whose pass is suspended under a nested
+/// one (a child composed in its body) can be read: what's read then is stale once its pass goes
+/// on (`resumed`).
+fn readable(active: Option<ActivePass>, id: CompositionId, data: &Data) -> u64 {
+    if active.is_some_and(|pass| pass.composition == id) {
         misuse(ComposeError::ConcurrentModification)
     }
     data.writes
@@ -299,7 +329,7 @@ fn find_below(id: CompositionId, top: u32, identity: GroupIdentity) -> Option<Co
     }
     with_runtime(|runtime| {
         let data = runtime.compositions.get(id)?;
-        let writes = readable(data);
+        let writes = readable(runtime.active, id, data);
         let table = &data.table;
         // Its index given to another group since, with other keys: not it.
         let found = table.groups.get(identity.group as usize)?;
@@ -318,7 +348,7 @@ fn find_below(id: CompositionId, top: u32, identity: GroupIdentity) -> Option<Co
             }
             at = parent;
         }
-        Some(CompositionGroup { id, group: identity.group, writes })
+        Some(CompositionGroup { id, group: identity.group, writes, _not_send: PhantomData })
     })
 }
 
@@ -365,8 +395,9 @@ pub(crate) fn inspect(id: CompositionId) {
         return;
     }
     let Some(tables) = LOCAL_INSPECTION_TABLES.current() else { return };
+    // A table borrowed now (its owner reading it as the pass begins) leaves this one out.
     if let Ok(mut set) = tables.try_borrow_mut() {
-        set.insert(CompositionInstance { id });
+        set.insert(CompositionInstance { id, _not_send: PhantomData });
     }
     with_runtime(|runtime| {
         if let Some(data) = runtime.compositions.get_mut(id)
@@ -381,7 +412,7 @@ pub(crate) fn inspect(id: CompositionId) {
 pub(crate) fn disposed(id: CompositionId, tables: Vec<InspectionTables>) {
     for table in tables {
         if let Ok(mut set) = table.try_borrow_mut() {
-            set.remove(&CompositionInstance { id });
+            set.remove(&CompositionInstance { id, _not_send: PhantomData });
         }
     }
 }

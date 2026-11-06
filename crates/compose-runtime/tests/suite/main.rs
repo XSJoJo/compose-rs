@@ -13,6 +13,7 @@ mod composition_data;
 mod composition_fuzz;
 mod composition_local;
 mod composition_observer;
+mod composition_registration;
 mod composition_reusing;
 mod composition_snapshot;
 mod composition_tree_fuzz;
