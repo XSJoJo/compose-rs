@@ -219,6 +219,7 @@ fn flexible_tracks_share_what_the_fixed_ones_leave() {
         false,
         vec![cell(1, 1), cell(1, 2), cell(1, 3)],
     );
+    assert_eq!((laid.size(0), laid.at(0)), ((100.0, 50.0), (0.0, 0.0)));
     assert_eq!((laid.size(1), laid.at(1)), ((50.0, 50.0), (100.0, 0.0)));
     assert_eq!((laid.size(2), laid.at(2)), ((150.0, 50.0), (150.0, 0.0)));
 }
@@ -419,7 +420,7 @@ fn right_to_left_the_first_column_is_on_the_right() {
         Modifier,
         Modifier,
         true,
-        vec![cell(1, 1), cell(1, 2)],
+        vec![flowing(100.0), flowing(100.0)],
     );
     assert_eq!((laid.at(0), laid.at(1)), ((100.0, 0.0), (0.0, 0.0)));
 }
@@ -1465,4 +1466,211 @@ fn a_new_cell_or_a_state_the_config_reads_lays_the_grid_out_again() {
     track.set(100.0);
     ui.wait_for_idle();
     assert_eq!((item.borrow().width(), item.borrow().height()), (100.0, 100.0));
+}
+
+// ---- The review's scenes: what the ported tests left to mutate ----------------------------------
+
+/// A `width` by `height` px child at `row`, `column` (0 to flow) spanning `rows` by `columns`.
+fn block(row: i32, column: i32, rows: i32, columns: i32, width: f32, height: f32) -> Child {
+    boxed(move |s| {
+        Modifier
+            .grid_item_with(s, row, column, rows, columns, Alignment::TOP_START)
+            .size((width.dp(), height.dp()))
+    })
+}
+
+fn unbounded() -> Modifier {
+    Modifier.wrap_content_width_with(Alignment::START, true)
+}
+
+// A: a span's deficit is shared by its auto columns, the remainder (21 over 2) to the first.
+#[test]
+fn a_span_shares_its_deficit_between_auto_columns() {
+    let laid = lay(
+        |c| {
+            c.column(GridTrackSize::AUTO);
+            c.column(GridTrackSize::AUTO);
+            c.column_gap(10.dp());
+        },
+        Modifier.width(300.dp()),
+        Modifier,
+        false,
+        vec![
+            block(1, 1, 1, 1, 40.0, 20.0),
+            block(1, 2, 1, 1, 30.0, 20.0),
+            block(2, 1, 1, 2, 101.0, 10.0),
+            cell(3, 1),
+            cell(3, 2),
+        ],
+    );
+    assert_eq!((laid.width(3), laid.width(4)), (51.0, 40.0));
+    assert_eq!((laid.at(1), laid.width(1)), ((61.0, 0.0), 30.0));
+    assert_eq!((laid.at(2), laid.width(2)), ((0.0, 20.0), 101.0));
+}
+
+// B: auto columns short on room grow toward their maximum in proportion.
+#[test]
+fn auto_columns_short_on_room_grow_in_proportion() {
+    let widths = |width: f32| {
+        let laid = lay(
+            |c| {
+                c.column(GridTrackSize::AUTO);
+                c.column(GridTrackSize::AUTO);
+                c.row(10.dp());
+            },
+            Modifier,
+            Modifier.width(width.dp()),
+            false,
+            vec![
+                intrinsic(0, 35, 80, |s| Modifier.grid_item(s, 1, 1)),
+                intrinsic(0, 20, 30, |s| Modifier.grid_item(s, 1, 2)),
+                cell(2, 1),
+                cell(2, 2),
+            ],
+        );
+        (laid.width(2), laid.width(3))
+    };
+    assert_eq!(widths(80.0), (55.0, 25.0));
+    assert_eq!(widths(120.0), (80.0, 30.0));
+}
+
+// C: the flexible tracks' rounding, a minmax's minimum, the gap, and right to left.
+#[test]
+fn flexible_tracks_round_by_accumulated_weight_either_way() {
+    let laid = |rtl| {
+        lay(
+            |c| {
+                c.column(10.dp());
+                c.column(1.fr());
+                c.column(1.fr());
+                c.column(GridTrackSize::min_max(7.dp(), 1.fr()));
+                c.row(10.dp());
+                c.column_gap(5.dp());
+            },
+            Modifier.width(100.dp()),
+            Modifier,
+            rtl,
+            (1..=4).map(|column| cell(1, column)).collect(),
+        )
+    };
+    let ltr = laid(false);
+    let widths: Vec<f32> = (0..4).map(|index| ltr.width(index)).collect();
+    let xs: Vec<f32> = (0..4).map(|index| ltr.at(index).0).collect();
+    assert_eq!((widths, xs), (vec![10.0, 23.0, 22.0, 30.0], vec![0.0, 15.0, 43.0, 70.0]));
+    let rtl = laid(true);
+    let xs: Vec<f32> = (0..4).map(|index| rtl.at(index).0).collect();
+    assert_eq!(xs, [90.0, 62.0, 35.0, 0.0]);
+}
+
+// D: a column flow fills each column's rows, then a span takes the next column.
+#[test]
+fn a_column_flow_fills_down_then_across() {
+    let laid = lay(
+        |c| {
+            c.flow(GridFlow::Column);
+            c.rows(&fixed(10.0, 2));
+        },
+        Modifier,
+        Modifier,
+        false,
+        vec![
+            flowing(10.0),
+            flowing(10.0),
+            flowing(10.0),
+            flowing(10.0),
+            boxed(|s| {
+                Modifier
+                    .grid_item_with(s, 0, 0, 2, 1, Alignment::TOP_START)
+                    .width(10.dp())
+                    .fill_max_height()
+            }),
+        ],
+    );
+    let at: Vec<(f32, f32)> = (0..5).map(|index| laid.at(index)).collect();
+    assert_eq!(at, [(0.0, 0.0), (0.0, 10.0), (10.0, 0.0), (10.0, 10.0), (20.0, 0.0)]);
+    assert_eq!(laid.size(4).1, 20.0);
+}
+
+// E: unbounded, flexible tracks are their content's minimum, a percentage its maximum.
+#[test]
+fn unbounded_flexible_and_percentage_tracks_are_their_content() {
+    let laid = lay(
+        |c| {
+            c.column(1.fr());
+            c.column(2.fr());
+            c.column(0.5);
+            c.row(10.dp());
+        },
+        Modifier,
+        unbounded(),
+        false,
+        vec![
+            intrinsic(0, 15, 30, |s| Modifier.grid_item(s, 1, 1)),
+            intrinsic(0, 0, 20, |s| Modifier.grid_item(s, 1, 2)),
+            intrinsic(0, 10, 25, |s| Modifier.grid_item(s, 1, 3)),
+            cell(2, 1),
+            cell(2, 2),
+            cell(2, 3),
+        ],
+    );
+    let widths: Vec<f32> = (3..6).map(|index| laid.width(index)).collect();
+    assert_eq!((widths, laid.grid_size().0), (vec![15.0, 0.0, 25.0], 40.0));
+}
+
+// F: right to left, the columns (and a span) start at the right of a grid wider than they are.
+#[test]
+fn right_to_left_columns_start_at_a_wide_grids_right() {
+    let laid = lay(
+        |c| {
+            c.columns(&fixed(10.0, 2));
+            c.row(10.dp());
+        },
+        Modifier.width(100.dp()),
+        Modifier,
+        true,
+        vec![cell(1, 1), cell(1, 2), block(2, 1, 1, 2, 20.0, 10.0)],
+    );
+    assert_eq!((laid.at(0).0, laid.at(1).0, laid.at(2).0), (90.0, 80.0, 80.0));
+}
+
+// A span too wide for the rest of its row wraps, and the cursor follows it.
+#[test]
+fn the_cursor_follows_a_span_that_wrapped() {
+    let laid = lay(
+        |c| c.columns(&fixed(10.0, 3)),
+        Modifier,
+        Modifier,
+        false,
+        vec![flowing(10.0), block(0, 0, 1, 3, 30.0, 10.0), flowing(10.0)],
+    );
+    assert_eq!((laid.at(0), laid.at(1), laid.at(2)), ((0.0, 0.0), (0.0, 10.0), (0.0, 20.0)));
+}
+
+// A span grows its auto and minmax tracks, never a fixed one.
+#[test]
+fn a_span_grows_its_auto_and_minmax_tracks_not_its_fixed_ones() {
+    let laid = lay(
+        |c| {
+            c.column(20.dp());
+            c.column(GridTrackSize::AUTO);
+            c.row(10.dp());
+        },
+        Modifier,
+        Modifier,
+        false,
+        vec![block(0, 0, 1, 2, 100.0, 10.0), cell(2, 1), cell(2, 2)],
+    );
+    assert_eq!((laid.width(1), laid.width(2)), (20.0, 80.0));
+    let laid = lay(
+        |c| {
+            c.column(GridTrackSize::min_max(10.dp(), 1.fr()));
+            c.column(20.dp());
+            c.row(10.dp());
+        },
+        Modifier,
+        unbounded(),
+        false,
+        vec![block(0, 0, 1, 2, 100.0, 10.0), cell(2, 1), cell(2, 2)],
+    );
+    assert_eq!((laid.width(1), laid.width(2)), (80.0, 20.0));
 }
