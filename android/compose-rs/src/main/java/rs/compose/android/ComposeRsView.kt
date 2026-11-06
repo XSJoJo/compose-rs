@@ -151,6 +151,13 @@ class ComposeRsView @JvmOverloads constructor(
 
     init {
         applyOptimizations(optimizations)
+        // A debug build checks once that Rust's icon types are the SDK's: a type crosses as its
+        // number (D1678).
+        val debuggable = context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+        if (debuggable && !pointerIconTypesChecked) {
+            pointerIconTypesChecked = true
+            checkPointerIconTypes()
+        }
     }
 
     private fun newMeasurer() =
@@ -1481,6 +1488,47 @@ class ComposeRsView @JvmOverloads constructor(
 
         /** `input_method::CURSOR_ANCHOR_HEADER`. */
         const val CURSOR_ANCHOR_HEADER = 19
+
+        /** Whether a debug build checked the icon types ([checkPointerIconTypes]), once. */
+        var pointerIconTypesChecked = false
+
+        /**
+         * Rust's `PointerIcon::TYPE_*` are the SDK's `PointerIcon.TYPE_*`, in
+         * `ComposeRsNative.pointerIconTypes`'s order. The constants are inlined, so the newer
+         * ones are read on any API level.
+         */
+        @android.annotation.SuppressLint("InlinedApi")
+        fun checkPointerIconTypes() {
+            val sdk = intArrayOf(
+                PointerIcon.TYPE_NULL,
+                PointerIcon.TYPE_ARROW,
+                PointerIcon.TYPE_CONTEXT_MENU,
+                PointerIcon.TYPE_HAND,
+                PointerIcon.TYPE_HELP,
+                PointerIcon.TYPE_WAIT,
+                PointerIcon.TYPE_CELL,
+                PointerIcon.TYPE_CROSSHAIR,
+                PointerIcon.TYPE_TEXT,
+                PointerIcon.TYPE_VERTICAL_TEXT,
+                PointerIcon.TYPE_ALIAS,
+                PointerIcon.TYPE_COPY,
+                PointerIcon.TYPE_NO_DROP,
+                PointerIcon.TYPE_ALL_SCROLL,
+                PointerIcon.TYPE_HORIZONTAL_DOUBLE_ARROW,
+                PointerIcon.TYPE_VERTICAL_DOUBLE_ARROW,
+                PointerIcon.TYPE_TOP_RIGHT_DIAGONAL_DOUBLE_ARROW,
+                PointerIcon.TYPE_TOP_LEFT_DIAGONAL_DOUBLE_ARROW,
+                PointerIcon.TYPE_ZOOM_IN,
+                PointerIcon.TYPE_ZOOM_OUT,
+                PointerIcon.TYPE_GRAB,
+                PointerIcon.TYPE_GRABBING,
+                PointerIcon.TYPE_HANDWRITING,
+            )
+            val rust = ComposeRsNative.pointerIconTypes()
+            check(rust.contentEquals(sdk)) {
+                "compose-rs's pointer icon types ${rust.contentToString()} aren't the SDK's ${sdk.contentToString()}"
+            }
+        }
     }
 }
 

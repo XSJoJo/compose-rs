@@ -13,6 +13,35 @@ pub(crate) const NONE: i32 = -1;
 /// What it answers for a bitmap: the view asks for it (`pointerIconBitmap`).
 pub(crate) const BITMAP: i32 = -2;
 
+/// compose-rs's Android system icon types (`PointerIcon::TYPE_*`), in the order a debug build of
+/// the view checks them against the SDK's `PointerIcon.TYPE_*` (`ComposeRsNative.pointerIconTypes`):
+/// a type crosses as its number, so a wrong one would show another icon.
+pub(crate) const ANDROID_TYPES: [i32; 23] = [
+    PointerIcon::TYPE_NULL,
+    PointerIcon::TYPE_ARROW,
+    PointerIcon::TYPE_CONTEXT_MENU,
+    PointerIcon::TYPE_HAND,
+    PointerIcon::TYPE_HELP,
+    PointerIcon::TYPE_WAIT,
+    PointerIcon::TYPE_CELL,
+    PointerIcon::TYPE_CROSSHAIR,
+    PointerIcon::TYPE_TEXT,
+    PointerIcon::TYPE_VERTICAL_TEXT,
+    PointerIcon::TYPE_ALIAS,
+    PointerIcon::TYPE_COPY,
+    PointerIcon::TYPE_NO_DROP,
+    PointerIcon::TYPE_ALL_SCROLL,
+    PointerIcon::TYPE_HORIZONTAL_DOUBLE_ARROW,
+    PointerIcon::TYPE_VERTICAL_DOUBLE_ARROW,
+    PointerIcon::TYPE_TOP_RIGHT_DIAGONAL_DOUBLE_ARROW,
+    PointerIcon::TYPE_TOP_LEFT_DIAGONAL_DOUBLE_ARROW,
+    PointerIcon::TYPE_ZOOM_IN,
+    PointerIcon::TYPE_ZOOM_OUT,
+    PointerIcon::TYPE_GRAB,
+    PointerIcon::TYPE_GRABBING,
+    PointerIcon::TYPE_HANDWRITING,
+];
+
 /// The icons the view was last told.
 pub(crate) struct ToldIcons {
     mouse: PointerIcon,
@@ -81,6 +110,18 @@ mod tests {
         assert_eq!(pixels, [1, 2, 3, 4, 5, 6, 7, 8]);
         assert_eq!(shape, [2.0, 1.0, 1.0, 0.5]);
         assert!(bitmap(Some(&PointerIcon::HAND)).is_none());
+    }
+
+    /// The table the view checks against the SDK's `PointerIcon.TYPE_*` in a debug build lists
+    /// each type once, in the view's order: `TYPE_NULL`, then `TYPE_ARROW` to `TYPE_HANDWRITING`
+    /// (1005 is no type).
+    #[test]
+    fn the_types_the_view_checks_are_androids_in_its_order() {
+        let mut expected = vec![0];
+        expected.extend((1000..=1022).filter(|&code| code != 1005));
+        assert_eq!(ANDROID_TYPES.to_vec(), expected);
+        assert_eq!(ANDROID_TYPES[1], PointerIcon::TYPE_ARROW);
+        assert_eq!(ANDROID_TYPES[ANDROID_TYPES.len() - 1], PointerIcon::TYPE_HANDWRITING);
     }
 
     /// The view hears of a change once: the mouse's icon as the content changes it, a stylus's
