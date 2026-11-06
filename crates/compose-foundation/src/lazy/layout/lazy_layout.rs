@@ -134,7 +134,9 @@ pub(in crate::lazy) struct ProviderSource {
     /// Each key's content, and the index it was last found at.
     contents: RefCell<IndexMap<u64, ItemContent>>,
     /// Each key's content's scope: run again when the provider changes, as Compose's content reads
-    /// `itemProvider()`, a state.
+    /// `itemProvider()`, a state. Bounded as `contents` is, and pruned with it: past
+    /// `MOST_CONTENTS`, only those of keys the last measurement composed stay (a key dropped gets
+    /// a new content, which composes anew).
     scopes: RefCell<IndexMap<u64, compose_runtime::RecomposeScope>>,
     /// The items the last measurement composed: the contents of the others go past
     /// `MOST_CONTENTS`.
@@ -183,13 +185,28 @@ impl SlotSource for ProviderSource {
         if contents.len() >= MOST_CONTENTS {
             let composed = self.composed.borrow();
             contents.retain(|key, _| composed.contains(key));
+            self.scopes.borrow_mut().retain(|key, _| composed.contains(key));
         }
         let near = Rc::new(Cell::new(index));
         let at = near.clone();
         let this = self.this.clone();
         let content = Callback::new(move || {
             let Some(source) = this.upgrade() else { return };
-            source.scopes.borrow_mut().insert(key, compose_runtime::current_recompose_scope());
+            {
+                // One per key composed, kept as the contents are: past `MOST_CONTENTS`, only
+                // those of the keys the last measurement composed stay.
+                let mut scopes = source.scopes.borrow_mut();
+                if scopes.len() >= MOST_CONTENTS && !scopes.contains_key(&key) {
+                    // A key's scope and content go together: one composed again takes a new
+                    // content, which composes with the provider as it is then.
+                    let composed = source.composed.borrow();
+                    scopes.retain(|it, _| *it == key || composed.contains(it));
+                    if let Ok(mut contents) = source.contents.try_borrow_mut() {
+                        contents.retain(|it, _| *it == key || composed.contains(it));
+                    }
+                }
+                scopes.insert(key, compose_runtime::current_recompose_scope());
+            }
             let provider = source.provider();
             let mut index = at.get();
             if index >= provider.item_count() || provider.key(index) != key {

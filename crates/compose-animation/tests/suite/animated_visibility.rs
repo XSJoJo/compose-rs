@@ -716,6 +716,50 @@ fn a_childs_own_enter_and_exit_play_with_the_content() {
     ui.on_node_unmerged(has_test_tag("child")).assert_does_not_exist();
 }
 
+// Compose: compose/animation/animation/src/commonMain/kotlin/androidx/compose/animation/EnterExitTransition.kt, EnterExitTransitionModifierNode.measure (`animSize?.value ?: measuredSize`)
+/// In a `LookaheadScope`, with no size animation (a fade only), the content is its size now, not
+/// its size ahead: 100 wide ahead and 50 now, it's 50 now, while showing and once shown.
+#[test]
+fn in_a_scope_a_fade_is_the_size_its_content_has_now() {
+    let widths: Rc<std::cell::RefCell<Vec<i32>>> = Rc::default();
+    let visible = mutable_state_of(false);
+    let (w, v) = (widths.clone(), visible.handle());
+    let mut ui = ComposeTestRule::with_manual_clock(move || {
+        let w = w.clone();
+        compose_ui::LookaheadScope(callback(move |_| {
+            let w = w.clone();
+            let noting = Modifier.layout(move |scope, measurable, constraints| {
+                let placeable = scope.measure(measurable, constraints);
+                if !scope.is_looking_ahead() {
+                    w.borrow_mut().push(placeable.width);
+                }
+                scope.layout_with(placeable.width, placeable.height, move |placement| {
+                    placement.place(&placeable, 0, 0);
+                })
+            });
+            let by_pass = Modifier.layout(|scope, measurable, _| {
+                let side = if scope.is_looking_ahead() { 100 } else { 50 };
+                let placeable =
+                    scope.measure(measurable, compose_ui::Constraints::fixed(side, side));
+                scope.layout_with(side, side, move |placement| placement.place(&placeable, 0, 0))
+            });
+            Box!(modifier = noting, move |_| {
+                let by_pass = by_pass.clone();
+                AnimatedVisibility!(v.get(), enter = fade_in(), exit = fade_out(), move |_| {
+                    Box!(modifier = by_pass.clone());
+                });
+            });
+        }));
+    });
+    visible.set(true);
+    ui.advance_time_by_frame();
+    ui.advance_time_by_frame();
+    ui.advance_time_by(Duration::from_millis(80));
+    assert_eq!(widths.borrow().last().copied(), Some(50), "fading in: {:?}", widths.borrow());
+    ui.advance_time_by(Duration::from_millis(1000));
+    assert_eq!(widths.borrow().last().copied(), Some(50), "shown: {:?}", widths.borrow());
+}
+
 // Compose: compose/animation/animation/src/commonMain/kotlin/androidx/compose/animation/EnterExitTransition.kt, EnterExitTransitionModifierNode.measure (`lookaheadSize` as the target)
 /// In a `LookaheadScope`, an expansion goes to the size its content has ahead, not the smaller
 /// one it's measured at now: constrained to 60 now and 200 wide ahead, half-way through it's 100

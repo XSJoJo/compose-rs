@@ -1643,7 +1643,7 @@ impl LayoutModifierNode for EnterExitNode {
                 );
                 constraints.constrain(animated.value())
             }
-            None => constraints.constrain(target),
+            None => constraints.constrain(measured),
         };
         let offset_delta = match &self.animations.offset {
             Some(offset) => {

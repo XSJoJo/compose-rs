@@ -59,6 +59,7 @@ mod lazy_list_content_padding;
 mod lazy_list_headers;
 mod lazy_list_in_lookahead;
 mod lazy_list_reverse_layout;
+mod lazy_list_state_restoration;
 mod lazy_lookahead_support;
 mod lazy_nested_prefetch;
 mod lazy_request_scroll;

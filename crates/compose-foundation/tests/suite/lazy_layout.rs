@@ -415,6 +415,46 @@ fn a_new_provider_runs_the_items_it_keeps_with_its_own_content() {
     ui.on_node_with_tag("second").assert_exists();
 }
 
+/// Past the most contents a layout keeps (256), those of keys no longer composed go with their
+/// scopes: after 600 keys, a new provider still runs the items shown with its own content.
+#[test]
+fn after_many_keys_a_new_provider_still_runs_the_items_shown() {
+    let tagged = |prefix: &'static str| {
+        provider(|| 1000, move |index| tagged_box(format!("{prefix}{index}")))
+    };
+    let current = mutable_state_of_with(tagged("a"), never_equal_policy());
+    let first = mutable_state_of(0usize);
+    let (handle, from) = (current.handle(), first.handle());
+    let mut ui = ComposeTestRule::sized(IntSize::new(200, 200), move || {
+        let items = handle.get();
+        LazyLayout!(
+            move || items.clone(),
+            measure_policy = remember(|| lazy_layout_measure_policy(move |scope, _| {
+                let mut y = 0;
+                for index in from.get()..from.get() + 3 {
+                    let layout = scope.compose(index)[0];
+                    let placeable = scope.measure(layout, Constraints::fixed(10, 10));
+                    scope.place(&placeable, 0, y);
+                    y += 10;
+                }
+                scope.layout(100, 100)
+            }))
+        );
+    });
+    ui.wait_for_idle();
+    for at in (3..=600).step_by(3) {
+        first.set(at);
+        ui.wait_for_idle();
+    }
+    ui.on_node_with_tag("a600").assert_exists();
+    current.set(tagged("b"));
+    ui.wait_for_idle();
+    for index in 600..603 {
+        ui.on_node_with_tag(&format!("b{index}")).assert_exists();
+        ui.on_node_with_tag(&format!("a{index}")).assert_does_not_exist();
+    }
+}
+
 // Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/layout/LazyLayoutTest.kt, keptForReuseItemIsDisposedWhenCanceled
 #[test]
 fn an_item_no_longer_composed_and_kept_for_reuse_disposes_its_effects() {
