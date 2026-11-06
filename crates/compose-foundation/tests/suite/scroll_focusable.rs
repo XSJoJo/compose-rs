@@ -69,18 +69,30 @@ fn scene(
     size: f32,
     content: impl Fn(Case) + Clone + 'static,
 ) -> Scene {
+    scene_with(case, viewport, size, |modifier| modifier, content)
+}
+
+/// [`scene`], with `area` of the scroll's area modifier, before the scroll.
+fn scene_with(
+    case: Case,
+    viewport: Option<MutableState<f32>>,
+    size: f32,
+    area: impl Fn(Modifier) -> Modifier + 'static,
+    content: impl Fn(Case) + Clone + 'static,
+) -> Scene {
     let scroll = ScrollState::new(0);
     let state = *scroll;
     let manager: Rc<RefCell<Option<FocusManager>>> = Rc::default();
     let into = manager.clone();
+    let area = Rc::new(area);
     let mut ui = ComposeTestRule::sized(IntSize::new(600, 600), move || {
         let _owner = &scroll;
         *into.borrow_mut() = Some(LOCAL_FOCUS_MANAGER.current());
         let size = viewport.map_or(size, |viewport| viewport.get());
         let direction = if case.rtl { LayoutDirection::Rtl } else { LayoutDirection::Ltr };
-        let content = content.clone();
+        let (content, area) = (content.clone(), area.clone());
         CompositionLocalProvider(LOCAL_LAYOUT_DIRECTION.provides(direction), move || {
-            let modifier = Modifier.test_tag(AREA).size(size.dp());
+            let modifier = area(Modifier.test_tag(AREA).size(size.dp()));
             let content = content.clone();
             if case.horizontal {
                 let modifier = modifier.horizontal_scroll_with(state, true, None, case.reverse);
@@ -401,6 +413,43 @@ fn shrink_after_shrink_keeps_the_focused_child_in_view() {
             scene.assert_position(FOCUSABLE, case.pick(0.0, 90.0 - 10.0 * step as f32));
             assert!(scene.displayed(FOCUSABLE), "{case:?}");
         }
+    }
+}
+
+// compose-rs's own (D1376, on review): two shrinks in one frame, the first leaving the focused
+// child in view and the second hiding it, are checked as one, from the size the frame started
+// with to the last: the child is kept in view.
+#[test]
+fn two_shrinks_in_a_frame_are_checked_from_first_to_last() {
+    for case in CASES {
+        let size = mutable_state_of(100.0);
+        let sizes = size.handle();
+        // The first shrink, to 95, is seen in a layout whose callback shrinks it to 50: laid
+        // out again in the same frame.
+        let area = move |modifier: Modifier| {
+            modifier.on_size_changed(move |seen: IntSize| {
+                if seen.width.min(seen.height) == 95 {
+                    sizes.set(50.0);
+                }
+            })
+        };
+        // A child of 10 after 85, and 20 more after it: the content outgrows the viewport.
+        let mut scene = scene_with(case, Some(size.handle()), 100.0, area, move |case| {
+            if case.reverse {
+                Spacer!(modifier = Modifier.size(20.dp()));
+            }
+            WithSpacerBefore(case, 85.0, || TestFocusable(10.0, FOCUSABLE));
+            if !case.reverse {
+                Spacer!(modifier = Modifier.size(20.dp()));
+            }
+        });
+        scene.request_focus_and_scroll_to_top();
+        scene.assert_position(FOCUSABLE, case.pick(5.0, 85.0));
+        size.set(95.0);
+        scene.ui.wait_for_idle();
+        assert_eq!(size.get(), 50.0);
+        assert!(scene.displayed(FOCUSABLE), "{case:?}");
+        scene.assert_position(FOCUSABLE, case.pick(0.0, 40.0));
     }
 }
 

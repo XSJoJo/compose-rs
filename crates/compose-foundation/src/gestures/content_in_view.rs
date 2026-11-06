@@ -150,9 +150,8 @@ pub(crate) struct ContentInView {
     animating: Cell<bool>,
     /// Keeping the focused child in view after the viewport shrank, as `trackingFocusedChild`.
     tracking: Cell<bool>,
-    /// A shrink waiting for its frame's end to see whether the focused child was clipped: the
-    /// check's handle, cancelled if the container is detached first.
-    checking: RefCell<Option<CancellationHandle>>,
+    /// A shrink waiting for its frame's end to see whether the focused child was clipped.
+    checking: RefCell<Option<PendingCheck>>,
     /// The container's handle, for the focused rect inside it.
     handle: Cell<Option<NodeHandle>>,
 }
@@ -214,24 +213,32 @@ impl ContentInView {
         self.handle.set(Some(handle));
         self.locals.set(Some(locals));
         self.viewport.set(size);
-        if self.animating.get() || self.tracking.get() || self.checking.borrow().is_some() {
+        if self.animating.get() || self.tracking.get() {
+            return;
+        }
+        // Another shrink in this frame (a layout callback's write laid out again): one check,
+        // from the size the frame's first started at to the last, where the child is placed.
+        if let Some(pending) = self.checking.borrow_mut().as_mut() {
+            pending.size = size;
             return;
         }
         // At the end of this frame, its layout done and the tree free; the animation it may
         // start takes its first step then.
         let this = self.clone();
         let check = move || {
-            this.checking.take();
-            this.keep_focused_in_view(previous, size, handle);
+            let Some(pending) = this.checking.take() else { return };
+            this.keep_focused_in_view(pending.previous, pending.size, handle);
         };
-        *self.checking.borrow_mut() = locals.schedule_frame_end_callback(check);
+        if let Some(cancel) = locals.schedule_frame_end_callback(check) {
+            *self.checking.borrow_mut() = Some(PendingCheck { previous, size, cancel });
+        }
     }
 
     /// The container is detached, as the end of `ContentInViewNode`'s coroutine scope: a check
     /// waiting for the frame's end won't run (it would keep the container until a frame ends).
     pub(crate) fn on_detach(&self) {
-        if let Some(check) = self.checking.take() {
-            check.cancel();
+        if let Some(pending) = self.checking.take() {
+            pending.cancel.cancel();
         }
     }
 
@@ -432,6 +439,14 @@ impl ContentInView {
             }
         });
     }
+}
+
+/// A shrink waiting for its frame's end: from what size to what, and the check's handle,
+/// cancelled if the container is detached first.
+struct PendingCheck {
+    previous: IntSize,
+    size: IntSize,
+    cancel: CancellationHandle,
 }
 
 /// Ends the animation: the requests it leaves are cancelled.
