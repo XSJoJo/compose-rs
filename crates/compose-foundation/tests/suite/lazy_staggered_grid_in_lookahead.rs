@@ -93,3 +93,79 @@ fn nothing_goes_while_either_pass_wants_it() {
         assert_eq!(gone_as_the_passes_shrink(window), vec![Vec::<usize>::new(); 4]);
     }
 }
+
+/// An item `ahead` square ahead and `now` square now.
+fn sized_by_pass(ahead: i32, now: i32) -> Modifier {
+    Modifier.layout(move |scope, measurable, _| {
+        let size = if scope.is_looking_ahead() { ahead } else { now };
+        let placeable = scope.measure(measurable, Constraints::fixed(size, size));
+        scope.layout_with(placeable.width, placeable.height, move |placement| {
+            placement.place(&placeable, 0, 0);
+        })
+    })
+}
+
+// Compose: LazyStaggeredGridInLookaheadTest.approachItemsComposed
+/// The first item 300 tall ahead and 30 now, in a grid of two lanes 300 tall: the pass ahead
+/// wants it and the second, the pass that's now 20 items, and those 20 are composed and placed,
+/// the others not composed.
+#[test]
+fn the_items_the_pass_that_is_now_needs_are_composed() {
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), || {
+        compose_ui::LookaheadScope(callback(|_| {
+            LazyVerticalStaggeredGrid!(
+                StaggeredGridCells::Fixed(2),
+                modifier = Modifier.size(300.dp()),
+                |scope: LazyStaggeredGridScope| {
+                    scope.items(24, |index| {
+                        let sized = if index == 0 {
+                            sized_by_pass(300, 30)
+                        } else {
+                            Modifier.size(30.dp())
+                        };
+                        Box!(modifier = sized.test_tag(index.to_string()));
+                    });
+                }
+            );
+        }));
+    });
+    ui.wait_for_idle();
+    for item in 0..20 {
+        let bounds = ui.on_node_with_tag(&item.to_string()).get_unclipped_bounds_in_root();
+        let row = (item / 2) as f32 * 30.0;
+        assert_eq!(bounds.top.0, row, "item {item}");
+    }
+    for item in 20..24 {
+        ui.on_node_with_tag(&item.to_string()).assert_does_not_exist();
+    }
+}
+
+// Compose: LazyStaggeredGridInLookaheadTest.testSmallScrollWithLookaheadScope
+/// A scroll of 2 in a grid of one lane 15 long of items 10 long moves them by 2 in a scope too.
+#[test]
+fn a_small_scroll_in_a_scope_moves_the_items() {
+    let owner = LazyStaggeredGridState::new(0, 0);
+    let state = *owner;
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let _ = &owner;
+        compose_ui::LookaheadScope(callback(move |_| {
+            LazyVerticalStaggeredGrid!(
+                StaggeredGridCells::Fixed(1),
+                modifier = Modifier.height(15.dp()),
+                state = state,
+                |scope: LazyStaggeredGridScope| {
+                    scope.items(20, |index| {
+                        Box!(modifier = Modifier.size(10.dp()).test_tag(index.to_string()));
+                    });
+                }
+            );
+        }));
+    });
+    ui.wait_for_idle();
+    ui.run_on_ui_thread(move |_| state.dispatch_raw_delta(2.0));
+    ui.wait_for_idle();
+    let top = |ui: &mut ComposeTestRule, tag: &str| {
+        ui.on_node_with_tag(tag).get_unclipped_bounds_in_root().top.0
+    };
+    assert_eq!((top(&mut ui, "0"), top(&mut ui, "1")), (-2.0, 8.0));
+}

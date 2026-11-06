@@ -3600,6 +3600,28 @@ impl LazyScrollNode {
     fn mirrored(&self, rtl: bool) -> bool {
         self.reverse ^ (!self.vertical && rtl)
     }
+
+    /// Scrolls by what `distance` (a spec's `calculate_scroll_distance`: offset, size, container)
+    /// says for `rect`, along the axis from the content's start, where it will be once the
+    /// scrolling asked for (not yet laid out) is, out from under a sticking header at the list's
+    /// start, as Compose's `StickyHeaderBringIntoViewSpec`.
+    fn bring_into_view_by(
+        &mut self,
+        rect: Rect,
+        viewport: IntSize,
+        distance: &dyn Fn(f32, f32, f32) -> f32,
+    ) -> Option<Rect> {
+        let inner = self.state.inner()?;
+        let mirrored = self.mirrored(inner.rtl.get());
+        let (start, end, length) =
+            crate::scroll::scroll_axis(rect, viewport, self.vertical, mirrored);
+        let pending = inner.pending.get();
+        let sticking = inner.sticking_size.get() as f32;
+        drop(inner);
+        let delta = distance(start - pending - sticking, end - start, length - sticking);
+        let used = if delta == 0.0 { 0.0 } else { self.state.dispatch(delta, None) };
+        Some(crate::scroll::scrolled_rect(rect, used, self.vertical, mirrored))
+    }
 }
 
 impl compose_ui::SemanticsModifierNode for LazyScrollNode {
@@ -3841,23 +3863,27 @@ impl ModifierNode for LazyScrollNode {
         }
     }
 
-    /// Scrolls the least that shows `rect` (an item beyond the viewport taking the focus).
+    /// Scrolls the least that shows `rect` (an item beyond the viewport taking the focus), by
+    /// Compose's default `BringIntoViewSpec`.
     fn bring_into_view(&mut self, rect: Rect, viewport: IntSize) -> Option<Rect> {
-        let inner = self.state.inner()?;
-        let mirrored = self.mirrored(inner.rtl.get());
-        let (start, end, length) =
-            crate::scroll::scroll_axis(rect, viewport, self.vertical, mirrored);
-        // Where it will be once the scrolling asked for (not yet laid out) is, out from under a
-        // sticking header at the list's start, as Compose's `StickyHeaderBringIntoViewSpec`.
-        let pending = inner.pending.get();
-        let sticking = inner.sticking_size.get() as f32;
-        let delta = bring_into_view_delta(
-            start - pending - sticking,
-            end - pending - sticking,
-            length - sticking,
-        );
-        let used = if delta == 0.0 { 0.0 } else { self.state.dispatch(delta, None) };
-        Some(crate::scroll::scrolled_rect(rect, used, self.vertical, mirrored))
+        self.bring_into_view_by(rect, viewport, &|offset, size, container| {
+            bring_into_view_delta(offset, offset + size, container)
+        })
+    }
+
+    /// Scrolls as far as `LOCAL_BRING_INTO_VIEW_SPEC` where the list is composed says to show
+    /// `rect`, out from under a sticking header, as Compose's lazy layouts' spec
+    /// (`rememberLazyLayoutBringIntoViewSpec`) wraps the local one (D1371).
+    fn bring_into_view_in(
+        &mut self,
+        rect: Rect,
+        viewport: IntSize,
+        locals: compose_runtime::CompositionLocalAnchor,
+    ) -> Option<Rect> {
+        let spec = locals.get(&crate::relocation::LOCAL_BRING_INTO_VIEW_SPEC);
+        self.bring_into_view_by(rect, viewport, &|offset, size, container| {
+            spec.calculate_scroll_distance(offset, size, container)
+        })
     }
 }
 

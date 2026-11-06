@@ -20,7 +20,7 @@ The log is split by area into the files below, one table each, rows in number or
 | [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 178 |
 | [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 398 |
 | [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 83 |
-| [lazy-and-prefetch](decisions/lazy-and-prefetch.md) | Lazy lists and grids, item reuse, the policy of composing only what is in view, prefetch. | 108 |
+| [lazy-and-prefetch](decisions/lazy-and-prefetch.md) | Lazy lists and grids, item reuse, the policy of composing only what is in view, prefetch. | 109 |
 | [android-drawing](decisions/android-drawing.md) | The display list and its replayer, render nodes and repaint boundaries, paths, shadows, layers. | 30 |
 | [android-host-and-performance](decisions/android-host-and-performance.md) | The view and activity glue, the frame loop, the hint session, jank, startup, memory, and the optimization flags. | 31 |
 | [desktop](decisions/desktop.md) | The desktop host: window, Skia rendering, input and events. | 6 |
@@ -844,6 +844,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1314 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1314) | current |
 | D1315 | [ui-and-layout](decisions/ui-and-layout.md#d1315) | current |
 | D1316 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1316) | current |
+| D1317 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1317) | current |
 | D1350 | [ui-and-layout](decisions/ui-and-layout.md#d1350) | current |
 | D1351 | [ui-and-layout](decisions/ui-and-layout.md#d1351) | current |
 | D1352 | [ui-and-layout](decisions/ui-and-layout.md#d1352) | current |
@@ -865,7 +866,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1368 | [ui-and-layout](decisions/ui-and-layout.md#d1368) | current |
 | D1369 | [ui-and-layout](decisions/ui-and-layout.md#d1369) | current |
 | D1370 | [ui-and-layout](decisions/ui-and-layout.md#d1370) | current |
-| D1371 | [ui-and-layout](decisions/ui-and-layout.md#d1371) | current |
+| D1371 | [ui-and-layout](decisions/ui-and-layout.md#d1371) | revised by [D1317](decisions/lazy-and-prefetch.md#d1317) |
 | D1400 | [api-and-tooling](decisions/api-and-tooling.md#d1400) | revised by [D1402](api-and-tooling.md#d1402), [D1403](api-and-tooling.md#d1403) |
 | D1401 | [api-and-tooling](decisions/api-and-tooling.md#d1401) | current |
 | D1402 | [api-and-tooling](decisions/api-and-tooling.md#d1402) | current |
