@@ -1260,7 +1260,7 @@ impl ItemAnimator {
             || kept.iter().zip(self.kept.borrow().iter()).any(|(one, other)| one != other);
         if changed {
             *self.kept.borrow_mut() = kept;
-            list.compose_again.update(|count| count.wrapping_add(1));
+            list.request_remeasure();
         }
         for item in positioned {
             if let Some(info) = self.info.borrow_mut().get_mut(&item.key) {

@@ -22,9 +22,12 @@ use compose_ui::{
 
 use super::item_animator;
 use super::layout_info::{LaidItem, LaidViewport};
+use super::slots::{ItemComposer, ItemsMeasurePolicy};
+use compose_ui::subcompose::SubcomposeMeasureScope;
+use std::collections::HashMap;
 use super::prefetch::{Laid, Policy, Units};
 use super::{
-    BEYOND, FIRST_STEP, Interval, ItemStacking, Items, ItemsRef, LazyItems, LazyListInner,
+    BEYOND, FIRST_STEP, Interval, ItemStacking, Items, ItemsRef, LazyListInner,
     LazyListState, LazyScrollElement, MOST_IN_A_ROUND, MOST_MISSING, Sizes, composed_range,
     content_type_of,
 };
@@ -1205,7 +1208,7 @@ fn LazyGrid(
                 *state.prefetch.units.borrow_mut() = Some(Rc::new(StoredLines(lines.clone())));
                 let told = Cell::new(false);
                 Rc::new(LazyGridLayout { state, info, scheduler, lines, slots: slots_cache, told })
-                    as Rc<dyn MeasurePolicy>
+                    as Rc<dyn ItemsMeasurePolicy>
             },
         )
     };
@@ -1251,13 +1254,7 @@ fn LazyGrid(
     // Reversed, each ends where the item does, as `LazyGridMeasuredItem.place`.
     let stacking =
         if reverse { ItemStacking::AtTheEnd { vertical } } else { ItemStacking::AtTheOrigin };
-    Layout(
-        modifier,
-        policy,
-        compose_runtime::callback(move || {
-            LazyItems(list, items.clone(), holder, fallback, stacking)
-        }),
-    );
+    super::slots::LazyItemsLayout(modifier, list, items, holder, fallback, stacking, policy);
 }
 
 /// An item's constraints, `size` across the grid: fixed across, unbounded along, as Compose's
@@ -1512,13 +1509,11 @@ impl LazyGridLayout {
 }
 
 /// Measures the composed items line by line, each once.
-struct Measurer<'a, 'scope> {
-    scope: &'a mut MeasureScope<'scope>,
-    measurables: &'a [Measurable],
-    /// The items composed, in the children's order, and the first of those in a run.
-    children: &'a [usize],
-    composed_start: usize,
-    placeables: Vec<Option<Placeable>>,
+struct Measurer<'a, 's, 'scope> {
+    scope: &'a mut SubcomposeMeasureScope<'s, 'scope>,
+    /// What composes the items as the measurement reaches them.
+    composer: &'a mut ItemComposer,
+    placeables: HashMap<usize, Placeable>,
     lines: &'a mut Lines,
     slots: &'a Slots,
     vertical: bool,
@@ -1530,13 +1525,6 @@ struct Measurer<'a, 'scope> {
     /// the lines' (the estimates).
     sizes: &'a mut Sizes,
     line_sizes: &'a mut Sizes,
-    /// The list's prefetch and items: an item whose content isn't applied (a request's paused
-    /// composition) or was removed is one it lacks (D592), if any is (`unready`).
-    prefetch: &'a super::prefetch::Prefetch,
-    items: &'a Items,
-    unready: Option<u64>,
-    /// It lacked such an item: composed in the frame's next round.
-    lacked_unready: std::cell::Cell<bool>,
 }
 
 /// The lines a measurement measured, by line: from the first one measured, a measurement's lines
@@ -1568,19 +1556,10 @@ impl MeasuredLines {
     }
 }
 
-impl Measurer<'_, '_> {
-    /// Item `item`'s child, if it's composed.
-    fn child_of(&self, item: usize) -> Option<usize> {
-        if self.unready.is_some_and(|key| key == self.items.key(item)) {
-            self.prefetch.complete_pending();
-            self.lacked_unready.set(true);
-            return None;
-        }
-        let child = match item.checked_sub(self.composed_start) {
-            Some(position) if self.children.get(position) == Some(&item) => Some(position),
-            _ => self.children.iter().position(|composed| *composed == item),
-        };
-        child.filter(|child| *child < self.measurables.len())
+impl Measurer<'_, '_, '_> {
+    /// Item `item`'s layout, composed as the measurement reaches it; `None` past the items.
+    fn child_of(&mut self, item: usize) -> Option<Measurable> {
+        self.composer.measurable(self.scope, item)
     }
 
     /// A line measured: its cells' range in `cells`, and its size along the grid.
@@ -1595,14 +1574,14 @@ impl Measurer<'_, '_> {
 
     /// Measures item `item` taking `span` cells from `slot`.
     fn measure(&mut self, item: usize, slot: usize, span: usize) -> Option<(Placeable, i32)> {
-        let child = self.child_of(item)?;
         let (offset, size) = self.slots.of(slot, span);
-        let placeable = match self.placeables[child] {
-            Some(placeable) => placeable,
+        let placeable = match self.placeables.get(&item) {
+            Some(placeable) => *placeable,
             None => {
+                let child = self.child_of(item)?;
                 let constraints = cell_constraints(self.vertical, size);
-                let placeable = self.scope.measure(self.measurables[child], constraints);
-                self.placeables[child] = Some(placeable);
+                let placeable = self.scope.measure(child, constraints);
+                self.placeables.insert(item, placeable);
                 let main = if self.vertical { placeable.height } else { placeable.width };
                 self.sizes.insert(item, main);
                 placeable
@@ -1671,7 +1650,7 @@ impl Measurer<'_, '_> {
 /// over those composed (their sizes known), far back by the average size, and near, waits for
 /// them (the scrolling left pending): returns how many lines it wants composed before.
 fn step_back(
-    measurer: &mut Measurer<'_, '_>,
+    measurer: &mut Measurer<'_, '_, '_>,
     state: &LazyListInner,
     spacing: i32,
     index: &mut usize,
@@ -1704,11 +1683,11 @@ fn step_back(
     0
 }
 
-impl MeasurePolicy for LazyGridLayout {
+impl ItemsMeasurePolicy for LazyGridLayout {
     fn measure(
         &self,
-        scope: &mut MeasureScope<'_>,
-        measurables: &[Measurable],
+        scope: &mut SubcomposeMeasureScope<'_, '_>,
+        composer: &mut ItemComposer,
         constraints: Constraints,
     ) -> MeasureResult {
         let state = &self.state;
@@ -1778,15 +1757,18 @@ impl MeasurePolicy for LazyGridLayout {
             *lines = Lines::new(info.items.clone(), slots.count());
         }
         let count = info.items.count;
+        // Those the last measurement composed: those it kept that stay in the window stay.
         let children = state.children.borrow().clone();
-        let (composed_start, composed_end) = composed_range(&children, count);
+        let (composed_start, composed_end) = {
+            let (start, end) = state.composed.get();
+            (start.min(count), end.min(count).max(start.min(count)))
+        };
+        state.prefetch.layout_started();
         let (mut sizes, mut line_sizes) = (state.sizes.borrow_mut(), state.line_sizes.borrow_mut());
         let mut measurer = Measurer {
             scope,
-            measurables,
-            children: &children,
-            composed_start,
-            placeables: vec![None; measurables.len()],
+            composer,
+            placeables: HashMap::new(),
             lines: &mut lines,
             slots: &slots,
             vertical,
@@ -1794,10 +1776,6 @@ impl MeasurePolicy for LazyGridLayout {
             cells: Vec::new(),
             sizes: &mut sizes,
             line_sizes: &mut line_sizes,
-            prefetch: &state.prefetch,
-            items: &info.items,
-            unready: state.prefetch.layout_started(),
-            lacked_unready: std::cell::Cell::new(false),
         };
         let m = &mut measurer;
         // The position, with the scrolling asked for; the first visible item found again by
@@ -2134,7 +2112,7 @@ impl MeasurePolicy for LazyGridLayout {
         let sticking = headers.and_then(|(header, next)| {
             let (placeable, _) = m.item(header)?;
             let size = if vertical { placeable.height } else { placeable.width };
-            let line_main = |m: &mut Measurer<'_, '_>, item: usize| {
+            let line_main = |m: &mut Measurer<'_, '_, '_>, item: usize| {
                 let line = m.lines.line_of(item);
                 placed.iter().find(|(placed_line, _)| *placed_line == line).map(|(_, main)| *main)
             };
@@ -2255,27 +2233,14 @@ impl MeasurePolicy for LazyGridLayout {
         };
         let past_limits = composed_start < limits.0 || composed_end > limits.1;
         let search_ended = beyond_ended && past_limits;
-        if search_ended {
-            state.dispose_leaving.set(true);
-        }
-        let mut composed = (composed_start, composed_end);
-        let composed_more = state.composed_more.take();
-        // A paused composition cancelled: the items composed again first (D594).
-        let recompose = m.lacked_unready.get() || prefetch.take_cancelled();
-        if !covers || search_ended || recompose {
-            // Items to compose (or a focus search's to let go): this composition deactivates
-            // those no longer wanted too.
-            composed = limits;
-            state.compose(composed);
-        } else if composed_more {
-            state.composed.set(composed);
-        }
+        // What stays composed, as a list's: those of it not measured stay if they were composed.
+        let composed =
+            if !covers || search_ended { limits } else { (composed_start, composed_end) };
+        state.composed.set(composed);
         prefetch.node.set(Some(node));
         prefetch.count.set(count);
         prefetch.wanted.set(wanted_items);
         prefetch.limits.set(limits);
-        // Those no longer wanted are deactivated by the next composition (D575).
-        prefetch.trim_between_frames(state, self.scheduler.as_ref(), composed);
         let first_item = m.lines.start(index);
         state.position.set((first_item, offset));
         state.first_key.set(Some(info.items.key(first_item)));
@@ -2381,9 +2346,11 @@ impl MeasurePolicy for LazyGridLayout {
         if state.sticky_written.replace(header) != header {
             state.sticky.set(header);
         }
-        // A focused item composed out of the composed lines (pinned), placed out of view.
+        // A focused item (pinned) and those moving out of view with `animate_item`, placed out of
+        // view.
+        let apart = state.items_apart(&info.items);
         let mut pinned: Vec<(Placeable, i32, i32)> = Vec::new();
-        for &item in &children {
+        for &item in &apart {
             if (item < composed_start || item >= composed_end)
                 && Some(item) != header
                 && let Some((placeable, cross)) = m.item(item)
@@ -2426,7 +2393,7 @@ impl MeasurePolicy for LazyGridLayout {
                 let moved = moved.unwrap_or(asked);
                 animator.add_consumed_scroll(item_animator::consumed_scroll(asked, moved));
             }
-            let settled = !missing && wanted_before == 0 && !m.lacked_unready.get();
+            let settled = !missing && wanted_before == 0;
             if settled {
                 let mut positioned = Vec::new();
                 for &(line, main) in ahead_lines.iter().chain(&placed).chain(&beyond_lines) {
@@ -2478,9 +2445,7 @@ impl MeasurePolicy for LazyGridLayout {
                 });
                 for away in moved {
                     let lane_cross = away.cross;
-                    if let Some(child) = m.child_of(away.index)
-                        && let Some(placeable) = m.placeables[child]
-                    {
+                    if let Some(placeable) = m.placeables.get(&away.index).copied() {
                         // Placed once, here: the items kept apart were out of the way so far.
                         pinned.retain(|(other, _, _)| *other != placeable);
                         let entry = (placeable, away.main + before, lane_cross);
@@ -2633,47 +2598,7 @@ impl MeasurePolicy for LazyGridLayout {
         if let Some(post_scroll) = post_scroll {
             m.scope.run_after_layout(post_scroll);
         }
+        state.keep_composed(m.scope, m.composer, &children, composed, &apart);
         m.scope.layout(width, height)
-    }
-
-    fn debug_name(&self) -> &'static str {
-        "LazyGrid"
-    }
-
-    // As Compose's `SubcomposeLayout`: it composes while measuring, so it has no intrinsics.
-    fn min_intrinsic_width(
-        &self,
-        _: &mut compose_ui::IntrinsicMeasureScope<'_>,
-        _: &[compose_ui::IntrinsicMeasurable],
-        _: i32,
-    ) -> i32 {
-        panic!("{}", compose_ui::platform::NO_INTRINSICS_MESSAGE)
-    }
-
-    fn min_intrinsic_height(
-        &self,
-        _: &mut compose_ui::IntrinsicMeasureScope<'_>,
-        _: &[compose_ui::IntrinsicMeasurable],
-        _: i32,
-    ) -> i32 {
-        panic!("{}", compose_ui::platform::NO_INTRINSICS_MESSAGE)
-    }
-
-    fn max_intrinsic_width(
-        &self,
-        _: &mut compose_ui::IntrinsicMeasureScope<'_>,
-        _: &[compose_ui::IntrinsicMeasurable],
-        _: i32,
-    ) -> i32 {
-        panic!("{}", compose_ui::platform::NO_INTRINSICS_MESSAGE)
-    }
-
-    fn max_intrinsic_height(
-        &self,
-        _: &mut compose_ui::IntrinsicMeasureScope<'_>,
-        _: &[compose_ui::IntrinsicMeasurable],
-        _: i32,
-    ) -> i32 {
-        panic!("{}", compose_ui::platform::NO_INTRINSICS_MESSAGE)
     }
 }
