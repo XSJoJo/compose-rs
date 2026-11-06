@@ -139,6 +139,7 @@ mod scrollable;
 mod scrollable_2d;
 mod scrollable_nested;
 mod scrollbar;
+mod secure_text_field;
 mod selection;
 mod selection_focus_hover_parity;
 mod semantics_actions;

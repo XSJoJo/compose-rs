@@ -164,6 +164,7 @@ pub fn BasicTextFieldOfState(
     #[default(crate::inner_text_field_only)] decorator: impl Fn(Callback) + 'static,
     #[default(None)] on_text_layout: Option<impl Fn(compose_ui::TextLayoutResult) + 'static>,
     #[default(None)] scroll_state: Option<crate::ScrollState>,
+    #[default(None)] password: Option<bool>,
 ) {
     line_limits.validate();
     // What the field's options don't say, its transformation's say, as Compose's
@@ -187,6 +188,7 @@ pub fn BasicTextFieldOfState(
         output_transformation,
         on_text_layout: on_text_layout.map(compose_runtime::callback),
         scroll_state,
+        password,
         // What its default action uses, read where it's composed, as Compose's node's
         // `currentValueOf`: only for a handler, which calls it outside the event.
         default_action: on_keyboard_action.as_ref().map(|_| {
@@ -277,6 +279,8 @@ pub(crate) struct StateTextFieldElement {
     pub scroll_state: Option<crate::ScrollState>,
     pub on_keyboard_action: Option<KeyboardActionHandler>,
     pub default_action: Option<DefaultActionTargets>,
+    /// A password's (`BasicSecureTextField`): whether it's shown obfuscated (D1142).
+    pub password: Option<bool>,
 }
 
 /// What a keyboard action handler's default action moves the focus with and hides the keyboard
@@ -334,6 +338,7 @@ impl ModifierNodeElement for StateTextFieldElement {
         link.shown_transformation = self.shown_transformation();
         link.on_text_layout = self.on_text_layout.clone();
         link.scroll_state = self.scroll_state;
+        link.password = self.password;
         node.state = Some(Box::new(link));
         // What the state holds, read without observing it: composition isn't to recompose on it.
         RuntimeSnapshot::without_read_observation(|| node.adopt_state());
@@ -362,6 +367,7 @@ impl ModifierNodeElement for StateTextFieldElement {
         // A new scroll state keeps its value: what's followed is the field's, as Compose's
         // node keeps its `previousSelection` (D1140).
         link.scroll_state = self.scroll_state;
+        link.password = self.password;
         let shown_transformation = self.shown_transformation();
         if link.shown_transformation != shown_transformation {
             link.shown_transformation = shown_transformation;
@@ -428,6 +434,7 @@ impl ModifierNodeElement for StateTextFieldElement {
             && other.output_transformation == self.output_transformation
             && same_layout_callback(&other.on_text_layout, &self.on_text_layout)
             && other.scroll_state == self.scroll_state
+            && other.password == self.password
             && match (&other.on_keyboard_action, &self.on_keyboard_action) {
                 (Some(a), Some(b)) => a.same(b),
                 (None, None) => true,
@@ -560,6 +567,8 @@ pub(crate) struct StateLink {
     handle: Option<compose_ui::NodeHandle>,
     /// Only the style's paint changed: the paragraph is given it at the next measurement.
     restyle: bool,
+    /// A password's: whether it's shown obfuscated (D1142).
+    password: Option<bool>,
     /// The cursor last brought into view, in the text, and the text's size then: shown again
     /// in the containers around once either changes while the cursor shows (D1141).
     revealed: Option<(Rect, IntSize)>,
@@ -604,6 +613,7 @@ impl StateLink {
             followed: Followed::default(),
             handle: None,
             restyle: false,
+            password: None,
             revealed: None,
             never_merge: false,
             restart,
@@ -1113,6 +1123,12 @@ impl TextFieldNode {
         };
     }
 
+    /// Its text is a password's: never copied nor cut.
+    fn is_password(&self) -> bool {
+        self.visual_transformation.is_password()
+            || self.state.as_ref().is_some_and(|link| link.password.is_some())
+    }
+
     /// A state-based field's cursor, shown by the containers around it once the layout is over
     /// when it moved or the text's size changed while it shows (focused and written to), as
     /// Compose's `updateScrollState` brings it into view (D1141): typing a new line at the bottom of
@@ -1184,6 +1200,16 @@ impl TextFieldNode {
     #[inline(never)]
     fn adopt_state_to_measure(&mut self, scope: &mut MeasureScope<'_>) {
         self.adopt_state_now();
+        // What's shown may read states of its own (a secure field's revealed character, its
+        // mask): read here, observed, so a change measures it again, and shown anew (D1142).
+        if self.paragraph.is_some()
+            && self.state.as_ref().is_some_and(|link| link.shown_transformation.is_some())
+        {
+            let shown = self.transform_shown(&self.text).map(|(shown, _)| shown);
+            if shown != self.shown_text {
+                self.invalidate_paragraph();
+            }
+        }
         let Some(link) = self.state.as_mut() else { return };
         if !std::mem::take(&mut link.restyle) {
             return;
@@ -2934,8 +2960,8 @@ impl TextFieldNode {
                     context.invalidate_measure();
                 }
                 // A password can't be copied nor cut, as Compose's.
-                'c' if self.visual_transformation.is_password() => {}
-                'x' if self.visual_transformation.is_password() => {}
+                'c' if self.is_password() => {}
+                'x' if self.is_password() => {}
                 'c' if !selected.is_empty() => context.clipboard().set_text(&selected),
                 'x' if !selected.is_empty() && editable => {
                     context.clipboard().set_text(&selected);
@@ -3408,6 +3434,10 @@ impl SemanticsModifierNode for TextFieldNode {
         if self.visual_transformation.is_password() {
             config.password();
         }
+        // A secure field's, obfuscated or shown, as Compose's `BasicSecureTextField`.
+        if let Some(obfuscated) = self.state.as_ref().and_then(|link| link.password) {
+            config.password_obfuscated(obfuscated);
+        }
         // As Compose's `CoreTextField`: editable, and its text set by accessibility, when
         // enabled and not read-only.
         let editable = self.enabled && !self.read_only;
@@ -3429,7 +3459,7 @@ impl SemanticsModifierNode for TextFieldNode {
         config.on_ime_action_of_node(
             self.keyboard_options.to_ime_options(self.single_line).ime_action,
         );
-        if self.anchor != self.cursor && !self.visual_transformation.is_password() {
+        if self.anchor != self.cursor && !self.is_password() {
             config.copy_text_of_node();
             if editable {
                 config.cut_text_of_node();
@@ -3560,7 +3590,7 @@ impl TextFieldNode {
             }
             Action::CopyText | Action::CutText => {
                 let selected = self.selection();
-                if selected.is_empty() || self.visual_transformation.is_password() {
+                if selected.is_empty() || self.is_password() {
                     return false;
                 }
                 let is_cut = action == Action::CutText;

@@ -1716,6 +1716,7 @@ fn decorated_field(
                 compose_runtime::callback(decoration),
                 on_text_layout,
                 scroll_state,
+                None,
             ),
         },
     );

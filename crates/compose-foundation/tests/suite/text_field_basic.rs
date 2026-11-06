@@ -80,6 +80,18 @@ fn insert_text(ui: &mut ComposeTestRule, text: &str) {
     );
 }
 
+/// Typed on a physical keyboard: each character's key down, its text, its key up, as a platform
+/// sends them (Compose's `performKeyInput { pressKey(…) }`).
+pub(crate) fn type_on_keys(ui: &mut ComposeTestRule, text: &str) {
+    for character in text.chars() {
+        let key = Key::Character(character);
+        ui.host().send_key(compose_ui::KeyEvent::down(key));
+        ui.host().send_text(&character.to_string());
+        ui.host().send_key(compose_ui::KeyEvent::up(key));
+    }
+    ui.wait_for_idle();
+}
+
 /// Compose's test `RejectAllTextFilter`.
 fn reject_all() -> InputTransformation {
     InputTransformation::from_fn(|buffer| buffer.revert_all_changes())
@@ -308,7 +320,7 @@ fn a_rejecting_transformation_rejects_every_input_path() {
         ("compose", |ui| send(ui, &[&SetComposingTextCommand::new("hello", 1)])),
         ("set text", |ui| set_text(ui, "hello")),
         ("insert text", |ui| insert_text(ui, "hello")),
-        ("key", |ui| ui.type_text("a")),
+        ("key", |ui| type_on_keys(ui, "a")),
     ];
     for (name, input) in inputs {
         let state = state_of("");
@@ -331,7 +343,7 @@ fn a_new_transformation_applies_from_the_next_edit() {
         ("commit", commit, ["hello", "hello", "helloworld"]),
         ("set text", set_text, ["hello", "hello", "world"]),
         ("insert text", insert_text, ["hello", "hello", "helloworld"]),
-        ("key", |ui, text| ui.type_text(text), ["hello", "hello", "helloworld"]),
+        ("key", type_on_keys, ["hello", "hello", "helloworld"]),
     ];
     for (name, input, expected) in inputs {
         let filter = cell(None::<InputTransformation>);
@@ -388,7 +400,7 @@ fn an_insertion_is_one_change_on_every_path() {
     let inputs: [(&str, Input, usize); 4] = [
         ("commit", |ui| commit(ui, "hello"), 5),
         ("compose", |ui| send(ui, &[&SetComposingTextCommand::new("hello", 1)]), 5),
-        ("key", |ui| ui.type_text("a"), 1),
+        ("key", |ui| type_on_keys(ui, "a"), 1),
         ("semantics", |ui| insert_text(ui, "hello"), 5),
     ];
     for (name, input, length) in inputs {
