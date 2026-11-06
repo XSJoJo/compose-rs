@@ -75,11 +75,17 @@ impl ToldIcons {
     }
 }
 
-/// How `icon` crosses: Android's type (`PointerIcon.getSystemIcon`), [`BITMAP`] or [`NONE`].
+/// How `icon` crosses: Android's type (`PointerIcon.getSystemIcon`), [`BITMAP`] or [`NONE`]. A
+/// negative type is none of Android's: it crosses as the arrow, as any type a host doesn't know,
+/// not as one of the two codes.
 pub(crate) fn code(icon: Option<&PointerIcon>) -> i32 {
     match icon {
         None => NONE,
-        Some(icon) => icon.pointer_icon_type().unwrap_or(BITMAP),
+        Some(icon) => match icon.pointer_icon_type() {
+            Some(pointer_icon_type) if pointer_icon_type < 0 => PointerIcon::TYPE_ARROW,
+            Some(pointer_icon_type) => pointer_icon_type,
+            None => BITMAP,
+        },
     }
 }
 
@@ -110,6 +116,17 @@ mod tests {
         assert_eq!(pixels, [1, 2, 3, 4, 5, 6, 7, 8]);
         assert_eq!(shape, [2.0, 1.0, 1.0, 0.5]);
         assert!(bitmap(Some(&PointerIcon::HAND)).is_none());
+    }
+
+    /// A negative type, no Android type, crosses as the arrow, as any type a host doesn't know:
+    /// not as the codes `NONE` and `BITMAP`, which would hide a stylus's icon or ask for a bitmap.
+    #[test]
+    fn a_negative_type_crosses_as_the_arrow() {
+        for negative in [NONE, BITMAP, -3, i32::MIN] {
+            let icon = PointerIcon::from_type(negative);
+            assert_eq!(code(Some(&icon)), PointerIcon::TYPE_ARROW, "{negative}");
+            assert!(bitmap(Some(&icon)).is_none());
+        }
     }
 
     /// The table the view checks against the SDK's `PointerIcon.TYPE_*` in a debug build lists

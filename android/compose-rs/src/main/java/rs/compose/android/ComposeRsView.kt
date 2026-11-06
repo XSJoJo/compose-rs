@@ -1019,7 +1019,7 @@ class ComposeRsView @JvmOverloads constructor(
     /** The icon Rust last told: a system icon of its type, or its bitmap; null for none. */
     private fun pointerIconOf(stylus: Boolean): PointerIcon? {
         val code = ComposeRsNative.pointerIcon(host, stylus)
-        // A type the platform refuses (`TYPE_CUSTOM`'s like) is the default's.
+        // A type the platform refuses is the default's (a negative one crosses as the arrow).
         if (code >= 0) return runCatching { PointerIcon.getSystemIcon(context, code) }.getOrNull()
         if (code != ComposeRsNative.POINTER_ICON_BITMAP) return null
         val shape = FloatArray(4)
