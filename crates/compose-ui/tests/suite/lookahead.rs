@@ -195,6 +195,43 @@ fn a_read_made_now_leaves_what_s_ahead() {
     assert_eq!((ahead.get(), now.get()), (1, 2));
 }
 
+// Compose: compose/ui/ui/src/commonMain/kotlin/androidx/compose/ui/node/LookaheadPassDelegate.kt,
+// performMeasure (`measurePassDelegate.markMeasurePending()`)
+/// A node measured ahead is measured now after, though nothing it reads changed now: a child
+/// sized by a state ahead only (the same size now) measures its parent ahead, and so now too, as
+/// what the parent does now may follow what it did ahead (a lazy layout placing its items where
+/// they are ahead).
+#[test]
+fn a_node_measured_ahead_is_measured_now_after() {
+    let state = mutable_state_of(10);
+    let (ahead, now) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+    let (st, a, n) = (state.handle(), ahead.clone(), now.clone());
+    let mut host = host(move || {
+        let (a, n) = (a.clone(), n.clone());
+        scoped(move |_| {
+            let (a, n) = (a.clone(), n.clone());
+            let parent = measure_policy(move |scope, measurables, constraints| {
+                let counter = if scope.is_looking_ahead() { &a } else { &n };
+                counter.set(counter.get() + 1);
+                let placeable = scope.measure(measurables[0], constraints);
+                scope.layout_with(placeable.width, placeable.height, move |placement| {
+                    placement.place(&placeable, 0, 0);
+                })
+            });
+            let child = Modifier.layout(move |scope, measurable, _| {
+                let side = if scope.is_looking_ahead() { st.get() } else { 10 };
+                let placeable = scope.measure(measurable, Constraints::fixed(side, side));
+                scope.layout_with(side, side, move |placement| placement.place(&placeable, 0, 0))
+            });
+            Layout(Modifier, parent, callback(move || leaf(child.clone())));
+        });
+    });
+    assert_eq!((ahead.get(), now.get()), (1, 1));
+    state.set(20);
+    host.frame();
+    assert_eq!((ahead.get(), now.get()), (2, 2));
+}
+
 /// A state read in a lookahead block places both passes; one read now, only now.
 #[test]
 fn a_state_read_placing_places_by_where_it_was_read() {

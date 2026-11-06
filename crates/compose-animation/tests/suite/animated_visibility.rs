@@ -715,3 +715,49 @@ fn a_childs_own_enter_and_exit_play_with_the_content() {
     ui.advance_time_by(Duration::from_millis(160));
     ui.on_node_unmerged(has_test_tag("child")).assert_does_not_exist();
 }
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/AnimatedVisibilityTest.kt, testAnimatedVisibilityInLookaheadScope
+/// In a `LookaheadScope`, what's around an `AnimatedVisibility` is measured ahead at the size its
+/// content ends at: the content's while showing, none once leaving.
+#[test]
+fn ahead_an_animated_visibility_is_the_size_it_ends_at() {
+    let sizes: Rc<std::cell::RefCell<Vec<IntSize>>> = Rc::default();
+    let visible = mutable_state_of(true);
+    let (s, v) = (sizes.clone(), visible.handle());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let s = s.clone();
+        compose_ui::LookaheadScope(callback(move |_| {
+            let s = s.clone();
+            let noting = Modifier.layout(move |scope, measurable, constraints| {
+                let placeable = scope.measure(measurable, constraints);
+                if scope.is_looking_ahead() {
+                    s.borrow_mut().push(IntSize::new(placeable.width, placeable.height));
+                }
+                scope.layout_with(placeable.width, placeable.height, move |placement| {
+                    placement.place(&placeable, 0, 0);
+                })
+            });
+            Box!(modifier = noting, move |_| {
+                AnimatedVisibility!(v.get(), move |_| {
+                    Box!(modifier = Modifier.size((200.dp(), 100.dp())));
+                });
+            });
+        }));
+    });
+    ui.wait_for_idle();
+    assert!(!sizes.borrow().is_empty());
+    assert!(sizes.borrow().iter().all(|it| *it == IntSize::new(200, 100)), "{:?}", sizes.borrow());
+    sizes.borrow_mut().clear();
+    // Each frame of the exit too, its content still there (Compose's waits for the end).
+    ui.set_auto_advance(false);
+    visible.set(false);
+    for _ in 0..3 {
+        ui.advance_time_by_frame();
+        assert!(!sizes.borrow().is_empty());
+        assert!(sizes.borrow().iter().all(|it| *it == IntSize::ZERO), "{:?}", sizes.borrow());
+    }
+    ui.set_auto_advance(true);
+    ui.wait_for_idle();
+    assert!(!sizes.borrow().is_empty());
+    assert!(sizes.borrow().iter().all(|it| *it == IntSize::ZERO), "{:?}", sizes.borrow());
+}
