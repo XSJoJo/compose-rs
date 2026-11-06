@@ -207,12 +207,25 @@ impl GraphicsLayer {
         self.store(recording, Offset::ZERO, size, scope.density.density);
     }
 
+    /// Keeps `recording` as its content: a change, unless it's what it holds already (the same
+    /// operations, shaders, filters and boundaries, at the same origin, size and density), so a
+    /// drawing recording the same content each time it runs doesn't draw itself, or what draws
+    /// the layer, again.
     fn store(&self, recording: DisplayList, origin: Offset, size: IntSize, density: f32) {
-        *self.0.recording.borrow_mut() = recording;
-        self.0.recorded_origin.set(origin);
-        self.0.size.set(size);
-        self.0.density.set(density);
-        self.0.released.set(false);
+        let cell = &self.0;
+        let same = !cell.released.get()
+            && cell.recorded_origin.get() == origin
+            && cell.size.get() == size
+            && cell.density.get() == density
+            && same_recording(&cell.recording.borrow(), &recording);
+        if same {
+            return;
+        }
+        *cell.recording.borrow_mut() = recording;
+        cell.recorded_origin.set(origin);
+        cell.size.set(size);
+        cell.density.set(density);
+        cell.released.set(false);
         self.changed();
     }
 
@@ -308,6 +321,15 @@ impl GraphicsLayer {
     pub fn ptr_eq(&self, other: &GraphicsLayer) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }
+}
+
+/// Whether two recordings draw the same: their operations, the shaders and filters these name,
+/// and the boundaries drawn among them. (Their paragraphs are named by the operations.)
+fn same_recording(old: &DisplayList, new: &DisplayList) -> bool {
+    old.ops == new.ops
+        && old.shaders == new.shaders
+        && old.color_filters == new.color_filters
+        && old.boundaries == new.boundaries
 }
 
 impl std::fmt::Debug for GraphicsLayer {

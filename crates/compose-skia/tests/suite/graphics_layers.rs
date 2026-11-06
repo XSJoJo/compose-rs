@@ -487,3 +487,80 @@ fn a_layer_recorded_again_by_its_node_is_drawn_again_by_another() {
     ui.on_node_with_tag("colored").capture_to_image().assert_pixels(None, |_| Some(Color::GREEN));
     drawing_box(&mut ui).assert_pixels(None, |_| Some(Color::GREEN));
 }
+
+/// A 200 × 100 black node drawing with `drawing`, holding a 100 × 100 red child drawn with
+/// `child`, both given the same layer: one drawing, as neither
+/// is a repaint boundary. The count is the child's drawing's runs.
+fn parent_and_child(
+    drawing: impl Fn(&mut DrawScope<'_>, &GraphicsLayer) + 'static,
+    child: impl Fn(&mut compose::ui::ContentDrawScope<'_, '_>, &GraphicsLayer) + 'static,
+) -> (ComposeTestRule, Rc<Cell<u32>>) {
+    set_capture_renderer(compose_skia::raster_colors);
+    let draws = Rc::new(Cell::new(0));
+    let counted = draws.clone();
+    let (drawing, child) = (Rc::new(drawing), Rc::new(child));
+    let ui = ComposeTestRule::sized(IntSize::new(200, 100), move || {
+        let layer = remember_graphics_layer();
+        let (drawn, drawing) = (layer.clone(), drawing.clone());
+        let (child, counted) = (child.clone(), counted.clone());
+        Box!(
+            modifier = Modifier
+                .test_tag(TAG)
+                .size((200.dp(), 100.dp()))
+                .background(BLACK)
+                .draw_behind(move |scope| drawing(scope, &drawn)),
+            {
+                let (child, layer, counted) = (child.clone(), layer.clone(), counted.clone());
+                Box!(
+                    modifier = Modifier
+                        .size(100.dp())
+                        .draw_with_content(move |scope| {
+                            counted.set(counted.get() + 1);
+                            child(scope, &layer);
+                        })
+                        .background(RED)
+                );
+            }
+        );
+    });
+    (ui, draws)
+}
+
+/// A layer drawn by a node and recorded later in the same pass by its child, a plain node,
+/// draws again once: its recording the next time is the same, so nothing draws again after.
+#[test]
+fn a_layer_drawn_by_a_parent_and_recorded_by_its_child_settles_after_one_more_frame() {
+    let (mut ui, draws) = parent_and_child(
+        |scope, layer| scope.translate(100.0, 0.0, |scope| scope.draw_layer(layer)),
+        |scope, layer| {
+            scope.record_layer(layer, |scope| scope.draw_content());
+            scope.draw_content();
+        },
+    );
+    assert_eq!(draws.get(), 2);
+    ui.wait_for_idle();
+    assert_eq!(draws.get(), 2);
+    let image = ui.on_node_with_tag(TAG).capture_to_image();
+    image.assert_pixel_color(RED, 50, 50);
+    image.assert_pixel_color(RED, 150, 50);
+}
+
+/// A drawing drawing a layer and then recording it draws again once, as the drawing then
+/// records what it recorded before.
+#[test]
+fn a_layer_drawn_then_recorded_by_the_same_drawing_settles_after_one_more_frame() {
+    let (mut ui, draws) = parent_and_child(
+        |_, _| {},
+        |scope, layer| {
+            scope.translate(100.0, 0.0, |scope| scope.draw_layer(layer));
+            scope.record_layer(layer, |scope| scope.draw_content());
+            scope.draw_content();
+        },
+    );
+    assert_eq!(draws.get(), 2);
+    ui.wait_for_idle();
+    assert_eq!(draws.get(), 2);
+    let image = ui.on_node_with_tag(TAG).capture_to_image();
+    image.assert_pixel_color(RED, 50, 50);
+    image.assert_pixel_color(RED, 150, 50);
+}
