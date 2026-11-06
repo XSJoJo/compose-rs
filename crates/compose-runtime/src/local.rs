@@ -51,6 +51,71 @@ pub struct CompositionLocal<T: 'static> {
 enum LocalDefault<T: 'static> {
     Value(fn() -> T),
     Computed(fn(&CompositionLocalAccessorScope) -> T),
+    /// What the host gives for a key, through [`LOCAL_HOST_DEFAULT_PROVIDER`], made a `T`.
+    Host {
+        key: &'static str,
+        resolve: fn(&'static str, Option<Rc<dyn Any>>) -> T,
+    },
+}
+
+/// What names a value a host gives, as Compose's `HostDefaultKey`: by its name, which is the key's
+/// own, and its value's type.
+pub struct HostDefaultKey<T: 'static> {
+    name: &'static str,
+    _value: std::marker::PhantomData<fn() -> T>,
+}
+
+impl<T: 'static> Clone for HostDefaultKey<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: 'static> Copy for HostDefaultKey<T> {}
+
+impl<T: 'static> HostDefaultKey<T> {
+    pub const fn new(name: &'static str) -> HostDefaultKey<T> {
+        HostDefaultKey { name, _value: std::marker::PhantomData }
+    }
+
+    /// What a [`HostDefaultProvider`] is asked for.
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+/// What a host (a view, a window) gives locals with host defaults, as Compose's
+/// `HostDefaultProvider`: provided by [`LOCAL_HOST_DEFAULT_PROVIDER`].
+pub trait HostDefaultProvider {
+    /// The host's value for the key named `key`, as `getHostDefault`: `None` if it has none. A
+    /// value of another type than the key's is taken as none.
+    fn get_host_default(&self, key: &'static str) -> Option<Rc<dyn Any>>;
+}
+
+/// The host's [`HostDefaultProvider`], as Compose's `LocalHostDefaultProvider`.
+///
+/// # Panics
+///
+/// Read where nothing provides it.
+pub static LOCAL_HOST_DEFAULT_PROVIDER: CompositionLocal<Rc<dyn HostDefaultProvider>> =
+    CompositionLocal::new("LocalHostDefaultProvider", || {
+        panic!("compose-runtime: CompositionLocal LocalHostDefaultProvider not present")
+    });
+
+/// The host's value for `key`, which a host must have.
+fn host_value<T: Clone + 'static>(key: &'static str, found: Option<Rc<dyn Any>>) -> T {
+    match found.as_deref().and_then(|value| value.downcast_ref::<T>()) {
+        Some(value) => value.clone(),
+        None => panic!("compose-runtime: the host has no default for {key}"),
+    }
+}
+
+/// The host's value for `key`, if it has one.
+fn optional_host_value<T: Clone + 'static>(
+    _key: &'static str,
+    found: Option<Rc<dyn Any>>,
+) -> Option<T> {
+    found.as_deref().and_then(|value| value.downcast_ref::<T>()).cloned()
 }
 
 /// Where a computed local reads other locals, as Compose's `CompositionLocalAccessorScope`:
@@ -178,6 +243,22 @@ struct ProviderEntries {
     entries: std::cell::RefCell<Vec<Entry>>,
 }
 
+impl<T: ComposeArg + Clone + 'static> CompositionLocal<Option<T>> {
+    /// [`with_host_default`](CompositionLocal::with_host_default) for a key a host may lack, as
+    /// `compositionLocalWithHostDefaultOf` of a nullable type: `None` where it does.
+    pub const fn with_optional_host_default(
+        name: &'static str,
+        key: HostDefaultKey<T>,
+    ) -> CompositionLocal<Option<T>> {
+        CompositionLocal {
+            name,
+            is_static: false,
+            default: LocalDefault::Host { key: key.name, resolve: optional_host_value::<T> },
+            equivalent: <Option<T> as ComposeArg>::same,
+        }
+    }
+}
+
 impl<T: 'static> CompositionLocal<T> {
     /// A dynamic local whose value outside any provider is `default()`, as `compositionLocalOf`:
     /// reading it subscribes, and a provider's new value (not [`same`](ComposeArg::same) as the
@@ -254,6 +335,30 @@ impl<T: 'static> CompositionLocal<T> {
             name,
             is_static: true,
             default: LocalDefault::Computed(compute),
+            equivalent: <T as ComposeArg>::same,
+        }
+    }
+
+    /// A dynamic local whose value outside any provider is the host's for `key`, as
+    /// `compositionLocalWithHostDefaultOf`: read through [`LOCAL_HOST_DEFAULT_PROVIDER`] where it's
+    /// read. Provided, it's an ordinary dynamic local.
+    ///
+    /// # Panics
+    ///
+    /// Read outside any provider where the host has no value for `key`, as Compose's throws for a
+    /// non-nullable type; [`with_optional_host_default`](Self::with_optional_host_default) reads
+    /// `None` there.
+    pub const fn with_host_default(
+        name: &'static str,
+        key: HostDefaultKey<T>,
+    ) -> CompositionLocal<T>
+    where
+        T: ComposeArg + Clone,
+    {
+        CompositionLocal {
+            name,
+            is_static: false,
+            default: LocalDefault::Host { key: key.name, resolve: host_value::<T> },
             equivalent: <T as ComposeArg>::same,
         }
     }
@@ -337,6 +442,10 @@ impl<T: 'static> CompositionLocal<T> {
         match self.default {
             LocalDefault::Value(default) => default(),
             LocalDefault::Computed(compute) => compute(scope),
+            LocalDefault::Host { key, resolve } => {
+                let host = scope.current_value(&LOCAL_HOST_DEFAULT_PROVIDER);
+                resolve(key, host.get_host_default(key))
+            }
         }
     }
 }

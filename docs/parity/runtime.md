@@ -16,15 +16,15 @@ What compose-rs's runtime (`crates/compose-runtime`, `crates/compose-macros`) ha
 | Status | Files | Tests |
 |---|---|---|
 | `covered` | 5 | 27 |
-| `ported` | 37 | 569 |
+| `ported` | 38 | 607 |
 | `port` | 0 | 0 |
-| `partial` | 18 | 455 |
+| `partial` | 17 | 417 |
 | `feature:…` | 0 | 0 |
 | `n/a` | 91 | 968 |
 
-841 tests are ported so far (each cites its Compose test in a `// Compose:` comment), in `ported` and `partial` files.
+846 tests are ported so far (each cites its Compose test in a `// Compose:` comment), in `ported` and `partial` files.
 
-No file waits on a feature. `partial` rows name further features they need for some of their tests (composition-context, composition-api, recomposer, movable-content, host-defaults, snapshot-isolation).
+No file waits on a feature. `partial` rows name further features they need for some of their tests (composition-context, composition-api, recomposer, movable-content, snapshot-isolation).
 
 Of the 968 `n/a` tests, 142 are Android Lint checks, 122 benchmarks, 513 tests of internal data structures and internal APIs (two slot tables, change lists, collections, snapshot id sets, the opt-in tracing API), 49 hot reload (Live Edit), and 142 platform or language specifics (threads, JVM reflection, `Parcelable`, RxJava, LiveData, Kotlin delegates and autoboxing, the Kotlin compiler's ABI and group sizes, Android tracing).
 
@@ -43,7 +43,7 @@ The core suite alone (`nonEmulatorCommonTest`, 1,099 tests) splits: 17 in `cover
 | `compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/CollectAsStateTests.kt` | 4 | `Flow.collectAsState`/`StateFlow.collectAsState`: initial value, updates, restart on a new flow, referential policy. | ported: 4 in crates/compose-runtime/tests/suite/flows.rs (step S4, D768). |
 | `compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/CompositionAndComputedStateTests.kt` | 30 | `computedStateOf` read in composition: invalidation only on a changed result, policies, dependency tracking, mixing with `derivedStateOf`. | ported: 30 in crates/compose-runtime/tests/suite/composition_and_computed_state.rs (D1504; two counts of calculations differ, the release checks count freed instances, not the composition's observed objects) |
 | `compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/CompositionAndDerivedStateTests.kt` | 20 | `derivedStateOf` read in composition: invalidates only on a changed result, policies, only live derived states computed, dependencies cleared, nested derived states. | ported: 16 in crates/compose-runtime/tests/suite/composition_and_derived_state.rs (which found the eager computation, fixed: D711) and movable_content.rs; `changingTheDerivedStateInstanceShouldRelease`, `changingTheDerivedStateInstanceShouldClearDependencies`, `changingDerivedStateDependenciesShouldClearThem` and `changingDerivedStateShouldNotAccumulateConditionalScopes` count Compose's internal observation maps (n/a). |
-| `compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/CompositionLocalTests.kt` | 38 | Composition locals: dynamic and static locals, sub/deferred compositions, many providers at once, `providesDefault`, computed defaults, `providesComputed`, host defaults, `withCompositionLocal(s)`, change while removing. | partial: 32 ported in crates/compose-runtime/tests/suite/composition_local.rs (`testProvideAllLocals` drives its second composition by hand) and composition_context.rs (`subCompose_*`, `deferredSubCompose_*`); the 5 `hostDefault_*` need host defaults (feature host-defaults); `testTheUnderlyingPropertiesOfPersistentHashMap` tests a Kotlin collection (n/a). |
+| `compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/CompositionLocalTests.kt` | 38 | Composition locals: dynamic and static locals, sub/deferred compositions, many providers at once, `providesDefault`, computed defaults, `providesComputed`, host defaults, `withCompositionLocal(s)`, change while removing. | ported: 37 in crates/compose-runtime/tests/suite/composition_local.rs (`testProvideAllLocals` drives its second composition by hand; the 5 `hostDefault_*`, D1512) and composition_context.rs (`subCompose_*`, `deferredSubCompose_*`); `testTheUnderlyingPropertiesOfPersistentHashMap` tests a Kotlin collection (n/a). |
 | `compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/CompositionObserverTests.kt` | 17 | `Composition.setObserver`/`CompositionObserver`: begin/end of composition, scope enter/exit/invalidated/disposed, reads, nested observations, subcompositions. | ported: 17 in crates/compose-runtime/tests/suite/composition_observer.rs (D1505; each `_Gap`/`_Link` pair is one test) |
 | `compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/CompositionReusingTests.kt` | 26 | `ReusableContent`, `ReusableContentHost`, `ReusableComposition.setContentWithReuse`/`deactivate`, node `onReuse`/`onDeactivate`/`onRelease` ordering, composite hash under reuse. | partial: 25 ported in crates/compose-runtime/tests/suite/composition_reusing.rs, composition_api.rs, composition_context.rs and movable_content.rs (mock views have ids for `flatten`/`findTextWith`); `onReuseIsCalledInApplyStage` differs: a reused node is reset as the pass reaches it, since compose-rs applies nodes during the pass (D31; behaviour 13). |
 | `compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/CompositionTests.kt` | 133 | The core: inserts, moves, replaces, skipping, `remember` with 0 to 5 keys, remember-observer order and abandonment, invalidation and observation scopes, applier begin/end, early returns, loops, default arguments, compound keys, subcompositions. | partial: 114 ported in crates/compose-runtime/tests/suite/composition.rs (Kotlin's inline wrappers are blocks or called closures there; a few models are state, as compose-rs memoizes content lambdas on their captures, D710) and composition_context.rs (the subcomposition tests). `testCompositionAndRecomposerDeadlock` is n/a: it's about a deadlock between threads (D14). (`movableContentNoopInDeactivatedComposition` in movable_content.rs.) Not ported: composition-api ones (`disposedCompositionShouldReportAsDisposed`, `setContentDeactivated`, `testRememberedObserver_Controlled_Dispose`), `recompositionClearsObservationsWhenDefaultParametersSkip` (defaults are evaluated by the caller: behaviour 4), the non-local returns from nested lambdas (5 `test_returnConditionally_*_nonLocal*`: Rust closures return locally), and n/a ones: Kotlin (`composableDelegates`, `composableVarargs_skipped`, `funInterface_isMemoized`, `testFunctionInstances`), Compose's hash values (`enumCompositeKey*ShouldBeStable`), internals (`composerCleanup`, `internalErrorsAreReportedAsInternal`), flows (`slotsAreUsedCorrectly_forEach`: flow-adapters). |
@@ -259,7 +259,7 @@ From each module's `api/current.txt` (`restricted_current.txt` only to tell what
 | Feature | Compose APIs (package `androidx.compose.runtime` unless named) | compose-rs today |
 |---|---|---|
 | host-content-groups | not an API of Compose's: its compiler sees every `@Composable` lambda, so an `if` in `setContent { … }` has a group | a gap to close: the plain closures given to a host (`run_app(options, || …)`, `application(|| …)`, `compose_test(|| …)`, `UiHost::set_content`, `Composition::set_content`) get no region groups, so an `if` there silently passes state to the next sibling (docs/03; found porting `RememberViewModelStoreProviderTest`, D838) |
-| host-defaults | `compositionLocalWithHostDefaultOf`, `HostDefaultKey`, `HostDefaultProvider`, `LocalHostDefaultProvider` | none: the other local variants are done (local-variants) |
+| host-defaults | `compositionLocalWithHostDefaultOf`, `HostDefaultKey`, `HostDefaultProvider`, `LocalHostDefaultProvider` | done (D1512): `CompositionLocal::with_host_default(name, key)`, `with_optional_host_default` for a nullable type, `HostDefaultKey<T>` (named), `HostDefaultProvider`, `LOCAL_HOST_DEFAULT_PROVIDER`; hosts don't provide one yet |
 | state-collections | `SnapshotStateList` (the `MutableList` API, `toList`, `SnapshotStateList(size, init)`), `SnapshotStateMap` (`MutableMap` API, `toMap`), `SnapshotStateSet` (`MutableSet` API, `toSet`), `mutableStateMapOf`, `mutableStateSetOf`, `toMutableStateMap`, element-wise `mutableStateListOf` | done (step S3, D761, `compose::runtime::snapshots`): the handles, `OwnedStateList`/`Map`/`Set`, `mutable_state_list_of`/`_from`, `snapshot_state_list`, `mutable_state_map_of`/`_from`, `mutable_state_set_of`/`_from`, `to_list`, `to_map`, `to_set` |
 | computed-state | `computedStateOf(policy, calculation)` | done (D1504): `computed_state_of`, `computed_state_of_with`, `ComputedState` |
 | snapshot-observation | `Snapshot.withoutReadObservation`, `Snapshot.observe(readObserver, writeObserver, block)`, `Snapshot.registerApplyObserver`, `Snapshot.registerGlobalWriteObserver`, `Snapshot.sendApplyNotifications`, `Snapshot.isApplyObserverNotificationPending`, `ObserverHandle`, `snapshots.SnapshotStateObserver` (`observeReads`, `clear`, `clearIf`, `start`, `stop`, `notifyChanges`) | done (step S1, D751–D753, `compose::runtime::snapshots`): `Snapshot::without_read_observation`, `observe`, `register_apply_observer`, `register_global_write_observer`, `send_apply_notifications`, `is_apply_observer_notification_pending`, `notify_objects_initialized`, `ObserverHandle`, `ChangeSet`, `StateObjectId`, `SnapshotStateObserver` (`observe_reads`, `clear`, `clear_if`, `clear_all`, `start`, `stop`, `notify_changes`) |
@@ -323,10 +323,10 @@ Sizes: S under a day, M a few days, L one to two weeks, XL multi-week. None of t
 ### local-variants (M): done
 - Static locals, policies, computed defaults, `provides_default`, `provides_computed`, several values per provider (one group), `CompositionLocalMap`, `CompositionLocalContext`, `with_composition_local(s)` (D713). Tests: crates/compose-runtime/tests/suite/composition_local.rs. Compose's ui declares its platform locals static (`LocalDensity`, `LocalLayoutDirection`): the ui ledger can now make compose-ui's so.
 
-### host-defaults (S)
+### host-defaults (S): done (D1512), but the hosts' providers
 - **APIs:** `compositionLocalWithHostDefaultOf(key)`, `HostDefaultKey<T>`, `HostDefaultProvider` (`getHostDefault`), `LocalHostDefaultProvider`.
 - **Does:** a local whose default the host gives (an Android view's, a desktop window's), through a provider local.
-- **Tests:** the 5 `CompositionLocalTests.hostDefault_*`.
+- **Tests:** the 5 `CompositionLocalTests.hostDefault_*`: ported.
 - **Depends on:** local-variants (done); hosts provide `LocalHostDefaultProvider` (ui area).
 
 ### host-content-groups (M, needs a decision)
@@ -435,7 +435,7 @@ Sizes: S under a day, M a few days, L one to two weeks, XL multi-week. None of t
 ### Suggested order
 
 1. **Quick wins that unblock ports:** keyed-side-effect (S, done), produce-state-scope (S, done), state-gaps (S, done), compose-node (S, done), frame-clocks (S, done).
-2. **local-variants (M, done)**; **host-defaults (S)** next, with the ui area's hosts.
+2. **local-variants (M, done)**; **host-defaults (S)** done but the ui area's hosts providing one.
 3. **state-collections (M)**, then **saveable-gaps (M)**: the most-used state APIs apps miss.
 4. **snapshot-observation (M)**, then **computed-state (M)** (done); then the `Stream` decision and **snapshot-flow (M)** with **flow-adapters (S)**.
 5. **composition-api (M)**, **recomposer (M)**, **frame-end-callback (S)**: host-level shape, unblocking `RecomposerTests` and the reuse and pausable API tests.

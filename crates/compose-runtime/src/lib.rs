@@ -94,8 +94,9 @@ pub use immutable_list::ImmutableList;
 pub use local::ProviderUpdate;
 pub use local::{
     CompositionLocal, CompositionLocalAccessorScope, CompositionLocalAnchor,
-    CompositionLocalContext, CompositionLocalMap, CompositionLocalProvider, ProvidedValue,
-    ProvidedValues, current_composition_local_anchor, current_composition_local_context,
+    CompositionLocalContext, CompositionLocalMap, CompositionLocalProvider, HostDefaultKey,
+    HostDefaultProvider, LOCAL_HOST_DEFAULT_PROVIDER, ProvidedValue, ProvidedValues,
+    current_composition_local_anchor, current_composition_local_context,
     current_composition_local_map, with_composition_local, with_composition_locals,
 };
 pub use movable::{movable_content_of, movable_content_of_with, movable_content_with_receiver_of};
