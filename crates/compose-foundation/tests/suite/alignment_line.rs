@@ -1240,3 +1240,45 @@ fn a_column_of_intrinsic_width_follows_a_change_with_no_scope() {
 fn a_column_of_intrinsic_width_follows_a_change_all_in_a_scope() {
     assert_eq!(intrinsic_column_width(None), (10, 20));
 }
+
+// Compose: compose/ui/ui/src/commonMain/kotlin/androidx/compose/ui/layout/LookaheadScope.kt, localLookaheadPositionOf (includeMotionFrameOfReference)
+#[test]
+fn a_lookahead_position_may_leave_a_scroll_out() {
+    let owner = LazyListState::new(3, 0);
+    let state = *owner;
+    let (list, item, scope): (Kept, Kept, Rc<Cell<Option<compose_ui::LookaheadScope>>>) =
+        (Rc::default(), Rc::default(), Rc::default());
+    let (l, i, sc) = (list.clone(), item.clone(), scope.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(100, 300), move || {
+        let (l, i, sc) = (l.clone(), i.clone(), sc.clone());
+        in_a_scope(move |scope| {
+            sc.set(Some(scope));
+            let i = i.clone();
+            LazyColumn!(
+                state = state,
+                modifier = Modifier.fill_max_size().then(keeping(&l)),
+                move |items: LazyListScope| {
+                    let i = i.clone();
+                    items.items(20, move |index| {
+                        let noted = if index == 4 { keeping(&i) } else { Modifier };
+                        Box!(modifier = Modifier.size(dp(100)).then(noted), {});
+                    });
+                }
+            );
+        });
+    });
+    ui.wait_for_idle();
+    let (list, item, scope) =
+        (list.get().expect("placed"), item.get().expect("placed"), scope.get().expect("composed"));
+    for include in [true, false] {
+        assert_eq!(
+            scope.local_lookahead_position_of_with(list, item, Offset::ZERO, include),
+            list.local_position_of_with(&item, Offset::ZERO, include),
+            "{include}"
+        );
+    }
+    assert_eq!(
+        scope.local_lookahead_position_of(list, item, Offset::ZERO),
+        Offset::new(0.0, 100.0)
+    );
+}
