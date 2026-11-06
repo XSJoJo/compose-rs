@@ -17,7 +17,7 @@ use crate::interaction::SemanticsNodeInteraction;
 use crate::rule::ComposeTestRule;
 
 /// The time between two injected events, as Compose's `InputDispatcher.eventPeriodMillis`.
-const EVENT_PERIOD_MILLIS: u64 = 16;
+pub(crate) const EVENT_PERIOD_MILLIS: u64 = 16;
 /// A held key repeats after this long, then every [`SUBSEQUENT_REPEAT_DELAY`], as Compose's.
 const INITIAL_REPEAT_DELAY: u64 = 500;
 const SUBSEQUENT_REPEAT_DELAY: u64 = 50;
@@ -28,14 +28,14 @@ const SINGLE_CLICK_DELAY_MILLIS: u64 = 60;
 /// A mouse gesture's default duration, as Compose's.
 const DEFAULT_MOUSE_GESTURE_MILLIS: u64 = 300;
 /// The swipes' default duration, as Compose's.
-const DEFAULT_SWIPE_MILLIS: u64 = 200;
+pub(crate) const DEFAULT_SWIPE_MILLIS: u64 = 200;
 /// A wheel's step in pixels per unit of `scroll`'s delta, as Android's (64 dp).
 const SCROLL_DP_PER_UNIT: f32 = 64.0;
 /// How far back a velocity is measured, as Compose's `HorizonMilliseconds`.
 const HORIZON_MILLIS: u64 = 100;
 
 /// The double tap's default delay, halfway between its least and most time, as Compose's.
-fn default_double_tap_delay_millis(configuration: &ViewConfiguration) -> u64 {
+pub(crate) fn default_double_tap_delay_millis(configuration: &ViewConfiguration) -> u64 {
     (configuration.double_tap_min_time_millis + configuration.double_tap_timeout_millis) / 2
 }
 
@@ -100,6 +100,8 @@ pub(crate) struct InputState {
     /// A trackpad's pan in progress and how far it panned, its pinch and how much it scaled.
     pan: Option<Offset>,
     scale: Option<f32>,
+    /// An indirect pointer gesture in progress.
+    pub(crate) indirect: Option<crate::indirect::IndirectGesture>,
     keys: Vec<Key>,
     /// When the last key went down, the key that repeats, and when it last repeated (ms of the
     /// test clock).
@@ -117,6 +119,16 @@ pub(crate) struct InputState {
 /// compose-rs's hosts) and fingers don't share a capture.
 fn touch_pointer(id: u64) -> PointerId {
     PointerId(id + 1)
+}
+
+/// Ends a touch gesture in progress: an indirect pointer's event cancels it, as Compose's
+/// dispatcher.
+pub(crate) fn cancel_touch_gesture(rule: &mut ComposeTestRule) {
+    let ids: Vec<u64> = std::mem::take(&mut rule.input.touches).into_keys().collect();
+    rule.input.touch_updated = false;
+    for id in ids {
+        rule.host.with_tree(|tree| tree.cancel_pointer(touch_pointer(id)));
+    }
 }
 
 /// The geometry and timing every injection scope shares, as Compose's `InjectionScope`: the
@@ -375,6 +387,7 @@ impl TouchInjectionScope<'_> {
             !self.input().touches.contains_key(&id),
             "compose-test: Cannot send DOWN event, a gesture is already in progress for pointer {id}"
         );
+        crate::indirect::cancel_indirect_gesture(self.0.rule);
         if self.input().mouse_buttons.are_any_pressed() {
             self.0.rule.input.mouse_buttons = PointerButtons::NONE;
             self.0.rule.host.with_tree(|tree| tree.cancel_pointer(PointerId(0)));
@@ -763,19 +776,19 @@ impl TouchInjectionScope<'_> {
     }
 }
 
-fn lerp(start: Offset, end: Offset, fraction: f32) -> Offset {
+pub(crate) fn lerp(start: Offset, end: Offset, fraction: f32) -> Offset {
     Offset::new(start.x + (end.x - start.x) * fraction, start.y + (end.y - start.y) * fraction)
 }
 
 /// Kotlin's `lerp(Long, Long, Float)`: rounded.
-fn lerp_time(start: u64, end: u64, fraction: f32) -> u64 {
+pub(crate) fn lerp_time(start: u64, end: u64, fraction: f32) -> u64 {
     start + ((end - start) as f64 * fraction as f64).round() as u64
 }
 
 /// The default duration of a swipe ending at `velocity`, as Compose's
 /// `VelocityPathFinder.calculateDefaultDuration`.
 #[track_caller]
-fn default_velocity_duration(start: Offset, end: Offset, velocity: f32) -> u64 {
+pub(crate) fn default_velocity_duration(start: Offset, end: Offset, velocity: f32) -> u64 {
     assert!(
         start != end || velocity == 0.0,
         "compose-test: When start == end; velocity cannot be {velocity}, it must be 0f"
@@ -801,7 +814,7 @@ fn distance(a: Offset, b: Offset) -> f32 {
 
 /// A path from `start` to `end` ending at a velocity, as Compose's `LegacyVelocityPathFinder`:
 /// still, then on each axis a parabola reaching the end at the velocity along the direction.
-struct VelocityPath {
+pub(crate) struct VelocityPath {
     start: Offset,
     end: Offset,
     duration: u64,
@@ -810,7 +823,7 @@ struct VelocityPath {
 }
 
 impl VelocityPath {
-    fn new(start: Offset, end: Offset, velocity: f32, duration: u64) -> VelocityPath {
+    pub(crate) fn new(start: Offset, end: Offset, velocity: f32, duration: u64) -> VelocityPath {
         let theta = ((end.y - start.y) as f64).atan2((end.x - start.x) as f64);
         VelocityPath {
             start,
@@ -821,7 +834,7 @@ impl VelocityPath {
         }
     }
 
-    fn offset_at(&self, time: u64) -> Offset {
+    pub(crate) fn offset_at(&self, time: u64) -> Offset {
         Offset::new(
             self.axis(self.vx, self.start.x, self.end.x, time),
             self.axis(self.vy, self.start.y, self.end.y, time),

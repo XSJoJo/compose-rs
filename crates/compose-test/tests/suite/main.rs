@@ -12,6 +12,7 @@ mod bounds;
 mod clock;
 mod configuration_override;
 mod displayed;
+mod indirect;
 mod input;
 mod restoration;
 mod review_d;

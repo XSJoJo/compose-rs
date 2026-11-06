@@ -13,10 +13,10 @@ This ledger maps Jetpack Compose UI's tests and public API in input, focus, sema
 | Status | Files | `@Test` methods |
 |---|---|---|
 | `covered` | 5 | 39 |
-| `ported` | 40 | 642 |
+| `ported` | 42 | 657 |
 | `port` | 8 | 56 |
-| `partial` | 37 | 1,169 |
-| `feature:*` | 99 | 1,163 |
+| `partial` | 41 | 1,262 |
+| `feature:*` | 93 | 1,055 |
 | `n/a` | 50 | 456 |
 | **Total** | **239** | **3,525** |
 
@@ -26,7 +26,7 @@ By feature (rows whose status is that feature; `partial` rows needing it are in 
 |---|---|---|
 | host-view-interop | 21 | 279 |
 | autofill | 11 | 166 |
-| indirect-pointer-input | 7 | 123 |
+| indirect-pointer-input | 1 | 15 |
 | velocity-tracker | 3 | 23 |
 | platform-text-input | 7 | 76 |
 | pointer-icon-api | 1 | 59 |
@@ -176,14 +176,14 @@ By feature (rows whose status is that feature; `partial` rows needing it are in 
 
 | Path | `@Test` | Covers | Status | Detail |
 |---|---|---|---|---|
-| `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/indirect/DelegatedIndirectPointerAndFocusEventTests.kt` | 10 | Indirect pointer streams are cancelled when focus moves | `feature:indirect-pointer-input` |  |
-| `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/indirect/IndirectPointerEventNavigationSystemTests.kt` | 53 | Touch-navigation swipes move focus along the primary axis | `feature:indirect-pointer-input` |  |
-| `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/indirect/IndirectPointerEventTest.kt` | 20 | Touch-navigation `MotionEvent`s become `IndirectPointerEvent`s to the focused node and its ancestors | `feature:indirect-pointer-input` |  |
-| `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/indirect/IndirectPointerNavigationGestureDetectorTest.kt` | 14 | The navigation gesture detector's swipe thresholds | `feature:indirect-pointer-input` |  |
+| `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/indirect/DelegatedIndirectPointerAndFocusEventTests.kt` | 10 | Indirect pointer streams are cancelled when focus moves | `partial` | `crates/compose-test/tests/suite/indirect.rs` (`the_focus_leaving_tells_what_it_left`, `a_cancel_or_a_move_of_the_focus_ends_the_stream`): six, the focus cleared, moved next, around, during a press, moves and a swipe (D1675). Left: the deeper trees and the move to a focusable parent (4) |
+| `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/indirect/IndirectPointerEventNavigationSystemTests.kt` | 53 | Touch-navigation swipes move focus along the primary axis | `partial` | `crates/compose-test/tests/suite/indirect.rs`: 40, table-driven (`a_swipe_along_the_axis_moves_the_focus`, `a_swipe_a_little_across_still_moves_the_focus`, `other_swipes_leave_the_focus`, the cancels and detaches), at density 1 with the device's distances scaled (D1675). Left: the deeper and complex trees' cancels and detaches (13) |
+| `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/indirect/IndirectPointerEventTest.kt` | 20 | Touch-navigation `MotionEvent`s become `IndirectPointerEvent`s to the focused node and its ancestors | `partial` | `crates/compose-test/tests/suite/indirect.rs`: 14, the passes' order around parents and focus targets, the next target ending the path, the event as sent, the constructor (D1675). Left: the 4 delegated ones (a test node delegating to two), and 2 of the `MotionEvent` conversion (the Android host's) |
+| `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/indirect/IndirectPointerNavigationGestureDetectorTest.kt` | 14 | The navigation gesture detector's swipe thresholds | `ported` | `crates/compose-test/tests/suite/indirect.rs` (`a_fling_along_the_axis_moves_the_focus`, `a_press_in_the_middle_starts_over`, `a_consumed_move_or_release_takes_the_stream`): `IndirectPointerNavigationGestureDetector` in Rust over Android's `GestureDetector` rules (slop, long press, fling velocity), at density 1 (D1675) |
 | `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/rotary/RotaryScrollEventTest.kt` | 14 | Rotary crown events reach the focused node with device id and time; preview; view interop | `feature:rotary-input` |  |
-| `compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/input/IndirectPointerEventWithInputDeviceMockTest.kt` | 15 | The primary axis from the input device's motion ranges | `feature:indirect-pointer-input` |  |
-| `compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/input/indirect/IndirectPointerInputChangeTest.kt` | 10 | `IndirectPointerInputChange` properties, consume, copy, historical | `feature:indirect-pointer-input` |  |
-| `compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/input/indirect/IndirectPointerNavigationGestureDetectorHostTest.kt` | 1 | The detector clears pending messages on dispose | `feature:indirect-pointer-input` |  |
+| `compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/input/IndirectPointerEventWithInputDeviceMockTest.kt` | 15 | The primary axis from the input device's motion ranges | `feature:indirect-pointer-input` | The primary axis from an `InputDevice`'s motion ranges: the Android host's, which doesn't send touch-navigation events yet (D1675) |
+| `compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/input/indirect/IndirectPointerInputChangeTest.kt` | 10 | `IndirectPointerInputChange` properties, consume, copy, historical | `partial` | `crates/compose-test/tests/suite/indirect.rs` (`a_change_has_its_properties`, `consuming_a_change_marks_it_once_and_for_all`, `a_change_keeps_its_history_and_copies_with_it`): 9 (D1675). Left: `createIndirectPointerInputChangesFromMotionEvents` (the Android host's) |
+| `compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/input/indirect/IndirectPointerNavigationGestureDetectorHostTest.kt` | 1 | The detector clears pending messages on dispose | `ported` | `crates/compose-test/tests/suite/indirect.rs` (`a_disposed_detector_asks_for_nothing`) |
 
 ### Semantics (7 files, 142 methods)
 
@@ -380,7 +380,7 @@ From `compose/ui/ui/api/current.txt` (deprecated entries left out; `restricted_c
 ### `androidx.compose.ui.input.rotary`, `androidx.compose.ui.input.indirect`, `androidx.compose.ui.input`
 
 - **rotary-input:** `Modifier.onRotaryScrollEvent`, `Modifier.onPreRotaryScrollEvent`, `RotaryScrollEvent` (`verticalScrollPixels`, `horizontalScrollPixels`, `uptimeMillis`, `inputDeviceId`), `RotaryInputModifierNode`.
-- **indirect-pointer-input:** `IndirectPointerEvent` (`changes`, `type`, `primaryDirectionalMotionAxis`, `nativeEvent`), `IndirectPointerEventType`, `IndirectPointerEventPrimaryDirectionalMotionAxis`, `IndirectPointerInputChange`, `IndirectPointerInputModifierNode`, the test-only `IndirectPointerEvent(...)` factory.
+- **indirect-pointer-input:** Present (D1675): `IndirectPointerEvent` (`changes`, `type` as `kind`, `primaryDirectionalMotionAxis`; the test-only factory as `IndirectPointerEvent::new`), `IndirectPointerEventType`, `IndirectPointerEventPrimaryDirectionalMotionAxis`, `IndirectPointerInputChange` (`clone` as `copy`), `IndirectPointerInputModifierNode`, `RootForTest.sendIndirectPointerEvent` as `UiHost::send_indirect_pointer`. Missing: `nativeEvent` (no `MotionEvent`).
 - **input-mode:** `InputMode` (`Touch`, `Keyboard`), `InputModeManager` (`inputMode`, `requestInputMode`), `LocalInputModeManager`.
 
 ### `androidx.compose.ui.input.pointer` and `.util`
@@ -542,6 +542,7 @@ Sizes: S under a day, M a few days, L one to two weeks, XL several weeks. "Tests
 ### indirect-pointer-input (M)
 - **Compose API:** the `androidx.compose.ui.input.indirect` package.
 - **What:** touch-navigation devices (touchpads without a cursor): events to the focused node, cancellation when focus moves, a navigation gesture moving focus along the primary axis.
+- **Done** (D1675): the types, the dispatch to the focus's path in three passes (`UiTree::dispatch_indirect_pointer`, `UiHost::send_indirect_pointer`, `cancel_indirect_pointer`), the cancels as the focus leaves or a node on its path goes, the navigation gesture detector; zero cost until a node of the kind is in the tree. Left: the Android host's touch-navigation `MotionEvent`s (source, primary axis from the device), delegated nodes' tests, the deeper trees' tests.
 - **Tests:** DelegatedIndirectPointerAndFocusEventTests, IndirectPointerEventNavigationSystemTests, IndirectPointerEventTest, IndirectPointerNavigationGestureDetectorTest, IndirectPointerEventWithInputDeviceMockTest, IndirectPointerInputChangeTest, IndirectPointerNavigationGestureDetectorHostTest.
 - **Depends on:** pointer-event-model (`PointerId`, `HistoricalChange`), focus-hierarchy.
 - **Experimental:** no.

@@ -345,6 +345,9 @@ impl UiTree {
         if previous != target {
             let generation = &self.focus_requests.focus_generation;
             generation.set(generation.get().wrapping_add(1));
+            if self.has_indirect_pointer_input {
+                self.indirect_focus_moved(previous);
+            }
         }
     }
 

@@ -49,11 +49,11 @@ These are on local branches, so they're not lost, but each still has to finish i
 - Many existing components are `partial`: they exist, with tests or details left.
 
 ### 6. Input and platform
-- **Indirect pointer input** (about 125), **pointer icons** (about 60), scroll capture (about 45), clipboard API (about 30), content capture, drag and drop, rotary input, media queries.
+- **Indirect pointer input** is in (D1675): the events to the focus's path, the cancels, the navigation gesture; left the Android host's touch-navigation events and about 20 tests (delegates, deeper trees). **Pointer icons** (about 60), scroll capture (about 45), clipboard API (about 30), content capture, drag and drop, rotary input, media queries.
 - **Locale and device data:** the date and time pickers use small tables for a few languages. Real data needs `icu4x`, a decision for the user.
 
 ### 7. The test framework
-`compose-test` lacks parts of ui-test that ports will need: indirect pointer injection (about 120 tests of its own), device configuration override, and capture to image. Trackpad injection is in (D1674): pans and pinches as Android 14 delivers them, on ui's pan and scale events.
+`compose-test` lacks parts of ui-test that ports will need: device configuration override, and capture to image. Trackpad injection (D1674: pans and pinches as Android 14 delivers them, on ui's pan and scale events) and indirect pointer injection (D1675) are in.
 
 ## Not verified on a device
 

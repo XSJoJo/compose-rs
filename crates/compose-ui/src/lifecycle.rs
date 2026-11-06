@@ -482,6 +482,9 @@ impl UiTree {
         // A context reaches its layout node: none without it (released first, which runs these
         // steps itself, `release_removed_in_subtree`; this guards the rest).
         let alive = self.get(node).is_some();
+        if self.has_indirect_pointer_input {
+            self.indirect_entries_removed(node, &mut entries);
+        }
         if alive {
             self.focus_entries_removed(node, &mut entries);
         }
