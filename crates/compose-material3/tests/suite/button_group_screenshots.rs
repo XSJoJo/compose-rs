@@ -211,8 +211,8 @@ fn the_indicator_stands_after_the_items_that_fit() {
             (0..10).filter(|index| ui.count_nodes(&has_text(&format!("{index}"))) > 0).collect();
         assert!(!shown.is_empty() && shown.len() < 10, "{shown:?}");
         let last = text_bounds(&mut ui, &format!("{}", shown.len() - 1));
-        // 12 dp after it, the 40 dp button centered in its 48 dp touch target, which compose-rs's
-        // semantics bounds leave out.
+        // 12 dp after it, the 40 dp button centered in its 48 dp touch target, which the
+        // semantics bounds leave out, as Compose's (its clickable's merging node is inside it).
         assert_eq!(indicator.left - last.right, 12.0 + 4.0);
         // Its default: three dots in the filled icon button's colors.
         assert!(fills(&mut ui).contains(&scheme.primary));

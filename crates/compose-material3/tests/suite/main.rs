@@ -88,6 +88,8 @@ mod slider;
 mod slider_screenshots;
 mod snackbar;
 mod snackbar_overloads;
+mod split_button;
+mod split_button_screenshots;
 mod surface;
 mod swipe_to_dismiss;
 mod switch;

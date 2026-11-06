@@ -49,6 +49,7 @@ mod selection;
 mod sheet;
 mod slider;
 mod snackbar;
+mod split_button;
 mod swipe_to_dismiss;
 mod tabs;
 mod text_field;
@@ -186,6 +187,12 @@ pub use slider::{
 pub use snackbar::{
     ContentSnackbar, Snackbar, SnackbarData, SnackbarDefaults, SnackbarDuration, SnackbarHost,
     SnackbarHostState, SnackbarResult, SnackbarVisuals,
+};
+pub use split_button::{
+    SplitButtonDefaults, SplitButtonElevatedLeadingButton, SplitButtonElevatedTrailingButton,
+    SplitButtonLayout, SplitButtonLeadingButton, SplitButtonOutlinedLeadingButton,
+    SplitButtonOutlinedTrailingButton, SplitButtonShapes, SplitButtonToggleableTrailingButton,
+    SplitButtonTonalLeadingButton, SplitButtonTonalTrailingButton, SplitButtonTrailingButton,
 };
 pub use swipe_to_dismiss::{
     SwipeToDismissBox, SwipeToDismissBoxDefaults, SwipeToDismissBoxState, SwipeToDismissBoxValue,

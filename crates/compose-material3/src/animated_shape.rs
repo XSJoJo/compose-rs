@@ -182,6 +182,35 @@ impl AnimatedShapeState {
     }
 }
 
+/// How far `shape`'s content moves toward its rounder side, in pixels at `size` (negative: toward
+/// the start), as `horizontalCenterOptically`: 11 % of how much rounder its start corners are than
+/// its end ones. A shape from `remember_animated_shape` reads its corners as they are now, each
+/// kept within half the height, as Compose's `ShapeWithHorizontalCenterOptically`; one without
+/// corners doesn't move it.
+pub(crate) fn optical_center_offset(shape: &Shape, size: Size, density: &Density) -> Option<f32> {
+    let (corners, animated) = match shape {
+        Shape::Custom(custom) => {
+            let animated = custom.downcast_ref::<AnimatedShape>()?;
+            let state = &animated.0;
+            let now = morphed(
+                &state.start.borrow(),
+                &state.target.borrow(),
+                state.fraction(),
+                size,
+                density,
+            );
+            (now.corners()?, true)
+        }
+        shape => (shape.corners()?, false),
+    };
+    let px = corners.map(|corner| {
+        let px = corner.to_px(size, density);
+        if animated { px.clamp(0.0, size.height / 2.0) } else { px }
+    });
+    // Top start, top end, bottom end, bottom start.
+    Some(0.11 * ((px[0] + px[3]) / 2.0 - (px[1] + px[2]) / 2.0))
+}
+
 /// A shape morphing to `current` on `spec` whenever `current` changes, as
 /// `rememberAnimatedShape(currentShape, animationSpec)`: the same shape object until `spec` changes.
 pub(crate) fn remember_animated_shape(current: Shape, spec: AnimationSpec) -> Shape {
