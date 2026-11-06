@@ -330,10 +330,9 @@ impl ModifierNodeElement for StateTextFieldElement {
         link.on_keyboard_action = self.on_keyboard_action.clone();
         link.default_action = self.default_action.clone();
         link.on_text_layout = self.on_text_layout.clone();
-        if link.scroll_state != self.scroll_state {
-            link.scroll_state = self.scroll_state;
-            link.revealed_cursor = None;
-        }
+        // A new scroll state keeps its value: what's followed is the field's, as Compose's
+        // node keeps its `previousSelection` (D1140).
+        link.scroll_state = self.scroll_state;
         let shown_transformation = self.shown_transformation();
         if link.shown_transformation != shown_transformation {
             link.shown_transformation = shown_transformation;
@@ -468,6 +467,19 @@ enum EditSource {
     Other,
 }
 
+/// What a state-based field's scroll last followed, as Compose's `TextFieldCoreModifierNode`'s
+/// `previousSelection`, `previousCursorRect`, `previousContainerSize` and
+/// `previousTextLayoutSize`: nothing followed yet at first, so a first focus follows.
+#[derive(Default)]
+struct Followed {
+    /// The selection shown, anchor then cursor.
+    selection: Option<(usize, usize)>,
+    /// The followed offset's cursor, in the scroller's coordinates.
+    cursor: Option<Rect>,
+    container: i32,
+    content: i32,
+}
+
 /// What ties a state-based field's node to its [`TextFieldState`] (D1130): the node edits a copy
 /// of the state's value, as the value-based field does, takes in the state's value when it
 /// changed elsewhere (`adopt_state`) and writes its own edits back after each event
@@ -499,8 +511,9 @@ pub(crate) struct StateLink {
     default_width: Option<(compose_ui::Density, TextStyle, i32)>,
     /// The application's scroll of the field (D1138).
     scroll_state: Option<crate::ScrollState>,
-    /// The cursor the last measurement saw: it's brought into view only once it moved.
-    revealed_cursor: Option<Rect>,
+    /// What the scroll last followed, as Compose's `updateScrollState`: it follows again when the
+    /// selection, the cursor, the viewport or the content changes (D1140).
+    followed: Followed,
     /// The edit being made is one of its own in the state's history (a cut, a paste, a selection
     /// deleted), as Compose's `NeverMerge`.
     never_merge: bool,
@@ -539,7 +552,7 @@ impl StateLink {
             heard_layout: None,
             default_width: None,
             scroll_state: None,
-            revealed_cursor: None,
+            followed: Followed::default(),
             never_merge: false,
             restart,
             listener,
@@ -969,19 +982,23 @@ impl TextFieldNode {
         self.state.is_some() && self.adopt_state_now()
     }
 
-    /// The scroll from the application's `scroll_state`, as Compose's text field's
-    /// (`TextFieldCoreModifier`): its largest value and viewport set from this layout, its value
-    /// read (observed: a scroll measures the field again) and coerced, and moved to bring the
-    /// cursor into view only when the focused cursor moved, so a scroll the user or the
-    /// application made stays (D1138).
+    /// A state-based field's scroll with a `scroll_state` (D1138): the state's value, its bounds
+    /// set from the layout, following the selection as Compose's `updateScrollState` (D1140):
+    /// only while the cursor shows (focused and written to), when the selection's end, its start,
+    /// or the viewport's or content's size changed since it last followed, to the offset that
+    /// changed (the selection's least for a size). A right-to-left single line scrolls from its
+    /// right, as Compose's `placeRelative`.
+    #[inline(never)]
     fn scroll_by_state(
         &mut self,
+        scope: &mut MeasureScope<'_>,
         scroll_state: crate::ScrollState,
-        cursor: Rect,
+        paragraph: ParagraphHandle,
         text: IntSize,
         size: IntSize,
         cursor_width: i32,
     ) {
+        let mirrored = self.single_line && self.direction == compose_ui::LayoutDirection::Rtl;
         let (visible, length) = if self.single_line {
             ((size.width - cursor_width).max(0), text.width)
         } else {
@@ -992,31 +1009,62 @@ impl TextFieldNode {
             scroll_state.set_layout(max, visible, length);
         });
         let mut value = scroll_state.value().clamp(0, max) as f32;
-        let moved = self.state.as_ref().is_some_and(|link| link.revealed_cursor != Some(cursor));
-        if self.focused && moved {
-            let (start, end) = if self.single_line {
-                (cursor.left, cursor.left)
-            } else {
-                (cursor.top, cursor.bottom)
-            };
-            let revealed = scroll_into_view(value, start, end, visible as f32, max as f32);
-            if revealed != value {
-                scroll_state.set_value(revealed.round() as i32);
-                value = revealed;
+        let selection = (self.shown(self.anchor), self.shown(self.cursor));
+        let show_cursor = self.focused && self.enabled && !self.read_only;
+        let followed = &self.state.as_ref().expect("a state-based field").followed;
+        let resized = length != followed.content || visible != followed.container;
+        let to_follow = match followed.selection {
+            Some((anchor, cursor)) if cursor == selection.1 => {
+                if anchor == selection.0 {
+                    resized.then_some(selection.0.min(selection.1))
+                } else {
+                    Some(selection.0)
+                }
+            }
+            _ => Some(selection.1),
+        };
+        if let Some(offset) = to_follow.filter(|_| show_cursor) {
+            let raw = scope.text_measurer().cursor_rect(paragraph, offset);
+            // From the scroller's start: a right-to-left line's right.
+            let left = if mirrored { length as f32 - raw.left } else { raw.left };
+            let cursor = Rect::new(left, raw.top, left, raw.bottom);
+            let moved = followed
+                .cursor
+                .is_none_or(|previous| previous.left != cursor.left || previous.top != cursor.top)
+                || length != followed.content;
+            if moved || visible != followed.container {
+                let (start, end) = if self.single_line {
+                    (cursor.left, cursor.right)
+                } else {
+                    (cursor.top, cursor.bottom)
+                };
+                let difference = offset_to_follow(value, start, end, visible as f32);
+                let to = (value + round_to_next(difference)).clamp(0.0, max as f32);
+                if to != value {
+                    scroll_state.set_value(to as i32);
+                    value = to;
+                }
+                if let Some(link) = self.state.as_mut() {
+                    link.followed = Followed {
+                        selection: Some(selection),
+                        cursor: Some(cursor),
+                        container: visible,
+                        content: length,
+                    };
+                }
             }
         }
-        // Seen, focused or not: the cursor is brought into view when it moves, not when the
-        // field gains the focus or the scroll moves.
-        if let Some(link) = self.state.as_mut() {
-            link.revealed_cursor = Some(cursor);
-        }
-        self.scroll =
-            if self.single_line { Offset::new(value, 0.0) } else { Offset::new(0.0, value) };
+        self.scroll = match (self.single_line, mirrored) {
+            (true, true) => Offset::new(max as f32 - value, 0.0),
+            (true, false) => Offset::new(value, 0.0),
+            (false, _) => Offset::new(0.0, value),
+        };
     }
 
     /// A state-based field's least width: ten "H" of its style, as Compose's `textFieldMinSize`
     /// (`DefaultWidthCharCount`); kept while the style and density are the same. `None` for a
     /// value-based field, as wide as its text (D1137).
+    #[inline(never)]
     fn default_width(&mut self, scope: &mut IntrinsicMeasureScope<'_>) -> Option<i32> {
         let link = self.state.as_ref()?;
         let density = scope.density();
@@ -2060,6 +2108,24 @@ fn default_keyboard_action(
     }
 }
 
+/// How far a scroll at `value` moves to show `[start, end]` in `visible`, as Compose's
+/// `updateScrollState`: the end first, then the start if the whole fits.
+fn offset_to_follow(value: f32, start: f32, end: f32, visible: f32) -> f32 {
+    let end_visible = value + visible;
+    if end > end_visible || (start < value && end - start > visible) {
+        end - end_visible
+    } else if start < value {
+        start - value
+    } else {
+        0.0
+    }
+}
+
+/// Away from zero to a whole number, as Compose's `roundToNext`.
+fn round_to_next(value: f32) -> f32 {
+    if value > 0.0 { value.ceil() } else { value.floor() }
+}
+
 /// Moves `scroll` (along one axis) so `[start, end)` is inside `[0, visible)`, within
 /// `[0, max]`.
 fn scroll_into_view(scroll: f32, start: f32, end: f32, visible: f32, max: f32) -> f32 {
@@ -2084,7 +2150,7 @@ impl LayoutModifierNode for TextFieldNode {
         // measures it again.
         self.adopt_state();
         // At least ten "H" wide, as Compose's `textFieldMinSize`.
-        let constraints = match self.default_width(scope) {
+        let constraints = match self.state.is_some().then(|| self.default_width(scope)).flatten() {
             Some(width) => Constraints {
                 min_width: constraints.min_width.max(width.min(constraints.max_width)),
                 ..constraints
@@ -2192,7 +2258,7 @@ impl LayoutModifierNode for TextFieldNode {
         // down in a multi-line field.
         let rect = self.cursor_rect.unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
         if let Some(scroll_state) = self.state.as_ref().and_then(|link| link.scroll_state) {
-            self.scroll_by_state(scroll_state, rect, metrics.size, size, cursor_width);
+            self.scroll_by_state(scope, scroll_state, paragraph, metrics.size, size, cursor_width);
         } else if self.single_line {
             let visible = (size.width - cursor_width).max(0) as f32;
             let max = metrics.size.width as f32 - visible;
@@ -2253,7 +2319,7 @@ impl LayoutModifierNode for TextFieldNode {
                 None => measurer.metrics(paragraph).size.width,
             }
         });
-        (text + cursor_width).max(self.default_width(scope).unwrap_or(0))
+        text + cursor_width
     }
 
     /// As `min_intrinsic_height`.
@@ -2351,9 +2417,8 @@ impl TextFieldNode {
             measurer.metrics(paragraph).size
         });
         let (min_height, max_height) = self.line_bounds(scope);
-        let default_width = self.default_width(scope).unwrap_or(0);
         constraints.constrain(IntSize::new(
-            (text.width + cursor_width).max(default_width),
+            text.width + cursor_width,
             text.height.max(min_height).min(max_height),
         ))
     }
@@ -2629,6 +2694,10 @@ impl FocusTargetModifierNode for TextFieldNode {
             // to another with it hidden (`Done`, back) shows it at the first tap.
             if self.enabled && !self.read_only {
                 context.show_software_keyboard();
+            }
+            // The cursor shows: a state-based field's scroll follows it from now (D1140).
+            if self.state.is_some() {
+                context.invalidate_measure();
             }
         }
         // A new field's text is for the input method to read anew, as Compose's `startInput`.

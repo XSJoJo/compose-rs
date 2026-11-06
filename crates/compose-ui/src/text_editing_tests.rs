@@ -279,6 +279,31 @@ fn committed_text_is_inserted_with_the_cursor_where_asked() {
     }
 }
 
+/// Android's cursor position counts UTF-16 units: forward, a surrogate pair half counted is
+/// stopped before; back, it's gone over whole, as Compose's buffer coerces offsets inside one
+/// (D1135).
+#[test]
+fn a_utf16_cursor_position_never_ends_inside_a_surrogate_pair() {
+    let text = format!("a{CH1}b");
+    // Forward from after "x" (2 bytes in): 1 unit is half of CH1, 2 units are all of it.
+    let cases = [(2, 2), (3, 6), (4, 7)];
+    for (position, cursor_after) in cases {
+        let mut eb = buffer(&text, TextRange::at(1));
+        CommitTextCommand::in_utf16("x", position).apply_to(&mut eb);
+        assert_buffer(&eb, &format!("ax{CH1}b"), Some(cursor_after), None);
+    }
+    // Back from before "x" (5 bytes in): 1 unit is half of CH1, gone over whole.
+    let cases = [(0, 5), (-1, 1), (-2, 1), (-3, 0)];
+    for (position, cursor_after) in cases {
+        let mut eb = buffer(&text, TextRange::at(5));
+        CommitTextCommand::in_utf16("x", position).apply_to(&mut eb);
+        assert_buffer(&eb, &format!("a{CH1}xb"), Some(cursor_after), None);
+        let mut eb = buffer(&text, TextRange::at(5));
+        SetComposingTextCommand::in_utf16("x", position).apply_to(&mut eb);
+        assert_eq!(eb.cursor(), Some(cursor_after), "composing {position}");
+    }
+}
+
 // Compose: compose/ui/ui-text/src/androidHostTest/kotlin/androidx/compose/ui/text/input/CommitTextCommandTest.kt, test_cancel_composition
 // Compose: compose/ui/ui-text/src/androidHostTest/kotlin/androidx/compose/ui/text/input/CommitTextCommandTest.kt, test_replace_selection
 // Compose: compose/ui/ui-text/src/androidHostTest/kotlin/androidx/compose/ui/text/input/CommitTextCommandTest.kt, test_composition_and_selection
