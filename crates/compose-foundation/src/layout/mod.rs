@@ -6,6 +6,7 @@
 mod arrangement;
 mod flex;
 mod flow;
+mod grid;
 mod window_insets;
 
 use std::rc::Rc;
@@ -31,6 +32,10 @@ pub use flex::{
     FlexJustifyContent, FlexWrap,
 };
 pub use flow::{FlowColumn, FlowColumnScope, FlowLayoutModifiers, FlowRow, FlowRowScope};
+pub use grid::{
+    Fr, FrExt, Grid, GridConfig, GridConfigurationScope, GridFlow, GridModifiers, GridScope,
+    GridTrackSize,
+};
 pub use window_insets::{
     ConsumedInsets, InsetsLength, MutableWindowInsets, WindowInsets, WindowInsetsModifiers,
     WindowInsetsProvider, WindowInsetsSides, consumed_insets_walks,
