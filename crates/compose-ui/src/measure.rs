@@ -494,11 +494,19 @@ impl UiTree {
             result
         } else {
             let policy = value.policy.clone();
-            let children = if value.composes_while_measured {
-                value.children.clone()
-            } else {
-                mem::take(&mut value.children)
-            };
+            let composes = value.composes_while_measured;
+            // A `SubcomposeLayout`'s children are its slots', which its measurement composes and
+            // finds: they stay where they are, the policy given none.
+            if composes {
+                for index in 0..self.node(node).children.len() {
+                    let child = self.node(node).children[index].node;
+                    let child = self.node_mut(child);
+                    child.placed = false;
+                    child.measured_in_block = false;
+                }
+            }
+            let children =
+                if composes { Vec::new() } else { mem::take(&mut self.node_mut(node).children) };
             // Deactivated children (content kept for reuse) aren't measured, so not placed: at
             // the end, as a lazy list keeps them, the others are a prefix; anywhere else, a copy.
             let mut active = children.len();
