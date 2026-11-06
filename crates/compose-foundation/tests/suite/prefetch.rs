@@ -441,10 +441,13 @@ fn a_frame_revealing_prefetched_items_lays_out_no_text() {
     // A row at a time: the prefetched items come into the wanted range, then into view.
     for _ in 0..6 {
         let before = text_layouts();
+        let rows = COMPOSED.with(|composed| composed.borrow().values().sum::<usize>());
         state.dispatch_raw_delta(20.0);
-        let stats = ui.host().frame();
+        ui.host().frame();
         assert_eq!(text_layouts(), before, "text laid out in the frame");
-        assert_eq!(stats.bodies_run, 0, "composed in the frame");
+        // No row composed; a row leaving is deactivated in the measurement, as Compose's (D1312).
+        let after = COMPOSED.with(|composed| composed.borrow().values().sum::<usize>());
+        assert_eq!(after, rows, "composed in the frame");
         ui.host().prefetch(later());
     }
 }

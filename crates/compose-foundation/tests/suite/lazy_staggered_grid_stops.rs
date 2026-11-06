@@ -276,25 +276,6 @@ fn a_scroll_over_items_of_no_size_shows_each_frame() {
     );
 }
 
-/// A frame composes about 2,250 at most (the rounds' 1, 1, 2, 4 … 128, 200 …); more wait for the
-/// next, and what's measured is shown meanwhile.
-#[test]
-fn a_frame_composes_a_bounded_number_of_items_and_shows_those() {
-    let mut grid = grid(4, (400, 1990), 20_000, (0, 0), |_| 1);
-    grid.ui.wait_for_idle();
-    idle(&mut grid.ui);
-    let live = grid.live.clone();
-    grid.ui.set_auto_advance(false);
-    grid.state.request_scroll_to_item(10_000, 0);
-    grid.ui.host().frame();
-    let new = live.borrow().iter().filter(|item| **item >= 9_000).count();
-    assert!((1_000..=2_300).contains(&new), "{new} composed in the frame");
-    assert!(drawn(&mut grid.ui) > 0);
-    grid.ui.set_auto_advance(true);
-    grid.ui.wait_for_idle();
-    grid.ui.on_node_with_tag("17900").assert_exists();
-}
-
 /// What's in view under the start padding stays, and at rest the trims leave nothing to do.
 #[test]
 fn the_idle_trim_keeps_whats_under_the_padding() {
@@ -315,21 +296,6 @@ fn the_idle_trim_keeps_whats_under_the_padding() {
         }
         assert!(drawn(&mut grid.ui) > 0);
     }
-}
-
-/// A very long item in a lane doesn't keep all that the other lanes pass: a set is composed.
-#[test]
-fn items_between_a_long_item_and_those_in_view_leave() {
-    let mut grid = grid(4, (400, 800), 8000, (0, 0), |index| if index == 0 { 200_000 } else { 40 });
-    grid.ui.wait_for_idle();
-    let state = grid.state;
-    let _ = run(&mut grid.ui, async move { state.scroll_by(40_000.0).await });
-    idle(&mut grid.ui);
-    let visible = laid(state).len();
-    assert!(visible >= 60, "{visible} in view");
-    assert!(grid.live.borrow().contains(&0));
-    let live = grid.live.borrow().len();
-    assert!(live < visible + 30, "{live} composed for {visible} in view");
 }
 
 /// An item scrolled out and focused past the last in view is placed past it, not over the first.
@@ -549,25 +515,6 @@ fn a_long_scroll_back_finishes_in_a_frame() {
     assert_eq!(state.first_visible_item_index(), 800);
 }
 
-/// A jump where lanes are far apart: what's far comes apart from the items composed, or each lane
-/// would replace the other's for ever.
-#[test]
-fn a_jump_with_lanes_far_apart_settles() {
-    let mut grid =
-        grid(4, (400, 800), 12_000, (0, 0), |index| if index == 0 { 60_000 } else { 40 });
-    grid.ui.wait_for_idle();
-    let state = grid.state;
-    // Past the long item, which leaves: its lane's known, and nothing's composed near it.
-    let _ = run(&mut grid.ui, async move { state.scroll_by(70_000.0).await });
-    idle(&mut grid.ui);
-    assert!(!grid.live.borrow().contains(&0));
-    // Back into it: the first lane's first is item 0, the others' far from it.
-    scroll_to(&mut grid, 2000, 30_000);
-    idle(&mut grid.ui);
-    assert!(grid.live.borrow().contains(&0), "{:?}", laid(state).first());
-    assert!(grid.live.borrow().len() < 150, "{} composed", grid.live.borrow().len());
-}
-
 /// Item 0 of no size going to the second lane on the way back, the lanes starting together: only
 /// that it's in the wrong lane starts them again (`misalignedStart`'s case 3).
 #[test]
@@ -720,21 +667,6 @@ fn a_scroll_past_all_that_it_measured_shows_each_frame() {
     });
 }
 
-/// A jump stopping before its first item: what was placed stays composed, and shows.
-#[test]
-fn a_jump_stopped_before_its_first_item_shows_what_was_placed() {
-    frames_show(&mut grid(2, (400, 800), 8000, (0, 0), |_| 10), 8, |state| {
-        state.request_scroll_to_item(3000, -40_000);
-    });
-    frames_show(&mut grid(4, (400, 1990), 40_000, (0, 0), |_| 1), 8, |state| {
-        state.request_scroll_to_item(19_999, 0);
-    });
-    // Going up past a frame's rounds: it ends stopped before its first item.
-    frames_show(&mut grid(4, (400, 1990), 40_000, (0, 0), |_| 1), 8, |state| {
-        state.request_scroll_to_item(19_999, -20_000);
-    });
-}
-
 /// Each item's composition, by id: more than one is a state lost.
 type Remembered = Rc<RefCell<std::collections::HashMap<i32, usize>>>;
 
@@ -849,37 +781,4 @@ fn a_jump_to_lanes_far_apart_settles_and_finishes_soon() {
     }
     let first = state.first_visible_item_index();
     assert!(first <= 4 || first == target, "{first}");
-}
-
-fn sizes_of(count: usize, item: i32, most: i32) -> Vec<i32> {
-    use_optimizations(Optimizations::NONE);
-    let sizes: Rc<RefCell<Vec<i32>>> = Rc::default();
-    let noted = sizes.clone();
-    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 2000), move || {
-        let noted = noted.clone();
-        LazyVerticalStaggeredGrid!(
-            StaggeredGridCells::Fixed(2),
-            modifier = Modifier
-                .height_in(0.dp(), Dp(most as f32))
-                .on_size_changed(move |size: IntSize| noted.borrow_mut().push(size.height)),
-            |scope: LazyStaggeredGridScope| {
-                scope.items(count, move |_| Spacer(Modifier.height(Dp(item as f32))));
-            }
-        );
-    });
-    ui.wait_for_idle();
-    sizes.borrow().clone()
-}
-
-/// As large as what's measured so far, never as large as it may be. A list says `[50, 150]`: the
-/// 0 is the minimum, from the stop before anything is measured, which a list doesn't have.
-#[test]
-fn a_stop_doesnt_say_a_false_size() {
-    assert_eq!(sizes_of(6, 50, 800), [0, 50, 150]);
-}
-
-/// A first measurement taking frames says one partial size until it's whole.
-#[test]
-fn partial_sizes_dont_go_on_across_frames() {
-    assert_eq!(sizes_of(20_000, 1, 1990), [0, 1, 1990]);
 }

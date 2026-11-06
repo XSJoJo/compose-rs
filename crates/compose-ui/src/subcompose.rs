@@ -164,6 +164,8 @@ struct Slot {
     force_recompose: bool,
     force_reuse: bool,
     active: bool,
+    /// Its first layout as its composition's passes left it, and their count then.
+    first: Option<(u64, Option<Measurable>)>,
 }
 
 #[derive(Default)]
@@ -176,6 +178,9 @@ struct Subcompositions {
     current_index: usize,
     reusable_count: usize,
     precomposed_count: usize,
+    /// Precomposed slots let go while the tree was busy (a layout measuring): let go at the
+    /// layout's next measurement, which has the tree.
+    deferred: Vec<SlotKey>,
 }
 
 thread_local! {
@@ -624,8 +629,25 @@ impl SubcompositionsState {
     }
 
     /// A slot precomposed goes out of use, for the policy to keep or dispose, as
-    /// `disposePrecomposedSlot`.
+    /// `disposePrecomposedSlot`. With the tree busy (a layout measuring, which may be this one's),
+    /// it waits for this layout's next measurement.
     fn dispose_precomposed(&self, key: &SlotKey) {
+        if self.precomposed_at(key).is_none() {
+            return;
+        }
+        let Some(handle) = self.inner.borrow().handle.clone() else { return };
+        if handle.try_with_applier(|_: &mut UiTree| ()).is_none() {
+            let mut inner = self.inner.borrow_mut();
+            if !inner.deferred.iter().any(|other| other.same_slot(&**key)) {
+                inner.deferred.push(key.clone());
+            }
+            return;
+        }
+        self.dispose_precomposed_with(key, None);
+    }
+
+    /// `dispose_precomposed`, through `tree` if a measurement holds it.
+    fn dispose_precomposed_with(&self, key: &SlotKey, mut tree: Option<&mut UiTree>) {
         let Some(at) = self.precomposed_at(key) else { return };
         let (handle, root, start) = {
             let mut inner = self.inner.borrow_mut();
@@ -634,20 +656,31 @@ impl SubcompositionsState {
             let start = inner.slots.len() - inner.precomposed_count - inner.reusable_count;
             (inner.handle.clone().expect("it's precomposed"), inner.root.expect("too"), start)
         };
-        self.cancel_paused_if_any(at);
-        with_the_tree(&handle, root, None, || {
-            handle.with_applier(|tree: &mut UiTree| {
+        if self.inner.borrow().slots[at].paused.is_some() {
+            self.cancel_paused(at, tree.as_deref_mut());
+        }
+        match tree.as_deref_mut() {
+            Some(tree) => {
                 let host = tree.id_of(root);
                 let mut inner = self.inner.borrow_mut();
                 move_slot(&mut inner, tree, host, at, start);
-            });
-        });
-        self.dispose_or_reuse_from(start, None);
+            }
+            None => with_the_tree(&handle, root, None, || {
+                handle.with_applier(|tree: &mut UiTree| {
+                    let host = tree.id_of(root);
+                    let mut inner = self.inner.borrow_mut();
+                    move_slot(&mut inner, tree, host, at, start);
+                });
+            }),
+        }
+        self.dispose_or_reuse_from(start, tree);
     }
 
-    fn cancel_paused_if_any(&self, at: usize) {
-        if self.inner.borrow().slots[at].paused.is_some() {
-            self.cancel_paused(at, None);
+    /// What was let go while the tree was busy, let go now that a measurement has it.
+    fn dispose_deferred(&self, tree: &mut UiTree) {
+        let deferred = std::mem::take(&mut self.inner.borrow_mut().deferred);
+        for key in deferred {
+            self.dispose_precomposed_with(&key, Some(&mut *tree));
         }
     }
 
@@ -750,6 +783,7 @@ fn add_slot(inner: &mut Subcompositions, tree: &mut UiTree, host: NodeId, key: S
             force_recompose: false,
             force_reuse: false,
             active: true,
+            first: None,
         },
     );
 }
@@ -882,8 +916,7 @@ impl PrecomposedSlotHandle {
         handle.with_applier(|tree: &mut UiTree| {
             let count = tree.node(node).children.len();
             assert!(index < count, "Index ({index}) is out of bound of [0, {count})");
-            let child = tree.node(node).children[index].node;
-            tree.measure_node(child, constraints);
+            tree.premeasure(node, index, constraints);
         });
     }
 
@@ -931,14 +964,100 @@ impl SubcomposeMeasureScope<'_, '_> {
         slot_id: impl PartialEq + 'static,
         content: Callback,
     ) -> Vec<Measurable> {
-        let key: SlotKey = Rc::new(slot_id);
+        let node = self.compose_into_slot(slot_id, content);
+        let tree = self.scope.base.tree.enter();
+        tree.virtual_measurables(node)
+    }
+
+    /// [`subcompose`](Self::subcompose), for a slot of one layout: its first, with no list made
+    /// (a lazy layout's item, per item per measurement).
+    pub fn subcompose_first(
+        &mut self,
+        slot_id: impl PartialEq + 'static,
+        content: Callback,
+    ) -> Option<Measurable> {
+        let node = self.compose_into_slot(slot_id, content);
+        let tree = self.scope.base.tree.enter();
+        tree.first_virtual_measurable(node)
+    }
+
+    /// [`subcompose_first`](Self::subcompose_first) for a caller whose content for an id is always
+    /// the same in effect (a lazy layout's item, its content by key): a slot already composed at
+    /// this measurement's next place, equal to `probe`, with nothing to compose, is taken without
+    /// asking for its id or content; otherwise `make` gives them.
+    pub fn subcompose_first_with<T: PartialEq + 'static>(
+        &mut self,
+        probe: &T,
+        make: impl FnOnce() -> (T, Callback),
+    ) -> Option<Measurable> {
+        let (node, at, passes) = match self.take_in_place(probe, None) {
+            Some(InPlace { first: Some(first), .. }) => return first,
+            Some(InPlace { node, at, passes, .. }) => (node, at, Some(passes)),
+            None => {
+                let (slot_id, content) = make();
+                let node = self.compose_into_slot(slot_id, content);
+                (node, self.state.inner.borrow().current_index - 1, None)
+            }
+        };
+        let first = {
+            let tree = self.scope.base.tree.enter();
+            tree.first_virtual_measurable(node)
+        };
+        // Kept while its composition's passes stay the same: only they change its nodes.
+        let composition = self.state.inner.borrow().slots[at].composition.clone();
+        let passes = passes.or_else(|| composition.map(|it| it.measure_state().1));
+        self.state.inner.borrow_mut().slots[at].first = passes.map(|passes| (passes, first));
+        first
+    }
+
+    /// The slot at this measurement's next place, if it's `slot_id`'s and nothing's to compose
+    /// in it (its content `content`, if given): taken as it is.
+    fn take_in_place(
+        &mut self,
+        slot_id: &dyn SlotId,
+        content: Option<&Callback>,
+    ) -> Option<InPlace> {
+        let (composition, node, at, cached) = {
+            let inner = self.state.inner.borrow();
+            let current = inner.current_index;
+            let active_end = inner.slots.len() - inner.precomposed_count - inner.reusable_count;
+            let slot = inner.slots.get(current).filter(|_| current < active_end)?;
+            let same = !slot.force_recompose
+                && slot.paused.is_none()
+                && slot
+                    .content
+                    .as_ref()
+                    .is_some_and(|last| content.is_none_or(|it| last.ptr_eq(it)))
+                && slot.key.same_slot(slot_id);
+            if !same {
+                return None;
+            }
+            (slot.composition.clone()?, slot.node, current, slot.first)
+        };
+        // The changes of the turn were sent before the layout: what's invalid is known.
+        let (invalid, passes) = composition.measure_state();
+        if invalid {
+            return None;
+        }
+        self.state.inner.borrow_mut().current_index += 1;
+        let first = cached.filter(|(at, _)| *at == passes).map(|(_, first)| first);
+        Some(InPlace { node, at, passes, first })
+    }
+
+    /// The slot of `slot_id` at this measurement's next place, its content composed if it has to
+    /// be: its virtual node.
+    fn compose_into_slot(
+        &mut self,
+        slot_id: impl PartialEq + 'static,
+        content: Callback,
+    ) -> NodeId {
+        // The common case, a measurement asking for what the last one did in the same order: the
+        // slot at `current`, its content the same and nothing to compose, is taken as it is.
+        if let Some(InPlace { node, .. }) = self.take_in_place(&slot_id, Some(&content)) {
+            return node;
+        }
         let state = self.state.clone();
         let current = state.inner.borrow().current_index;
-        assert!(
-            state.slot_index(&*key, 0..current).is_none(),
-            "Error: currently it is not supported to subcompose the same slot id twice in a \
-             measurement"
-        );
         let mut tree = self.scope.base.tree.enter();
         let tree: &mut UiTree = &mut tree;
         let root = {
@@ -950,18 +1069,32 @@ impl SubcomposeMeasureScope<'_, '_> {
             let end = inner.slots.len();
             (end - inner.precomposed_count - inner.reusable_count, end)
         };
-        let found = state.slot_index(&*key, current..active_end).or_else(|| {
+        // Where it was last, usually at `current`, its id compared in place: no allocation.
+        let id: &dyn SlotId = &slot_id;
+        let found = state.slot_index(id, current..active_end).or_else(|| {
             let precomposed = end - state.inner.borrow().precomposed_count;
-            let at = state.slot_index(&*key, precomposed..end)?;
+            let at = state.slot_index(id, precomposed..end)?;
             state.inner.borrow_mut().precomposed_count -= 1;
             Some(at)
         });
-        let at = match found.or_else(|| state.take_from_reusables(&key, tree)) {
+        let at = match found {
             Some(at) => at,
             None => {
-                let mut inner = state.inner.borrow_mut();
-                add_slot(&mut inner, tree, root, key.clone(), current);
-                current
+                // Not ahead: composed already in this measurement, which Compose forbids, or new.
+                assert!(
+                    state.slot_index(id, 0..current).is_none(),
+                    "Error: currently it is not supported to subcompose the same slot id twice in \
+                     a measurement"
+                );
+                let key: SlotKey = Rc::new(slot_id);
+                match state.take_from_reusables(&key, tree) {
+                    Some(at) => at,
+                    None => {
+                        let mut inner = state.inner.borrow_mut();
+                        add_slot(&mut inner, tree, root, key, current);
+                        current
+                    }
+                }
             }
         };
         {
@@ -970,9 +1103,17 @@ impl SubcomposeMeasureScope<'_, '_> {
             inner.current_index = current + 1;
         }
         state.compose_slot(current, content, Some(tree), false);
-        let inner = state.inner.borrow();
-        tree.virtual_measurables(inner.slots[current].node)
+        state.inner.borrow().slots[current].node
     }
+}
+
+/// A slot taken in place: its virtual node, its place, its composition's passes, and its first
+/// layout if that's known for them.
+struct InPlace {
+    node: NodeId,
+    at: usize,
+    passes: u64,
+    first: Option<Option<Measurable>>,
 }
 
 /// Measures a `SubcomposeLayout`, as a [`MeasurePolicy`] does a `Layout`.
@@ -1025,6 +1166,7 @@ impl MeasurePolicy for Adapter {
         let start = self.state.inner.borrow().current_index;
         let mut tree = scope.base.tree.enter();
         self.state.dispose_or_reuse_from(start, Some(&mut tree));
+        self.state.dispose_deferred(&mut tree);
         self.state.check_consistent(&tree);
         result
     }

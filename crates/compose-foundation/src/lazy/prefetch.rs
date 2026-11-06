@@ -36,8 +36,8 @@ use std::ops::Range;
 use std::rc::{Rc, Weak};
 use std::time::Instant;
 
-use compose_runtime::PausedComposition;
 use compose_ui::platform::{NodeId, Optimization, Optimizations};
+use compose_ui::subcompose::{PausedPrecomposition, PrecomposedSlotHandle};
 use compose_ui::{Constraints, Density, PrefetchRequest, PrefetchRequestScope, PrefetchScheduler};
 
 use super::cache_window::{
@@ -57,9 +57,6 @@ pub(super) const PREFETCH_MARGIN_NANOS: u64 = 500_000;
 /// The items of a nested list a request composes before its first layout of that content type,
 /// as Compose's `nestedPrefetchItemCount` (2).
 const INITIAL_NESTED_PREFETCH_COUNT: usize = 2;
-
-/// The items composed by requests a list remembers (`Prefetch::was_precomposed`).
-const PRECOMPOSED_KEPT: usize = 8;
 
 /// Items noted with nested lists beyond which the dead entries are forgotten.
 const NESTED_KEYS_KEPT: usize = 64;
@@ -169,27 +166,12 @@ pub(super) struct Prefetch {
     /// it (Compose traverses the precomposed item's nodes for them, `traversablePrefetchState`).
     pub(super) composing_item: Cell<Option<u64>>,
     nested: RefCell<HashMap<u64, Vec<Weak<LazyListInner>>>>,
-    /// The paused composition a request holds, not applied yet (the request owns it: dropped,
-    /// it's cancelled).
-    pending: RefCell<Option<(u64, Weak<PausedComposition>)>>,
-    /// The item whose content isn't the layout's to measure: a request's paused composition's,
-    /// there unapplied (composing, complete, or cancelled with its removal waiting for the next
-    /// pass), whoever holds the paused composition now (D592, D599). One at a time, as paused
-    /// compositions; cleared once the content is applied or removed.
-    unready: RefCell<Option<(u64, compose_runtime::PausedWatch)>>,
-    /// A request's paused composition was cancelled (its content removed, the composable around
-    /// it invalidated): the layout has the items composed again (`take_cancelled`), so the next
-    /// pass composes the items' composition first, which lets the item go if it's no longer
-    /// wanted, rather than composing its content again (D594).
-    cancelled: Cell<bool>,
+    /// Slots precomposed by requests let go while their items are still in the limits: they stay
+    /// precomposed, as they stayed composed in the composed range, until a measurement takes them
+    /// or they're out of the limits (`settle_precomposed`).
+    kept_slots: RefCell<Vec<(usize, PrecomposedSlotHandle)>>,
     /// The scheduler the last layout prefetched with.
     scheduler: RefCell<Option<PrefetchScheduler>>,
-    /// Items a request composed, the latest last (a few): leaving before they're measured, they
-    /// go to the reuse pool, as Compose's precomposed slots (`PrecomposedSlotHandle.dispose`),
-    /// where an item never measured is disposed (D460).
-    precomposed: RefCell<Vec<u64>>,
-    /// The trimming request waiting in the scheduler, if any (`KEEP_ITEMS_BEHIND`).
-    trim: RefCell<Weak<TrimRequest>>,
 }
 
 impl Prefetch {
@@ -225,12 +207,8 @@ impl Prefetch {
             idle: Cell::default(),
             composing_item: Cell::new(None),
             nested: RefCell::default(),
-            pending: RefCell::new(None),
-            unready: RefCell::default(),
-            cancelled: Cell::new(false),
+            kept_slots: RefCell::default(),
             scheduler: RefCell::new(None),
-            precomposed: RefCell::default(),
-            trim: RefCell::new(Weak::new()),
         }
     }
 }
@@ -824,88 +802,48 @@ impl Prefetch {
         }
     }
 
-    /// Asks for the items composed beyond `limits` to be deactivated between frames (kept for
-    /// reuse): those the layout no longer wants stay composed, unplaced and undrawn, until then.
-    /// Compose deactivates them in its measurement, which composes nothing; here leaving needs a
-    /// composition, which a frame whose items are all composed doesn't run for them (D575).
-    pub(super) fn trim_between_frames(
-        &self,
-        state: &Rc<LazyListInner>,
-        scheduler: Option<&PrefetchScheduler>,
-        composed: (usize, usize),
-    ) {
-        let (low, high) = self.limits.get();
-        if composed.0 >= low && composed.1 <= high && !self.detached_dirty.get() {
-            return;
-        }
-        let Some(scheduler) = scheduler else { return };
-        if self.trim.borrow().upgrade().is_some() {
-            return;
-        }
-        let request = Rc::new(TrimRequest { state: Rc::downgrade(state) });
-        *self.trim.borrow_mut() = Rc::downgrade(&request);
-        // First in the next idle time with any time left, whatever the queue holds: a request
-        // waiting for a longer idle time, or one whose item is composed already (which
-        // deactivates nothing), would leave them composed for good, and an animation in one
-        // asking for frames (D575).
-        scheduler.schedule_prefetch_first(request);
-    }
-
     fn averages(&self, content_type: Option<u64>) -> Averages {
         self.metrics.borrow().get(&content_type).copied().unwrap_or_default()
     }
 
-    /// Whether the item of `key`'s content is the layout's to measure: not a paused
-    /// composition's not applied yet, nor a cancelled one's not removed yet (D592, D599).
-    pub(super) fn content_ready(&self, key: u64) -> bool {
-        self.unready_item() != Some(key)
+    /// At a measurement's end: the slots kept precomposed out of the limits now go, and those it
+    /// composed are its own.
+    pub(super) fn settle_precomposed(
+        &self,
+        limits: (usize, usize),
+        composed: &dyn Fn(usize) -> bool,
+    ) {
+        let mut kept = self.kept_slots.borrow_mut();
+        if kept.is_empty() {
+            return;
+        }
+        // The window's items too: its units, a grid's lines, in items.
+        let units = self.units.borrow();
+        let items_of = |unit: usize| match units.as_deref() {
+            Some(units) => units.items_of(unit),
+            None => Some(unit..unit + 1),
+        };
+        let window = self
+            .window_bounds()
+            .and_then(|(first, last)| Some((items_of(first)?.start, items_of(last)?.end)));
+
+        kept.retain(|(item, handle)| {
+            if composed(*item) {
+                return false;
+            }
+            let stays = (limits.0..limits.1).contains(item)
+                || window.is_some_and(|(first, end)| (first..end).contains(item));
+            if !stays {
+                handle.dispose();
+            }
+            stays
+        });
     }
 
-    /// A layout of the list starts: the item whose content isn't ready (`unready_item`), which
-    /// it checks its children against. A completion's item noted before (`complete_pending`)
-    /// is composed by now, so it's no longer the item composing: no inner scope restarted later
-    /// notes its lists under it.
-    pub(super) fn layout_started(&self) -> Option<u64> {
+    /// A layout of the list starts: an item composed before it is no longer the item composing,
+    /// so no inner scope restarted later notes its lists under it.
+    pub(super) fn layout_started(&self) {
         self.composing_item.set(None);
-        self.unready_item()
-    }
-
-    /// The item whose content isn't ready (`content_ready`), if any.
-    fn unready_item(&self) -> Option<u64> {
-        let mut unready = self.unready.borrow_mut();
-        let (key, watch) = unready.as_ref()?;
-        if watch.holds_unapplied_content() {
-            return Some(*key);
-        }
-        *unready = None;
-        None
-    }
-
-    /// Whether a request's paused composition was cancelled since the last layout asked: the
-    /// layout has the items composed again (D594).
-    pub(super) fn take_cancelled(&self) -> bool {
-        self.cancelled.take()
-    }
-
-    /// A layout lacked an item whose content isn't ready: the paused composition pending, if
-    /// any, is completed before the next pass (its round's), as Compose's measurement completes
-    /// a precomposed item's (D592). A cancelled one's item composes its content in that pass.
-    pub(super) fn complete_pending(&self) {
-        let pending = self.pending.borrow();
-        if let Some((key, paused)) = pending.as_ref()
-            && let Some(paused) = paused.upgrade()
-            && !paused.is_applied()
-            && !paused.is_cancelled()
-        {
-            // Its nested lists note themselves under its key as the completion composes them.
-            self.composing_item.set(Some(*key));
-            paused.request_completion();
-        }
-    }
-
-    /// A paused composition was applied or cancelled: none pending now.
-    fn pending_done(&self) {
-        *self.pending.borrow_mut() = None;
     }
 
     fn update_averages(&self, content_type: Option<u64>, update: impl FnOnce(&mut Averages)) {
@@ -1028,77 +966,22 @@ impl Prefetch {
         }
     }
 
-    /// Composes `item` beside the composed ones, deactivating those beyond the limits on the
-    /// other side in the same composition (those the layout let go), as a paused composition,
-    /// returned not composed yet (its first resume runs the pass). `None` if it isn't next to them.
-    fn compose_item(
-        &self,
-        state: &Rc<LazyListInner>,
-        item: usize,
-        key: u64,
-        scope: &mut PrefetchRequestScope<'_>,
-    ) -> Option<Composed> {
-        let (start, end) = state.composed.get();
-        if (start..end).contains(&item) || state.children.borrow().contains(&item) {
-            // Composed already, unless a cancelled request's content was removed: composed
-            // again then (its item composes it).
-            if self.content_ready(key) {
-                return Some(Composed::Already);
-            }
-            self.measure_by_request.set(true);
-            state.compose((start, end));
-            return Some(self.composed_by(scope, item_target(state, key)));
-        }
-        let (low, high) = self.limits.get();
-        // Next to them, or across what the other lanes hold (a staggered grid's: the items between
-        // are composed with it, in the frame's way, where Compose's composes it alone).
-        let lanes = self.window_lanes.get().max(1);
-        let range = if (end..end + lanes).contains(&item) {
-            (start.max(low).min(item), item + 1)
-        } else if item < start && item + lanes >= start {
-            (item, end.min(high).max(item + 1))
-        } else if state.sticky_written.get().is_some_and(|header| item < header) {
-            // Before a sticking header, away from the range (D895).
-            self.detached.borrow_mut().push(item);
-            (start, end)
-        } else {
+    /// Precomposes `item` as a paused precomposition of its slot, returned not composed yet (its
+    /// first resume composes), as Compose's `precomposePaused`; `Already` if a measurement holds
+    /// it. `None` if there's no such item, or no layout yet.
+    fn compose_item(&self, state: &Rc<LazyListInner>, item: usize) -> Option<Composed> {
+        let layout = state.layout_state.borrow().clone()?;
+        let factory = state.factory.borrow().clone()?;
+        if item >= factory.count() {
             return None;
-        };
-        {
-            let mut precomposed = self.precomposed.borrow_mut();
-            precomposed.retain(|kept| *kept != key);
-            if precomposed.len() >= PRECOMPOSED_KEPT {
-                precomposed.remove(0);
-            }
-            precomposed.push(key);
         }
-        // What it composes is within the limits until the next layout sets them.
-        if range != (start, end) {
-            self.limits.set((low.min(item), high.max(item + 1)));
+        if state.children.borrow().contains(&item) {
+            return Some(Composed::Already);
         }
-        self.measure_by_request.set(true);
-        state.compose(range);
-        Some(self.composed_by(scope, item_target(state, key)))
-    }
-
-    /// Composes what the request's writes invalidated, as a paused composition of the item's
-    /// content (`target`), as Compose's item subcomposition (other lists' items its pass composes
-    /// are ordinary content, D597).
-    fn composed_by(&self, scope: &mut PrefetchRequestScope<'_>, target: u64) -> Composed {
-        Composed::Paused(Rc::new(scope.recompose_pausable_for(target)))
-    }
-
-    /// Whether the item of `key` was composed by a request and not measured since: leaving, it
-    /// is kept for reuse. Forgotten, as asked when its item leaves.
-    pub(super) fn take_precomposed(&self, key: u64) -> bool {
-        let mut precomposed = self.precomposed.borrow_mut();
-        let found = precomposed.iter().position(|kept| *kept == key);
-        found.map(|position| precomposed.remove(position)).is_some()
-    }
-
-    /// The item of `key` was measured: it is a measured item from now on.
-    fn measured(&self, key: u64) {
-        self.precomposed.borrow_mut().retain(|kept| *kept != key);
+        // Kept precomposed since its last request: this one's now.
+        self.kept_slots.borrow_mut().retain(|(kept, _)| *kept != item);
+        let paused = layout.create_paused_precomposition(factory.slot(item), factory.content(item));
+        Some(Composed::Paused(Rc::new(paused)))
     }
 
     /// Notes `nested`, a lazy list composing in the item of `key`.
@@ -1141,7 +1024,7 @@ enum Composed {
     /// Composed already (the layout's, or a request's).
     Already,
     /// In a paused composition, to resume until complete, then apply.
-    Paused(Rc<PausedComposition>),
+    Paused(Rc<PausedPrecomposition>),
 }
 
 /// Compose's `Averages`: a content type's steps.
@@ -1197,8 +1080,11 @@ pub(super) struct Handle {
     canceled: Cell<bool>,
     /// Composed: complete (Compose's `isComposed`: applied, or its paused composition complete).
     composed: Cell<bool>,
-    /// Its paused composition, from its compose step until applied or cancelled.
-    paused: RefCell<Option<Rc<PausedComposition>>>,
+    /// Its paused precomposition, from its compose step until applied or cancelled.
+    paused: RefCell<Option<Rc<PausedPrecomposition>>>,
+    /// Its slot, precomposed once applied: what premeasures it, and lets it go when the request
+    /// is cleaned up, as Compose's `precomposeHandle`.
+    precomposed: RefCell<Option<PrecomposedSlotHandle>>,
     /// The time its paused composition's resumes took so far.
     composition_nanos: Cell<u64>,
     measured: Cell<bool>,
@@ -1243,6 +1129,7 @@ impl Handle {
             canceled: Cell::new(false),
             composed: Cell::new(false),
             paused: RefCell::new(None),
+            precomposed: RefCell::new(None),
             composition_nanos: Cell::new(0),
             measured: Cell::new(false),
             done: Cell::new(false),
@@ -1343,35 +1230,27 @@ impl Handle {
         }
         // Compose's apply step, gated by its own average.
         let paused = self.paused.borrow().clone();
-        if paused.as_ref().is_some_and(|paused| paused.is_cancelled()) {
-            // A pass discarded it (its item left): over.
-            self.canceled.set(true);
-            self.clean_up(prefetch);
-            return false;
-        }
         if let Some(paused) = paused {
-            if !paused.is_applied() {
-                if !paused.is_complete() {
-                    // Invalidated since it completed: composed again first.
-                    self.composed.set(false);
-                    return true;
-                }
-                if !prefetch.fits(scope, Step::Apply, averages.apply, urgent) {
-                    return self.short_of_time(&state);
-                }
-                let _section = compose_ui::platform::trace::section(c"compose-rs: prefetch apply");
-                let began = compose_ui::prefetch_now();
-                paused.apply();
-                prefetch.timed(
-                    scope,
-                    Step::Apply,
-                    self.content_type.get(),
-                    compose_ui::prefetch_now().saturating_duration_since(began).as_nanos() as u64,
-                );
-                prefetch.stepped(scope);
+            if !paused.is_complete() {
+                // Invalidated since it completed: composed again first.
+                self.composed.set(false);
+                return true;
             }
+            if !prefetch.fits(scope, Step::Apply, averages.apply, urgent) {
+                return self.short_of_time(&state);
+            }
+            let _section = compose_ui::platform::trace::section(c"compose-rs: prefetch apply");
+            let began = compose_ui::prefetch_now();
+            // A measurement that took the slot applied it already: what's left is its handle.
+            *self.precomposed.borrow_mut() = Some(paused.apply());
+            prefetch.timed(
+                scope,
+                Step::Apply,
+                self.content_type.get(),
+                compose_ui::prefetch_now().saturating_duration_since(began).as_nanos() as u64,
+            );
+            prefetch.stepped(scope);
             *self.paused.borrow_mut() = None;
-            prefetch.pending_done();
         }
         if self.nested.borrow().is_none() {
             // `resolveNestedPrefetchStates`: the lazy lists in the item, whether this request or
@@ -1392,26 +1271,19 @@ impl Handle {
             }
             let _section = compose_ui::platform::trace::section(c"compose-rs: prefetch measure");
             let start = compose_ui::prefetch_now();
-            let child = state.children.borrow().iter().position(|composed| *composed == self.item);
             let constraints_of = prefetch.constraints_of.borrow().clone();
             let constraints = match constraints_of {
                 Some(constraints_of) => constraints_of(self.item),
                 None => state.item_constraints.get(),
             };
-            if let (Some(node), Some(child), Some(constraints)) =
-                (prefetch.node.get(), child, constraints)
-            {
-                // What measuring it wrote (a nested list's items) is composed and measured too,
-                // as a frame's rounds do.
-                for _ in 0..3 {
-                    if let Some(size) = scope.premeasure(node, child, constraints) {
-                        let vertical = prefetch.vertical.get();
-                        self.size.set(if vertical { size.height } else { size.width });
-                    }
-                    if !scope.recompose() {
-                        break;
-                    }
-                }
+            let precomposed = self.precomposed.borrow();
+            let slot = precomposed.as_ref().filter(|handle| handle.placeables_count() > 0);
+            if let (Some(slot), Some(constraints)) = (slot, constraints) {
+                // What it composes in it (a nested list's items) is composed in the measurement.
+                slot.premeasure(0, constraints);
+                let size = slot.get_size(0);
+                let vertical = prefetch.vertical.get();
+                self.size.set(if vertical { size.height } else { size.width });
                 // Timed only when it measured: an item gone in the meantime would lower the
                 // estimate with a sample of nothing.
                 prefetch.timed(
@@ -1423,7 +1295,6 @@ impl Handle {
             }
             prefetch.stepped(scope);
             self.measured.set(true);
-            prefetch.measured(self.key.get());
             // The nested lists measured: how many items the smallest shows, for the next item of
             // this type; a measurement that composed more of them than were prefetched isn't one
             // to go by (`clearMeasureTime`).
@@ -1467,16 +1338,13 @@ impl Handle {
         let existing = self.paused.borrow().clone();
         let paused = match existing {
             Some(paused) => paused,
-            None => match prefetch.compose_item(state, self.item, self.key.get(), scope) {
+            None => match prefetch.compose_item(state, self.item) {
                 None => {
                     self.canceled.set(true);
                     return false;
                 }
                 Some(Composed::Paused(paused)) => {
                     self.key_composed.set(true);
-                    let key = self.key.get();
-                    *prefetch.pending.borrow_mut() = Some((key, Rc::downgrade(&paused)));
-                    *prefetch.unready.borrow_mut() = Some((key, paused.watch()));
                     *self.paused.borrow_mut() = Some(paused.clone());
                     paused
                 }
@@ -1487,12 +1355,6 @@ impl Handle {
                 }
             },
         };
-        if paused.is_cancelled() {
-            // A pass discarded it (its item left, or was deactivated): over.
-            self.canceled.set(true);
-            self.clean_up(prefetch);
-            return false;
-        }
         let timing = Rc::new(PauseTiming {
             state: Rc::downgrade(state),
             content_type: self.content_type.get(),
@@ -1504,7 +1366,7 @@ impl Handle {
         });
         // The lists composing in the item note themselves under its key.
         let composing = prefetch.composing_item.replace(Some(self.key.get()));
-        while !paused.is_complete() && !paused.is_cancelled() && !timing.requested.get() {
+        while !paused.is_complete() && !timing.requested.get() {
             let asked = timing.clone();
             let mark = timing.mark.get();
             // A resume that composed nothing (no pass could run: the composition is applying
@@ -1543,11 +1405,15 @@ impl Handle {
                 }
             }
         }
-        let Some(paused) = self.paused.borrow_mut().take() else { return };
-        prefetch.pending_done();
-        if !paused.is_applied() && !paused.is_cancelled() {
+        // Not applied, it's cancelled; applied, its slot goes to those kept for reuse, unless a
+        // measurement took it.
+        if let Some(paused) = self.paused.borrow_mut().take() {
             paused.cancel();
-            prefetch.cancelled.set(true);
+        }
+        // Applied, its slot stays precomposed until the next measurement says whether it's in the
+        // limits (`settle_precomposed`), as it stayed composed in the composed range.
+        if let Some(precomposed) = self.precomposed.borrow_mut().take() {
+            prefetch.kept_slots.borrow_mut().push((self.item, precomposed));
         }
     }
 
@@ -1677,53 +1543,6 @@ impl PrefetchRequest for HandleRequest {
         }
         more
     }
-}
-
-/// Deactivates between frames the items composed beyond the limits the last layout set.
-struct TrimRequest {
-    state: Weak<LazyListInner>,
-}
-
-impl PrefetchRequest for TrimRequest {
-    fn execute(&self, scope: &mut PrefetchRequestScope<'_>) -> bool {
-        let Some(state) = self.state.upgrade() else { return false };
-        let prefetch = &state.prefetch;
-        let (start, end) = state.composed.get();
-        let (low, high) = prefetch.limits.get();
-        let (wanted_start, wanted_end) = prefetch.wanted.get();
-        if start > wanted_start || end < wanted_end {
-            // The frame composes the wanted ones (and trims).
-            return false;
-        }
-        let range = (start.max(low), end.min(high));
-        if (range == (start, end) && !prefetch.detached_dirty.get()) || range.0 >= range.1 {
-            return false;
-        }
-        // Compose deactivates in its measurement, so any time left goes; D341's budget times it
-        // as a composition.
-        let recent_maximum = prefetch.policy.get().recent_maximum;
-        let fits = if recent_maximum {
-            prefetch.fits(scope, Step::Compose, prefetch.averages(None).composition, false)
-        } else {
-            scope.available_time_nanos() > 0
-        };
-        if !fits {
-            return !recent_maximum;
-        }
-        let _section = compose_ui::platform::trace::section(c"compose-rs: prefetch compose");
-        prefetch.measure_by_request.set(true);
-        state.compose(range);
-        scope.recompose();
-        prefetch.stepped(scope);
-        false
-    }
-}
-
-/// The target of the item of `key`'s content in `list` (`PausableContentFor`): the request's
-/// paused composition pauses it, no other list's item.
-pub(super) fn item_target(list: &LazyListInner, key: u64) -> u64 {
-    let address = list as *const LazyListInner as u64;
-    key.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ address.rotate_left(17)
 }
 
 /// The lazy list whose items are composing, for the lazy lists in them to note themselves in

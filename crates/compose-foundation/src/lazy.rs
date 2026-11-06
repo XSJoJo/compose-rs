@@ -27,6 +27,7 @@ mod item_animator;
 mod layout_info;
 pub(crate) mod pager;
 mod prefetch;
+mod slots;
 mod staggered;
 
 pub use animate_scroll::LazyLayoutScrollScope;
@@ -55,7 +56,7 @@ use std::rc::{Rc, Weak};
 
 use compose_runtime::{
     ComposeArg, CoroutineScope, ImmutableList, ObjectHandle, Owned, OwnedState,
-    SaveableStateHolder, composable, hash_key, key, mutable_state_of,
+    SaveableStateHolder, composable, hash_key, mutable_state_of,
 };
 use compose_ui::{
     Alignment, Constraints, Dp, EventContext, HorizontalAlignment, IntOffset, IntSize, Layout,
@@ -98,10 +99,6 @@ const MOST_MISSING: usize = 200;
 /// How far from its last index an item is looked for by key.
 const KEY_WINDOW: usize = 100;
 
-/// The most composed items looked for in the key window when the items change (D455): a
-/// change's cost stays bounded (each of the others is checked where the one before it went).
-const MOST_KEY_SEARCHES: usize = 8;
-
 /// Where a lazy list is scrolled, as Compose's `LazyListState`: the first visible item and how
 /// far it is scrolled off. Reading them in composition recomposes on scrolls.
 ///
@@ -116,6 +113,9 @@ struct LazyListInner {
     /// It's been measured ahead, in a `LookaheadScope`: what it says of where it is is what's
     /// ahead's, as Compose's `hasLookaheadOccurred` (D1226).
     measured_ahead: Cell<bool>,
+    /// The items the pass that's now last wanted, after a pass ahead: the pass ahead keeps them
+    /// composed too, so what either pass wants stays composed across frames (D1226).
+    wanted_now: Cell<Option<(usize, usize)>>,
     /// Where the pass ahead placed each animated item: the pass that's now places it there.
     lookahead_places: RefCell<Vec<item_animator::LookaheadPlace>>,
     /// What runs `animate_item`, shared with its items' nodes.
@@ -135,22 +135,16 @@ struct LazyListInner {
     remeasure: OwnedState<u64>,
     /// What `remeasure` holds, to bump it without reading it.
     remeasure_written: Cell<u64>,
-    /// The items to compose: what the layout asks for, read by the items' composition only.
-    composed: OwnedState<(usize, usize)>,
-    /// What the items' composition last read of `composed` (it may compose another range: the
-    /// keys it followed, D455), and a count it reads, bumped to compose `composed` again when
-    /// it holds the range wanted already.
-    composed_read: Cell<(usize, usize)>,
-    compose_again: OwnedState<u64>,
+    /// The range of items the last measurement kept composed (those it measured, and those it
+    /// had composed in the window), as Compose's measurement keeps its items around: the next one
+    /// starts from it.
+    composed: Cell<(usize, usize)>,
     /// The focused item's key, kept composed and placed while it scrolls away, as Compose pins
     /// it, and the index it was last at.
     pinned: OwnedState<Vec<u64>>,
     pinned_near: Cell<usize>,
     /// The list has had items: an empty layout before that keeps the initial position.
     had_items: Cell<bool>,
-    /// Not laid out yet, its items' composition composed more than `composed` (the slots it
-    /// kept in content reused): the layout makes them the composed range.
-    composed_more: Cell<bool>,
     /// The items composed, in the children's order: written by their composition, read by the
     /// layout (a change of children measures it again).
     children: RefCell<Vec<usize>>,
@@ -215,7 +209,6 @@ struct LazyListInner {
     /// items composed for it, but those next to the ones wanted, and they're disposed rather
     /// than kept for reuse (no scroll brought them, D482).
     beyond_ended: Cell<bool>,
-    dispose_leaving: Cell<bool>,
     /// The sticking header's size, as last measured: what a focused item is scrolled out from under.
     sticking_size: Cell<i32>,
     /// The largest size across of the items last laid out (a list's).
@@ -241,6 +234,11 @@ struct LazyListInner {
     /// comes through, set around it by the list's node: what an estimated end leaves of it goes
     /// to them (D479).
     scroll_outer: RefCell<Option<Outer>>,
+    /// The layout's subcompositions, its items' slots: what a prefetch request precomposes in.
+    layout_state: RefCell<Option<Rc<compose_ui::subcompose::SubcomposeLayoutState>>>,
+    /// What composes the items, as last composed, and their contents by key.
+    factory: RefCell<Option<Rc<slots::ItemFactory>>>,
+    contents: Rc<slots::ItemContents>,
 }
 
 /// What a delta came through: the nested-scroll parents, the list's axis, whether it runs against
@@ -269,6 +267,11 @@ trait ListObserver {
         after: i32,
         spacing: i32,
     );
+    /// The size along the list its items are measured at most at: a pager's page size, as
+    /// Compose's pager's child constraints carry it.
+    fn item_main_size(&self) -> Option<i32> {
+        None
+    }
     /// With what's laid out known.
     fn after_measure(&self);
     /// `used` pixels were asked of the list, for the next measurement.
@@ -332,15 +335,82 @@ impl LazyListInner {
         !same
     }
 
-    /// Asks the items' composition for the items `range`: a write of `composed`, or, when it
-    /// holds `range` already (the composition composed another range, following the items'
-    /// keys, D455), a count bumped so it composes `composed` again.
-    fn compose(&self, range: (usize, usize)) {
-        if self.composed_read.get() == range {
-            self.compose_again.update(|count| count.wrapping_add(1));
-        } else {
-            self.composed.set(range);
+    /// The items composed apart from the measured ones, by key, wherever they are now: the
+    /// focused item (pinned), and those moving out of view with `animate_item`.
+    fn items_apart(&self, items: &Items) -> Vec<usize> {
+        let mut apart = Vec::new();
+        for pinned in self.pinned.get() {
+            if let Some(index) = items.index_of(pinned, self.pinned_near.get()) {
+                self.pinned_near.set(index);
+                apart.push(index);
+            }
         }
+        if self.item_animator.has_kept() {
+            for &(kept, near) in self.item_animator.kept().iter() {
+                if let Some(index) = items.index_of(kept, near)
+                    && !apart.contains(&index)
+                {
+                    apart.push(index);
+                }
+            }
+        }
+        apart
+    }
+
+    /// At a measurement's end, what stays composed with what it measured: of the items composed
+    /// before (`before`), those in `range`, those before a sticking header (`detached`), the
+    /// sticky header; and those `apart`. The others leave. Debug builds check the keys.
+    fn keep_composed(
+        &self,
+        scope: &mut compose_ui::subcompose::SubcomposeMeasureScope<'_, '_>,
+        composer: &mut slots::ItemComposer,
+        before: &[usize],
+        range: (usize, usize),
+        apart: &[usize],
+        shown: Option<(usize, usize)>,
+    ) {
+        let count = composer.items().count;
+        for &item in before {
+            if item < count && (range.0..range.1).contains(&item) {
+                composer.keep(scope, item);
+            }
+        }
+        if let Some(header) = self.sticky_written.get()
+            && header < count
+        {
+            composer.keep(scope, header);
+        }
+        let detached = self.prefetch.detached.borrow().clone();
+        for item in detached.into_iter().chain(apart.iter().copied()) {
+            if item < count {
+                composer.keep(scope, item);
+            }
+        }
+        self.prefetch.settle_precomposed(range, &|item| composer.has(item));
+        // Many items composed only to be stepped over (a jump, a search's scroll), neither shown
+        // nor kept: a measurement again lets them go now, where Compose's next one would. A
+        // scroll's few stay until the next frame's, as Compose's.
+        if let Some((low, high)) = shown {
+            let stepped = composer
+                .composed()
+                .filter(|item| {
+                    !(low..high).contains(item)
+                        && !(range.0..range.1).contains(item)
+                        && !apart.contains(item)
+                })
+                .count();
+            if stepped > (high - low).max(MOST_STEPPED_OVER) {
+                self.request_remeasure();
+            }
+        }
+        #[cfg(debug_assertions)]
+        composer.check_keys();
+    }
+
+    /// Measures the list again with the items `range` composed: its measurement composes them.
+    fn compose(&self, range: (usize, usize)) {
+        self.composed.set(range);
+        self.request_remeasure();
     }
 
     fn new(first_visible_item_index: usize, first_visible_item_scroll_offset: i32) -> Self {
@@ -355,13 +425,10 @@ impl LazyListInner {
             rtl: Cell::new(false),
             remeasure: mutable_state_of(0),
             remeasure_written: Cell::new(0),
-            composed: mutable_state_of((first_visible_item_index, first_visible_item_index + 1)),
-            composed_read: Cell::new((first_visible_item_index, first_visible_item_index + 1)),
-            compose_again: mutable_state_of(0),
+            composed: Cell::new((first_visible_item_index, first_visible_item_index + 1)),
             pinned: mutable_state_of(Vec::new()),
             pinned_near: Cell::new(0),
             had_items: Cell::new(false),
-            composed_more: Cell::new(false),
             children: RefCell::new(Vec::new()),
             first_index: mutable_state_of(first_visible_item_index),
             first_offset: mutable_state_of(offset),
@@ -399,14 +466,17 @@ impl LazyListInner {
             observer: RefCell::new(None),
             beyond_more: Cell::new((false, false)),
             beyond_ended: Cell::new(false),
-            dispose_leaving: Cell::new(false),
             core: crate::gestures::ScrollCore::new(),
             laid_out: layout_info::LaidOut::new(),
             measured_ahead: Cell::new(false),
+            wanted_now: Cell::new(None),
             lookahead_places: RefCell::default(),
             density: Cell::new(1.0),
             laid_items: RefCell::new(None),
             scroll_outer: RefCell::new(None),
+            layout_state: RefCell::new(None),
+            factory: RefCell::new(None),
+            contents: Rc::default(),
         }
     }
 }
@@ -1675,298 +1745,9 @@ impl Items {
     }
 }
 
-/// The most deactivated items kept for reuse per content type, as Compose's
-/// `MaxItemsToRetainForReuse`.
-const MAX_ITEMS_TO_RETAIN_FOR_REUSE: usize = 7;
-
-/// No slot yet.
-const NO_SLOT: u64 = 0;
-
-/// A slot an item is composed in, as the subcomposition Compose's lazy layouts compose each item
-/// in: a keyed group of the items' composition holding one item at a time. When its item leaves,
-/// its content is deactivated and kept for an item of the same content type to reuse.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ItemSlot {
-    /// Its group's key: the same whatever item it holds.
-    id: u64,
-    /// The key of the item it holds, or held last.
-    key: u64,
-    /// That item's content type, hashed (`None`: Compose's `null`).
-    content_type: Option<u64>,
-    /// That item's index, as last composed.
-    index: usize,
-}
-
-/// What a slot holds in a pass: an item (by index), or its content deactivated, kept for reuse.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SlotContent {
-    Item(usize),
-    Deactivated,
-}
-
-/// The key of a slot's reusable group (its data key is its item's key).
-const SLOT_GROUP: u64 = compose_runtime::key_of("compose_foundation::LazyItemSlot");
-
-/// The data key of a slot's reusable group while it holds no item.
-const NO_ITEM: u64 = compose_runtime::key_of("compose_foundation::LazyItemSlot::none");
-
-/// A slot's content, as the content of the subcomposition Compose's lazy layouts compose each
-/// item in (`ReusableContentHost(active) { item }`, reused from its root when another item
-/// takes it): a reusable group whose data key is its item's key, so another item reuses it,
-/// or `NO_ITEM` while it's kept for reuse, its content deactivated (D430). One group where
-/// Compose has two (the host, and `ReusableContent(key)` around the item): a slot passes through
-/// both states the same way.
-fn compose_slot(
-    slot: ItemSlot,
-    content: SlotContent,
-    state: LazyListState,
-    items: &ItemsRef,
-    holder: SaveableStateHolder,
-    stacking: ItemStacking,
-) {
-    let composer = compose_runtime::platform::current();
-    match content {
-        SlotContent::Item(index) => {
-            composer.start_reusable_group(SLOT_GROUP, slot.key);
-            LazyItem(index, state, items.clone(), holder, stacking);
-        }
-        SlotContent::Deactivated => {
-            // Its data key changes as its item leaves: the composer deactivates its content
-            // then (content being reused), and skips it after.
-            composer.start_reusable_group(SLOT_GROUP, NO_ITEM);
-            composer.deactivate_to_end_group(false);
-        }
-    }
-    composer.end_reusable_group();
-}
-
-/// Which slot holds which item, and the slots kept for reuse: what Compose's
-/// `SubcomposeLayoutState` keeps of a lazy layout's items (its `slotIdToNode` and reusable
-/// nodes).
-#[derive(Default)]
-struct ItemSlots {
-    /// The slots holding items, in the order last composed.
-    active: Vec<ItemSlot>,
-    /// The slots kept for reuse, their content deactivated, oldest first.
-    reusable: Vec<ItemSlot>,
-    /// The last slot id given.
-    last_id: u64,
-    /// The items the active slots were composed from.
-    items: Weak<Items>,
-}
-
-impl ItemSlots {
-    /// When the items changed since the last pass (the list's caller composed again), where the
-    /// `composed` range's items went. The range moves by as much as the first visible item
-    /// (`anchor`: its key and the index it was at) moved, found by key: the layout follows that
-    /// key (Compose's position follows `firstVisibleItem`'s), so the range composed is the one
-    /// the next measurement wants (D458). It's widened to hold the other composed items found
-    /// near it (each looked for first where the one before it went, else within the key
-    /// window, `MOST_KEY_SEARCHES` times at most); when that cap leaves some unsearched, it
-    /// holds the old range too, so `assign` still finds them by key. Those items stay composed,
-    /// rather than leaving (deactivated, their state lost) for a measurement to ask for them
-    /// again, as Compose's measurement finds each item's composition by its key (D453, D455).
-    /// `composed` may hold indices past the new count (items removed). `None` if the items are
-    /// the same, or the range is the same.
-    /// The items composed apart from the range, `apart`, where their keys went among new `items`.
-    fn follow_apart(&self, items: &Rc<Items>, apart: &mut Vec<usize>) {
-        if std::ptr::eq(self.items.as_ptr(), Rc::as_ptr(items)) {
-            return;
-        }
-        let keys: HashMap<usize, u64> =
-            self.active.iter().map(|slot| (slot.index, slot.key)).collect();
-        let mut moved = false;
-        for item in apart.iter_mut() {
-            if let Some(key) = keys.get(item)
-                && let Some(found) = items.index_of(*key, *item)
-                && found != *item
-            {
-                *item = found;
-                moved = true;
-            }
-        }
-        if moved {
-            apart.sort_unstable();
-            apart.dedup();
-        }
-    }
-
-    fn follow(
-        &self,
-        items: &Rc<Items>,
-        composed: (usize, usize),
-        anchor: Option<(u64, usize)>,
-    ) -> Option<(usize, usize)> {
-        if std::ptr::eq(self.items.as_ptr(), Rc::as_ptr(items)) {
-            return None;
-        }
-        let count = items.count;
-        let (start, end) = composed;
-        let find = |key: u64, guess: Option<usize>, near: usize, searches: &mut usize| match guess
-            .filter(|guess| *guess < count)
-        {
-            Some(guess) if items.key(guess) == key => Some(guess),
-            _ if *searches < MOST_KEY_SEARCHES => {
-                *searches += 1;
-                items.index_of(key, near.min(count.saturating_sub(1)))
-            }
-            _ => None,
-        };
-        let mut searches = 0;
-        // The first visible item's move (none if it went: the range stays where it was).
-        let anchor_shift = anchor
-            .and_then(|(key, old)| {
-                let index = find(key, Some(old), old, &mut searches)?;
-                Some(index as isize - old as isize)
-            })
-            .unwrap_or(0);
-        let moved = |index: usize| index.saturating_add_signed(anchor_shift).min(count);
-        let (moved_start, moved_end) = (moved(start), moved(end));
-        let near = (end - start).max(1);
-        let (mut low, mut high) = (moved_start, moved_end);
-        let mut shift = anchor_shift;
-        let mut unsearched = false;
-        for slot in &self.active {
-            let old = slot.index;
-            // A pinned item or a header out of the range: kept by key already.
-            if old < start || old >= end {
-                continue;
-            }
-            let guess = old.checked_add_signed(shift);
-            let searched = searches < MOST_KEY_SEARCHES;
-            match find(slot.key, guess, old, &mut searches) {
-                Some(index) => {
-                    shift = index as isize - old as isize;
-                    if index + near >= moved_start && index < moved_end + near {
-                        low = low.min(index);
-                        high = high.max(index + 1);
-                    }
-                }
-                None => unsearched |= !searched,
-            }
-        }
-        if unsearched {
-            low = low.min(start.min(count));
-            high = high.max(end.min(count));
-        }
-        let followed = (low, high.min(count));
-        (followed != composed).then_some(followed)
-    }
-
-    /// Gives each item of `indices` a slot, and returns them in order: the slot holding the item
-    /// already; else a slot kept for reuse, the item's own if it's there (Compose's search for
-    /// the same slot id first), else the newest of its content type; else a new one. The slots
-    /// of the items that left are kept for reuse first, so an item coming in reuses one going
-    /// out in the same pass (where Compose deactivates it after the measurement, for the next
-    /// one to reuse). Returns the slots to compose: those of `indices`, each with its item, then
-    /// those kept for reuse.
-    ///
-    /// A slot whose item leaves without ever having been measured (`measured` of its index is
-    /// false) is disposed rather than kept: a first layout's estimate composes items it then
-    /// finds it doesn't want (the stress list's: 87 items, its rows and carousels' tiles, of
-    /// which 38 stay, from the size of its 36 dp header), which Compose, composing items as its
-    /// measurement reaches them, never composes; kept, they would fill its pool with items no
-    /// scroll brought, and keep it full (D460).
-    fn assign(
-        &mut self,
-        items: &Items,
-        indices: &[usize],
-        measured: impl Fn(&ItemSlot) -> bool,
-    ) -> Vec<(ItemSlot, SlotContent)> {
-        let previous: HashMap<u64, usize> =
-            self.active.iter().enumerate().map(|(position, slot)| (slot.key, position)).collect();
-        let mut taken = vec![false; self.active.len()];
-        let mut assigned = Vec::with_capacity(indices.len());
-        for &index in indices {
-            let (key, content_type) = (items.key(index), items.content_type(index));
-            let slot = match previous.get(&key) {
-                Some(&position) if !taken[position] => {
-                    taken[position] = true;
-                    ItemSlot { content_type, index, ..self.active[position] }
-                }
-                _ => ItemSlot { id: NO_SLOT, key, content_type, index },
-            };
-            assigned.push((index, slot));
-        }
-        for (position, slot) in self.active.iter().enumerate() {
-            if !taken[position] && measured(slot) {
-                self.reusable.push(*slot);
-            }
-        }
-        for (_, slot) in &mut assigned {
-            if slot.id == NO_SLOT {
-                slot.id = match self.take_reusable(slot.key, slot.content_type) {
-                    Some(id) => id,
-                    None => {
-                        self.last_id += 1;
-                        self.last_id
-                    }
-                };
-            }
-        }
-        self.active = assigned.iter().map(|(_, slot)| *slot).collect();
-        LazyLayoutItemReusePolicy::get_slots_to_retain(&mut self.reusable);
-        let mut composed: Vec<(ItemSlot, SlotContent)> =
-            assigned.into_iter().map(|(index, slot)| (slot, SlotContent::Item(index))).collect();
-        composed.extend(self.reusable.iter().map(|slot| (*slot, SlotContent::Deactivated)));
-        composed
-    }
-
-    /// Takes a slot kept for reuse for the item with `key` and `content_type`: the one it was
-    /// in, else the newest compatible one (as Compose's `takeNodeFromReusables`).
-    fn take_reusable(&mut self, key: u64, content_type: Option<u64>) -> Option<u64> {
-        let position = (self.reusable.iter().rposition(|slot| slot.key == key)).or_else(|| {
-            self.reusable.iter().rposition(|slot| {
-                LazyLayoutItemReusePolicy::are_compatible(content_type, slot.content_type)
-            })
-        })?;
-        Some(self.reusable.remove(position).id)
-    }
-}
-
-/// Which items that left are kept for reuse, and which item may reuse which, as Compose's
-/// `LazyLayoutItemReusePolicy` (a `SubcomposeSlotReusePolicy`): up to
-/// `MAX_ITEMS_TO_RETAIN_FOR_REUSE` of each content type; an item reuses one of its content type
-/// (`null`, here `None`, being one). Compose's is an object of the item content factory; here
-/// the slots know their items' content types, so it holds nothing.
-enum LazyLayoutItemReusePolicy {}
-
-impl LazyLayoutItemReusePolicy {
-    /// Keeps the newest `MAX_ITEMS_TO_RETAIN_FOR_REUSE` of each content type among `reusable`
-    /// (oldest first), as `getSlotsToRetain`; the others are disposed.
-    fn get_slots_to_retain(reusable: &mut Vec<ItemSlot>) {
-        if reusable.len() <= MAX_ITEMS_TO_RETAIN_FOR_REUSE {
-            return;
-        }
-        let mut count_per_type: Vec<(Option<u64>, usize)> = Vec::new();
-        let mut retain = vec![false; reusable.len()];
-        for (position, slot) in reusable.iter().enumerate().rev() {
-            let count = match count_per_type.iter_mut().find(|(kind, _)| *kind == slot.content_type)
-            {
-                Some((_, count)) => count,
-                None => {
-                    count_per_type.push((slot.content_type, 0));
-                    &mut count_per_type.last_mut().expect("just pushed").1
-                }
-            };
-            if *count < MAX_ITEMS_TO_RETAIN_FOR_REUSE {
-                *count += 1;
-                retain[position] = true;
-            }
-        }
-        let mut position = 0;
-        reusable.retain(|_| {
-            position += 1;
-            retain[position - 1]
-        });
-    }
-
-    /// Whether an item of `content_type` may reuse the slot of one of `reusable_content_type`, as
-    /// `areCompatible`: the same content type.
-    fn are_compatible(content_type: Option<u64>, reusable_content_type: Option<u64>) -> bool {
-        content_type == reusable_content_type
-    }
-}
+/// The items a measurement may compose only to step over them (not shown, not kept) before it's
+/// measured again, beyond as many as it shows.
+const MOST_STEPPED_OVER: usize = 8;
 
 /// The items, compared by identity (a new set each time the list's caller recomposes).
 #[derive(Clone)]
@@ -2137,7 +1918,7 @@ fn LazyList(
         let scheduler = compose_ui::LOCAL_PREFETCH_SCHEDULER.current();
         compose_runtime::remember_keyed((state, InfoKey(info.clone()), scheduler.clone()), || {
             Rc::new(LazyListLayout { state: state.inner_or_detached(), info, scheduler })
-                as Rc<dyn MeasurePolicy>
+                as Rc<dyn slots::ItemsMeasurePolicy>
         })
     };
     let modifier = modifier
@@ -2169,168 +1950,8 @@ fn LazyList(
             Constraints::new(0, Constraints::INFINITY, 0, around.max_height)
         }
     });
-    Layout(
-        modifier,
-        policy,
-        compose_runtime::callback(move || {
-            let stacking = ItemStacking::Along { vertical, reverse };
-            LazyItems(state, items.clone(), holder, fallback, stacking)
-        }),
-    );
-}
-
-/// The items composed: a restartable scope of its own, so a change of the range recomposes it
-/// and not the list's caller; each item skips when it stays.
-#[composable]
-#[allow(non_snake_case)]
-fn LazyItems(
-    state: LazyListState,
-    items: ItemsRef,
-    holder: SaveableStateHolder,
-    fallback: Option<Constraints>,
-    stacking: ItemStacking,
-) {
-    // Each item in a slot of its own, which an item of its content type reuses once it left
-    // (D430). Kept when the list is in content reused (an outer list's item reused for
-    // another): its items are reused too, as Compose keeps a reused node's
-    // `SubcomposeLayoutState`.
-    let slots = compose_runtime::platform::remember_across_reuse(|| {
-        Rc::new(RefCell::new(ItemSlots::default()))
-    });
-    let inner = state.inner_or_detached();
-    // A completion's item (`complete_pending`), noted for the completion before this pass: not
-    // the item of an inner scope restarted in this one.
-    inner.prefetch.composing_item.set(None);
-    let (mut start, mut end) = inner.composed.get();
-    inner.compose_again.get();
-    inner.composed_read.set((start, end));
-    let count = items.0.count;
-    // Items came, went or moved: those composed stay composed where they went.
-    if inner.had_items.get()
-        && let Some(followed) = slots.borrow().follow(
-            &items.0,
-            (start, end),
-            inner.first_key.get().map(|key| (key, inner.position.get().0)),
-        )
-    {
-        (start, end) = followed;
-        // The layout makes it the composed range.
-        inner.composed_more.set(true);
-    }
-    // A list not laid out yet composes its first item, and then those its layout asks for; in
-    // reused content, it composes as many as it had, which keep their slots (as Compose's
-    // measurement takes the active slots by key) rather than going to those kept for reuse,
-    // where all but 7 would be disposed.
-    if !inner.had_items.get() && start + slots.borrow().active.len() > end {
-        end = start + slots.borrow().active.len();
-        // The layout makes it the composed range (rather than the first item alone).
-        inner.composed_more.set(true);
-    }
-    let mut indices: Vec<usize> = (start.min(count)..end.min(count)).collect();
-    // The focused item, by key (gone with its item).
-    for pinned in inner.pinned.get() {
-        if let Some(index) = items.0.index_of(pinned, inner.pinned_near.get()) {
-            inner.pinned_near.set(index);
-            if !indices.contains(&index) {
-                indices.push(index);
-            }
-        }
-    }
-    // The sticky header over the first visible item, wherever it is.
-    if let Some(header) = inner.sticky.get()
-        && header < count
-        && !indices.contains(&header)
-    {
-        indices.push(header);
-    }
-    // Those moving out of view with `animate_item`, by key (gone with their items).
-    if inner.item_animator.has_kept() {
-        for &(kept, near) in inner.item_animator.kept().iter() {
-            if let Some(index) = items.0.index_of(kept, near)
-                && !indices.contains(&index)
-            {
-                indices.push(index);
-            }
-        }
-    }
-    // Those composed apart from the range: before a sticking header (D895), a staggered grid's
-    // (D1470), where their items went if the items changed. Each once in `detached`, so a search
-    // through what's before them alone.
-    inner.prefetch.detached_dirty.set(false);
-    {
-        let mut detached = inner.prefetch.detached.borrow_mut();
-        if !detached.is_empty() {
-            slots.borrow().follow_apart(&items.0, &mut detached);
-        }
-        let (range_start, range_end) = (start.min(count), end.min(count));
-        let (in_range, others) =
-            ((range_end - range_start.min(range_end)).min(indices.len()), indices.len());
-        for &item in detached.iter() {
-            if item < count
-                && !(range_start..range_end).contains(&item)
-                && !indices[in_range..others].contains(&item)
-            {
-                indices.push(item);
-            }
-        }
-    }
-    #[cfg(debug_assertions)]
-    items.0.check_keys(&indices);
-    // Other items composed: the list measures again. A slot can take another item without its
-    // node moving or its size changing (an empty item after another), which wouldn't measure
-    // the list again by itself.
-    if *inner.children.borrow() != indices
-        && let Some(list) = inner.prefetch.node.get()
-    {
-        compose_runtime::platform::current()
-            .with_applier(|tree: &mut compose_ui::platform::UiTree| tree.invalidate_measure(list));
-    }
-    *inner.children.borrow_mut() = indices.clone();
-    // The items' constraints, for what's composed in them that guesses at its own (a nested list).
-    let hint = inner.item_constraints.get().or(fallback);
-    drop(inner);
-    let composed = {
-        let inner = state.inner_or_detached();
-        let sizes = inner.sizes.borrow();
-        let keep = !inner.dispose_leaving.replace(false);
-        // Measured, or composed by a prefetch request (Compose's precomposed slot goes to the
-        // reuse pool when its request is cancelled).
-        slots.borrow_mut().assign(&items.0, &indices, |slot| {
-            // The slot's own item: its key, its index when last composed.
-            let precomposed = inner.prefetch.take_precomposed(slot.key);
-            keep && (sizes.contains_key(slot.index) || precomposed)
-        })
-    };
-    slots.borrow_mut().items = Rc::downgrade(&items.0);
-    let parent = {
-        let inner = state.inner_or_detached();
-        *inner.prefetch.items.borrow_mut() = Rc::downgrade(&items.0);
-        // One per list, kept: the local stays the same, its readers aren't invalidated; its
-        // list is the state's now.
-        let parent = compose_runtime::platform::remember_across_reuse(|| {
-            Rc::new(prefetch::ParentList::new(&inner))
-        });
-        parent.set(&inner);
-        parent
-    };
-    compose_runtime::CompositionLocalProvider(
-        compose_ui::platform::LOCAL_CONSTRAINTS_HINT.provides(hint),
-        || {
-            compose_runtime::CompositionLocalProvider(
-                prefetch::LOCAL_PARENT_LIST.provides(Some(parent)),
-                || {
-                    // The slots holding items first, in the children's order the layout reads;
-                    // then those kept for reuse, deactivated: their nodes stay, unmeasured and
-                    // unplaced. One loop, so a slot's group moves between the two.
-                    for &(slot, content) in &composed {
-                        key(slot.id, || {
-                            compose_slot(slot, content, state, &items, holder, stacking)
-                        });
-                    }
-                },
-            );
-        },
-    );
+    let stacking = ItemStacking::Along { vertical, reverse };
+    slots::LazyItemsLayout(modifier, state, items, holder, fallback, stacking, policy);
 }
 
 /// One item: a layout node around its content, which pins the item while it holds the focus.
@@ -2339,14 +1960,17 @@ fn LazyItems(
 /// doesn't run the provider again).
 #[composable]
 #[allow(non_snake_case)]
-fn LazyItem(
+pub(super) fn LazyItem(
     index: usize,
     state: LazyListState,
-    items: ItemsRef,
     holder: SaveableStateHolder,
     stacking: ItemStacking,
 ) {
     let inner = state.inner_or_detached();
+    // The items as they are now, as Compose's item reads `itemProvider()`.
+    let Some(items) = inner.factory.borrow().as_ref().map(|factory| factory.items.clone()) else {
+        return;
+    };
     let policy = compose_runtime::remember_keyed(stacking, || {
         Rc::new_cyclic(|this| ItemLayout {
             this: this.clone(),
@@ -2362,7 +1986,6 @@ fn LazyItem(
     // composes it (a frame here, a request's resumes, a completion), as Compose's request finds
     // those of its precomposed item (`traversablePrefetchState`).
     let composing = inner.prefetch.composing_item.replace(Some(item_key));
-    let target = prefetch::item_target(&inner, item_key);
     // What's in it pins it while it has the focus, as `LazyLayoutPinnableItem`.
     let parent = compose_ui::LOCAL_PINNABLE_CONTAINER.current();
     let pin = compose_runtime::remember_keyed((item_key, state), || {
@@ -2386,15 +2009,37 @@ fn LazyItem(
         modifier,
         policy as Rc<dyn MeasurePolicy>,
         compose_runtime::callback(move || {
+            // Run again when the list's content changes (`LazyItemsLayout`), with the items as
+            // they are then, as Compose's item reads `itemProvider()`: restarting for a state of its
+            // own after the list's content changed, it runs the new content, once.
+            let inner = state.inner_or_detached();
+            inner
+                .contents
+                .scopes
+                .borrow_mut()
+                .insert(item_key, compose_runtime::current_recompose_scope());
+            let current = inner.factory.borrow().as_ref().map(|it| it.items.clone());
+            drop(inner);
+            let (items, index) = match current {
+                Some(now) if !Rc::ptr_eq(&now.0, &items.0) => {
+                    let found = if index < now.0.count && now.0.key(index) == item_key {
+                        Some(index)
+                    } else {
+                        now.0.index_of(item_key, index)
+                    };
+                    // Gone from the items: nothing, as Compose's `getIndex(key) == -1`.
+                    match found {
+                        Some(found) => (now, found),
+                        None => return,
+                    }
+                }
+                _ => (items.clone(), index),
+            };
             if let Some((interval, local)) = items.0.find(index) {
-                // The item's content, as Compose's item subcomposition: a request's paused
-                // composition may pause in it, and applies it whole (D590).
-                compose_runtime::platform::PausableContentFor(target, || {
-                    compose_runtime::CompositionLocalProvider(
-                        compose_ui::LOCAL_PINNABLE_CONTAINER.provides(Some(container.clone())),
-                        || holder.SaveableStateProvider(item_key, || (interval.content)(local)),
-                    );
-                });
+                compose_runtime::CompositionLocalProvider(
+                    compose_ui::LOCAL_PINNABLE_CONTAINER.provides(Some(container.clone())),
+                    || holder.SaveableStateProvider(item_key, || (interval.content)(local)),
+                );
             }
         }),
     );
@@ -2689,11 +2334,11 @@ fn note_lookahead_places(
     }));
 }
 
-impl MeasurePolicy for LazyListLayout {
+impl slots::ItemsMeasurePolicy for LazyListLayout {
     fn measure(
         &self,
-        scope: &mut MeasureScope<'_>,
-        measurables: &[Measurable],
+        scope: &mut compose_ui::subcompose::SubcomposeMeasureScope<'_, '_>,
+        composer: &mut slots::ItemComposer,
         constraints: Constraints,
     ) -> MeasureResult {
         let state = &self.state;
@@ -2758,10 +2403,30 @@ impl MeasurePolicy for LazyListLayout {
         } else {
             (cross_max - cross_before - cross_after).max(0)
         };
+        // The position, with the scrolling asked for; the first visible item found again by
+        // its key if items came or went before it. A pager's pages are its size along it.
+        let observer = state.observer.borrow().clone();
+        let mut main_room_of_item = Constraints::INFINITY;
+        if let Some(observer) = observer {
+            compose_runtime::snapshots::Snapshot::without_read_observation(|| {
+                observer.before_measure(
+                    state,
+                    &info.items,
+                    density,
+                    main_max,
+                    before,
+                    after,
+                    spacing,
+                );
+            });
+            if let Some(main) = observer.item_main_size() {
+                main_room_of_item = main;
+            }
+        }
         let item_constraints = if vertical {
-            Constraints::new(0, cross_room, 0, Constraints::INFINITY)
+            Constraints::new(0, cross_room, 0, main_room_of_item)
         } else {
-            Constraints::new(0, Constraints::INFINITY, 0, cross_room)
+            Constraints::new(0, main_room_of_item, 0, cross_room)
         };
         if tells
             && state.item_constraints_written.replace(Some(item_constraints))
@@ -2781,52 +2446,40 @@ impl MeasurePolicy for LazyListLayout {
             state.parent_size.size.set(parent_size);
         }
         let count = info.items.count;
+        // Those the last measurement composed: those it kept that stay in the window stay.
         let children = state.children.borrow().clone();
-        let (composed_start, composed_end) = composed_range(&children, count);
-        // Each child measured once, when first needed.
-        let mut placeables: Vec<Option<Placeable>> = vec![None; measurables.len()];
+        let (composed_start, composed_end) = {
+            let (start, end) = state.composed.get();
+            (start.min(count), end.min(count).max(start.min(count)))
+        };
+        // Each item measured once, when first needed.
+        let mut placeables: slots::ItemMap<Placeable> = Default::default();
+        placeables.reserve(children.len() + 8);
         let mut sizes = state.sizes.borrow_mut();
         let main_of =
             move |placeable: &Placeable| if vertical { placeable.height } else { placeable.width };
-        // An item whose content isn't applied (a request's paused composition) or was removed (a
-        // cancelled one's) is one it lacks: composed in this frame's next round (D592).
-        let unready = state.prefetch.layout_started();
-        let lacked_unready = Cell::new(false);
+        state.prefetch.layout_started();
+        // Set where only items composed already are placed (beyond those wanted, up to a pinned
+        // one): the others between aren't composed for it.
+        let only_composed = Cell::new(false);
+        // An item is composed as the measurement reaches it (a request's paused composition
+        // completed and applied then), as Compose's `measuredItemProvider.getAndMeasure`.
         let mut measure_child = |index: usize, sizes: &mut Sizes| -> Option<Placeable> {
-            if unready.is_some_and(|key| key == info.items.key(index)) {
-                // Not applied (a request's paused composition): completed before the round's
-                // pass; cancelled, its item composes it in that pass.
-                state.prefetch.complete_pending();
-                lacked_unready.set(true);
+            if let Some(placeable) = placeables.get(&index) {
+                return Some(*placeable);
+            }
+            if only_composed.get() && !children.contains(&index) && !composer.has(index) {
                 return None;
             }
-            let child = children
-                .iter()
-                .position(|composed| *composed == index)
-                .filter(|child| *child < measurables.len())?;
-            if placeables[child].is_none() {
-                let placeable = scope.measure(measurables[child], item_constraints);
-                sizes.insert(index, main_of(&placeable));
-                placeables[child] = Some(placeable);
-            }
-            placeables[child]
+            let measurable = composer.measurable(scope, index)?;
+            let placeable = scope.measure(measurable, item_constraints);
+            sizes.insert(index, main_of(&placeable));
+            placeables.insert(index, placeable);
+            Some(placeable)
         };
         let measure: &mut MeasureItem<'_> = &mut measure_child;
         // The position, with the scrolling asked for; the first visible item found again by
         // its key if items came or went before it.
-        if let Some(observer) = state.observer.borrow().clone() {
-            compose_runtime::snapshots::Snapshot::without_read_observation(|| {
-                observer.before_measure(
-                    state,
-                    &info.items,
-                    density,
-                    main_max,
-                    before,
-                    after,
-                    spacing,
-                );
-            });
-        }
         let (mut index, offset) = state.position.get();
         let scrolled = state.pending.replace(0.0);
         let mut offset = offset + scrolled;
@@ -3209,7 +2862,6 @@ impl MeasurePolicy for LazyListLayout {
         } else if tells {
             state.asked.set(0);
         }
-        let covers = composed_start <= wanted_start && composed_end >= wanted_end;
         let prefetch = &state.prefetch;
         if tells {
             prefetch.policy.set(policy);
@@ -3320,35 +2972,24 @@ impl MeasurePolicy for LazyListLayout {
                 header_apart.is_some(),
             );
         }
-        // After a focus search that laid items out beyond the bounds, those it composed go
-        // too, but the ones next to those wanted, as after a scroll (D482).
-        let past_limits = composed_start < limits.0 || composed_end > limits.1;
-        let search_ended = beyond_ended && past_limits;
-        if search_ended {
-            state.dispose_leaving.set(true);
-        }
-        let mut composed = (composed_start, composed_end);
-        let composed_more = state.composed_more.take();
-        // A paused composition cancelled: the items composed again first (D594).
-        let recompose = lacked_unready.get() || (tells && prefetch.take_cancelled());
-        if !covers || search_ended || recompose {
-            // Items to compose (or a focus search's to let go): this composition deactivates
-            // those the layout no longer wants too (kept for reuse), as Compose's measurement.
-            composed = limits;
-            state.compose(composed);
-        } else if composed_more {
-            state.composed.set(composed);
-        }
+        // What stays composed: the limits; those of it this measurement doesn't measure stay if
+        // they were composed (below), and the others leave, deactivated and kept for reuse, as
+        // Compose's measurement lets go of what it doesn't compose. Ahead, in a scope, what the
+        // pass that's now wanted last stays too: what's composed is what either pass wants, and
+        // neither lets go of what the other composes again.
+        let composed = match state.wanted_now.get().filter(|_| looking_ahead) {
+            Some((start, end)) if start < end => {
+                (limits.0.min(start.min(count)), limits.1.max(end.min(count)))
+            }
+            _ => limits,
+        };
+        state.composed.set(composed);
         if tells {
             // What prefetching works from.
             prefetch.node.set(Some(node));
             prefetch.count.set(count);
             prefetch.wanted.set((wanted_start, wanted_end));
             prefetch.limits.set(limits);
-            // Those no longer wanted, unplaced, are deactivated by the next composition: a
-            // request's, or one between frames; a frame with nothing to compose runs none for
-            // them (D575).
-            prefetch.trim_between_frames(state, self.scheduler.as_ref(), composed);
             state.position.set((index, offset));
             if count > 0 {
                 state.first_key.set(Some(info.items.key(index)));
@@ -3365,21 +3006,25 @@ impl MeasurePolicy for LazyListLayout {
                 state.first_offset.set(rounded.1);
             }
         } else {
-            // What either pass wants stays composed, and what's trimmed between frames is
-            // outside both.
+            // What either pass wants stays composed, and what's kept precomposed is in either.
             let (start, end) = prefetch.wanted.get();
             prefetch.wanted.set((start.min(wanted_start), end.max(wanted_end)));
             prefetch.limits.set(limits);
+            state.wanted_now.set(Some((wanted_start, wanted_end)));
         }
-        // The items wanted are placed: those in view, and those a focus search asked for beyond
-        // them (clipped away), so focus can move to them; those composed beyond the ones wanted
-        // (prefetched, kept behind) aren't, as Compose's: nothing draws or hits them until
-        // they're wanted. A focused one among those is placed, next to the others: focus
+        // The items wanted are placed, composed as they're measured: those in view, and those a
+        // focus search asked for beyond them (clipped away), so focus can move to them; those
+        // composed beyond the ones wanted (prefetched, kept behind) aren't, as Compose's: nothing
+        // draws or hits them until they're wanted. A focused one among those is placed, next to the others: focus
         // scrolls it in.
-        let (mut placed_start, mut placed_end) =
-            (composed_start.max(wanted_start), composed_end.min(wanted_end));
+        let (mut placed_start, mut placed_end) = (wanted_start, wanted_end);
+        // What was composed and what stays (a prefetched item next to those wanted).
+        let (composed_start, composed_end) =
+            (composed_start.min(composed.0), composed_end.max(composed.1));
+        let mut pinned_items: Vec<usize> = Vec::new();
         for key in state.pinned.get() {
             if let Some(pinned) = info.items.index_of(key, state.pinned_near.get()) {
+                pinned_items.push(pinned);
                 if (placed_end..composed_end).contains(&pinned) {
                     placed_end = pinned + 1;
                 } else if (composed_start..placed_start).contains(&pinned) {
@@ -3391,6 +3036,7 @@ impl MeasurePolicy for LazyListLayout {
         let mut main =
             placed.last().map_or(before, |(placeable, main)| main + main_of(placeable) + spacing);
         for next in end_index..placed_end.min(count) {
+            only_composed.set(next >= wanted_end && !pinned_items.contains(&next));
             if let Some(placeable) = measure(next, &mut sizes) {
                 beyond.push((placeable, main));
                 main += (main_of(&placeable) + spacing).max(0);
@@ -3403,11 +3049,13 @@ impl MeasurePolicy for LazyListLayout {
         let mut ahead: Vec<(Placeable, i32)> = Vec::new();
         let mut main = placed.first().map_or(before, |(_, main)| *main);
         for previous in (placed_start.min(lead)..lead).rev() {
+            only_composed.set(previous < wanted_start && !pinned_items.contains(&previous));
             if let Some(placeable) = measure(previous, &mut sizes) {
                 main -= (main_of(&placeable) + spacing).max(0);
                 ahead.push((placeable, main));
             }
         }
+        only_composed.set(false);
         ahead.reverse();
         let extent_start = main - before;
         let pending = state.pending.get();
@@ -3519,8 +3167,10 @@ impl MeasurePolicy for LazyListLayout {
             });
             sticky = Some((placeable, at));
         }
-        let children = state.children.borrow().clone();
-        for &pinned in &children {
+        // The focused item and those moving out of view with `animate_item`, by key, wherever
+        // they are: composed and placed out of the way.
+        let apart = state.items_apart(&info.items);
+        for &pinned in &apart {
             if (pinned < composed_start || pinned >= composed_end)
                 && Some(pinned) != header
                 && !prefetch.detached.borrow().contains(&pinned)
@@ -3585,10 +3235,8 @@ impl MeasurePolicy for LazyListLayout {
                 let moved = moved.unwrap_or(asked);
                 animator.add_consumed_scroll(item_animator::consumed_scroll(asked, moved));
             }
-            let settled = !missing
-                && wanted_before == 0
-                && !lacked_unready.get()
-                && (headers.is_none() || sticking.is_some());
+            let settled =
+                !missing && wanted_before == 0 && (headers.is_none() || sticking.is_some());
             if !tells {
                 // Now, after the pass ahead: each animated item where it is ahead, animating
                 // toward there, as Compose's `place` with a `lookaheadOffset`; those moving away
@@ -3697,6 +3345,8 @@ impl MeasurePolicy for LazyListLayout {
             sizes.retain(|item| item.abs_diff(index) <= MOST_MISSING);
         }
         drop(sizes);
+        let shown = (placed_start.min(lead), placed_end.max(end_index));
+        state.keep_composed(scope, composer, &children, composed, &apart, Some(shown));
         let (width, height) =
             if vertical { (cross_total, main_total) } else { (main_total, cross_total) };
         let position_of = |placeable: &Placeable, main: i32| {
@@ -3783,47 +3433,6 @@ impl MeasurePolicy for LazyListLayout {
         }
         scope.layout(width, height)
     }
-
-    fn debug_name(&self) -> &'static str {
-        "LazyList"
-    }
-
-    // As Compose's `SubcomposeLayout`: it composes while measuring, so it has no intrinsics.
-    fn min_intrinsic_width(
-        &self,
-        _: &mut compose_ui::IntrinsicMeasureScope<'_>,
-        _: &[compose_ui::IntrinsicMeasurable],
-        _: i32,
-    ) -> i32 {
-        panic!("{}", compose_ui::platform::NO_INTRINSICS_MESSAGE)
-    }
-
-    fn min_intrinsic_height(
-        &self,
-        _: &mut compose_ui::IntrinsicMeasureScope<'_>,
-        _: &[compose_ui::IntrinsicMeasurable],
-        _: i32,
-    ) -> i32 {
-        panic!("{}", compose_ui::platform::NO_INTRINSICS_MESSAGE)
-    }
-
-    fn max_intrinsic_width(
-        &self,
-        _: &mut compose_ui::IntrinsicMeasureScope<'_>,
-        _: &[compose_ui::IntrinsicMeasurable],
-        _: i32,
-    ) -> i32 {
-        panic!("{}", compose_ui::platform::NO_INTRINSICS_MESSAGE)
-    }
-
-    fn max_intrinsic_height(
-        &self,
-        _: &mut compose_ui::IntrinsicMeasureScope<'_>,
-        _: &[compose_ui::IntrinsicMeasurable],
-        _: i32,
-    ) -> i32 {
-        panic!("{}", compose_ui::platform::NO_INTRINSICS_MESSAGE)
-    }
 }
 
 /// Sizes along the axis by index (a list's items, a grid's items or lines), as last measured,
@@ -3884,21 +3493,6 @@ impl Sizes {
         }
         (self.sum / self.sizes.len() as i64).max(1) as i32
     }
-}
-
-/// The contiguous range of composed items (the children but a pinned one out of it).
-fn composed_range(children: &[usize], count: usize) -> (usize, usize) {
-    let mut start = None;
-    let mut end = 0;
-    for (position, &index) in children.iter().enumerate() {
-        if position > 0 && index != children[position - 1] + 1 {
-            break;
-        }
-        start.get_or_insert(index);
-        end = index + 1;
-    }
-    let start = start.unwrap_or(0).min(count);
-    (start, end.min(count).max(start))
 }
 
 /// The wheel and drags scroll the list (unless disabled: `user_scroll_enabled`).

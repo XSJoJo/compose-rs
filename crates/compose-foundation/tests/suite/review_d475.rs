@@ -262,7 +262,9 @@ fn tab_past_unfocusable_rows_finds_the_next_and_leaves_few_composed() {
         ui.wait_for_idle();
     }
     let after = lazy_items(&ui);
-    assert!(after <= before + 4, "{before} items composed before, {after} after");
+    // Those the search laid out leave: up to 7 kept for reuse, deactivated, as Compose's pool
+    // (D1312, where D482 disposed them).
+    assert!(after <= before + 7, "{before} items composed before, {after} after");
 }
 
 /// Input: a Tab from the last row in view (it waits for the next row, D477), then the list
