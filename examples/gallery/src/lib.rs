@@ -889,6 +889,61 @@ pub fn Graphics() {
                 Some("A rotated square"),
                 modifier = Modifier.size(96.dp())
             );
+            Text!("A graphics layer drawn twice: as recorded, then turned and tinted");
+            let layer = remember_graphics_layer();
+            Canvas(Modifier.size((160.dp(), 64.dp())), move |scope| {
+                let side = scope.size().height as i32;
+                layer.record(scope, IntSize::new(side, side), |scope| {
+                    let bounds = scope.bounds();
+                    scope.draw_rect(bounds, Paint::fill(Color::from_rgb(255, 128, 0)));
+                    let center = scope.center();
+                    scope.draw_circle(center, bounds.right / 4.0, Paint::fill(Color::BLUE));
+                });
+                layer.set_rotation_z(0.0);
+                layer.set_color_filter(None);
+                scope.draw_layer(&layer);
+                layer.set_rotation_z(30.0);
+                layer.set_color_filter(Some(ColorFilter::tint(Color::MAGENTA)));
+                scope.translate(side as f32 * 1.5, 0.0, |scope| scope.draw_layer(&layer));
+            });
+            Text!("Blur: bounded, unbounded");
+            Row!(horizontal_arrangement = Arrangement::spaced_by(24.dp()), {
+                for treatment in [BlurredEdgeTreatment::RECTANGLE, BlurredEdgeTreatment::UNBOUNDED]
+                {
+                    Box!(
+                        modifier = Modifier
+                            .size(64.dp())
+                            .blur_with(6.dp(), 6.dp(), treatment)
+                            .background(Color::BLUE),
+                        content_alignment = Alignment::CENTER,
+                        {
+                            Box!(modifier = Modifier.size(24.dp()).background(Color::YELLOW));
+                        }
+                    );
+                }
+            });
+            Text!("Shadows: dropped, inside");
+            Row!(horizontal_arrangement = Arrangement::spaced_by(24.dp()), {
+                let shape = compose::foundation::RoundedCornerShape(12.dp());
+                let soft = shadow::Shadow {
+                    spread: 2.dp(),
+                    offset: DpOffset::new(0.dp(), 4.dp()),
+                    alpha: 0.6,
+                    ..shadow::Shadow::new(8.dp())
+                };
+                Box!(
+                    modifier = Modifier
+                        .size(64.dp())
+                        .drop_shadow(shape.clone(), soft.clone())
+                        .background_with(Color::WHITE, shape.clone())
+                );
+                Box!(
+                    modifier = Modifier
+                        .size(64.dp())
+                        .background_with(Color::WHITE, shape.clone())
+                        .inner_shadow(shape, soft)
+                );
+            });
         }
     );
 }
