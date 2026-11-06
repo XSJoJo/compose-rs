@@ -16,6 +16,7 @@ mod dark_theme;
 mod fling;
 pub mod gestures;
 mod image;
+mod input_transformation;
 pub mod layout;
 pub mod lazy;
 mod mutator;
@@ -57,6 +58,7 @@ pub use gestures::{
     scrollable_state,
 };
 pub use image::{ContentScale, Image};
+pub use input_transformation::{InputTransform, InputTransformation, KeyboardActionHandler};
 pub use lazy::pager::{
     HorizontalPager, PageInfo, PageSize, PagerDefaults, PagerLayoutInfo, PagerScope,
     PagerSnapDistance, PagerState, VerticalPager, pager_key, pager_snap_distance_at_most,

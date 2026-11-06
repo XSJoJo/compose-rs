@@ -41,6 +41,8 @@ pub struct CursorAnchor {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 #[non_exhaustive]
 pub enum ImeAction {
+    /// Not said: a field's `KeyboardOptions` takes another's, or `Default` (D1133).
+    Unspecified,
     /// The platform's default: on desktop, none; on Android, `Done` for a single line, a new
     /// line otherwise.
     #[default]
@@ -61,6 +63,8 @@ pub enum ImeAction {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 #[non_exhaustive]
 pub enum KeyboardType {
+    /// Not said: a field's `KeyboardOptions` takes another's, or `Text` (D1133).
+    Unspecified,
     #[default]
     Text,
     Ascii,
@@ -78,6 +82,8 @@ pub enum KeyboardType {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 #[non_exhaustive]
 pub enum KeyboardCapitalization {
+    /// Not said: a field's `KeyboardOptions` takes another's, or `None` (D1133).
+    Unspecified,
     /// Nothing.
     #[default]
     None,
