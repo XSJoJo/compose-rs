@@ -1515,7 +1515,7 @@ struct Measurer<'a, 's, 'scope> {
     /// are measured: beyond those wanted, up to a pinned one.
     before: &'a [usize],
     only_composed: bool,
-    placeables: super::slots::IndexMap<usize, Placeable>,
+    placeables: super::slots::ItemMap<Placeable>,
     lines: &'a mut Lines,
     slots: &'a Slots,
     vertical: bool,
@@ -1776,7 +1776,7 @@ impl ItemsMeasurePolicy for LazyGridLayout {
             before: &children,
             only_composed: false,
             placeables: {
-                let mut placeables = super::slots::IndexMap::default();
+                let mut placeables = super::slots::ItemMap::default();
                 placeables.reserve(children.len() + 8);
                 placeables
             },

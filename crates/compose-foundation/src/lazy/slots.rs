@@ -45,6 +45,64 @@ impl std::hash::Hasher for IndexHasher {
 /// A map by item index or key, with [`IndexHasher`].
 pub(super) type IndexMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<IndexHasher>>;
 
+/// A map by item index for a measurement: the items it reaches are mostly next to each other, so
+/// a list from the first one holds them (a look-up is an index), the others (a pinned item far
+/// away) in a map.
+pub(super) struct ItemMap<V> {
+    base: usize,
+    dense: Vec<Option<V>>,
+    sparse: IndexMap<usize, V>,
+}
+
+/// How far past its first item the list of an `ItemMap` goes.
+const DENSE_ITEMS: usize = 512;
+
+impl<V> Default for ItemMap<V> {
+    fn default() -> Self {
+        ItemMap { base: usize::MAX, dense: Vec::new(), sparse: IndexMap::default() }
+    }
+}
+
+impl<V> ItemMap<V> {
+    pub(super) fn reserve(&mut self, additional: usize) {
+        self.dense.reserve(additional);
+    }
+
+    fn slot(&self, index: usize) -> Option<usize> {
+        let at = index.checked_sub(self.base)?;
+        (at < DENSE_ITEMS).then_some(at)
+    }
+
+    pub(super) fn get(&self, index: &usize) -> Option<&V> {
+        match self.slot(*index) {
+            Some(at) => self.dense.get(at).and_then(Option::as_ref),
+            None => self.sparse.get(index),
+        }
+    }
+
+    pub(super) fn contains_key(&self, index: &usize) -> bool {
+        self.get(index).is_some()
+    }
+
+    pub(super) fn insert(&mut self, index: usize, value: V) {
+        if self.base == usize::MAX {
+            // Room before the first: a measurement may go back from where it starts.
+            self.base = index.saturating_sub(DENSE_ITEMS / 4);
+        }
+        match self.slot(index) {
+            Some(at) => {
+                if self.dense.len() <= at {
+                    self.dense.resize_with(at + 1, || None);
+                }
+                self.dense[at] = Some(value);
+            }
+            None => {
+                self.sparse.insert(index, value);
+            }
+        }
+    }
+}
+
 /// The most deactivated items kept for reuse per content type, as Compose's
 /// `MaxItemsToRetainForReuse`.
 const MAX_ITEMS_TO_RETAIN_FOR_REUSE: usize = 7;
@@ -187,7 +245,7 @@ impl ItemFactory {
 /// once, its layout returned; in the order asked, which is their slots'.
 pub(super) struct ItemComposer {
     factory: Rc<ItemFactory>,
-    composed: IndexMap<usize, Option<Measurable>>,
+    composed: ItemMap<Option<Measurable>>,
     order: Vec<usize>,
     #[cfg(debug_assertions)]
     keys: IndexMap<u64, usize>,
@@ -195,7 +253,7 @@ pub(super) struct ItemComposer {
 
 impl ItemComposer {
     fn new(factory: Rc<ItemFactory>, expected: usize) -> ItemComposer {
-        let mut composed = IndexMap::default();
+        let mut composed = ItemMap::default();
         composed.reserve(expected);
         ItemComposer {
             factory,

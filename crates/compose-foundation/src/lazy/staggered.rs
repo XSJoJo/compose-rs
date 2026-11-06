@@ -1501,7 +1501,7 @@ struct Context<'a, 's, 'scope> {
     /// What composes the items as the measurement reaches them.
     composer: &'a mut ItemComposer,
     /// Each item's placeable, as Compose's `getPlaceables` keeps those measured.
-    placeables: super::slots::IndexMap<usize, Placeable>,
+    placeables: super::slots::ItemMap<Placeable>,
     lane_info: &'a mut LazyStaggeredGridLaneInfo,
     slots: &'a Slots,
     items: &'a Items,
@@ -2397,7 +2397,7 @@ impl ItemsMeasurePolicy for StaggeredLayout {
             scope,
             composer,
             placeables: {
-                let mut placeables = super::slots::IndexMap::default();
+                let mut placeables = super::slots::ItemMap::default();
                 placeables.reserve(children.len() + 8);
                 placeables
             },
