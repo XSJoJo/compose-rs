@@ -998,8 +998,22 @@ impl TextFieldNode {
             constraints,
             placeholders: None,
         };
-        let size = constraints.constrain(measurer.metrics(paragraph).size);
+        // Laid out at the field's least height, as Compose's text under `heightInLines`, and
+        // with no most height but a single line's: a multi-line field scrolls.
+        let text = measurer.metrics(paragraph).size;
+        let least = self.least_lines_height().clamp(constraints.min_height, constraints.max_height);
+        let height = text.height.max(least);
+        let height = if self.single_line { height.min(constraints.max_height) } else { height };
+        let size = IntSize::new(constraints.constrain(text).width, height);
         Some(compose_ui::TextLayoutResult::new(input, measurer.paragraph(paragraph), size))
+    }
+
+    /// The fewest lines' height, as last measured (`line_bounds`).
+    fn least_lines_height(&self) -> i32 {
+        if self.single_line || self.min_lines <= 1 {
+            return 0;
+        }
+        self.line_bounds.map_or(0, |(_, min, _)| min)
     }
 
     /// A state-based field's `on_text_layout` hears each new layout (a paragraph laid out
@@ -2449,8 +2463,15 @@ impl LayoutModifierNode for TextFieldNode {
         }
         let metrics = scope.text_measurer().metrics(paragraph);
         // A multi-line field between `min_lines` and `max_lines` lines high, as Compose's
-        // `heightInLines`.
-        let (min_height, max_height) = self.line_bounds(scope);
+        // `heightInLines`; a value-based field of one line at most as high as its first line, as
+        // the legacy field's `heightForSingleLineField` for `maxLines == 1`: a tall script isn't
+        // cut.
+        let (min_height, max_height) = if self.max_lines == 1 && self.state.is_none() {
+            let line = scope.text_measurer().cursor_rect(paragraph, 0).bottom.ceil() as i32;
+            (line, line)
+        } else {
+            self.line_bounds(scope)
+        };
         let size = constraints.constrain(IntSize::new(
             metrics.size.width + cursor_width,
             metrics.size.height.max(min_height).min(max_height),
