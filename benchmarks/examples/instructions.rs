@@ -13,7 +13,7 @@ use compose::foundation::layout::*;
 use compose::foundation::*;
 use compose::runtime::{composable, derived_state_of, key, mutable_state_of, platform, remember};
 use compose::test::*;
-use compose::ui::platform::{FixedTextMeasurer, Optimizations, UiHost};
+use compose::ui::platform::{FixedTextMeasurer, Optimizations, ParagraphHandle, UiHost};
 use compose::ui::*;
 
 fn phone(content: fn()) -> UiHost {
@@ -421,13 +421,13 @@ fn dump(content: fn(), n: usize) {
     platform::set_manual_clock(platform::now_nanos());
     let mut host = phone(content);
     host.frame();
-    print!("{}", host.display_list().dump());
+    print!("{}", dump_with_text(&host));
     for _ in 0..n {
         platform::advance_clock(Duration::from_millis(16));
         host.frame();
     }
     println!("---");
-    print!("{}", host.display_list().dump());
+    print!("{}", dump_with_text(&host));
     let at = Offset::new(540.0, 1200.0);
     host.send_pointer(PointerEvent::scroll(at, Offset::new(0.0, 200.0)));
     for _ in 0..n {
@@ -435,7 +435,36 @@ fn dump(content: fn(), n: usize) {
         host.frame();
     }
     println!("---");
-    print!("{}", host.display_list().dump());
+    print!("{}", dump_with_text(&host));
+}
+
+/// The display list's dump with each paragraph's handle, an allocation number that another
+/// composing order renumbers, replaced by its text as the host's measurer holds it.
+fn dump_with_text(host: &UiHost) -> String {
+    let dump = host.display_list().dump();
+    host.with_tree(|tree| {
+        let measurer = tree.text_measurer_ref();
+        let mut out = String::with_capacity(dump.len());
+        for line in dump.lines() {
+            let trimmed = line.trim_start();
+            let handle = trimmed
+                .strip_prefix("paragraph ")
+                .and_then(|rest| rest.split_once(' '))
+                .and_then(|(number, rest)| Some((number.parse::<u64>().ok()?, rest)));
+            match handle {
+                Some((number, rest)) => {
+                    let indent = &line[..line.len() - trimmed.len()];
+                    let text = measurer.text(ParagraphHandle(number));
+                    out.push_str(&format!("{indent}paragraph {text:?} {rest}\n"));
+                }
+                None => {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+        }
+        out
+    })
 }
 
 fn main() {
