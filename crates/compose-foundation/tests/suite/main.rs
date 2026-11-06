@@ -3,6 +3,7 @@
 
 extern crate compose_runtime as compose;
 
+mod activity_recreation;
 mod alignment_line;
 mod anchored_draggable;
 mod bring_into_view;
@@ -136,6 +137,7 @@ mod review_x575;
 mod rtl;
 mod saveable_state_holder;
 mod scroll;
+mod scroll_focusable;
 mod scroll_indicator;
 mod scroll_indicator_lazy;
 mod scroll_state;
@@ -158,12 +160,15 @@ mod snapping;
 mod stretch_overscroll;
 mod subcompose_layout;
 mod text_field_basic;
+mod text_field_common_key_event;
 mod text_field_default_width;
+mod text_field_key_event;
 mod text_field_output;
 mod text_field_output_input_method;
 mod text_field_scroll_state;
 mod text_field_semantics;
 mod text_field_state;
+mod text_field_state_semantics;
 mod text_field_text_layout;
 mod text_field_transformation;
 mod text_field_undo;

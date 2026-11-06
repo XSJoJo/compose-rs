@@ -503,6 +503,31 @@ fn a_single_line_shows_new_lines_as_spaces() {
     assert_eq!(state.text().as_str(), "a\rb");
 }
 
+/// A new line typed into a single line, by an input method's commit or as text, is kept in the
+/// state and shown as a space, as Compose's single line, which filters nothing (D1146).
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldCodepointTransformationTest.kt, textField_singleLine_removesLineFeedViaCodepointTransformation
+#[test]
+fn a_new_line_typed_into_a_single_line_is_kept() {
+    let state = **Box::leak(Box::new(TextFieldState::new("")));
+    let mut ui = compose_test(move || {
+        BasicTextFieldOfState!(
+            state,
+            modifier = Modifier.width(300.dp()).test_tag("field"),
+            line_limits = TextFieldLineLimits::SingleLine,
+        );
+    });
+    ui.on_node_with_tag("field").request_focus();
+    ui.wait_for_idle();
+    let commit = compose_ui::CommitTextCommand::new("a\nb", 1);
+    assert!(ui.host().send_edit_commands(&[&commit]));
+    ui.wait_for_idle();
+    assert_eq!(state.text().as_str(), "a\nb");
+    assert_eq!(told(&mut ui).0, "a b");
+    ui.on_node_with_tag("field").perform_text_input("\nc");
+    assert_eq!(state.text().as_str(), "a\nb\nc");
+    assert_eq!(told(&mut ui).0, "a b c");
+}
+
 /// A new output transformation is shown at once.
 #[test]
 fn a_new_output_transformation_is_shown() {

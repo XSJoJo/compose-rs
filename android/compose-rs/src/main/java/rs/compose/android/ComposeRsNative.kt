@@ -303,6 +303,10 @@ internal object ComposeRsNative {
     @JvmStatic
     fun readAnimatorScale(): Float = ComposeRsRuntime.readAnimatorScale()
 
+    /** The "Show passwords" setting, when a password field asks (`bridge.rs`): 1 touch, 2 physical. */
+    @JvmStatic
+    fun readShowPassword(): Int = ComposeRsRuntime.readShowPassword()
+
     /** A task woke, on any thread: a tick on the main thread. */
     @JvmStatic
     fun wake() {

@@ -595,6 +595,35 @@ impl CompositionLocalAnchor {
         self.data(runtime).map(|data| &data.table)
     }
 
+    /// `action` at the end of a frame of the tree this anchor's composition is in, on its
+    /// recomposer, as [`Composition::schedule_frame_end_callback`](crate::Composition): another
+    /// tree's frame doesn't run it (once its composition is gone, any frame's end does). `None`
+    /// when no frame will end: the composition's no longer known, or its recomposer is shut down.
+    /// [`NONE`](Self::NONE) has no composition: any frame of the thread's recomposer.
+    pub fn schedule_frame_end_callback(
+        &self,
+        action: impl FnOnce() + 'static,
+    ) -> Option<crate::recomposer::CancellationHandle> {
+        let (owner, recomposer) = if self.composition.index == NONE {
+            (None, None)
+        } else {
+            // Its composition, whatever its provider (one at the content's root has none).
+            let recomposer = with_runtime(|runtime| {
+                let disposing =
+                    runtime.disposing_data.iter().find(|(id, _)| *id == self.composition);
+                match disposing {
+                    Some((_, data)) => Some(data.recomposer),
+                    None => runtime.compositions.get(self.composition).map(|data| data.recomposer),
+                }
+            })?;
+            (Some(self.composition), recomposer)
+        };
+        let recomposer = recomposer.unwrap_or_else(crate::recomposer::Recomposer::current_thread);
+        recomposer
+            .is_open_for_frames()
+            .then(|| recomposer.schedule_frame_end_callback_of(owner, Box::new(action)))
+    }
+
     /// The value of `local` here, or its default, as `currentValueOf`. A dynamic local is a
     /// state's value: reading it is observed where reads are (measuring, drawing, a composing
     /// scope). An anchor outlives nothing: its composition gone, it reads defaults.

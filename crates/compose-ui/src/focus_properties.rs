@@ -307,6 +307,48 @@ impl UiTree {
         }
     }
 
+    /// The focused rectangle in the layer of chain entry `entry` of `node`, if the focused target
+    /// is after it in the node's chain or in a node inside it (not an overlay's: its containers
+    /// are its own), as a container's `getFocusedRect()` of a target it holds.
+    pub(crate) fn focused_rect_inside(&mut self, node: NodeId, entry: EntryId) -> Option<Rect> {
+        self.in_window_of(node, |tree| tree.focused_rect_inside_here(node, entry))
+    }
+
+    fn focused_rect_inside_here(&mut self, node: NodeId, entry: EntryId) -> Option<Rect> {
+        let active = self.focus.active?;
+        let value = self.get(node)?;
+        let index = value.chain.iter().position(|it| it.id == entry)?;
+        let inside = if active.node == node {
+            value.chain.iter().position(|it| it.id == active.entry).is_some_and(|at| at > index)
+        } else {
+            let mut at = active.node;
+            loop {
+                let child = self.get(at)?;
+                if child.overlay {
+                    break false;
+                }
+                match child.parent {
+                    Some(parent) if parent == node => break true,
+                    Some(parent) => at = parent,
+                    None => break false,
+                }
+            }
+        };
+        if !inside {
+            return None;
+        }
+        let value = self.node(node);
+        let layer = value.layer_of(index).min(value.layers.len().checked_sub(1)?);
+        let origin = self.layer_origin(node, layer);
+        let rect = self.focus_rect_of(active);
+        Some(Rect::new(
+            rect.left - origin.x,
+            rect.top - origin.y,
+            rect.right - origin.x,
+            rect.bottom - origin.y,
+        ))
+    }
+
     fn focused_rect_here(&mut self, place: FocusPlace) -> Option<Rect> {
         let target = place?;
         let state = self.focus_state_of(target);

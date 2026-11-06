@@ -318,7 +318,8 @@ pub use placeholder::{Placeholder, PlaceholderVerticalAlign, Placeholders};
 pub use placement::PlacementScope;
 pub use platform_services::{
     DEFAULT_URI_SCHEMES, HapticFeedback, HapticFeedbackType, LOCAL_HAPTIC_FEEDBACK,
-    LOCAL_URI_HANDLER, PlatformUriHandler, UriHandler, check_uri, uri_for_log,
+    LOCAL_URI_HANDLER, PlatformUriHandler, UriHandler, check_uri, platform_show_password,
+    set_show_password_source, uri_for_log,
 };
 pub use platform_text_style::{
     EmojiSupportMatch, PlatformParagraphStyle, PlatformSpanStyle, PlatformTextStyle,
@@ -331,7 +332,9 @@ pub use prefetch::{
     LOCAL_PREFETCH_SCHEDULER, PrefetchClock, PrefetchRequest, PrefetchRequestScope,
     PrefetchScheduler, prefetch_now,
 };
-pub use relocation::{BringIntoViewBounds, BringIntoViewResponderNode, BringIntoViewScope};
+pub use relocation::{
+    BoundsRead, BringIntoViewBounds, BringIntoViewResponderNode, BringIntoViewScope,
+};
 pub use remeasurement::{Remeasurement, RemeasurementModifier};
 pub use ruler::{HorizontalRuler, RectRulers, Ruler, RulerScope, VerticalRuler};
 pub use semantics::{

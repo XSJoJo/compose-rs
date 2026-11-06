@@ -183,6 +183,31 @@ fn a_character_typed_in_the_middle_or_over_a_selection_shows() {
     assert_eq!(shown(&mut ui), bullets(3));
 }
 
+/// One glyph typed that ends selected (an input method's commit and selection in one batch)
+/// isn't revealed, as Compose's `PasswordInputTransformation`: "if there is an expanded
+/// selection, don't reveal anything".
+// Compose: compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/text/BasicSecureTextField.kt, PasswordInputTransformation.transformInput (no test of its own)
+#[test]
+fn a_character_typed_and_left_selected_is_not_shown() {
+    let mut ui = in_mode(TextObfuscationMode::RevealLastTyped);
+    type_in(&mut ui, "ab");
+    advance(&mut ui, 2000);
+    assert_eq!(shown(&mut ui), bullets(2));
+    // The commit's offsets are the shown text's: a bullet is 3 bytes.
+    let commit = compose_ui::CommitTextCommand::new("c", 1);
+    let select = compose_ui::SetSelectionCommand::new(6, 9);
+    assert!(ui.host().send_edit_commands(&[&commit, &select]));
+    ui.wait_for_idle();
+    advance(&mut ui, 50);
+    assert_eq!(shown(&mut ui), bullets(3));
+    // Typed over it, nothing selected after: it shows.
+    let commit = compose_ui::CommitTextCommand::new("d", 1);
+    assert!(ui.host().send_edit_commands(&[&commit]));
+    ui.wait_for_idle();
+    advance(&mut ui, 50);
+    assert_eq!(shown(&mut ui), format!("{}d", bullets(2)));
+}
+
 fn select(ui: &mut ComposeTestRule, start: i32, end: i32) {
     ui.on_node_with_tag("field").perform_semantics_action_with(&A::SET_SELECTION, |set| {
         set(start, end, false);
@@ -437,6 +462,48 @@ fn system_mode_reveals_as_the_platform_says_for_the_keyboard() {
     type_on_keys(&mut ui, "d");
     advance(&mut ui, 200);
     assert_eq!(shown(&mut ui), "****", "a physical keyboard's, not shown for it");
+}
+
+/// Without a provider, `System` reads the platform's "Show passwords" setting, for a screen's
+/// keyboard and a physical one (D1146); where the host has none, Android's defaults.
+// Compose: compose/foundation/foundation/src/androidMain/kotlin/androidx/compose/foundation/text/BasicSecureTextField.android.kt, PlatformPasswordVisibilitySettingImpl (no test of its own)
+#[test]
+fn system_mode_reads_the_platform_setting() {
+    fn setting_off() -> (bool, bool) {
+        (false, false)
+    }
+    fn physical_only() -> (bool, bool) {
+        (false, true)
+    }
+    let read = || -> PasswordVisibility {
+        let heard = std::rc::Rc::new(std::cell::Cell::new(None));
+        let into = heard.clone();
+        let mut ui = compose_test(move || into.set(Some(LOCAL_PASSWORD_VISIBILITY.current())));
+        ui.wait_for_idle();
+        heard.get().expect("composed")
+    };
+    compose_ui::set_show_password_source(None);
+    assert_eq!(read(), visibility(true, false));
+    compose_ui::set_show_password_source(Some(setting_off));
+    assert_eq!(read(), visibility(false, false));
+    compose_ui::set_show_password_source(Some(physical_only));
+    assert_eq!(read(), visibility(false, true));
+    compose_ui::set_show_password_source(Some(setting_off));
+    // A field typed in on a screen's keyboard hides it at once.
+    let mut field = ComposeTestRule::with_manual_clock(move || {
+        BasicSecureTextField!(
+            remember_text_field_state("", None),
+            modifier = Modifier.width(300.dp()).test_tag("field"),
+            text_obfuscation_character = '*',
+        );
+    });
+    field.wait_for_idle();
+    field.on_node_with_tag("field").perform_click();
+    type_in(&mut field, "a");
+    advance(&mut field, 200);
+    let shown_text = shown(&mut field);
+    compose_ui::set_show_password_source(None);
+    assert_eq!(shown_text, "*");
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/BasicSecureTextFieldTest.kt, revealLastTyped_alwaysReveals_evenWhenSystemSettingDisabled

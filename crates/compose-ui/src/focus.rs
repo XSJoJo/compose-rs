@@ -1869,21 +1869,31 @@ impl UiTree {
         self.focus.moved_by_tree = moving;
     }
 
-    /// What `EventContext::bring_into_view` asked of `node` (a focused node in a scrolling
+    /// What `EventContext::bring_into_view` asked of each node (a focused node in a scrolling
     /// container is scrolled into view, as Compose's `FocusableNode`; one not placed yet, a lazy
-    /// item composed ahead, once the next layout places it).
-    /// `rect`, a rect in a chain entry's layer, is what of it to show.
-    pub(crate) fn bring_focused_into_view(&mut self, node: NodeId, rect: Option<(usize, Rect)>) {
+    /// item composed ahead, once the next layout places it), each queued by the containers (D1145).
+    /// A rect in a chain entry's layer is what of it to show; `None`, all of it.
+    pub(crate) fn bring_focused_into_view(
+        &mut self,
+        requests: Vec<crate::input::BringIntoViewRequest>,
+    ) {
         if self.focus.moved_by_tree {
             return;
         }
-        if self.is_laid_out(node) {
-            match rect {
-                Some((entry, rect)) => self.bring_entry_rect_into_view(node, entry, rect),
-                None => self.bring_into_view(node),
+        // Each container queues them and shows the largest that fits, as Compose's
+        // `ContentInViewNode` (D1145, D1376).
+        for (node, what) in requests {
+            if self.get(node).is_none() {
+                continue;
             }
-        } else {
-            self.bring_into_view_after_layout = Some(node);
+            if self.is_laid_out(node) {
+                match what {
+                    Some((entry, rect)) => self.bring_entry_rect_into_view(node, entry, rect),
+                    None => self.bring_into_view(node),
+                }
+            } else {
+                self.bring_into_view_after_layout = Some(node);
+            }
         }
     }
 

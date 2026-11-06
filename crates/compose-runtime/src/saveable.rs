@@ -23,9 +23,10 @@ use std::rc::Rc;
 
 pub use crate::saveable_state_holder::{SaveableStateHolder, remember_saveable_state_holder};
 
+use crate::composer::record_effect;
 use crate::local::CompositionLocal;
 use crate::remember::{Remember, RememberObserver, remember_observer};
-use crate::runtime::with_runtime;
+use crate::runtime::{DeferredEffect, with_runtime};
 use crate::slot_table::{GroupKind, NONE};
 use crate::state::{Owned, OwnedState, mutable_state_of};
 
@@ -423,6 +424,9 @@ impl<'a> Reader<'a> {
 /// What a registered value saves itself with.
 type Provider = Rc<dyn Fn() -> Option<SavedValue>>;
 
+/// Which values a registry can save.
+type CanBeSaved = Box<dyn Fn(&SavedValue) -> bool>;
+
 #[derive(Default)]
 struct RegistryInner {
     /// The values restored and not yet taken back, by key, in order.
@@ -430,6 +434,8 @@ struct RegistryInner {
     /// The registered values, by key, in the order they were registered.
     providers: RefCell<HashMap<u64, Vec<(u64, Provider)>>>,
     next_entry: Cell<u64>,
+    /// Which values can be saved, as Compose's `canBeSaved`: all of them without it.
+    can_be_saved: Option<CanBeSaved>,
 }
 
 /// Where `remember_saveable` registers its values and finds those saved, as Compose's
@@ -446,13 +452,55 @@ impl crate::ComposeArg for SaveableStateRegistry {
 }
 
 impl SaveableStateRegistry {
-    /// A registry giving back `restored` (what an earlier registry saved), if any.
+    /// A registry giving back `restored` (what an earlier registry saved), if any. Every saved
+    /// value can be saved in it: a [`SavedValue`] is what saved state holds.
     pub fn new(restored: Option<SavedState>) -> SaveableStateRegistry {
         let registry = SaveableStateRegistry::default();
         if let Some(restored) = restored {
             registry.restore(restored);
         }
         registry
+    }
+
+    /// A registry giving back `restored`, saving only the values `can_be_saved` accepts, as
+    /// Compose's `SaveableStateRegistry(restoredValues, canBeSaved)`: a value it refuses panics
+    /// when it registers through `remember_saveable` or when it's saved, as Compose throws (a
+    /// platform's limit on what it keeps, say).
+    pub fn with_can_be_saved(
+        restored: Option<SavedState>,
+        can_be_saved: impl Fn(&SavedValue) -> bool + 'static,
+    ) -> SaveableStateRegistry {
+        let registry = SaveableStateRegistry {
+            inner: Rc::new(RegistryInner {
+                can_be_saved: Some(Box::new(can_be_saved)),
+                ..RegistryInner::default()
+            }),
+        };
+        if let Some(restored) = restored {
+            registry.restore(restored);
+        }
+        registry
+    }
+
+    /// Whether `value` can be saved in this registry, as Compose's `canBeSaved`.
+    pub fn can_be_saved(&self, value: &SavedValue) -> bool {
+        self.inner.can_be_saved.as_ref().is_none_or(|can_be_saved| can_be_saved(value))
+    }
+
+    /// Whether the registry refuses some values: [`can_be_saved`](Self::can_be_saved) is
+    /// otherwise always true, and nothing needs asking.
+    pub(crate) fn checks_values(&self) -> bool {
+        self.inner.can_be_saved.is_some()
+    }
+
+    /// Panics, as Compose's `requireCanBeSaved`, if `value` can't be saved here.
+    fn require_can_be_saved(&self, value: &SavedValue) {
+        assert!(
+            self.can_be_saved(value),
+            "{value:?} cannot be saved using the current SaveableStateRegistry. Its \
+             can_be_saved refuses it: consider a custom Saver for this value, passed to \
+             remember_saveable_with()"
+        );
     }
 
     /// Gives back `state` to the values registered from now on (what's left of an earlier
@@ -482,9 +530,14 @@ impl SaveableStateRegistry {
         key: u64,
         provider: impl Fn() -> Option<SavedValue> + 'static,
     ) -> RegistryEntry {
+        self.register(key, Rc::new(provider))
+    }
+
+    /// [`register_provider`](Self::register_provider) of a provider already shared.
+    fn register(&self, key: u64, provider: Provider) -> RegistryEntry {
         let id = self.inner.next_entry.get();
         self.inner.next_entry.set(id + 1);
-        self.inner.providers.borrow_mut().entry(key).or_default().push((id, Rc::new(provider)));
+        self.inner.providers.borrow_mut().entry(key).or_default().push((id, provider));
         RegistryEntry { registry: Rc::downgrade(&self.inner), key, id }
     }
 
@@ -495,6 +548,11 @@ impl SaveableStateRegistry {
 
     /// Every registered value's saved form, by key, and the values restored and not yet taken
     /// back, as Compose's `performSave`. Values whose saver saved nothing are left out.
+    ///
+    /// # Panics
+    ///
+    /// If a value can't be saved here ([`can_be_saved`](Self::can_be_saved)), as Compose's
+    /// `check`.
     pub fn perform_save(&self) -> SavedState {
         // Nothing to save (a lazy list item without saveable state, as it scrolls away).
         if self.inner.providers.borrow().is_empty() && self.inner.restored.borrow().is_empty() {
@@ -519,9 +577,13 @@ impl SaveableStateRegistry {
             .iter()
             .map(|(key, values)| (*key, values.iter().cloned().collect()))
             .collect();
+        let checks = self.checks_values();
         for (key, providers) in providers {
             let saved: Vec<SavedValue> =
                 providers.iter().filter_map(|provider| provider()).collect();
+            if checks {
+                saved.iter().for_each(|value| self.require_can_be_saved(value));
+            }
             if saved.is_empty() {
                 values.remove(&key);
             } else {
@@ -554,9 +616,11 @@ impl RegistryEntry {
 }
 
 /// The registry `remember_saveable` uses, as Compose's `LocalSaveableStateRegistry`: none
-/// outside a host that saves state (values are then only remembered).
+/// outside a host that saves state (values are then only remembered). Static, as Compose's
+/// (`staticCompositionLocalOf`): reads record nothing, and another registry provided
+/// recomposes the provider's whole content.
 pub static LOCAL_SAVEABLE_STATE_REGISTRY: CompositionLocal<Option<SaveableStateRegistry>> =
-    CompositionLocal::new("LocalSaveableStateRegistry", || None);
+    CompositionLocal::new_static("LocalSaveableStateRegistry", || None);
 
 /// A hash of the keys of the groups from the composition's root to the composable composing
 /// now, as Compose's `currentCompositeKeyHash`: the same at the same place of the same
@@ -739,25 +803,73 @@ impl<H: Copy + 'static> RememberSaveable for Owned<H> {
     }
 }
 
-/// The value remembered, registered with the registry while it's in the composition.
-struct SaveableHolder<S: 'static> {
-    stored: Rc<S>,
-    registration: Option<(SaveableStateRegistry, u64, Provider)>,
+/// What a registered value saves: the value remembered now, with the saver passed last.
+struct SaveableValue<S: 'static, Sv> {
+    stored: RefCell<Rc<S>>,
+    saver: RefCell<Sv>,
+}
+
+/// The value remembered, registered with the registry while it's in the composition, as
+/// Compose's `SaveableHolder`.
+struct SaveableHolder<S: 'static, Sv: 'static> {
+    value: Rc<SaveableValue<S, Sv>>,
+    /// What the registry calls: the value's saved form, by the saver passed last.
+    provider: Provider,
+    /// The registry the value registers with: the one provided when the last pass applied.
+    registry: RefCell<Option<SaveableStateRegistry>>,
+    key: u64,
     entry: RefCell<Option<RegistryEntry>>,
 }
 
-impl<S: 'static> RememberObserver for SaveableHolder<S> {
-    fn on_remembered(&self) {
-        if let Some((registry, key, provider)) = &self.registration {
-            let provider = provider.clone();
-            *self.entry.borrow_mut() = Some(registry.register_provider(*key, move || provider()));
+impl<S: 'static, Sv: 'static> SaveableHolder<S, Sv> {
+    fn register(&self) {
+        let registry = self.registry.borrow().clone();
+        let Some(registry) = registry else { return };
+        // As Compose's `requireCanBeSaved`, when the registry may refuse values.
+        if registry.checks_values()
+            && let Some(value) = (self.provider)()
+        {
+            registry.require_can_be_saved(&value);
         }
+        *self.entry.borrow_mut() = Some(registry.register(self.key, self.provider.clone()));
     }
 
-    fn on_forgotten(&self) {
+    fn unregister(&self) {
         if let Some(entry) = self.entry.borrow_mut().take() {
             entry.unregister();
         }
+    }
+
+    /// The registry provided now, at the end of a pass that saw another: the value moves to it,
+    /// as Compose's `SaveableHolder.update` (unless it never registered, as Compose's).
+    fn update_registry(&self, registry: Option<SaveableStateRegistry>) {
+        *self.registry.borrow_mut() = registry;
+        if self.entry.borrow().is_some() {
+            self.unregister();
+            self.register();
+        }
+    }
+}
+
+impl<S: 'static, Sv: 'static> RememberObserver for SaveableHolder<S, Sv> {
+    fn on_remembered(&self) {
+        self.register();
+    }
+
+    fn on_forgotten(&self) {
+        self.unregister();
+    }
+
+    fn on_abandoned(&self) {
+        self.unregister();
+    }
+}
+
+fn same_registry(a: &Option<SaveableStateRegistry>, b: &Option<SaveableStateRegistry>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => Rc::ptr_eq(&a.inner, &b.inner),
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -765,7 +877,7 @@ impl<S: 'static> RememberObserver for SaveableHolder<S> {
 /// `rememberSaveable { … }`: the first time this call runs at this place, it takes back the
 /// value saved here by an earlier host, if any, or computes `init`. The value (a remembered
 /// `OwnedState`'s value) must be [`Saveable`]; others take a saver
-/// ([`remember_saveable_with`]).
+/// ([`remember_saveable_with`]). A registry provided in place of another takes the value over.
 ///
 /// ```ignore
 /// let count = remember_saveable(|| mutable_state_of(0));
@@ -775,18 +887,67 @@ where
     T: RememberSaveable,
     T::Value: Saveable,
 {
-    remember_saveable_with(AutoSaver, init)
+    remember_saveable_impl(false, AutoSaver, init)
 }
 
 /// [`remember_saveable`] converting the value with `saver`, as Compose's
-/// `rememberSaveable(saver = …) { … }` (for an `OwnedState`, its `stateSaver`).
+/// `rememberSaveable(saver = …) { … }` (for an `OwnedState`, its `stateSaver`). The value is
+/// saved with the saver passed last.
 pub fn remember_saveable_with<T: RememberSaveable>(
     saver: impl Saver<T::Value>,
     init: impl FnOnce() -> T,
 ) -> T::Output {
-    let holder = remember_observer(move || {
-        let registry = LOCAL_SAVEABLE_STATE_REGISTRY.current();
-        let key = current_composite_key_hash_code();
+    remember_saveable_impl(false, saver, init)
+}
+
+/// [`remember_saveable`], computed again by `init` whenever `inputs` is not
+/// [`same`](crate::ComposeArg::same) as last time, as Compose's `rememberSaveable(inputs) { … }`:
+/// the value resets, without taking back a saved one, and keeps its place among the values
+/// saved. `inputs` is one value or a tuple, as [`remember_keyed`](crate::remember_keyed)'s
+/// keys; a replaced `OwnedState` is freed at the end of the pass.
+pub fn remember_saveable_keyed<K, T>(inputs: K, init: impl FnOnce() -> T) -> T::Output
+where
+    K: crate::ComposeArg,
+    T: RememberSaveable,
+    T::Value: Saveable,
+{
+    let same = crate::remember::remember_keys(inputs);
+    remember_saveable_impl(!same, AutoSaver, init)
+}
+
+/// [`remember_saveable_keyed`] converting the value with `saver`, as Compose's
+/// `rememberSaveable(inputs, saver = …) { … }`.
+pub fn remember_saveable_keyed_with<K: crate::ComposeArg, T: RememberSaveable>(
+    inputs: K,
+    saver: impl Saver<T::Value>,
+    init: impl FnOnce() -> T,
+) -> T::Output {
+    let same = crate::remember::remember_keys(inputs);
+    remember_saveable_impl(!same, saver, init)
+}
+
+fn remember_saveable_impl<T: RememberSaveable, Sv: Saver<T::Value>>(
+    inputs_changed: bool,
+    saver: Sv,
+    init: impl FnOnce() -> T,
+) -> T::Output {
+    remember_saveable_in(LOCAL_SAVEABLE_STATE_REGISTRY.current(), inputs_changed, saver, init)
+}
+
+/// `remember_saveable` with the registry provided here, read by the caller.
+pub(crate) fn remember_saveable_in<T: RememberSaveable, Sv: Saver<T::Value>>(
+    registry: Option<SaveableStateRegistry>,
+    inputs_changed: bool,
+    saver: Sv,
+    init: impl FnOnce() -> T,
+) -> T::Output {
+    let (mut saver, mut init) = (Some(saver), Some(init));
+    let holder = remember_observer(|| {
+        let saver = saver.take().expect("taken once");
+        let init = init.take().expect("taken once");
+        // The key matters only to a registry (one provided later isn't registered with, as in
+        // Compose): no walk to the root without one.
+        let key = registry.as_ref().map_or(0, |_| current_composite_key_hash_code());
         let restored = registry
             .as_ref()
             .and_then(|registry| registry.consume_restored(key))
@@ -795,14 +956,39 @@ pub fn remember_saveable_with<T: RememberSaveable>(
             Some(value) => T::from_value(value),
             None => init(),
         };
-        let stored = Rc::new(value.into_stored());
-        let registration = registry.map(|registry| {
-            let stored = stored.clone();
-            let provider: Provider =
-                Rc::new(move || T::with_value(&stored, |value| saver.save(value)));
-            (registry, key, provider)
+        let value = Rc::new(SaveableValue {
+            stored: RefCell::new(Rc::new(value.into_stored())),
+            saver: RefCell::new(saver),
         });
-        SaveableHolder { stored, registration, entry: RefCell::new(None) }
+        let saved = value.clone();
+        let provider: Provider = Rc::new(move || {
+            let stored = saved.stored.borrow().clone();
+            T::with_value(&stored, |value| saved.saver.borrow().save(value))
+        });
+        SaveableHolder {
+            value,
+            provider,
+            registry: RefCell::new(registry.clone()),
+            key,
+            entry: RefCell::new(None),
+        }
     });
-    T::output(&holder.stored)
+    // Remembered before: the latest saver is the one saving, as Compose's.
+    if let Some(saver) = saver {
+        *holder.value.saver.borrow_mut() = saver;
+        if inputs_changed && let Some(init) = init {
+            // A new value, not the restored one; the old goes when the pass applies (or with
+            // the pass, if it doesn't), as `remember_keyed`'s.
+            let value = Rc::new(init().into_stored());
+            let old = holder.value.stored.replace(value);
+            record_effect(DeferredEffect::Boxed(Box::new(move || drop(old))));
+        }
+        if !same_registry(&holder.registry.borrow(), &registry) {
+            let holder = holder.clone();
+            record_effect(DeferredEffect::Boxed(Box::new(move || {
+                holder.update_registry(registry)
+            })));
+        }
+    }
+    T::output(&holder.value.stored.borrow())
 }

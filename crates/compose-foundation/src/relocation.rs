@@ -4,14 +4,14 @@
 //! takes part as one of them; `BringIntoViewSpec` says how far a container scrolls to show
 //! something, and along what animation (D1371, D1376).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use compose_animation::AnimationSpec;
 use compose_runtime::{ComposeArg, CompositionLocal};
 use compose_ui::{
-    BringIntoViewBounds, BringIntoViewResponderNode, BringIntoViewScope, LocalBoxFuture, Modifier,
-    ModifierNode, ModifierNodeElement, NodeContext, NodeHandle, Rect,
+    BoundsRead, BringIntoViewBounds, BringIntoViewResponderNode, BringIntoViewScope,
+    LocalBoxFuture, Modifier, ModifierNode, ModifierNodeElement, NodeContext, NodeHandle, Rect,
 };
 
 // ---- The spec ----------------------------------------------------------------------------------
@@ -241,7 +241,20 @@ impl BringIntoViewResponderNode for ResponderNode {
         _scope: &BringIntoViewScope,
     ) -> Option<LocalBoxFuture<'static, ()>> {
         let responder = self.0.clone();
-        let local_rect: Rc<dyn Fn() -> Option<Rect>> = Rc::new(move || bounds.rect());
+        // A read while the tree is busy (from inside another read of it) gives the rect last
+        // read: the requester hasn't gone.
+        let last = Cell::new(None);
+        let local_rect: Rc<dyn Fn() -> Option<Rect>> = Rc::new(move || match bounds.read() {
+            BoundsRead::Now(rect, _) => {
+                last.set(Some(rect));
+                Some(rect)
+            }
+            BoundsRead::Gone => {
+                last.set(None);
+                None
+            }
+            BoundsRead::Busy => last.get(),
+        });
         Some(Box::pin(async move { responder.bring_child_into_view(local_rect).await }))
     }
 }

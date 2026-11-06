@@ -81,6 +81,18 @@ impl BringIntoViewScope {
 #[derive(Clone)]
 pub struct BringIntoViewBounds(Rc<BoundsPath>);
 
+/// What reading a [`BringIntoViewBounds`] found.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum BoundsRead {
+    /// The rect now, in the responder's coordinates, and the size of the responder's layer.
+    Now(Rect, IntSize),
+    /// The requester, a responder on the way or the tree is gone: it never shows again.
+    Gone,
+    /// The tree is busy (read from inside another read of it, or while it's changed): nothing
+    /// can be said now. Not a detached requester: read it again later.
+    Busy,
+}
+
 impl BringIntoViewBounds {
     /// The rect now, in the responder's coordinates, as `localRect()`: `None` once the requester
     /// or a responder on the way is detached (or the tree is busy).
@@ -90,11 +102,26 @@ impl BringIntoViewBounds {
 
     /// The rect now and the size of the responder's layer.
     pub fn current(&self) -> Option<(Rect, IntSize)> {
+        match self.read() {
+            BoundsRead::Now(rect, size) => Some((rect, size)),
+            BoundsRead::Gone | BoundsRead::Busy => None,
+        }
+    }
+
+    /// The rect now, telling a requester gone from a tree that can't be read now. Registers
+    /// nothing: reading is free to do each frame.
+    pub fn read(&self) -> BoundsRead {
         let mut current = None;
-        crate::node_context::peek_tree(self.0.tree, &mut |tree| {
+        let read = crate::node_context::peek_tree(self.0.tree, &mut |tree| {
             current = tree.bounds_along(&self.0);
         });
-        current
+        match current {
+            Some((rect, size)) => BoundsRead::Now(rect, size),
+            None if read => BoundsRead::Gone,
+            // Not read: busy while the tree's still registered, else gone with it.
+            None if crate::node_context::requests_of(self.0.tree).is_some() => BoundsRead::Busy,
+            None => BoundsRead::Gone,
+        }
     }
 }
 
@@ -263,7 +290,9 @@ impl UiTree {
             let origin = self.layer_origin(node, layer);
             let viewport = self.node(node).layers[layer].measured;
             let locals = self.node(node).locals;
-            let handle = crate::node_context::entry_handle(self, node, index);
+            // Not registered: the scope's handle isn't for keeping, only `calculate_rect_for_parent`
+            // is asked here.
+            let handle = crate::node_context::NodeHandle::of_entry(self.key, node, entry);
             let scope = BringIntoViewScope { viewport, locals, handle };
             let local = moved(rect, Offset::new(-origin.x, -origin.y));
             let responder = self.node_mut(node).chain[index].as_bring_into_view_responder()?;

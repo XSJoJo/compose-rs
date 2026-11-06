@@ -13,10 +13,12 @@ use std::rc::Rc;
 
 use compose_runtime::CompositionLocalAnchor;
 use compose_ui::{
-    BringIntoViewBounds, BringIntoViewScope, IntSize, LocalBoxFuture, NodeHandle, Rect,
+    BoundsRead, BringIntoViewBounds, BringIntoViewScope, IntSize, LocalBoxFuture, NodeHandle, Rect,
 };
 
-use crate::gestures::bring_into_view_queue::{BringIntoViewRequestPriorityQueue, Request};
+use crate::gestures::bring_into_view_queue::{
+    BringIntoViewRequestPriorityQueue, ReadBounds, Request,
+};
 use crate::gestures::updatable_animation_state::{ExecutorFrames, UpdatableAnimationState};
 use crate::gestures::{ScrollableState, ScrollableStateExt};
 use crate::mutator::MutatePriority;
@@ -108,24 +110,63 @@ pub(crate) fn shows(rect: Rect, parent: Rect, shift: f32, vertical: bool) -> boo
     relocation.abs() <= MIN_SCROLL_THRESHOLD
 }
 
+/// Notes a container measured at `size`, last at `*measured`: what it was if it shrank along its
+/// axis (not the first measurement), as `onRemeasured`'s test.
+pub(crate) fn shrunk(measured: &mut IntSize, size: IntSize, vertical: bool) -> Option<IntSize> {
+    let previous = std::mem::replace(measured, size);
+    let along = |size: IntSize| if vertical { size.height } else { size.width };
+    (along(size) < along(previous)).then_some(previous)
+}
+
+/// A container's `ContentInView` with `config`, made if it has none.
+pub(crate) fn with_config(
+    content_in_view: &mut Option<Rc<ContentInView>>,
+    config: ContentInViewConfig,
+) -> Rc<ContentInView> {
+    match content_in_view {
+        Some(content_in_view) => {
+            content_in_view.set_config(config);
+            content_in_view.clone()
+        }
+        None => content_in_view.insert(ContentInView::new(config)).clone(),
+    }
+}
+
 /// A container's requests and its animation, made at its first request.
+///
+/// The requests' bounds are read (application code may run: a deprecated
+/// `BringIntoViewResponder`'s `calculate_rect_for_parent`) with nothing of it borrowed, then the
+/// queue decides from what they read; the queue is borrowed only for that, never across a read or
+/// an await, so it's free whenever the animation ends.
 pub(crate) struct ContentInView {
-    config: RefCell<ContentInViewConfig>,
+    /// Read when it's used (a frame's scroll, a read of a request's bounds): an update of the
+    /// container mid-animation is followed, but for its state (the scroll held is of the state it
+    /// started with).
+    config: Rc<RefCell<ContentInViewConfig>>,
     locals: Cell<Option<CompositionLocalAnchor>>,
     /// The container's size, as its requests' bounds last said.
     viewport: Rc<Cell<IntSize>>,
     requests: RefCell<BringIntoViewRequestPriorityQueue>,
     animating: Cell<bool>,
+    /// Keeping the focused child in view after the viewport shrank, as `trackingFocusedChild`.
+    tracking: Cell<bool>,
+    /// A shrink waiting for its frame's end to see whether the focused child was clipped.
+    checking: Cell<bool>,
+    /// The container's handle, for the focused rect inside it.
+    handle: Cell<Option<NodeHandle>>,
 }
 
 impl ContentInView {
     pub(crate) fn new(config: ContentInViewConfig) -> Rc<ContentInView> {
         Rc::new(ContentInView {
-            config: RefCell::new(config),
+            config: Rc::new(RefCell::new(config)),
             locals: Cell::new(None),
             viewport: Rc::default(),
             requests: RefCell::default(),
             animating: Cell::new(false),
+            tracking: Cell::new(false),
+            checking: Cell::new(false),
+            handle: Cell::new(None),
         })
     }
 
@@ -134,7 +175,8 @@ impl ContentInView {
     }
 
     fn spec(&self) -> Rc<dyn BringIntoViewSpec> {
-        resolve_spec(&self.config.borrow().spec, self.locals.get())
+        let given = self.config.borrow().spec.clone();
+        resolve_spec(&given, self.locals.get())
     }
 
     fn vertical(&self) -> bool {
@@ -143,27 +185,104 @@ impl ContentInView {
 
     /// Whether `rect` is as visible as it can be: in view, or spanning the viewport, as
     /// `isMaxVisible`.
-    fn is_max_visible(&self, rect: Rect) -> bool {
-        let spec = self.spec();
-        relocation(&*spec, rect, self.viewport.get(), self.vertical()).abs() <= MIN_SCROLL_THRESHOLD
+    fn is_max_visible(&self, spec: &dyn BringIntoViewSpec, rect: Rect) -> bool {
+        relocation(spec, rect, self.viewport.get(), self.vertical()).abs() <= MIN_SCROLL_THRESHOLD
     }
 
-    /// Asked by the tree to show what `bounds` gives, which doesn't show yet (`shows`), as
-    /// `bringChildIntoView`: the future ends once it's shown, or the request was interrupted.
+    /// The focused rect inside the container, where the scroll asked for will put it, as
+    /// `getFocusedRect()`.
+    fn focused_rect(&self) -> Option<Rect> {
+        let rect = self.handle.get()?.focused_rect_inside()?;
+        let config = self.config.borrow();
+        Some(shifted(rect, config.pending_shift(), config.vertical))
+    }
+
+    /// The container was measured smaller along its axis, from `previous` to `size`, as
+    /// `onRemeasured`: if that clipped the focused child, which showed before, the container
+    /// animates to keep it in view. compose-rs can't read the tree during the measurement, so the
+    /// focused child is looked at once the frame's layout is done, where it's placed: one placed
+    /// from the container's end (`!reverse_direction`, as Compose's adjustment) was where it is
+    /// now plus what the viewport lost.
+    pub(crate) fn on_viewport_shrunk(
+        self: &Rc<Self>,
+        previous: IntSize,
+        size: IntSize,
+        handle: NodeHandle,
+        locals: CompositionLocalAnchor,
+    ) {
+        self.handle.set(Some(handle));
+        self.locals.set(Some(locals));
+        self.viewport.set(size);
+        if self.animating.get() || self.tracking.get() || self.checking.get() {
+            return;
+        }
+        // At the end of this frame, its layout done and the tree free; the animation it may
+        // start takes its first step then.
+        self.checking.set(true);
+        let this = self.clone();
+        let check = move || {
+            this.checking.set(false);
+            this.keep_focused_in_view(previous, size, handle);
+        };
+        if locals.schedule_frame_end_callback(check).is_none() {
+            self.checking.set(false);
+        }
+    }
+
+    /// Starts keeping the focused child in view if the shrink from `previous` to `size` clipped
+    /// it, and it showed before.
+    fn keep_focused_in_view(self: &Rc<Self>, previous: IntSize, size: IntSize, handle: NodeHandle) {
+        if self.animating.get() || self.tracking.get() {
+            return;
+        }
+        let Some(rect) = self.focused_rect() else { return };
+        let spec = self.spec();
+        let (vertical, from_end) = {
+            let config = self.config.borrow();
+            (config.vertical, !config.reverse_direction)
+        };
+        let along = |size: IntSize| if vertical { size.height } else { size.width } as f32;
+        let lost = if from_end { along(previous) - along(size) } else { 0.0 };
+        let was = shifted(rect, lost, vertical);
+        let showed = relocation(&*spec, was, previous, vertical).abs() <= MIN_SCROLL_THRESHOLD;
+        if showed && !self.is_max_visible(&*spec, rect) {
+            self.tracking.set(true);
+            self.launch_animation(handle);
+        }
+    }
+
+    /// Reads every request's bounds again, outside the queue.
+    fn refresh(&self) -> Vec<Request> {
+        let requests = self.requests.borrow_mut().snapshot();
+        for request in &requests {
+            request.refresh();
+        }
+        requests
+    }
+
+    /// Asked by the tree to show what `bounds` gives, which doesn't show yet (`shows`) and is at
+    /// `rect` now, as `bringChildIntoView`: the future ends once it's shown, or the request was
+    /// interrupted.
     pub(crate) fn bring_child_into_view(
         self: &Rc<Self>,
+        rect: Rect,
         bounds: BringIntoViewBounds,
         scope: &BringIntoViewScope,
     ) -> LocalBoxFuture<'static, ()> {
         self.locals.set(Some(scope.locals()));
         self.viewport.set(scope.viewport());
-        let current = self.current_bounds(bounds);
+        let first = {
+            let config = self.config.borrow();
+            shifted(rect, config.pending_shift(), config.vertical)
+        };
+        let request = Request::new(self.read_bounds(bounds), Some(first));
         let this = self.clone();
         let handle = scope.handle();
         Box::pin(async move {
-            // What's gone by now is resumed at once.
-            let request = Request::new(current);
             let wait = request.continuation.clone().wait();
+            // Where it and the others are now (it may be gone already: resumed at once).
+            this.refresh();
+            request.refresh();
             let enqueued = this.requests.borrow_mut().enqueue(request);
             if enqueued && !this.animating.get() {
                 this.launch_animation(handle);
@@ -172,27 +291,32 @@ impl ContentInView {
         })
     }
 
-    /// What `bounds` gives in the container now, where the scroll asked for will put it.
-    fn current_bounds(&self, bounds: BringIntoViewBounds) -> Rc<dyn Fn() -> Option<Rect>> {
-        let config = self.config.borrow().clone();
+    /// How a request reads what `bounds` gives in the container now, where the scroll asked for
+    /// will put it: `Some(None)` once it's gone, `None` while the tree can't be read.
+    fn read_bounds(&self, bounds: BringIntoViewBounds) -> ReadBounds {
+        let config = self.config.clone();
         let viewport = self.viewport.clone();
-        Rc::new(move || {
-            let (rect, size) = bounds.current()?;
-            viewport.set(size);
-            Some(shifted(rect, config.pending_shift(), config.vertical))
+        Rc::new(move || match bounds.read() {
+            BoundsRead::Now(rect, size) => {
+                viewport.set(size);
+                let config = config.borrow();
+                Some(Some(shifted(rect, config.pending_shift(), config.vertical)))
+            }
+            BoundsRead::Gone => Some(None),
+            BoundsRead::Busy => None,
         })
     }
 
     /// The largest request that fits in the viewport (the smallest, if none does), as
-    /// `findBringIntoViewRequest`.
+    /// `findBringIntoViewRequest`, by the bounds last read.
     fn find_request(&self) -> Option<Rect> {
         let vertical = self.vertical();
+        let viewport = self.viewport.get();
         let along = |width: f32, height: f32| if vertical { height } else { width };
         let mut found = None;
         self.requests.borrow_mut().for_each_from_smallest(|bounds| {
             // One detached is left for the frame's end to remove.
             let Some(bounds) = bounds else { return true };
-            let viewport = self.viewport.get();
             let fits = along(bounds.width(), bounds.height())
                 <= along(viewport.width as f32, viewport.height as f32);
             if fits {
@@ -206,10 +330,32 @@ impl ContentInView {
         found
     }
 
-    /// How far to scroll to show the requests, as `calculateScrollDelta`.
+    /// How far to scroll to show the requests, else the focused child being kept in view, as
+    /// `calculateScrollDelta`, by the bounds last read (the spec asked with nothing borrowed).
     fn scroll_delta(&self, spec: &dyn BringIntoViewSpec) -> f32 {
-        let Some(rect) = self.find_request() else { return 0.0 };
+        let rect = self
+            .find_request()
+            .or_else(|| if self.tracking.get() { self.focused_rect() } else { None });
+        let Some(rect) = rect else { return 0.0 };
         relocation(spec, rect, self.viewport.get(), self.vertical())
+    }
+
+    /// Resumes the requests this frame's layout showed (or whose requester went), the smallest
+    /// first, as `resumeAndRemoveWhile { it == null || isMaxVisible(it) }`: each decided with
+    /// nothing borrowed, then resumed if it's still the smallest.
+    fn resume_shown(&self, spec: &dyn BringIntoViewSpec) {
+        let requests = self.refresh();
+        let shown: Vec<&Request> = requests
+            .iter()
+            .rev()
+            .take_while(|request| {
+                request.bounds().is_none_or(|bounds| self.is_max_visible(spec, bounds))
+            })
+            .collect();
+        let mut shown = shown.into_iter();
+        self.requests
+            .borrow_mut()
+            .resume_and_remove_while(|request| shown.next().is_some_and(|it| it.is(request)));
     }
 
     /// Starts the animation in the container's scope, as `launchAnimation`: it holds the state's
@@ -223,23 +369,24 @@ impl ContentInView {
         let spec = self.spec();
         #[allow(deprecated)]
         let animation = UpdatableAnimationState::new(spec.scroll_animation_spec());
+        let frames = ExecutorFrames::of(self.locals.get());
         self.animating.set(true);
         // Dropped with the task however it ends, as Compose's `finally`.
         let ending = AnimationEnd(self.clone());
         scope.launch(async move {
             let ending = ending;
             let this = &*ending.0;
-            let config = this.config.borrow().clone();
-            let multiplier = config.multiplier();
-            let (animation, spec) = (&animation, &*spec);
-            let scrolled = config
-                .state
+            let state = this.config.borrow().state.clone();
+            let (animation, spec, frames) = (&animation, &*spec, &frames);
+            let scrolled = state
                 .scroll(MutatePriority::Default, move |scroll| async move {
+                    this.refresh();
                     animation.set_value(this.scroll_delta(spec));
                     animation
                         .animate_to_zero(
-                            &ExecutorFrames,
+                            frames,
                             |delta| {
+                                let multiplier = this.config.borrow().multiplier();
                                 let consumed = multiplier * scroll.scroll_by(multiplier * delta);
                                 // What the state didn't take this frame it won't take later (an
                                 // edge): the animation ends here, its requests cancelled, or it
@@ -251,9 +398,15 @@ impl ContentInView {
                             || {
                                 // The requests this frame's layout showed (or whose requester
                                 // went) are done; the target is worked out again from the rest.
-                                this.requests.borrow_mut().resume_and_remove_while(|bounds| {
-                                    bounds.is_none_or(|bounds| this.is_max_visible(bounds))
-                                });
+                                this.resume_shown(spec);
+                                // Kept in view once it shows.
+                                if this.tracking.get()
+                                    && this
+                                        .focused_rect()
+                                        .is_some_and(|rect| this.is_max_visible(spec, rect))
+                                {
+                                    this.tracking.set(false);
+                                }
                                 animation.set_value(this.scroll_delta(spec));
                             },
                         )
@@ -273,9 +426,24 @@ struct AnimationEnd(Rc<ContentInView>);
 
 impl Drop for AnimationEnd {
     fn drop(&mut self) {
-        self.0.animating.set(false);
-        if let Ok(mut requests) = self.0.requests.try_borrow_mut() {
-            requests.cancel_and_remove_all();
+        let this = &self.0;
+        this.animating.set(false);
+        this.tracking.set(false);
+        match this.requests.try_borrow_mut() {
+            Ok(mut requests) => requests.cancel_and_remove_all(),
+            Err(_) => {
+                // The queue is never borrowed across an await or a read, so the task can't end
+                // while it is; if it ever does, the requests are cancelled once it's free rather
+                // than left waiting forever.
+                debug_assert!(
+                    std::thread::panicking(),
+                    "the bring-into-view animation ended with its requests borrowed"
+                );
+                let this = this.clone();
+                compose_runtime::platform::launch(async move {
+                    this.requests.borrow_mut().cancel_and_remove_all();
+                });
+            }
         }
     }
 }
