@@ -1,0 +1,264 @@
+//! A field's touch selection, as Compose's `TextFieldSelectionState`'s: whether the user is
+//! touching it (`isDirectTouchInteraction`), the cursor handle shown after a tap
+//! (`showCursorHandle`), which handles show and where (`getCursorHandleState`,
+//! `getSelectionHandleState`), and the handles' drags (D2008).
+//!
+//! Both fields' node keeps it, so both fields have it. A field no finger touches, or focused in
+//! keyboard input mode, asks nothing of it but a branch at each measurement.
+
+use std::rc::Rc;
+
+use compose_ui::platform::{ParagraphHandle, TextMeasurer};
+use compose_ui::{EventContext, Offset, PointerEvent, PointerType, ResolvedTextDirection};
+
+use super::TextFieldNode;
+use crate::selection_handles::{Handle, HandlePositions, ShownHandles, TouchHandles};
+
+/// What a field's node keeps for touch selection.
+pub(crate) struct Touch {
+    /// Shared with its handles' popups; `None` for a node without a composable around (never, as
+    /// both fields give one).
+    handles: Option<Rc<TouchHandles>>,
+    /// The user's last interaction with the field was a finger's (or a stylus'), as Compose's
+    /// `isDirectTouchInteraction`: true at first, false once a mouse or a hardware key is used,
+    /// or the field is focused in keyboard input mode.
+    direct: bool,
+    /// The cursor handle shows, as Compose's `showCursorHandle`, set by a tap: the shown text it
+    /// was set over, an edit of which hides it.
+    cursor_handle: Option<String>,
+    /// What the handles were last told.
+    shown: ShownHandles,
+    positions: HandlePositions,
+    /// The handle drag the field follows: the handle, where it pointed in the text at the drag's
+    /// start (Compose's `getAdjustedCoordinates`, a pixel up), and the field's scroll then.
+    drag: Option<(Handle, Offset, Offset)>,
+}
+
+impl Touch {
+    pub(super) fn new(handles: Option<Rc<TouchHandles>>) -> Touch {
+        Touch {
+            handles,
+            direct: true,
+            cursor_handle: None,
+            shown: ShownHandles::default(),
+            positions: HandlePositions::default(),
+            drag: None,
+        }
+    }
+
+    /// A new element's handles: the composable's, the same while it's composed.
+    pub(super) fn update(&mut self, handles: &Option<Rc<TouchHandles>>) {
+        let same = match (&self.handles, handles) {
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.handles = handles.clone();
+            self.shown = ShownHandles::default();
+            self.positions = HandlePositions::default();
+            self.drag = None;
+        }
+    }
+
+    /// Reused for another field, or detached: no handle shows.
+    pub(super) fn reset(&mut self) {
+        self.direct = true;
+        self.cursor_handle = None;
+        self.drag = None;
+    }
+}
+
+impl TextFieldNode {
+    /// What the shown text is: the transformed one when it's transformed.
+    fn shown_str(&self) -> &str {
+        self.shown_text.as_deref().unwrap_or(&self.text)
+    }
+
+    /// A pointer's event on the field: a mouse's (or a touchpad's) ends the touch interaction, a
+    /// finger's starts it, as Compose's `detectDirectTouchInteraction`.
+    pub(super) fn touch_pointer_event(&mut self, event: &PointerEvent) {
+        self.touch.direct = event.pointer_type != PointerType::Mouse;
+    }
+
+    /// A tap placed the cursor: its handle shows over a text that isn't empty, in an editable
+    /// field, as Compose's `onTapTextField` (`showCursorHandle = true`).
+    pub(super) fn touch_tapped(&mut self) {
+        if self.touch.direct && !self.read_only && self.touch.handles.is_some() {
+            let text = self.shown_str();
+            self.touch.cursor_handle = (!text.is_empty()).then(|| text.to_owned());
+        }
+    }
+
+    /// The field gained or lost the focus: in keyboard input mode the touch interaction ends, as
+    /// Compose's `applyCurrentInputMode`; unfocused, the cursor handle goes, as when Compose's
+    /// visibility observer ends.
+    pub(super) fn touch_focus_changed(&mut self, focused: bool, context: &mut EventContext<'_>) {
+        let Some(handles) = &self.touch.handles else { return };
+        if focused {
+            if handles.field.get().is_none() {
+                handles.field.set(Some(context.handle()));
+            }
+            if self.touch.direct {
+                let manager = context.current_value_of(&compose_ui::LOCAL_INPUT_MODE_MANAGER);
+                if manager.input_mode() != compose_ui::InputMode::Touch {
+                    self.touch.direct = false;
+                }
+            }
+        } else {
+            self.touch.cursor_handle = None;
+            self.touch.drag = None;
+        }
+    }
+
+    /// A hardware key ends the touch interaction: the handles hide until a finger comes back.
+    pub(super) fn touch_hardware_key(&mut self, context: &mut EventContext<'_>) {
+        self.touch.direct = false;
+        if self.touch.shown.any() {
+            context.invalidate_measure();
+        }
+    }
+
+    /// Follows a handle's drag its node told, at a measurement with the paragraph laid out, as
+    /// Compose's `detectCursorHandleDragGestures` and `detectSelectionHandleDragGestures`: the
+    /// finger's place in the text is where the handle pointed at the drag's start, moved by the
+    /// finger, and by how far the text scrolled since (`handleDragPosition`).
+    pub(super) fn follow_handle_drag(
+        &mut self,
+        measurer: &mut dyn TextMeasurer,
+        paragraph: ParagraphHandle,
+    ) {
+        let Some(handles) = &self.touch.handles else { return };
+        if handles.moved.get().is_none() && !handles.ended.get() {
+            return;
+        }
+        let handles = handles.clone();
+        if let Some((handle, delta)) = handles.moved.take() {
+            let (handle, start, scroll) = *self.touch.drag.get_or_insert_with(|| {
+                let pointed = self.touch.positions.text[handle.index()];
+                (handle, Offset::new(pointed.x, pointed.y - 1.0), self.scroll)
+            });
+            let target = start + delta + (self.scroll - scroll);
+            let offset = self.tap_offset_in(measurer, paragraph, target).0;
+            match handle {
+                Handle::Cursor => {
+                    self.cursor = offset;
+                    self.anchor = offset;
+                }
+                // A selection never collapses while its handles are dragged, as Compose's.
+                Handle::SelectionStart if offset != self.cursor => self.anchor = offset,
+                Handle::SelectionEnd if offset != self.anchor => self.cursor = offset,
+                _ => {}
+            }
+            self.preferred_x = None;
+        }
+        if handles.ended.replace(false) {
+            self.touch.drag = None;
+        }
+    }
+
+    /// Tells the handles which show and where, at the end of a measurement, as Compose's
+    /// `getCursorHandleState` and `getSelectionHandleState`: only when it changed, and nothing
+    /// at all while none shows and none may.
+    pub(super) fn tell_handles(&mut self, measurer: &dyn TextMeasurer, paragraph: ParagraphHandle) {
+        let may_show = self.focused && self.enabled && self.touch.direct;
+        if !may_show && !self.touch.shown.any() {
+            return;
+        }
+        let Some(handles) = self.touch.handles.clone() else { return };
+        self.tell_handles_now(&handles, may_show, measurer, paragraph);
+    }
+
+    #[inline(never)]
+    fn tell_handles_now(
+        &mut self,
+        handles: &TouchHandles,
+        may_show: bool,
+        measurer: &dyn TextMeasurer,
+        paragraph: ParagraphHandle,
+    ) {
+        // An edit of what's shown hides the cursor handle, as Compose's `observeTextChanges`.
+        if self.touch.cursor_handle.as_deref().is_some_and(|text| text != self.shown_str()) {
+            self.touch.cursor_handle = None;
+        }
+        let may_show =
+            may_show && self.window.as_ref().is_none_or(|window| window.is_window_focused());
+        let mut shown = ShownHandles::default();
+        let mut positions = self.touch.positions;
+        let dragging = self.touch.drag.map(|(handle, _, _)| handle);
+        let size = self.size;
+        let scroll = self.scroll;
+        let in_view = |point: Offset| {
+            let local = point - scroll;
+            local.x >= 0.0
+                && local.y >= 0.0
+                && local.x <= size.width as f32
+                && local.y <= size.height as f32
+        };
+        let mut place = |handle: Handle, point: Offset| {
+            positions.text[handle.index()] = point;
+            positions.anchor[handle.index()] = point - scroll;
+        };
+        if may_show && self.anchor == self.cursor {
+            if self.touch.cursor_handle.is_some()
+                && !self.read_only
+                && let Some(rect) = self.drawn_cursor_rect()
+            {
+                let point = Offset::new((rect.left + rect.right) / 2.0, rect.bottom);
+                if dragging == Some(Handle::Cursor) || in_view(point) {
+                    shown.cursor = true;
+                    place(Handle::Cursor, point);
+                }
+            }
+        } else if may_show {
+            let layout = measurer.paragraph(paragraph);
+            let crossed = self.anchor > self.cursor;
+            for (handle, offset) in
+                [(Handle::SelectionStart, self.anchor), (Handle::SelectionEnd, self.cursor)]
+            {
+                let start = handle == Handle::SelectionStart;
+                let offset = self.shown(offset);
+                let line = layout.get_line_for_offset(offset);
+                if line >= layout.line_count() {
+                    continue;
+                }
+                // As Compose's `getSelectionHandleCoordinates`.
+                let checked =
+                    if start != crossed { offset } else { previous_char(self.shown_str(), offset) };
+                let primary = layout.get_bidi_run_direction(checked)
+                    == layout.get_paragraph_direction(offset);
+                let x = layout.get_horizontal_position(offset, primary).clamp(0.0, layout.width());
+                let y = layout.get_line_bottom(line).clamp(0.0, layout.height());
+                let point = Offset::new(x, y);
+                if dragging != Some(handle) && !in_view(point) {
+                    continue;
+                }
+                // As Compose's: the start's character, or the one before the end.
+                let direction_offset =
+                    if start { offset } else { previous_char(self.shown_str(), offset) };
+                let direction = layout.get_bidi_run_direction(direction_offset);
+                let ltr = (direction == ResolvedTextDirection::Ltr) != crossed;
+                let left = if start { ltr } else { !ltr };
+                if start {
+                    shown.start = Some(left);
+                } else {
+                    shown.end = Some(left);
+                }
+                place(handle, point);
+            }
+        }
+        if shown != self.touch.shown {
+            self.touch.shown = shown;
+            handles.shown.set(shown);
+        }
+        if positions != self.touch.positions {
+            self.touch.positions = positions;
+            handles.positions.set(positions);
+        }
+    }
+}
+
+/// The character boundary before `offset` in `text`, or 0.
+fn previous_char(text: &str, offset: usize) -> usize {
+    text[..offset.min(text.len())].char_indices().next_back().map_or(0, |(index, _)| index)
+}

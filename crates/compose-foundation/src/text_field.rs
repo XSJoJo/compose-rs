@@ -19,12 +19,16 @@ use crate::output_transformation::{
     WedgeAffinity, index_transformation_type, map_from_transformed, map_to_transformed,
     next_cursor_position, shows_as, transformed_text,
 };
+use crate::selection_handles::TouchHandles;
+
+mod touch;
 use crate::text_field_buffer::TextFieldCharSequence;
 use crate::text_undo::TextFieldEditUndoBehavior;
 use crate::{
     InputTransformation, KeyboardActionHandler, OutputTransformation, TextFieldLineLimits,
     TextFieldState,
 };
+use touch::Touch;
 
 use crate::text_input::{
     ImeAction, KeyboardActions, KeyboardOptions, OffsetMapping, VisualTransformation,
@@ -37,7 +41,7 @@ use compose_ui::{
     MeasureResult, MeasureScope, Modifier, ModifierNode, ModifierNodeElement, Offset, Paint,
     PointerEvent, PointerEventPass, PointerEventType, PointerInputModifierNode, Rect,
     ReleaseContext, SemanticsConfiguration, SemanticsModifierNode, SetComposingTextCommand,
-    SetSelectionCommand, TextFieldValue, TextRange, TextStyle, empty_measure_policy,
+    SetSelectionCommand, TextFieldValue, TextRange, TextStyle,
     platform::{ParagraphHandle, TextLayoutOptions},
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -82,6 +86,8 @@ pub fn BasicTextField(
         crate::text::validate_min_max_lines(min_lines, max_lines);
     }
     let interaction_source_for_press = if enabled { interaction_source.clone() } else { None };
+    // What the node tells its handles, composed in the inner field (D2008).
+    let handles = compose_runtime::remember(|| Rc::new(TouchHandles::new()));
     let element: Rc<dyn AnyModifierNodeElement> = Rc::new(TextFieldElement {
         value,
         on_value_change,
@@ -99,15 +105,10 @@ pub fn BasicTextField(
         keyboard_actions,
         visual_transformation,
         interaction_source,
+        handles: Some(handles.clone()),
     });
     let press_source = interaction_source_for_press;
-    let inner_text_field = Callback::new(move || {
-        Layout(
-            compose_ui::platform::shared_custom_modifier(element.clone()),
-            empty_measure_policy(),
-            compose_runtime::callback(|| {}),
-        );
-    });
+    let inner_text_field = inner_field(element, handles);
     crate::layout::Box(
         // An I-beam over the field, as Compose Desktop's text fields.
         modifier
@@ -119,6 +120,52 @@ pub fn BasicTextField(
         true,
         compose_runtime::callback(move |_| decoration_box(inner_text_field.clone())),
     );
+}
+
+/// The inner field: the field's node, and its handles' popups inside, as Compose composes them in
+/// the inner field (a decoration that never calls it shows none, D2008).
+fn inner_field(element: Rc<dyn AnyModifierNodeElement>, handles: Rc<TouchHandles>) -> Callback {
+    // The same content while the field is composed: a decoration composed again (a label's
+    // animation) doesn't compose the handles again.
+    let content = compose_runtime::remember(move || {
+        compose_runtime::callback(move || {
+            crate::selection_handles::TextFieldHandles(handles.clone())
+        })
+    });
+    Callback::new(move || {
+        Layout(
+            compose_ui::platform::shared_custom_modifier(element.clone()),
+            handles_host_policy(),
+            content.clone(),
+        );
+    })
+}
+
+/// The inner field's own layout: as large as its node makes it, its children (the handles'
+/// popup hosts, which have no size) placed at its start.
+struct HandlesHost;
+
+impl compose_ui::MeasurePolicy for HandlesHost {
+    fn measure(
+        &self,
+        scope: &mut MeasureScope<'_>,
+        measurables: &[Measurable],
+        constraints: Constraints,
+    ) -> MeasureResult {
+        for &child in measurables {
+            let placeable = scope.measure(child, constraints);
+            scope.place(&placeable, 0, 0);
+        }
+        scope.layout(constraints.min_width, constraints.min_height)
+    }
+}
+
+thread_local! {
+    static HANDLES_HOST: Rc<dyn compose_ui::MeasurePolicy> = Rc::new(HandlesHost);
+}
+
+fn handles_host_policy() -> Rc<dyn compose_ui::MeasurePolicy> {
+    HANDLES_HOST.with(Rc::clone)
 }
 
 /// The decoration of a field without one: the text alone, as Compose's default `decorationBox`.
@@ -175,6 +222,8 @@ pub fn BasicTextFieldOfState(
         keyboard_options.fill_unspecified_values_with(transformation_options.as_ref());
     let text_style = phone_direction(text_style, keyboard_options);
     let interaction_source_for_press = if enabled { interaction_source.clone() } else { None };
+    // What the node tells its handles, composed in the inner field (D2008).
+    let handles = compose_runtime::remember(|| Rc::new(TouchHandles::new()));
     let element: Rc<dyn AnyModifierNodeElement> = Rc::new(StateTextFieldElement {
         state,
         enabled,
@@ -199,15 +248,10 @@ pub fn BasicTextFieldOfState(
             )
         }),
         on_keyboard_action,
+        handles: Some(handles.clone()),
     });
     let press_source = interaction_source_for_press;
-    let inner_text_field = Callback::new(move || {
-        Layout(
-            compose_ui::platform::shared_custom_modifier(element.clone()),
-            empty_measure_policy(),
-            compose_runtime::callback(|| {}),
-        );
-    });
+    let inner_text_field = inner_field(element, handles);
     // Dragged and wheeled along its lines, the content following the finger, as Compose's
     // `scrollable(scrollState, …, reverseDirection)` (D1138).
     let modifier = match scroll_state {
@@ -282,6 +326,8 @@ pub(crate) struct StateTextFieldElement {
     pub default_action: Option<DefaultActionTargets>,
     /// A password's (`BasicSecureTextField`): whether it's shown obfuscated (D1142).
     pub password: Option<bool>,
+    /// What it tells its handles (D2008).
+    pub handles: Option<Rc<TouchHandles>>,
 }
 
 /// What a keyboard action handler's default action moves the focus with and hides the keyboard
@@ -330,6 +376,7 @@ impl ModifierNodeElement for StateTextFieldElement {
             keyboard_actions: KeyboardActions::new(),
             visual_transformation: VisualTransformation::NONE,
             interaction_source: self.interaction_source.clone(),
+            handles: self.handles.clone(),
         }
         .create();
         let mut link = StateLink::new(self.state, cursor_brush);
@@ -419,10 +466,12 @@ impl ModifierNodeElement for StateTextFieldElement {
             node.tell_focus(false);
             node.interaction_source = self.interaction_source.clone();
         }
+        node.touch.update(&self.handles);
     }
 
     fn same(&self, other: &Self) -> bool {
-        other.state == self.state
+        same_handles(&other.handles, &self.handles)
+            && other.state == self.state
             && other.enabled == self.enabled
             && other.read_only == self.read_only
             && other.style == self.style
@@ -664,6 +713,8 @@ pub(crate) struct TextFieldElement {
     pub visual_transformation: VisualTransformation,
     /// Told when the field gains and loses the focus, as `interactionSource`.
     pub interaction_source: Option<compose_ui::MutableInteractionSource>,
+    /// What it tells its handles, which its composable composes (D2008).
+    pub handles: Option<Rc<TouchHandles>>,
 }
 
 impl ModifierNodeElement for TextFieldElement {
@@ -724,6 +775,7 @@ impl ModifierNodeElement for TextFieldElement {
             shown_text: None,
             before_edit: None,
             state: None,
+            touch: Touch::new(self.handles.clone()),
         }
     }
 
@@ -773,6 +825,7 @@ impl ModifierNodeElement for TextFieldElement {
         node.selection_color = self.selection_color;
         node.keyboard_options = self.keyboard_options;
         node.keyboard_actions = self.keyboard_actions.clone();
+        node.touch.update(&self.handles);
         if node.interaction_source != self.interaction_source {
             // The focus told to the old source ends there, as `focusable`'s `update`.
             node.tell_focus(false);
@@ -795,10 +848,19 @@ impl ModifierNodeElement for TextFieldElement {
             && other.keyboard_actions.same(&self.keyboard_actions)
             && other.visual_transformation.same(&self.visual_transformation)
             && other.interaction_source == self.interaction_source
+            && same_handles(&other.handles, &self.handles)
     }
 
     fn name(&self) -> &'static str {
         "TextField"
+    }
+}
+
+fn same_handles(a: &Option<Rc<TouchHandles>>, b: &Option<Rc<TouchHandles>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -975,6 +1037,8 @@ pub(crate) struct TextFieldNode {
     shown_text: Option<String>,
     /// A state-based field's state (`BasicTextFieldOfState`); `None` for a value-based field.
     state: Option<Box<StateLink>>,
+    /// Touch selection: its handles and what decides them (D2008).
+    touch: Touch,
 }
 
 impl TextFieldNode {
@@ -2204,6 +2268,7 @@ impl ModifierNode for TextFieldNode {
         self.preedit_interrupted = false;
         self.composing_over_text = false;
         self.restart_input = false;
+        self.touch.reset();
     }
 }
 
@@ -2481,6 +2546,7 @@ impl LayoutModifierNode for TextFieldNode {
                 self.cursor = self.tap_offset_in(&mut *measurer, paragraph, position).0;
                 self.anchor = self.cursor;
             }
+            self.follow_handle_drag(&mut *scope.text_measurer(), paragraph);
             paragraph
         };
         self.cursor_rect =
@@ -2561,6 +2627,7 @@ impl LayoutModifierNode for TextFieldNode {
         if reveals {
             self.reveal_cursor(scope, metrics.size, short);
         }
+        self.tell_handles(&*scope.text_measurer(), paragraph);
         self.tell_text_layout(scope, paragraph);
         let placeable = scope.measure(content, Constraints::fixed(size.width, size.height));
         scope.place(&placeable, 0, 0);
@@ -2794,6 +2861,9 @@ impl TextFieldNode {
         if pass != PointerEventPass::Main {
             return;
         }
+        if matches!(event.kind, PointerEventType::Press | PointerEventType::Move) {
+            self.touch_pointer_event(event);
+        }
         let inside = event.position.x >= 0.0
             && event.position.y >= 0.0
             && event.position.x < bounds.width as f32
@@ -2905,6 +2975,7 @@ impl TextFieldNode {
                     }
                     None => self.pending_tap = Some(event.position),
                 }
+                self.touch_tapped();
                 context.invalidate_measure();
             }
             _ => {}
@@ -2962,6 +3033,7 @@ impl FocusTargetModifierNode for TextFieldNode {
             // Laid out again at the next measurement (an edit before the tap): resolved then.
             None => self.pending_tap = Some(position),
         }
+        self.touch_tapped();
         context.invalidate_measure();
         self.publish_state_in(EditSource::Other, context);
     }
@@ -2982,6 +3054,7 @@ impl FocusTargetModifierNode for TextFieldNode {
             return;
         }
         self.focused = focused;
+        self.touch_focus_changed(focused, context);
         // Its decoration is told, as the field's gaining the focus shows it whole (D1145).
         tell_decoration(focused, context);
         self.tell_focus(focused);
@@ -3049,25 +3122,31 @@ impl compose_ui::FocusPropertiesModifierNode for TextFieldNode {
 }
 
 impl TextFieldNode {
+    /// The cursor's rect in the text, as Compose's `calculateCursorRect`: the cursor's width, kept
+    /// in the text and on a whole or half pixel. `None` before it's laid out.
+    fn drawn_cursor_rect(&self) -> Option<Rect> {
+        let (density, cursor) = (self.density?, self.cursor_rect?);
+        let width = density.to_px(CURSOR_WIDTH).floor().max(1.0);
+        let half = width / 2.0;
+        let center = match self.direction {
+            compose_ui::LayoutDirection::Ltr => cursor.left + half,
+            compose_ui::LayoutDirection::Rtl => cursor.right - half,
+        };
+        // The text's width and the cursor's: the room the field gives them.
+        let end = self.text_width + density.round_to_px(CURSOR_WIDTH) as f32;
+        let center = center.min(end - half).max(half);
+        let center = if width as i32 % 2 == 1 { center.floor() + 0.5 } else { center.round() };
+        Some(Rect::new(center - half, cursor.top, center + half, cursor.bottom))
+    }
+
     /// The focused field's cursor, as Compose's `calculateCursorRect` (the cursor's width, kept
     /// in the text and on a whole or half pixel), or the selection's bounds, under its scroll.
     fn focus_rect(&self) -> Option<Rect> {
         if !self.focused {
             return None;
         }
-        let (density, cursor) = (self.density?, self.cursor_rect?);
         let rect = if self.anchor == self.cursor {
-            let width = density.to_px(CURSOR_WIDTH).floor().max(1.0);
-            let half = width / 2.0;
-            let center = match self.direction {
-                compose_ui::LayoutDirection::Ltr => cursor.left + half,
-                compose_ui::LayoutDirection::Rtl => cursor.right - half,
-            };
-            // The text's width and the cursor's: the room the field gives them.
-            let end = self.text_width + density.round_to_px(CURSOR_WIDTH) as f32;
-            let center = center.min(end - half).max(half);
-            let center = if width as i32 % 2 == 1 { center.floor() + 0.5 } else { center.round() };
-            Rect::new(center - half, cursor.top, center + half, cursor.bottom)
+            self.drawn_cursor_rect()?
         } else {
             let mut rects = self.selection_rects.iter();
             let first = *rects.next()?;
@@ -3369,6 +3448,9 @@ impl KeyInputModifierNode for TextFieldNode {
             if event.from_soft_keyboard { EditSource::SoftKey } else { EditSource::HardwareKey };
         if let Some(link) = self.state.as_mut() {
             link.typed_by = (event.kind == KeyEventType::KeyDown).then_some(source);
+        }
+        if source == EditSource::HardwareKey && event.kind == KeyEventType::KeyDown {
+            self.touch_hardware_key(context);
         }
         let selection = (self.anchor, self.cursor);
         let consumed = self.on_key_event_here(event, context);

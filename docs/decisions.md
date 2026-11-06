@@ -1005,3 +1005,5 @@ The log is split by area into the files below, one table each, rows in number or
 | D2005 | [text](decisions/text.md#d2005) | current |
 | D2006 | [text](decisions/text.md#d2006) | current |
 | D2007 | [text](decisions/text.md#d2007) | current |
+| D2008 | [text](decisions/text.md#d2008) | current |
+| D2009 | [text](decisions/text.md#d2009) | current |
