@@ -629,7 +629,7 @@ impl NodeHandle {
                 return;
             };
             if tree.is_laid_out(node) {
-                asked = Some(tree.bring_into_view_from(node, Some(index), rect));
+                asked = Some(tree.bring_into_view_from(node, Some(index), rect).futures);
             }
         });
         asked.map(|futures| {

@@ -18,6 +18,7 @@ mod fling;
 pub mod gestures;
 mod image;
 mod input_transformation;
+mod key_mapping;
 pub mod layout;
 pub mod lazy;
 mod mutator;

@@ -1173,3 +1173,67 @@ fn a_scrollable_stops_once_its_spec_says_zero_and_animates_along_its_spec() {
         assert_eq!(animations.get(), 1);
     }
 }
+
+/// A focused node in a column placed deep in padded boxes is scrolled to the column's edge: the
+/// walk finds where each container is from the outermost down (D1149), the boxes' offsets counted.
+#[test]
+fn a_focused_node_in_a_column_inside_padded_boxes_scrolls_just_into_view() {
+    let scroll_state = **Box::leak(Box::new(ScrollState::new(0)));
+    let mut ui = compose_test(move || {
+        Box!(Modifier.padding(50.dp()), {
+            Box!(Modifier.padding(30.dp()), {
+                Column!(modifier = Modifier.height(100.dp()).vertical_scroll(scroll_state), {
+                    Box!(Modifier.height(150.dp()));
+                    Box!(Modifier.size(20.dp()).focusable().test_tag("target"));
+                    Box!(Modifier.height(300.dp()));
+                });
+            });
+        });
+    });
+    ui.wait_for_idle();
+    ui.on_node_with_tag("target").request_focus();
+    ui.wait_for_idle();
+    let density = ui.density().density;
+    // Its bottom at the column's: 150 + 20 - 100 dp scrolled.
+    assert!(
+        (scroll_state.value() as f32 - 70.0 * density).abs() <= 1.0,
+        "scrolled {}",
+        scroll_state.value()
+    );
+}
+
+/// The same for a lazy list, which answers at once with where it showed the item: the rect it's
+/// asked is where the item is in it, the boxes around counted.
+#[test]
+fn a_focused_item_of_a_list_inside_padded_boxes_scrolls_just_into_view() {
+    let kept: Rc<RefCell<Option<compose_foundation::lazy::LazyListState>>> = Rc::default();
+    let into = kept.clone();
+    let mut ui = compose_test(move || {
+        let state = compose_foundation::lazy::remember_lazy_list_state(0, 0);
+        *into.borrow_mut() = Some(state);
+        Box!(Modifier.padding(50.dp()), {
+            Box!(Modifier.padding(30.dp()), {
+                compose_foundation::lazy::LazyColumn!(
+                    modifier = Modifier.height(100.dp()),
+                    state = state,
+                    move |scope: compose_foundation::lazy::LazyListScope| {
+                        scope.items(20, move |item| {
+                            Box!(
+                                Modifier.size(40.dp()).focusable().test_tag(format!("item {item}"))
+                            );
+                        });
+                    }
+                );
+            });
+        });
+    });
+    ui.wait_for_idle();
+    ui.on_node_with_tag("item 2").request_focus();
+    ui.wait_for_idle();
+    let state = kept.borrow().expect("composed");
+    let density = ui.density().density;
+    // Item 2 (80 to 120 dp) shown to its end: 20 dp scrolled.
+    let scrolled = state.first_visible_item_index() as f32 * 40.0 * density
+        + state.first_visible_item_scroll_offset() as f32;
+    assert!((scrolled - 20.0 * density).abs() <= 1.0, "scrolled {scrolled}");
+}

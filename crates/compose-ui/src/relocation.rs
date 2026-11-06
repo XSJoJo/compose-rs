@@ -16,6 +16,7 @@ use std::rc::Rc;
 use std::task::{Context, Poll};
 
 use compose_runtime::CompositionLocalAnchor;
+use smallvec::SmallVec;
 
 use crate::nested_scroll::LocalBoxFuture;
 use crate::node_chain::{EntryId, NodeKinds};
@@ -140,7 +141,7 @@ impl UiTree {
         node: NodeId,
         entry: Option<usize>,
         rect: Option<Rect>,
-    ) -> Vec<LocalBoxFuture<'static, ()>> {
+    ) -> Walked {
         let (mut base, first) = match entry {
             Some(index) => {
                 let entry = self.node(node).chain[index].id;
@@ -148,52 +149,98 @@ impl UiTree {
             }
             None => (Base::Node { node, rect }, 0),
         };
+        let mut walked = Walked::default();
         let mut via: Vec<(NodeId, EntryId)> = Vec::new();
-        let mut futures = Vec::new();
         // Where it is in the root, as the walk goes.
-        let Some(mut current) = self.base_rect(&base) else { return futures };
-        let mut at = Some((node, first));
-        while let Some((id, end)) = at {
+        let Some(mut current) = self.base_rect(&base) else { return walked };
+        // The nodes walked, innermost first: an overlay's containers are its own, so the ones
+        // around its host don't show it.
+        let mut path: SmallVec<[NodeId; 32]> = SmallVec::new();
+        let mut at = Some(node);
+        while let Some(id) = at {
+            path.push(id);
+            let value = self.node(id);
+            at = if value.overlay { None } else { value.parent };
+        }
+        // Where each node's first layer starts in the root, from the outermost down, as
+        // `layer_origin` finds it: a walk's worth once, not each entry's.
+        let mut starts: SmallVec<[Offset; 32]> = SmallVec::from_elem(Offset::ZERO, path.len());
+        for (depth, &id) in path.iter().enumerate().rev() {
+            let value = self.node(id);
+            starts[depth] = match value.parent {
+                _ if value.overlay => value.overlay_origin,
+                Some(parent) if depth + 1 < path.len() => {
+                    let outer = self.node(parent);
+                    let skip = usize::from(outer.overlay);
+                    outer.layers.iter().skip(skip).fold(starts[depth + 1], |origin, layer| {
+                        origin + Offset::new(layer.offset.x as f32, layer.offset.y as f32)
+                    })
+                }
+                Some(parent) => self.layer_origin(parent, self.node(parent).layers.len() - 1),
+                None => Offset::ZERO,
+            };
+        }
+        for (depth, &id) in path.iter().enumerate() {
+            let end = if depth == 0 { first } else { self.node(id).chain.len() };
+            if end == 0 {
+                continue;
+            }
+            let value = self.node(id);
+            let skip = usize::from(value.overlay);
+            // Each entry's layer: the layout entries before it, counted down as the walk goes
+            // from the chain's end.
+            let mut layer = value.chain[..end]
+                .iter()
+                .filter(|entry| entry.kinds.any(NodeKinds::LAYOUT))
+                .count();
             for index in (0..end).rev() {
+                let value = self.node(id);
+                if value.chain[index].kinds.any(NodeKinds::LAYOUT) {
+                    layer -= 1;
+                }
+                let layer = layer.min(value.layers.len() - 1);
+                let origin = value.layers[..=layer].iter().skip(skip).fold(
+                    starts[depth],
+                    |origin, layer| {
+                        origin + Offset::new(layer.offset.x as f32, layer.offset.y as f32)
+                    },
+                );
                 self.ask_to_bring_into_view(
                     id,
                     index,
+                    layer,
+                    origin,
                     &mut base,
                     &mut via,
                     &mut current,
-                    &mut futures,
+                    &mut walked,
                 );
             }
-            // An overlay's containers are its own: the ones around its host don't show it.
-            at = match self.node(id).parent {
-                Some(parent) if !self.node(id).overlay => {
-                    Some((parent, self.node(parent).chain.len()))
-                }
-                _ => None,
-            };
         }
-        futures
+        walked
     }
 
-    /// Asks chain entry `index` of `id` to show `current` (in the root), which becomes where it
-    /// will then be: a responder is given bounds to read and asked where it will put them; a node
-    /// answering at once (`ModifierNode::bring_into_view`) is asked with where it is, and becomes
-    /// the base of what the ones outside read.
+    /// Asks chain entry `index` of `id` (in layer `layer`, at `origin` in the root) to show
+    /// `current` (in the root), which becomes where it will then be: a responder is given bounds
+    /// to read and asked where it will put them; a node answering at once
+    /// (`ModifierNode::bring_into_view`) is asked with where it is, and becomes the base of what
+    /// the ones outside read.
+    #[allow(clippy::too_many_arguments)]
     fn ask_to_bring_into_view(
         &mut self,
         id: NodeId,
         index: usize,
+        layer: usize,
+        origin: Offset,
         base: &mut Base,
         via: &mut Vec<(NodeId, EntryId)>,
         current: &mut Rect,
-        futures: &mut Vec<LocalBoxFuture<'static, ()>>,
+        walked: &mut Walked,
     ) {
         let value = self.node(id);
-        let layer = value.layer_of(index).min(value.layers.len() - 1);
-        let origin = self.layer_origin(id, layer);
-        let viewport = self.node(id).layers[layer].measured;
-        let locals = self.node(id).locals;
-        let entry = self.node(id).chain[index].id;
+        let viewport = value.layers[layer].measured;
+        let locals = value.locals;
+        let entry = value.chain[index].id;
         let local = moved(*current, Offset::new(-origin.x, -origin.y));
         let key = self.key;
         // Its handle, registered below if it's given a request to keep.
@@ -201,6 +248,7 @@ impl UiTree {
         let Some(value) = self.get_mut(id) else { return };
         match value.chain[index].bring_into_view_answer(local, viewport, locals) {
             Answer::Responder(responder) => {
+                walked.answered = true;
                 let scope = BringIntoViewScope { viewport, locals, handle };
                 let bounds = BringIntoViewBounds(Rc::new(BoundsPath {
                     tree: key,
@@ -211,13 +259,14 @@ impl UiTree {
                 let parent = responder.calculate_rect_for_parent(local, &scope);
                 if let Some(future) = responder.bring_child_into_view(local, parent, bounds, &scope)
                 {
-                    futures.push(future);
+                    walked.futures.push(future);
                     crate::node_context::entry_handle(self, id, index);
                 }
                 via.push((id, entry));
                 *current = moved(parent, origin);
             }
             Answer::Shown(shown) => {
+                walked.answered = true;
                 *current = moved(shown, origin);
                 *base = Base::Entry { node: id, entry, rect: Some(shown) };
                 via.clear();
@@ -284,19 +333,42 @@ impl UiTree {
 
     /// The same for `rect` within `node` (its own coordinates; `None`: all of it).
     pub fn bring_rect_into_view(&mut self, node: NodeId, rect: Option<Rect>) {
-        let futures = self.bring_into_view_from(node, None, rect);
-        if !futures.is_empty() {
-            compose_runtime::platform::launch(join_all(futures));
-        }
+        self.bring_into_view_from(node, None, rect).launch();
+    }
+
+    /// `bring_into_view`, saying whether a node around answered: one that didn't asked nothing
+    /// of any.
+    pub(crate) fn bring_node_into_view(&mut self, node: NodeId) -> bool {
+        self.bring_into_view_from(node, None, None).launch()
     }
 
     /// The same for `rect` in the layer of chain entry `entry` of `node`, asking the entries
     /// before it in its chain first.
-    pub(crate) fn bring_entry_rect_into_view(&mut self, node: NodeId, entry: usize, rect: Rect) {
-        let futures = self.bring_into_view_from(node, Some(entry), Some(rect));
-        if !futures.is_empty() {
-            compose_runtime::platform::launch(join_all(futures));
+    pub(crate) fn bring_entry_rect_into_view(
+        &mut self,
+        node: NodeId,
+        entry: usize,
+        rect: Rect,
+    ) -> bool {
+        self.bring_into_view_from(node, Some(entry), Some(rect)).launch()
+    }
+}
+
+/// What a walk bringing into view found: the futures the responders give to wait for, and
+/// whether any node answered (none: the walk asked nothing of anything).
+#[derive(Default)]
+pub(crate) struct Walked {
+    pub(crate) futures: Vec<LocalBoxFuture<'static, ()>>,
+    pub(crate) answered: bool,
+}
+
+impl Walked {
+    /// Runs what the responders animate as a task of its own; returns whether a node answered.
+    fn launch(self) -> bool {
+        if !self.futures.is_empty() {
+            compose_runtime::platform::launch(join_all(self.futures));
         }
+        self.answered
     }
 }
 

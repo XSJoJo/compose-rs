@@ -3,9 +3,11 @@
 //! and Enter, undo, and which key events reach the field's ancestors.
 //!
 //! Compose's tests press Android's keys (`platformDefaultKeyMapping`): Ctrl moves by words and
-//! paragraphs, Alt by lines and to the text's ends. compose-rs maps them so off macOS and as
-//! Compose Desktop does on macOS (Option by words and paragraphs, Cmd by lines), so these tests
-//! hold the platform's modifier (`word`, `line`, `shortcut`), D1147.
+//! paragraphs, Alt by lines and to the text's ends. compose-rs maps them so on Android, as Compose
+//! Desktop's `defaultKeyMapping` on Linux and Windows (no Alt motion) and as Compose Desktop does
+//! on macOS (Option by words and paragraphs, Cmd by lines), so these tests hold the host's
+//! modifier (`word`, `line`, `shortcut`), D1147, D1148; every mapping's own keys are checked on
+//! any host by the crate's `text_field_key_mapping_tests.rs`.
 
 #![allow(non_snake_case)]
 
@@ -28,9 +30,17 @@ fn word() -> Key {
     if cfg!(target_os = "macos") { Key::AltLeft } else { Key::CtrlLeft }
 }
 
-/// Lines (and the text's ends with Up and Down): Cmd on macOS, Alt elsewhere.
-fn line() -> Key {
-    if cfg!(target_os = "macos") { Key::MetaLeft } else { Key::AltLeft }
+/// Lines (and the text's ends with Up and Down): Cmd on macOS, Alt on Android. Compose
+/// Desktop's default mapping (Linux, Windows) has none: there, Android's is the unit tests'
+/// (`text_field_key_mapping_tests.rs`, D1148).
+fn line() -> Option<Key> {
+    if cfg!(target_os = "macos") {
+        Some(Key::MetaLeft)
+    } else if cfg!(target_os = "android") {
+        Some(Key::AltLeft)
+    } else {
+        None
+    }
 }
 
 /// The clipboard's and undo's shortcuts: Cmd on macOS, Ctrl elsewhere.
@@ -258,6 +268,29 @@ fn backspace_deletes_a_joined_emoji_whole() {
     keys.press_key(Key::Backspace).expect_text("");
 }
 
+/// Backspace deletes an emoji whole, as EmojiCompat's `getEmojiStart` finds it: a keycap (its
+/// digit isn't pictographic, its VS16 and keycap mark are), a flag, a lone regional indicator after
+/// one, a skin tone, a family joined by ZWJs, a heart with VS16; else a code point: the second of
+/// two combining marks, a Hangul syllable's last jamo (D1147).
+// Compose: compose/foundation/foundation/src/androidMain/kotlin/androidx/compose/foundation/text/StringHelpers.android.kt, findCodePointOrEmojiStartBefore
+#[test]
+fn backspace_deletes_an_emoji_whole_or_a_code_point() {
+    let cases = [
+        ("a1\u{FE0F}\u{20E3}", "a"),
+        ("a\u{1F1EB}\u{1F1F7}", "a"),
+        ("\u{1F1EB}\u{1F1F7}\u{1F1E9}", "\u{1F1EB}\u{1F1F7}"),
+        ("a\u{1F44D}\u{1F3FD}", "a"),
+        ("a\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}", "a"),
+        ("a\u{2764}\u{FE0F}", "a"),
+        ("b\u{301}\u{302}", "b\u{301}"),
+        ("\u{1100}\u{1161}\u{11A8}", "\u{1100}\u{1161}"),
+    ];
+    for (text, left) in cases {
+        let at_end = Setup { selection: TextRange::at(text.len()), ..DEFAULT };
+        Sequence::with(text, at_end).press_key(Key::Backspace).expect_text(left);
+    }
+}
+
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldKeyEventTest.kt, textField_delete
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldKeyEventTest.kt, textField_delete_atEnd
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldKeyEventTest.kt, textField_delete_whenEmpty
@@ -334,78 +367,83 @@ fn home_and_end_reach_the_lines_ends_and_shift_selects() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldKeyEventTest.kt, textField_altLineLeftRight
 #[test]
 fn the_line_modifier_moves_to_the_lines_ends() {
+    let Some(line) = line() else { return };
     let mut keys = Sequence::new("hi\nhello world\nhi");
-    keys.press(&[line(), Key::DirectionRight]).press_key(Key::DirectionRight).typed("0");
+    keys.press(&[line, Key::DirectionRight]).press_key(Key::DirectionRight).typed("0");
     keys.expect_text("hi\n0hello world\nhi");
-    keys.press(&[line(), Key::DirectionRight]).typed("0").expect_text("hi\n0hello world0\nhi");
-    keys.press(&[Key::ShiftLeft, line(), Key::DirectionLeft]).expect_selection(16, 3);
-    keys.press(&[line(), Key::DirectionLeft]).press_key(Key::DirectionRight);
-    keys.press(&[Key::ShiftLeft, line(), Key::DirectionRight]).expect_selection(4, 16);
+    keys.press(&[line, Key::DirectionRight]).typed("0").expect_text("hi\n0hello world0\nhi");
+    keys.press(&[Key::ShiftLeft, line, Key::DirectionLeft]).expect_selection(16, 3);
+    keys.press(&[line, Key::DirectionLeft]).press_key(Key::DirectionRight);
+    keys.press(&[Key::ShiftLeft, line, Key::DirectionRight]).expect_selection(4, 16);
     keys.expect_text("hi\n0hello world0\nhi");
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldKeyEventTest.kt, textField_altTop
 #[test]
 fn the_line_modifier_with_up_goes_to_the_start() {
+    let Some(line) = line() else { return };
     let mut keys = Sequence::new("hi\nhello world\nhi");
     keys.press_key(Key::MoveEnd);
     for _ in 0..3 {
         keys.press_key(Key::DirectionRight);
     }
     keys.typed("0").expect_text("hi\nhe0llo world\nhi");
-    keys.press(&[line(), Key::DirectionUp]).typed("0").expect_text("0hi\nhe0llo world\nhi");
+    keys.press(&[line, Key::DirectionUp]).typed("0").expect_text("0hi\nhe0llo world\nhi");
     keys.press_key(Key::MoveEnd);
     for _ in 0..3 {
         keys.press_key(Key::DirectionRight);
     }
-    keys.press(&[Key::ShiftLeft, line(), Key::DirectionUp]).expect_selection(6, 0);
+    keys.press(&[Key::ShiftLeft, line, Key::DirectionUp]).expect_selection(6, 0);
     keys.expect_text("0hi\nhe0llo world\nhi");
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldKeyEventTest.kt, textField_altBottom
 #[test]
 fn the_line_modifier_with_down_goes_to_the_end() {
+    let Some(line) = line() else { return };
     let mut keys = Sequence::new("hi\nhello world\nhi");
     keys.press_key(Key::MoveEnd);
     for _ in 0..3 {
         keys.press_key(Key::DirectionRight);
     }
     keys.typed("0").expect_text("hi\nhe0llo world\nhi");
-    keys.press(&[Key::ShiftLeft, line(), Key::DirectionDown]).expect_selection(6, 18);
+    keys.press(&[Key::ShiftLeft, line, Key::DirectionDown]).expect_selection(6, 18);
     keys.press_key(Key::DirectionLeft).typed("0").expect_text("hi\nhe00llo world\nhi");
-    keys.press(&[line(), Key::DirectionDown]).typed("0").expect_text("hi\nhe00llo world\nhi0");
+    keys.press(&[line, Key::DirectionDown]).typed("0").expect_text("hi\nhe00llo world\nhi0");
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldKeyEventTest.kt, textField_deleteToBeginningOfLine
 #[test]
 fn the_line_modifier_with_backspace_deletes_to_the_lines_start() {
+    let Some(line) = line() else { return };
     let mut keys = Sequence::new("hello world\nhi world");
     keys.press(&[word(), Key::DirectionRight]);
-    keys.press(&[line(), Key::Backspace]).expect_text(" world\nhi world");
-    keys.press(&[line(), Key::Backspace]).expect_text(" world\nhi world");
+    keys.press(&[line, Key::Backspace]).expect_text(" world\nhi world");
+    keys.press(&[line, Key::Backspace]).expect_text(" world\nhi world");
     for _ in 0..3 {
         keys.press_key(Key::DirectionRight);
     }
-    keys.press(&[line(), Key::Backspace]).expect_text("rld\nhi world");
+    keys.press(&[line, Key::Backspace]).expect_text("rld\nhi world");
     keys.press_key(Key::DirectionDown).press_key(Key::MoveEnd);
-    keys.press(&[line(), Key::Backspace]).expect_text("rld\n");
-    keys.press(&[line(), Key::Backspace]).expect_text("rld\n");
+    keys.press(&[line, Key::Backspace]).expect_text("rld\n");
+    keys.press(&[line, Key::Backspace]).expect_text("rld\n");
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldKeyEventTest.kt, textField_deleteToEndOfLine
 #[test]
 fn the_line_modifier_with_delete_deletes_to_the_lines_end() {
+    let Some(line) = line() else { return };
     let mut keys = Sequence::new("hello world\nhi world");
     keys.press(&[word(), Key::DirectionRight]);
-    keys.press(&[line(), Key::Delete]).expect_text("hello\nhi world");
-    keys.press(&[line(), Key::Delete]).expect_text("hello\nhi world");
+    keys.press(&[line, Key::Delete]).expect_text("hello\nhi world");
+    keys.press(&[line, Key::Delete]).expect_text("hello\nhi world");
     for _ in 0..3 {
         keys.press_key(Key::DirectionRight);
     }
-    keys.press(&[line(), Key::Delete]).expect_text("hello\nhi");
+    keys.press(&[line, Key::Delete]).expect_text("hello\nhi");
     keys.press_key(Key::MoveHome);
-    keys.press(&[line(), Key::Delete]).expect_text("hello\n");
-    keys.press(&[line(), Key::Delete]).expect_text("hello\n");
+    keys.press(&[line, Key::Delete]).expect_text("hello\n");
+    keys.press(&[line, Key::Delete]).expect_text("hello\n");
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldKeyEventTest.kt, textField_paragraphNavigation

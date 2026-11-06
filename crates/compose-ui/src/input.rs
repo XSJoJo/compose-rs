@@ -529,6 +529,10 @@ impl EventContext<'_> {
 /// A node asking to be shown, with what of it: a rect in a chain entry's layer, or all of it.
 pub(crate) type BringIntoViewRequest = (NodeId, Option<(usize, crate::unit::Rect)>);
 
+/// A dispatch's requests to be shown: most have none, a text field gaining the focus two (its
+/// cursor and its decoration), so they're kept inline (D1149).
+pub(crate) type BringIntoViewRequests = smallvec::SmallVec<[BringIntoViewRequest; 2]>;
+
 /// Requests handlers make, applied after dispatch.
 #[derive(Default)]
 pub(crate) struct Requests {
@@ -549,7 +553,7 @@ pub(crate) struct Requests {
     /// The handling nodes asking to be shown (`EventContext::bring_into_view`), each with what
     /// of it: a rect in its chain entry's layer (`EventContext::bring_rect_into_view`), or all of
     /// it. Shown together, as Compose's `ContentInViewNode` queues them (D1145).
-    pub(crate) bring_into_view: Vec<BringIntoViewRequest>,
+    pub(crate) bring_into_view: BringIntoViewRequests,
 }
 
 impl EventContext<'_> {
