@@ -230,7 +230,7 @@ struct LazyListInner {
     layout_state: RefCell<Option<Rc<compose_ui::subcompose::SubcomposeLayoutState>>>,
     /// What composes the items, as last composed, and their contents by key.
     factory: RefCell<Option<Rc<slots::ItemFactory>>>,
-    contents: slots::ItemContents,
+    contents: Rc<slots::ItemContents>,
 }
 
 /// The nested-scroll parents a delta came through, the list's axis, whether it runs against the
@@ -457,7 +457,7 @@ impl LazyListInner {
             scroll_outer: RefCell::new(None),
             layout_state: RefCell::new(None),
             factory: RefCell::new(None),
-            contents: slots::ItemContents::default(),
+            contents: Rc::default(),
         }
     }
 }

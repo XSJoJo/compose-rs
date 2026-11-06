@@ -101,6 +101,8 @@ impl SubcomposeSlotReusePolicy for LazyItemReusePolicy {
 /// What composes each item of one set of items, as Compose's `LazyLayoutItemContentFactory`.
 pub(super) struct ItemFactory {
     pub(super) state: LazyListState,
+    /// The list's contents by key, `ItemContents`, held here not to look the list up per item.
+    contents: Rc<ItemContents>,
     pub(super) items: ItemsRef,
     holder: SaveableStateHolder,
     stacking: ItemStacking,
@@ -137,6 +139,10 @@ impl ItemFactory {
 
     /// Item `index`'s content, its key `key`.
     fn content_of(&self, index: usize, key: u64) -> Callback {
+        if let Some((near, content)) = self.contents.contents.borrow().get(&key) {
+            near.set(index);
+            return content.clone();
+        }
         let inner = self.state.inner_or_detached();
         let mut contents = inner.contents.contents.borrow_mut();
         if let Some((near, content)) = contents.get(&key) {
@@ -290,7 +296,13 @@ pub(super) fn LazyItemsLayout(
         for (_, scope) in inner.contents.scopes.borrow_mut().drain() {
             scope.invalidate();
         }
-        Rc::new(ItemFactory { state, items: items.clone(), holder, stacking })
+        Rc::new(ItemFactory {
+            state,
+            items: items.clone(),
+            holder,
+            stacking,
+            contents: inner.contents.clone(),
+        })
     });
     *inner.factory.borrow_mut() = Some(factory.clone());
     // One per list, kept: the local stays the same, its readers aren't invalidated; its list is
