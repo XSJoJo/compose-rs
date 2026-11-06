@@ -32,6 +32,28 @@ pub(crate) struct Touch {
     /// The handle drag the field follows: the handle, where it pointed in the text at the drag's
     /// start (Compose's `getAdjustedCoordinates`, a pixel up), and the field's scroll then.
     drag: Option<(Handle, Offset, Offset)>,
+    /// The timer of a finger's press becoming a long press.
+    long_press_job: Option<compose_runtime::Job>,
+    /// What the field resolves at its next measurement, with its paragraph: the long press, or
+    /// where the finger dragged after it (in the text's coordinates).
+    pending: Option<Pending>,
+    /// A long press's drag under way, as Compose's `TextFieldTextDragObserver` (its
+    /// `directDragGestureInitiator` is `Touch` meanwhile: no handle shows).
+    long: Option<LongDrag>,
+}
+
+#[derive(Clone, Copy)]
+enum Pending {
+    LongPress(Offset),
+    DragTo(Offset),
+}
+
+/// A long press's drag: where it went down in the text, and the start of the word it selected
+/// (`dragBeginOffsetInText`), none when it went down past the text (`isPositionOnText`).
+#[derive(Clone, Copy)]
+struct LongDrag {
+    at: Offset,
+    begin: Option<usize>,
 }
 
 impl Touch {
@@ -43,6 +65,9 @@ impl Touch {
             shown: ShownHandles::default(),
             positions: HandlePositions::default(),
             drag: None,
+            long_press_job: None,
+            pending: None,
+            long: None,
         }
     }
 
@@ -66,6 +91,11 @@ impl Touch {
         self.direct = true;
         self.cursor_handle = None;
         self.drag = None;
+        self.pending = None;
+        self.long = None;
+        if let Some(job) = self.long_press_job.take() {
+            job.cancel();
+        }
     }
 }
 
@@ -99,11 +129,8 @@ impl TextFieldNode {
             if handles.field.get().is_none() {
                 handles.field.set(Some(context.handle()));
             }
-            if self.touch.direct {
-                let manager = context.current_value_of(&compose_ui::LOCAL_INPUT_MODE_MANAGER);
-                if manager.input_mode() != compose_ui::InputMode::Touch {
-                    self.touch.direct = false;
-                }
+            if self.touch.direct && context.input_mode() != compose_ui::InputMode::Touch {
+                self.touch.direct = false;
             }
         } else {
             self.touch.cursor_handle = None;
@@ -117,6 +144,137 @@ impl TextFieldNode {
         if self.touch.shown.any() {
             context.invalidate_measure();
         }
+    }
+
+    /// A finger went down: in the long-press timeout, unless it lifts or moves past the slop
+    /// first, the press becomes a long press (`detectDragGesturesAfterLongPress`).
+    pub(super) fn start_long_press(&mut self, context: &mut EventContext<'_>) {
+        self.cancel_long_press();
+        let handle = context.handle();
+        let Some(scope) = handle.coroutine_scope() else { return };
+        let timeout = context.view_configuration().long_press_timeout_millis;
+        self.touch.long_press_job = Some(scope.launch(async move {
+            compose_runtime::delay(std::time::Duration::from_millis(timeout)).await;
+            handle.with_node::<TextFieldNode, _>(|node, context| {
+                node.touch.long_press_job = None;
+                node.long_pressed(context);
+            });
+        }));
+    }
+
+    pub(super) fn cancel_long_press(&mut self) {
+        if let Some(job) = self.touch.long_press_job.take() {
+            job.cancel();
+        }
+    }
+
+    /// The long-press timeout passed with the finger still down and still: the field resolves
+    /// the long press at its next measurement.
+    fn long_pressed(&mut self, context: &mut compose_ui::NodeContext<'_>) {
+        let Some(press) = self.press.as_mut().filter(|press| press.long_possible && self.enabled)
+        else {
+            return;
+        };
+        press.long = true;
+        self.touch.pending = Some(Pending::LongPress(press.at));
+        context.invalidate_measurement();
+    }
+
+    /// The finger moved to `at` (in the text) after a long press.
+    pub(super) fn long_press_dragged(&mut self, at: Offset) {
+        self.touch.pending = Some(Pending::DragTo(at));
+    }
+
+    /// The long press's finger lifted, or its input was cancelled: the handles may show again.
+    pub(super) fn long_press_lifted(&mut self) {
+        self.touch.long = None;
+        self.touch.pending = None;
+    }
+
+    /// Resolves a long press or its drag, at a measurement, as Compose's
+    /// `TextFieldTextDragObserver`: a long press on the text selects the word under it (from a
+    /// collapsed selection, by `SelectionAdjustment.Word`); past the text, it puts the cursor
+    /// there and shows its handle. Then the drag selects from that word to the word under the
+    /// finger, never reversed, and never collapsing once it isn't; begun past the text, it
+    /// starts once the finger reaches another offset.
+    pub(super) fn follow_long_press(
+        &mut self,
+        measurer: &mut dyn TextMeasurer,
+        paragraph: ParagraphHandle,
+    ) {
+        let Some(pending) = self.touch.pending.take() else { return };
+        let layout = measurer.paragraph(paragraph);
+        let on_text = |at: Offset| {
+            let line = layout.get_line_for_vertical_position(at.y);
+            at.x >= layout.get_line_left(line) && at.x <= layout.get_line_right(line)
+        };
+        match pending {
+            Pending::LongPress(at) => {
+                self.touch.cursor_handle = None;
+                if !on_text(at) {
+                    let offset = self.tap_offset_in(measurer, paragraph, at).0;
+                    self.cursor = offset;
+                    self.anchor = offset;
+                    let text = self.shown_str();
+                    self.touch.cursor_handle = (!text.is_empty()).then(|| text.to_owned());
+                    self.touch.long = Some(LongDrag { at, begin: None });
+                } else {
+                    self.touch.long = Some(LongDrag { at, begin: None });
+                    if self.text.is_empty() {
+                        return;
+                    }
+                    let offset = self.tap_offset_in(measurer, paragraph, at).0;
+                    let word = self.unit_at(super::Unit::Word, offset);
+                    self.anchor = word.start;
+                    self.cursor = word.end;
+                    self.touch.long = Some(LongDrag { at, begin: Some(word.start) });
+                }
+            }
+            Pending::DragTo(at) => {
+                let Some(mut long) = self.touch.long else { return };
+                if self.text.is_empty() {
+                    return;
+                }
+                let end = self.tap_offset_in(measurer, paragraph, at).0;
+                let (anchor, cursor) = match long.begin {
+                    // Begun past the text and still past it: a cursor, until it leaves the
+                    // offset it began at.
+                    None if !on_text(at) => {
+                        let start = self.tap_offset_in(measurer, paragraph, long.at).0;
+                        if start == end { (end, end) } else { self.word_selection(start, end) }
+                    }
+                    begin => {
+                        let start = match begin {
+                            Some(begin) => begin,
+                            None => self.tap_offset_in(measurer, paragraph, long.at).0,
+                        };
+                        if begin.is_none() && start == end {
+                            return;
+                        }
+                        self.word_selection(start, end)
+                    }
+                };
+                // Never reversed, as Compose's.
+                let (anchor, cursor) = (anchor.min(cursor), anchor.max(cursor));
+                if self.anchor == self.cursor || anchor != cursor {
+                    self.anchor = anchor;
+                    self.cursor = cursor;
+                }
+                if long.begin.is_none() && self.anchor != self.cursor {
+                    long.begin = Some(self.anchor);
+                    self.touch.long = Some(long);
+                }
+            }
+        }
+        self.preferred_x = None;
+    }
+
+    /// The selection from the word at `start` to the word at `end`, as
+    /// `SelectionAdjustment.Word`: each end at the far side of its word.
+    fn word_selection(&self, start: usize, end: usize) -> (usize, usize) {
+        let first = self.unit_at(super::Unit::Word, start);
+        let last = self.unit_at(super::Unit::Word, end);
+        if end >= start { (first.start, last.end.max(first.end)) } else { (first.end, last.start) }
     }
 
     /// Follows a handle's drag its node told, at a measurement with the paragraph laid out, as
@@ -161,7 +319,8 @@ impl TextFieldNode {
     /// `getCursorHandleState` and `getSelectionHandleState`: only when it changed, and nothing
     /// at all while none shows and none may.
     pub(super) fn tell_handles(&mut self, measurer: &dyn TextMeasurer, paragraph: ParagraphHandle) {
-        let may_show = self.focused && self.enabled && self.touch.direct;
+        let may_show =
+            self.focused && self.enabled && self.touch.direct && self.touch.long.is_none();
         if !may_show && !self.touch.shown.any() {
             return;
         }

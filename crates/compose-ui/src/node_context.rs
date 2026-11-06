@@ -249,6 +249,13 @@ impl NodeContext<'_> {
         self.tree.node(self.node).locals
     }
 
+    /// The input mode of the node's host, as `currentValueOf(LocalInputModeManager).inputMode`
+    /// (a read of its state). `LOCAL_INPUT_MODE_MANAGER`'s default is the host's only while
+    /// composing: read outside composition, it would be a manager of its own.
+    pub fn input_mode(&self) -> crate::input_mode::InputMode {
+        self.tree.input_mode.input_mode()
+    }
+
     /// The layout node's layout direction, as `requireLayoutDirection()`.
     pub fn require_layout_direction(&self) -> LayoutDirection {
         self.tree.node(self.node).layout_direction

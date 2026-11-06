@@ -939,6 +939,10 @@ struct Press {
     unit: Unit,
     /// The word or line a double- or triple-click selected.
     initial: std::ops::Range<usize>,
+    /// A finger's first press, not moved past the slop: a long press may come (D2010).
+    long_possible: bool,
+    /// The long press came: the moves drag the selection by words until it's lifted.
+    long: bool,
 }
 
 pub(crate) struct TextFieldNode {
@@ -2546,6 +2550,7 @@ impl LayoutModifierNode for TextFieldNode {
                 self.cursor = self.tap_offset_in(&mut *measurer, paragraph, position).0;
                 self.anchor = self.cursor;
             }
+            self.follow_long_press(&mut *scope.text_measurer(), paragraph);
             self.follow_handle_drag(&mut *scope.text_measurer(), paragraph);
             paragraph
         };
@@ -2854,7 +2859,7 @@ impl TextFieldNode {
         if pass == PointerEventPass::Final
             && event.kind == PointerEventType::Move
             && event.consumed
-            && self.press.as_ref().is_some_and(|press| !press.dragging)
+            && self.press.as_ref().is_some_and(|press| !press.dragging && !press.long)
         {
             self.press = None;
         }
@@ -2899,14 +2904,31 @@ impl TextFieldNode {
                     self.cursor = initial.end;
                     context.invalidate_measure();
                 }
-                self.press = Some(Press { at, dragging: false, unit, initial });
+                let long_possible =
+                    event.pointer_type != compose_ui::PointerType::Mouse && unit == Unit::Character;
+                self.press =
+                    Some(Press { at, dragging: false, unit, initial, long_possible, long: false });
+                if long_possible {
+                    self.start_long_press(context);
+                }
             }
             PointerEventType::Move if event.pressed => {
                 let Some(press) = &mut self.press else { return };
                 let touch = event.pointer_type != compose_ui::PointerType::Mouse;
+                // After a long press, the finger drags the selection by words (D2010).
+                if press.long {
+                    event.consume();
+                    self.long_press_dragged(at);
+                    context.invalidate_measure();
+                    return;
+                }
                 // A finger's first press doesn't drag: the moves are for what's around, as
                 // `touchSelectionFirstPress`, and it's still a tap unless it leaves the field.
                 if touch && press.unit == Unit::Character {
+                    let slop = context.view_configuration().touch_slop;
+                    if (at - press.at).x.hypot((at - press.at).y) > slop {
+                        press.long_possible = false;
+                    }
                     if !inside {
                         self.press = None;
                     }
@@ -2952,6 +2974,16 @@ impl TextFieldNode {
             }
             PointerEventType::Release => {
                 let Some(press) = self.press.take() else { return };
+                self.cancel_long_press();
+                if press.long {
+                    // The long press's selection is made: the field takes the focus now, as
+                    // Compose's `onDragStop` (D2010).
+                    event.consume();
+                    self.long_press_lifted();
+                    context.request_focus();
+                    context.invalidate_measure();
+                    return;
+                }
                 if event.consumed || (!inside && !press.dragging) {
                     return;
                 }
@@ -3004,6 +3036,8 @@ impl PointerInputModifierNode for TextFieldNode {
 
     fn on_cancel_pointer_input(&mut self) {
         self.press = None;
+        self.cancel_long_press();
+        self.long_press_lifted();
     }
 }
 
