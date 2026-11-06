@@ -11,7 +11,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use compose_runtime::CompositionLocalAnchor;
+use compose_runtime::{CancellationHandle, CompositionLocalAnchor};
 use compose_ui::{
     BoundsRead, BringIntoViewBounds, BringIntoViewScope, IntSize, LocalBoxFuture, NodeHandle, Rect,
 };
@@ -150,8 +150,9 @@ pub(crate) struct ContentInView {
     animating: Cell<bool>,
     /// Keeping the focused child in view after the viewport shrank, as `trackingFocusedChild`.
     tracking: Cell<bool>,
-    /// A shrink waiting for its frame's end to see whether the focused child was clipped.
-    checking: Cell<bool>,
+    /// A shrink waiting for its frame's end to see whether the focused child was clipped: the
+    /// check's handle, cancelled if the container is detached first.
+    checking: RefCell<Option<CancellationHandle>>,
     /// The container's handle, for the focused rect inside it.
     handle: Cell<Option<NodeHandle>>,
 }
@@ -165,7 +166,7 @@ impl ContentInView {
             requests: RefCell::default(),
             animating: Cell::new(false),
             tracking: Cell::new(false),
-            checking: Cell::new(false),
+            checking: RefCell::new(None),
             handle: Cell::new(None),
         })
     }
@@ -213,19 +214,24 @@ impl ContentInView {
         self.handle.set(Some(handle));
         self.locals.set(Some(locals));
         self.viewport.set(size);
-        if self.animating.get() || self.tracking.get() || self.checking.get() {
+        if self.animating.get() || self.tracking.get() || self.checking.borrow().is_some() {
             return;
         }
         // At the end of this frame, its layout done and the tree free; the animation it may
         // start takes its first step then.
-        self.checking.set(true);
         let this = self.clone();
         let check = move || {
-            this.checking.set(false);
+            this.checking.take();
             this.keep_focused_in_view(previous, size, handle);
         };
-        if locals.schedule_frame_end_callback(check).is_none() {
-            self.checking.set(false);
+        *self.checking.borrow_mut() = locals.schedule_frame_end_callback(check);
+    }
+
+    /// The container is detached, as the end of `ContentInViewNode`'s coroutine scope: a check
+    /// waiting for the frame's end won't run (it would keep the container until a frame ends).
+    pub(crate) fn on_detach(&self) {
+        if let Some(check) = self.checking.take() {
+            check.cancel();
         }
     }
 

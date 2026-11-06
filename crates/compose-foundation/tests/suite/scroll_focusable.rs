@@ -5,9 +5,10 @@
 
 #![allow(non_snake_case)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use compose_foundation::gestures::{LocalBoxFuture, ScrollBlock};
 use compose_foundation::layout::*;
 use compose_foundation::*;
 use compose_runtime::*;
@@ -485,4 +486,72 @@ fn a_focused_node_outside_isnt_followed() {
         ui.wait_for_idle();
         assert_eq!(state.value(), 0, "horizontal: {horizontal}");
     }
+}
+
+/// A scrollable state whose clones are counted through `alive`: what keeps one keeps it.
+#[derive(Clone)]
+struct Tracked {
+    inner: DefaultScrollableState,
+    alive: Rc<()>,
+}
+
+impl ScrollableState for Tracked {
+    fn scroll_boxed<'a>(
+        &'a self,
+        priority: MutatePriority,
+        block: ScrollBlock<'a>,
+    ) -> LocalBoxFuture<'a, Result<(), MutationInterrupted>> {
+        self.inner.scroll_boxed(priority, block)
+    }
+
+    fn dispatch_raw_delta(&self, delta: f32) -> f32 {
+        self.inner.dispatch_raw_delta(delta)
+    }
+
+    fn is_scroll_in_progress(&self) -> bool {
+        self.inner.is_scroll_in_progress()
+    }
+}
+
+impl ComposeArg for Tracked {
+    fn same(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.alive, &other.alive)
+    }
+}
+
+// compose-rs's own (D1376, on review): a container detached in the frame its viewport shrank
+// cancels the check waiting for the frame's end, which would otherwise keep it (and its state)
+// queued until a frame ends.
+#[test]
+fn a_container_leaving_in_the_frame_it_shrank_cancels_its_check() {
+    let size = mutable_state_of(100.0);
+    let shown = mutable_state_of(true);
+    let state = Tracked { inner: scrollable_state(|delta| delta), alive: Rc::new(()) };
+    let alive = Rc::downgrade(&state.alive);
+    let (sizes, shows) = (size.handle(), shown.handle());
+    let mut ui = ComposeTestRule::sized(IntSize::new(600, 600), move || {
+        if shows.get() {
+            Box!(
+                modifier = Modifier
+                    .size(sizes.get().dp())
+                    .scrollable(state.clone(), Orientation::Vertical)
+                    // The shrink seen, the container leaves in the same frame.
+                    .on_size_changed(move |size: IntSize| {
+                        if size.height < 100 {
+                            shows.set(false);
+                        }
+                    })
+            );
+        }
+    });
+    ui.wait_for_idle();
+    // At the end of the frame, before the check: what keeps the state then.
+    let at_frame_end = Rc::new(Cell::new(None));
+    let (probe, seen) = (alive.clone(), at_frame_end.clone());
+    let _probe = Recomposer::current_thread()
+        .schedule_frame_end_callback(move || seen.set(Some(probe.strong_count())));
+    size.set(50.0);
+    ui.wait_for_idle();
+    assert!(!shown.get(), "it left in the frame it shrank");
+    assert_eq!(at_frame_end.get(), Some(alive.strong_count()), "nothing queued keeps it");
 }
