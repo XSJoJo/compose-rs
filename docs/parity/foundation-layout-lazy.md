@@ -268,13 +268,13 @@ Pager prefetch already uses a cache window in 1.12.1 (`isCacheWindowForPagerEnab
 | compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/gestures/snapping/LazyListSnapLayoutInfoProviderTest.kt | 3 | List `SnapLayoutInfoProvider` | ported (`snapping.rs`: all 3, one test, with a header and without) |
 | compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/gestures/snapping/SnapFlingBehaviorTest.kt | 17 | `snapFlingBehavior` approach and snap phases, remaining offset, velocity | partial (`snapping.rs`: 15 of 17. Left: `findClosestOffset`'s 2, of the test's own provider) |
 | compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewRequesterViewIntegrationTest.kt | 4 | `bringIntoView` reaching Android's `requestRectangleOnScreen` | n/a: Android View interop |
-| compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewResponderTest.kt | 20 | `BringIntoViewRequester` propagating up through responders, interrupting requests | partial (`bring_into_view.rs`: 8 of 20, D1371; the interruption and cancellation tests wait on the animated `ContentInViewNode`; the 4 `isChildOf` ones test a helper of the test) |
-| compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewScrollableInteractionTest.kt | 24 | Scrollables scroll requested rects into view (leading, trailing, center, bigger than the parent) | partial (`bring_into_view.rs`: 15 of 24, each in both orientations, D1371; the concurrent requests' order and the spec's tests through `Modifier.scrollable(bringIntoViewSpec)` wait on the animated `ContentInViewNode`; the detached-coordinates one on a suspending responder) |
+| compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewResponderTest.kt | 20 | `BringIntoViewRequester` propagating up through responders, interrupting requests | ported (`bring_into_view.rs`: 16 of 20, D1371, D1372; the 4 `isChildOf` ones test a helper of the test) |
+| compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewScrollableInteractionTest.kt | 24 | Scrollables scroll requested rects into view (leading, trailing, center, bigger than the parent) | ported (`bring_into_view.rs`: all 24, each in both orientations, D1371, D1372; `shouldUseCustomSpec` counts the animation specs the spec gives, where Compose counts their `vectorize`) |
 | compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/MutatorMutexTest.kt | 8 | `MutatorMutex` priorities, `tryMutate`, `tryLock` | ported (`mutator_mutex.rs`: 7 tests for the 8; `tryLock`/`unlock` are internal, checked through `try_mutate`; an interrupted mutation returns `Err(MutationInterrupted)`, D850) |
-| compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/gestures/BringIntoViewRequestPriorityQueueTest.kt | 15 | The internal request queue of `ContentInViewNode` | n/a: internal class (port its rules with feature:bring-into-view if compose-rs grows the same queue) |
+| compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/gestures/BringIntoViewRequestPriorityQueueTest.kt | 15 | The internal request queue of `ContentInViewNode` | ported (`gestures/bring_into_view_queue.rs`'s unit tests: 13 of 15, D1373; the 2 `toString` ones check Kotlin's debugging strings) |
 | compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/gestures/DraggableAnchorsTest.kt | 11 | `DraggableAnchors` builder, closest anchor, min/max, equality | ported (`anchored_draggable.rs`; `equality_differentObject` compares with a string, which Rust doesn't compile) |
 | compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/gestures/DraggableIsAnyChangedToDownTest.kt | 10 | The internal `isAnyChangedToDown` helper | n/a: internal helper |
-| compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/gestures/UpdatableAnimationStateTest.kt | 7 | The internal animation state behind bring-into-view | n/a: internal class |
+| compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/gestures/UpdatableAnimationStateTest.kt | 7 | The internal animation state behind bring-into-view | ported (`gestures/updatable_animation_state.rs`'s unit tests: all 7, D1372) |
 
 ### Helper files without tests (23)
 
@@ -346,7 +346,7 @@ From `compose/foundation/foundation-layout/api/current.txt` and `compose/foundat
   - state and modifiers: `ScrollableState` (`scroll(priority) {}`, `dispatchRawDelta`, `isScrollInProgress`, `canScroll*`, `lastScrolled*`, `scrollIndicatorState`), `ScrollableState(consume)`/`rememberScrollableState`, `ScrollScope`, `Modifier.scrollable` (both overloads), `Modifier.scrollableArea`;
   - flings: `FlingBehavior`, `TargetedFlingBehavior`, `ScrollableDefaults` (`flingBehavior()`, `reverseDirection`);
   - extensions: `scrollBy`, `animateScrollBy`, `stopScroll`;
-  - `BringIntoViewSpec` with `LocalBringIntoViewSpec`, `clipScrollableContainer`, `checkScrollableContainerConstraints`.
+  - `clipScrollableContainer`, `checkScrollableContainerConstraints` (`BringIntoViewSpec` with `LocalBringIntoViewSpec` is in, D1371, D1372).
 - **scroll-state-api:**
   - `ScrollState`: `animateScrollTo`, `scroll {}`, suspend `scrollTo` that returns what it consumed, `canScrollForward`/`Backward`, `isScrollInProgress`, `lastScrolled*`, `interactionSource`, `scrollIndicatorState`, `Saver`;
   - the parameters `enabled`, `flingBehavior`, `reverseScrolling` and `overscrollEffect` of `verticalScroll`/`horizontalScroll`.
@@ -366,7 +366,7 @@ From `compose/foundation/foundation-layout/api/current.txt` and `compose/foundat
   - `animateBy`, `animatePanBy`, `animateRotateBy`, `animateZoomBy`, `panBy`, `rotateBy`, `zoomBy`, `stopTransformation`.
 - **anchored-draggable:** Done (D1463, `overscrollEffect` D1464) but for the deprecated constructors and `settle(velocity)`: `AnchoredDraggableState` (both constructors, `anchoredDrag`, `dispatchRawDelta`, `progress(from, to)`, `requireOffset`, `settle(spec)`, `updateAnchors`, `currentValue`, `targetValue`, `settledValue`, `offset`, `lastVelocity`, `isAnimationRunning`, `Saver()`), `DraggableAnchors {}`, `DraggableAnchorsConfig`, `Modifier.anchoredDraggable` (both overloads), `AnchoredDragScope`, `AnchoredDraggableDefaults` (`flingBehavior`, `PositionalThreshold`, `SnapAnimationSpec`, `DecayAnimationSpec`), `animateTo`, `animateToWithDecay`, `snapTo`, `forEach`.
 - **snapping:** Done (D1462): `SnapLayoutInfoProvider` (interface, and for `LazyListState`/`LazyGridState`), `SnapPosition` (Start, Center, End), `snapFlingBehavior`, `rememberSnapFlingBehavior` (for a provider, a `LazyListState` or a `LazyGridState`).
-- **bring-into-view:** done (D1371) but for the animated `ContentInViewNode` (containers scroll at once) and the lazy layouts reading `LocalBringIntoViewSpec` (after C8): `BringIntoViewRequester()`, `Modifier.bringIntoViewRequester`, `bringIntoView(rect)`, `bringIntoViewResponder`, `BringIntoViewSpec`, `LocalBringIntoViewSpec`.
+- **bring-into-view:** done (D1371, the animated `ContentInViewNode` D1372) but for the lazy layouts, which jump and use the default spec until C8: `BringIntoViewRequester()`, `Modifier.bringIntoViewRequester`, `bringIntoView(rect)`, `bringIntoViewResponder`, `BringIntoViewSpec` (with the deprecated `scrollAnimationSpec`), `LocalBringIntoViewSpec`, `Modifier.scrollable(bringIntoViewSpec)`.
 - **lazy-layout-info:** done (D859).
 - **lazy-state-api:** on `LazyListState` and `LazyGridState`:
   - `animateScrollToItem`, `requestScrollToItem`, `scroll(priority) {}`, `dispatchRawDelta`;
@@ -389,7 +389,7 @@ From `compose/foundation/foundation-layout/api/current.txt` and `compose/foundat
   - state: `PagerState` (abstract) and `PagerState(…, pageCount)`, `rememberPagerState`;
   - `PageSize` (Fill, Fixed), `PagerDefaults` (`flingBehavior`, `pageNestedScrollConnection`, `bringIntoViewSpec`, `BeyondViewportPageCount`), `PagerSnapDistance.atMost`;
   - info and scopes: `PagerLayoutInfo`, `PageInfo`, `PagerScope`.
-- **keep-focused-in-view:** no API. Compose's scrollables keep a focused child in view when their viewport shrinks (`ContentInViewNode`).
+- **keep-focused-in-view:** no API. Compose's scrollables keep a focused child in view when their viewport shrinks (`ContentInViewNode.onRemeasured`; the rest of `ContentInViewNode` is in, D1372, and this would start its animation).
 - **system-gesture-exclusion:** `Modifier.systemGestureExclusion()`, with a rect lambda (Android).
 - **flags:** `ComposeFoundationFlags` (*exp*). compose-rs has none now: the pausable-prefetch flag it mirrored went as the tip's did (D892).
 
@@ -416,7 +416,7 @@ Each entry gives the Compose API, what it does, the test files that need it (by 
    - Tests: ScrollableTest, ScrollableAreaTest, and most scroll-state and lazy-state tests.
    - Depends on: mutator-mutex; interaction (`DragInteraction`, misc ledger) for `interactionSource`.
    - Size: L. Experimental: no.
-   - **Mostly done** (D851, D852, D855): `ScrollableState`, `ScrollableStateExt` (`scroll`, `scroll_by`, `animate_scroll_by`, `stop_scroll`), `ScrollScope`, `FlingBehavior`, `DefaultFlingBehavior`, `ScrollableDefaults` (`fling_behavior`, `reverse_direction`), `scrollable_state`/`remember_scrollable_state`, `Modifier.scrollable`/`scrollable_with`. Left: `scrollableArea`, keyboard paging, `TargetedFlingBehavior`, `BringIntoViewSpec`, `clipScrollableContainer`, `checkScrollableContainerConstraints`, the overscroll overload.
+   - **Mostly done** (D851, D852, D855): `ScrollableState`, `ScrollableStateExt` (`scroll`, `scroll_by`, `animate_scroll_by`, `stop_scroll`), `ScrollScope`, `FlingBehavior`, `DefaultFlingBehavior`, `ScrollableDefaults` (`fling_behavior`, `reverse_direction`), `scrollable_state`/`remember_scrollable_state`, `Modifier.scrollable`/`scrollable_with` (and `bringIntoViewSpec`, the last parameter of `scrollable_overscroll`, D1372). Left: `scrollableArea`, keyboard paging, `TargetedFlingBehavior`, `clipScrollableContainer`, `checkScrollableContainerConstraints`, the overscroll overload.
 4. **scroll-state-api.**
    - API: the rest of `ScrollState`, and `verticalScroll`'s `enabled`/`flingBehavior`/`reverseScrolling` parameters.
    - Tests: ScrollTest (rest).
@@ -469,7 +469,7 @@ Each entry gives the Compose API, what it does, the test files that need it (by 
     - Tests: ScrollFocusableInteractionTest, LazyListFocusableInteractionTest.
     - Depends on: none.
     - Size: M. Experimental: no.
-14. **bring-into-view.** Done but for the animation (D1371); the animated `ContentInViewNode` is next.
+14. **bring-into-view.** Done (D1371, D1372; [design](design/content-in-view.md)) but for the lazy layouts (after C8).
     - API: `BringIntoViewRequester`, `bringIntoViewRequester`, `BringIntoViewSpec`, `LocalBringIntoViewSpec`.
     - Tests: BringIntoViewResponderTest, BringIntoViewScrollableInteractionTest.
     - Depends on: scrollable.

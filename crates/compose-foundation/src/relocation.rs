@@ -2,24 +2,34 @@
 //! `BringIntoViewRequester` and `Modifier::bring_into_view_requester` ask the scrolling
 //! containers around a node to show it (or a part of it); `Modifier::bring_into_view_responder`
 //! takes part as one of them; `BringIntoViewSpec` says how far a container scrolls to show
-//! something. compose-rs's containers scroll at once, where Compose's animate (D1371).
+//! something, and along what animation (D1371, D1372).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use compose_animation::AnimationSpec;
 use compose_runtime::{ComposeArg, CompositionLocal};
 use compose_ui::{
-    IntSize, Modifier, ModifierNode, ModifierNodeElement, NodeContext, NodeHandle, Rect,
+    BringIntoViewBounds, BringIntoViewResponderNode, BringIntoViewScope, LocalBoxFuture, Modifier,
+    ModifierNode, ModifierNodeElement, NodeContext, NodeHandle, Rect,
 };
 
 // ---- The spec ----------------------------------------------------------------------------------
 
 /// How far a scrolling container scrolls to show something, as Compose's `BringIntoViewSpec`:
-/// `calculate_scroll_distance` is given where it starts (`offset`, from the container's leading
-/// edge), its `size` and the container's, and returns how far to scroll (positive: towards the
-/// end). By default, nothing if it's in view or spans the container, else the least that brings
-/// its nearer edge in.
+/// `calculate_scroll_distance` is given where it starts (`offset`, from the container's top or
+/// left edge, in its layout's coordinates, whatever the scroll's direction), its `size` and the
+/// container's, and returns how far the content is to move back (positive: towards the bottom or
+/// the right of the content). By default, nothing if it's in view or spans the container, else the least that brings
+/// its nearer edge in. Asked again each frame of the container's animation: 0 ends it.
 pub trait BringIntoViewSpec {
+    /// What a container animates along to show what's asked, as the deprecated
+    /// `scrollAnimationSpec`: `spring()` by default.
+    #[deprecated(note = "Animation spec customization is no longer supported.")]
+    fn scroll_animation_spec(&self) -> AnimationSpec {
+        compose_animation::spring().into()
+    }
+
     fn calculate_scroll_distance(&self, offset: f32, size: f32, container_size: f32) -> f32 {
         default_scroll_distance(offset, size, container_size)
     }
@@ -46,7 +56,8 @@ pub(crate) fn default_scroll_distance(offset: f32, size: f32, container_size: f3
 }
 
 /// The spec the scrolling containers use where it's read, as `LocalBringIntoViewSpec`. Read by
-/// `vertical_scroll` and `horizontal_scroll`; the lazy layouts use the default for now.
+/// `vertical_scroll`, `horizontal_scroll` and `scrollable` (when given none); the lazy layouts use
+/// the default for now.
 pub static LOCAL_BRING_INTO_VIEW_SPEC: CompositionLocal<Rc<dyn BringIntoViewSpec>> =
     CompositionLocal::new("LocalBringIntoViewSpec", || Rc::new(DefaultBringIntoViewSpec));
 
@@ -67,14 +78,19 @@ impl BringIntoViewRequester {
     }
 
     /// Asks the containers around each of its nodes to show `rect` (in the node's coordinates;
-    /// `None`: all of it), as `bringIntoView(rect)`. A node not placed yet is asked again at the
-    /// next frame; one that isn't then is left.
+    /// `None`: all of it), as `bringIntoView(rect)`: returns once they have (they animate to it),
+    /// or were interrupted by a newer request. A node not placed yet is asked again at the next
+    /// frame; one that isn't then is left.
     pub async fn bring_into_view(&self, rect: Option<Rect>) {
         let nodes = self.nodes.borrow().clone();
         for node in nodes {
-            if !node.bring_into_view(rect) && node.is_attached() {
+            let mut asked = node.bring_into_view(rect);
+            if asked.is_none() && node.is_attached() {
                 compose_runtime::with_frame_nanos(|_| ()).await;
-                node.bring_into_view(rect);
+                asked = node.bring_into_view(rect);
+            }
+            if let Some(asked) = asked {
+                asked.await;
             }
         }
     }
@@ -169,15 +185,21 @@ impl ModifierNode for RequesterNode {
 // ---- The responder -----------------------------------------------------------------------------
 
 /// A node that takes part in bringing what's inside it into view, as Compose's deprecated
-/// `BringIntoViewResponder`. compose-rs's is told at once, where Compose's suspends: what it
-/// does (a scroll) is done when `bring_child_into_view` returns.
+/// `BringIntoViewResponder`: told where what's asked is (in this node's coordinates), it says
+/// where its parents are to show it, and shows it, its parents asked alongside.
 pub trait BringIntoViewResponder {
     /// Where `local_rect` (in this node's coordinates) is to be shown by the nodes around, as
-    /// `calculateRectForParent`.
+    /// `calculateRectForParent`: where it will be once this node has shown it.
     fn calculate_rect_for_parent(&self, local_rect: Rect) -> Rect;
 
-    /// Shows `local_rect`, in this node's coordinates, as `bringChildIntoView`.
-    fn bring_child_into_view(&self, local_rect: Rect);
+    /// Shows what `local_rect` gives, in this node's coordinates, as `bringChildIntoView`:
+    /// returns once it's shown. `local_rect` may give another rect as time goes on, and `None`
+    /// once it can't be worked out (the requester detached). One request at a time is this
+    /// node's to handle: a newer one comes while an older one may still run.
+    fn bring_child_into_view(
+        &self,
+        local_rect: Rc<dyn Fn() -> Option<Rect>>,
+    ) -> LocalBoxFuture<'_, ()>;
 }
 
 struct ResponderElement(Rc<dyn BringIntoViewResponder>);
@@ -201,10 +223,23 @@ impl ModifierNodeElement for ResponderElement {
 }
 
 impl ModifierNode for ResponderNode {
-    fn bring_into_view(&mut self, rect: Rect, _viewport: IntSize) -> Option<Rect> {
+    fn as_bring_into_view_responder(&mut self) -> Option<&mut dyn BringIntoViewResponderNode> {
+        Some(self)
+    }
+}
+
+impl BringIntoViewResponderNode for ResponderNode {
+    fn calculate_rect_for_parent(&self, rect: Rect, _scope: &BringIntoViewScope) -> Rect {
+        self.0.calculate_rect_for_parent(rect)
+    }
+
+    fn bring_child_into_view(
+        &mut self,
+        bounds: BringIntoViewBounds,
+        _scope: &BringIntoViewScope,
+    ) -> Option<LocalBoxFuture<'static, ()>> {
         let responder = self.0.clone();
-        let parent = responder.calculate_rect_for_parent(rect);
-        responder.bring_child_into_view(rect);
-        Some(parent)
+        let local_rect: Rc<dyn Fn() -> Option<Rect>> = Rc::new(move || bounds.rect());
+        Some(Box::pin(async move { responder.bring_child_into_view(local_rect).await }))
     }
 }

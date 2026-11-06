@@ -19,8 +19,12 @@ use compose_ui::{
 
 use crate::fling::Fling;
 use crate::gestures::Orientation;
+use crate::gestures::content_in_view::{
+    ContentInView, ContentInViewConfig, destination, resolve_spec,
+};
 use crate::mutator::{MutatePriority, MutationInterrupted, MutatorMutex};
 use crate::overscroll::{OverscrollEffect, same_overscroll};
+use crate::relocation::BringIntoViewSpec;
 use crate::scroll::same_fling;
 
 pub use compose_ui::LocalBoxFuture;
@@ -640,8 +644,10 @@ pub trait ScrollableModifier {
         S: ScrollableState + ComposeArg + Clone + 'static;
 
     /// With an effect given the deltas, as `Modifier.scrollable(state, orientation,
-    /// overscrollEffect, enabled, reverseDirection, flingBehavior, interactionSource)`. It's not
-    /// drawn here: as Compose's, apply [`overscroll`](crate::OverscrollModifier::overscroll) too.
+    /// overscrollEffect, enabled, reverseDirection, flingBehavior, interactionSource,
+    /// bringIntoViewSpec)`. It's not drawn here: as Compose's, apply
+    /// [`overscroll`](crate::OverscrollModifier::overscroll) too. `bring_into_view_spec` says how
+    /// far it scrolls to bring what's inside into view (`None`: `LOCAL_BRING_INTO_VIEW_SPEC`'s).
     #[allow(clippy::too_many_arguments)]
     fn scrollable_overscroll<S>(
         self,
@@ -652,6 +658,7 @@ pub trait ScrollableModifier {
         reverse_direction: bool,
         fling_behavior: Option<Rc<dyn FlingBehavior>>,
         interaction_source: Option<MutableInteractionSource>,
+        bring_into_view_spec: Option<Rc<dyn BringIntoViewSpec>>,
     ) -> Modifier
     where
         S: ScrollableState + ComposeArg + Clone + 'static;
@@ -685,6 +692,7 @@ impl ScrollableModifier for Modifier {
             reverse_direction,
             fling_behavior,
             interaction_source,
+            None,
         )
     }
 
@@ -697,11 +705,13 @@ impl ScrollableModifier for Modifier {
         reverse_direction: bool,
         fling_behavior: Option<Rc<dyn FlingBehavior>>,
         interaction_source: Option<MutableInteractionSource>,
+        bring_into_view_spec: Option<Rc<dyn BringIntoViewSpec>>,
     ) -> Modifier
     where
         S: ScrollableState + ComposeArg + Clone + 'static,
     {
         self.then_custom(ScrollableElement {
+            bring_into_view_spec,
             overscroll: overscroll_effect,
             dyn_state: Rc::new(state.clone()),
             state,
@@ -725,6 +735,7 @@ struct ScrollableElement<S> {
     fling_behavior: Option<Rc<dyn FlingBehavior>>,
     interaction_source: Option<MutableInteractionSource>,
     overscroll: Option<Rc<dyn OverscrollEffect>>,
+    bring_into_view_spec: Option<Rc<dyn BringIntoViewSpec>>,
 }
 
 pub(crate) struct ScrollableNode {
@@ -738,6 +749,9 @@ pub(crate) struct ScrollableNode {
     interaction_source: Option<MutableInteractionSource>,
     overscroll: Option<Rc<dyn OverscrollEffect>>,
     drag: crate::scroll::DragScroller,
+    bring_into_view_spec: Option<Rc<dyn BringIntoViewSpec>>,
+    /// Its bring-into-view requests and their animation, from the first request on (D1372).
+    content_in_view: Option<Rc<ContentInView>>,
 }
 
 impl<S: ScrollableState + ComposeArg + Clone + 'static> ModifierNodeElement
@@ -756,6 +770,8 @@ impl<S: ScrollableState + ComposeArg + Clone + 'static> ModifierNodeElement
             interaction_source: self.interaction_source.clone(),
             overscroll: self.overscroll.clone(),
             drag: crate::scroll::DragScroller::along(self.orientation == Orientation::Vertical),
+            bring_into_view_spec: self.bring_into_view_spec.clone(),
+            content_in_view: None,
         }
     }
 
@@ -785,6 +801,10 @@ impl<S: ScrollableState + ComposeArg + Clone + 'static> ModifierNodeElement
         node.fling_behavior = self.fling_behavior.clone();
         node.interaction_source = self.interaction_source.clone();
         node.overscroll = self.overscroll.clone();
+        node.bring_into_view_spec = self.bring_into_view_spec.clone();
+        if let Some(content_in_view) = &node.content_in_view {
+            content_in_view.set_config(node.content_in_view_config());
+        }
     }
 
     fn same(&self, other: &Self) -> bool {
@@ -795,6 +815,7 @@ impl<S: ScrollableState + ComposeArg + Clone + 'static> ModifierNodeElement
             && same_fling(&other.fling_behavior, &self.fling_behavior)
             && same_overscroll(&other.overscroll, &self.overscroll)
             && other.interaction_source == self.interaction_source
+            && same_spec(&other.bring_into_view_spec, &self.bring_into_view_spec)
     }
 
     fn name(&self) -> &'static str {
@@ -802,7 +823,27 @@ impl<S: ScrollableState + ComposeArg + Clone + 'static> ModifierNodeElement
     }
 }
 
+/// Whether two optional specs are the same (by identity).
+fn same_spec(a: &Option<Rc<dyn BringIntoViewSpec>>, b: &Option<Rc<dyn BringIntoViewSpec>>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+        _ => false,
+    }
+}
+
 impl ScrollableNode {
+    /// What its bring-into-view animation scrolls, as Compose's `ContentInViewNode`'s.
+    fn content_in_view_config(&self) -> ContentInViewConfig {
+        ContentInViewConfig {
+            state: self.dyn_state.clone(),
+            vertical: self.vertical,
+            reverse_direction: self.reverse_direction,
+            spec: self.bring_into_view_spec.clone(),
+            pending: None,
+        }
+    }
+
     pub(crate) fn drag_gesture(&self) -> (Option<super::Orientation>, super::GestureState) {
         let orientation = if self.vertical {
             super::Orientation::Vertical
@@ -868,6 +909,41 @@ impl ModifierNode for ScrollableNode {
     fn on_reset(&mut self, _context: &mut compose_ui::NodeContext<'_>) {
         self.drag.cancel_leaving();
         self.drag.detach();
+    }
+
+    fn as_bring_into_view_responder(
+        &mut self,
+    ) -> Option<&mut dyn compose_ui::BringIntoViewResponderNode> {
+        Some(self)
+    }
+}
+
+/// As Compose's `ContentInViewNode` behind its scrollable: it animates to what's asked, as far as
+/// its spec says (the one given, else `LOCAL_BRING_INTO_VIEW_SPEC`'s where it's composed).
+impl compose_ui::BringIntoViewResponderNode for ScrollableNode {
+    fn calculate_rect_for_parent(
+        &self,
+        rect: compose_ui::Rect,
+        scope: &compose_ui::BringIntoViewScope,
+    ) -> compose_ui::Rect {
+        let spec = resolve_spec(&self.bring_into_view_spec, Some(scope.locals()));
+        destination(&*spec, rect, scope.viewport(), self.vertical)
+    }
+
+    fn bring_child_into_view(
+        &mut self,
+        bounds: compose_ui::BringIntoViewBounds,
+        scope: &compose_ui::BringIntoViewScope,
+    ) -> Option<LocalBoxFuture<'static, ()>> {
+        let config = self.content_in_view_config();
+        let content_in_view = match &self.content_in_view {
+            Some(content_in_view) => {
+                content_in_view.set_config(config);
+                content_in_view.clone()
+            }
+            None => self.content_in_view.insert(ContentInView::new(config)).clone(),
+        };
+        Some(content_in_view.bring_child_into_view(bounds, scope))
     }
 }
 
