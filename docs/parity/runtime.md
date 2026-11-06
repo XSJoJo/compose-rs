@@ -124,7 +124,7 @@ The core suite alone (`nonEmulatorCommonTest`, 1,099 tests) splits: 17 in `cover
 
 | File (under `frameworks/support/`) | Tests | Covers | Status |
 |---|---|---|---|
-| `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/AndroidInstrumentedMovableContentTests.kt` | 4 | Movable content with `BoxWithConstraints`, dialogs, subcompositions. | ported: 4 in crates/compose-foundation/tests/suite/subcompose_layout.rs (D1511: state kept across a subcomposition's edge, the body run again there, D1308; compose-rs's `Dialog` is in its caller's composition) |
+| `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/AndroidInstrumentedMovableContentTests.kt` | 4 | Movable content with `BoxWithConstraints`, dialogs, subcompositions. | ported: 4 in crates/compose-foundation/tests/suite/subcompose_layout.rs (D1511: state kept across a subcomposition's edge, the body run again there only as `BoxWithConstraints` provides a local; compose-rs's `Dialog` is in its caller's composition) |
 | `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/AndroidMovableContentTests.kt` | 1 | A movable content parameter in `BoxWithConstraints`. | ported: 1 in crates/compose-foundation/tests/suite/subcompose_layout.rs |
 | `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/AndroidSnapshotTests.kt` | 1 | Committing state from a background thread. | n/a: state is thread-bound (D14). |
 | `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/ComposeIntoTests.kt` | 3 | `setContent` twice on a view, committing from another thread, collecting a composition with a pending invalidation. | partial: 2 ported in crates/compose-runtime/tests/suite/recomposer.rs (`set_content` twice keeps the effects; a composition is dropped while one of its scopes is held); the thread test is n/a (D14). |
@@ -385,7 +385,7 @@ Sizes: S under a day, M a few days, L one to two weeks, XL multi-week. None of t
 - **Tests:** `RecomposerFrameEndSchedulingTests` (3 of 4; 1 needs movable-content).
 - **Depends on:** the hosts' step (C4): on the default recomposer, nothing runs `perform_frame` until then.
 
-### movable-content (L; XL with moves across compositions): done, in a composition (D1305) and across those sharing a tree (D1308); a move across compositions without running the body again is designed, not built (D1511, [design](design/movable-across-compositions.md))
+### movable-content (L; XL with moves across compositions): done, in a composition (D1305) and across those sharing a tree (D1308); across compositions it composes again only under other locals (D1511); between appliers it's new ([design](design/movable-across-compositions.md))
 - **APIs:** `movableContentOf` with 0 to 4 parameters, `movableContentWithReceiverOf` with 0 to 3.
 - **Does:** a composable lambda whose groups, state and nodes move with it when it's called from another place (another parent, another branch, another composition) in the same frame, instead of being disposed and recreated.
 - **Tests:** `MovableContentTests` (49), `AndroidInstrumentedMovableContentTests` (4, ported), `AndroidMovableContentTests` (1, ported), and 1-2 tests each in `CompositionAndDerivedStateTests`, `CompositionReusingTests`, `PausableCompositionInstrumentedTests`, `ActivityRecreationTest`, `RecomposerFrameEndSchedulingTests`, `RetainTests`.

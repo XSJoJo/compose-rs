@@ -582,11 +582,14 @@ pub fn current_composite_key_hash_code() -> u64 {
 pub struct CompositeKeyToken {
     composition: u32,
     group: u32,
+    /// Its group's key: a group made since at its index, after it went, isn't taken for it.
+    key: u64,
 }
 
 impl CompositeKeyToken {
     /// No place: its hash is 0.
-    pub const NONE: CompositeKeyToken = CompositeKeyToken { composition: NONE, group: NONE };
+    pub const NONE: CompositeKeyToken =
+        CompositeKeyToken { composition: NONE, group: NONE, key: 0 };
 }
 
 /// The place composing now, for `composite_key_hash_of` later.
@@ -595,9 +598,14 @@ impl CompositeKeyToken {
 ///
 /// Outside composition.
 pub fn current_composite_key_token() -> CompositeKeyToken {
-    with_runtime(|runtime| CompositeKeyToken {
-        composition: runtime.check_composing(),
-        group: runtime.frames.last().map_or(NONE, |frame| frame.group),
+    with_runtime(|runtime| {
+        let composition = runtime.check_composing();
+        let group = runtime.frames.last().map_or(NONE, |frame| frame.group);
+        let key = match group {
+            NONE => 0,
+            group => runtime.compositions.data(composition).table[group].key,
+        };
+        CompositeKeyToken { composition, group, key }
     })
 }
 
@@ -609,8 +617,28 @@ pub fn composite_key_hash_of(token: CompositeKeyToken) -> u64 {
         return 0;
     }
     with_runtime(|runtime| {
-        let data = runtime.compositions.data(token.composition);
-        composite_key_hash_at(&runtime.compositions, data, token.group)
+        let compositions = &runtime.compositions;
+        // Its group, where it is or where content moved across compositions took it (D1511).
+        let at = |index: u32, group: u32| {
+            let id = compositions.live_id_at(index)?;
+            let data = compositions.get(id)?;
+            let entry = data.table.groups.get(group as usize)?;
+            (entry.kind != crate::slot_table::GroupKind::Free && entry.key == token.key)
+                .then_some(data)
+        };
+        if let Some(data) = at(token.composition, token.group) {
+            return composite_key_hash_at(compositions, data, token.group);
+        }
+        let moved = runtime
+            .moved_groups
+            .follow(token.composition, token.group, |id, group| at(id.index, group).is_some());
+        match moved {
+            Some((id, group)) => {
+                composite_key_hash_at(compositions, at(id.index, group).expect("just found"), group)
+            }
+            // Its place is gone: what was there hashes as nothing.
+            None => 0,
+        }
     })
 }
 

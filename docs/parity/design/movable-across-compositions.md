@@ -1,6 +1,6 @@
 # Movable content across compositions, without composing it again
 
-A design, not built (D1511). It follows D1308, which moves content between compositions sharing an applier and composes all of it where it arrives, and it asks the coordinator to choose before building.
+Built as proposed, but for the move between appliers (D1511, on the coordinator's choice). It revises D1308, which moved content between compositions sharing an applier and composed all of it where it arrived. What follows was written before building; where the code differs, D1511 says.
 
 ## What was measured
 
@@ -55,6 +55,6 @@ Moving state into another applier needs a second node path. The moved groups kee
 - Nothing in compose-rs asks for it until content moves between two hosts' trees (desktop windows), since dialogs and popups share their caller's tree.
 - **Proposed:** leave it, as D1308 did, and note it under the multi-window work.
 
-## The choice to make
+## As built
 
-Build parts 1 to 3 (about 300 lines, no change to the default build's hot paths), or keep D1308's behaviour. Moves across compositions with the same locals would then stop running their bodies.
+Parts 1 to 3, with the tests: `content_moved_across_compositions_under_the_same_locals_isnt_composed_again`, `..._under_other_locals_composes_again` and `anchors_and_key_tokens_in_moved_content_follow_it` in `crates/compose-runtime/tests/suite/movable_content.rs`. A token whose place is gone hashes as 0, where it had panicked. The token's key is read at each node's emission, the one cost outside moves, within the benchmarks' spread.

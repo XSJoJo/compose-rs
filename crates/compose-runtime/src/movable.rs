@@ -31,9 +31,9 @@ pub(crate) struct Parked {
     nodes: Vec<NodeRef>,
     /// The nearest provider where it was.
     provider: u32,
-    /// It came from another composition's table: nothing it holds of where it was is any use, so
-    /// all of it composes where it goes.
-    transplanted: bool,
+    /// It came from another composition's table, with what was provided where it was: where it
+    /// goes provides the same, or all of it composes (D1511).
+    transplanted: Option<crate::local::CompositionLocalMap>,
 }
 
 /// What a table holds of the movable content in the pass under way.
@@ -156,8 +156,14 @@ fn compose_movable<P: ComposeArg + Clone + 'static>(inner: Rc<MovableInner<P>>, 
         },
         || (inner.clone(), param.clone(), Cell::new(locals)),
     );
-    let locals_moved = last_locals != locals
-        && with_runtime(|runtime| runtime.force_if_moved(last_locals, locals));
+    // Content from another table was compared there: what it kept names that table's providers.
+    let locals_moved = match start {
+        Start::Composing(Adopted::Transplanted { forced }) => forced,
+        _ => {
+            last_locals != locals
+                && with_runtime(|runtime| runtime.force_if_moved(last_locals, locals))
+        }
+    };
     let changed = changed || locals_moved;
     if start != Start::Placeholder {
         if !changed && composer.skipping() {
@@ -175,8 +181,17 @@ fn compose_movable<P: ComposeArg + Clone + 'static>(inner: Rc<MovableInner<P>>, 
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Start {
-    Composing,
+    Composing(Adopted),
     Placeholder,
+}
+
+/// Where what a call composes came from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Adopted {
+    /// Its own table, or nothing.
+    Here,
+    /// Another composition's table: `forced` if what's provided where it went differs.
+    Transplanted { forced: bool },
 }
 
 fn start_movable_content(key: u64, identity: u64) -> Start {
@@ -297,7 +312,7 @@ fn park(table: &mut SlotTable, group: u32) {
     let mut nodes = Vec::with_capacity(table[group].node_count as usize);
     top_nodes(table, group, &mut nodes);
     let provider = table[group].enclosing_provider;
-    table.movable.parked.push(Parked { group, nodes, provider, transplanted: false });
+    table.movable.parked.push(Parked { group, nodes, provider, transplanted: None });
 }
 
 /// `group`'s going: if it's a context's, what's under that goes too, at the end of the pass.
@@ -456,7 +471,7 @@ fn take_parked(table: &mut SlotTable, identity: u64) -> Option<Parked> {
         top_nodes(table, group, &mut nodes);
         let provider = table[group].enclosing_provider;
         table.movable.pending += placeholders_under(table, group);
-        return Some(Parked { group, nodes, provider, transplanted: false });
+        return Some(Parked { group, nodes, provider, transplanted: None });
     }
     None
 }
@@ -490,6 +505,7 @@ fn move_group(
     contexts: &mut crate::context::Contexts,
     target_id: CompositionId,
     moved_contexts: &mut Vec<crate::context::ContextId>,
+    moved: &mut Vec<(u32, u32)>,
     old: u32,
     parent: u32,
     provider: u32,
@@ -538,6 +554,7 @@ fn move_group(
             contexts,
             target_id,
             moved_contexts,
+            moved,
             child,
             new,
             inner,
@@ -547,6 +564,7 @@ fn move_group(
         child = next;
     }
     source.free(old);
+    moved.push((old, new));
     new
 }
 
@@ -618,19 +636,29 @@ impl Runtime {
             if parked.provider != provider {
                 relink_providers(table, group, provider);
             }
-            // From another table: what its nodes and calls keep of places is of that one.
-            if parked.transplanted {
-                frame.forced = true;
-                if *providers_invalid == 0 {
-                    *providers_invalid = frames.len();
+            // From another table, under what doesn't provide what was provided there: all of it
+            // composes, as Compose's does when its locals differ. Under the same, what it holds of
+            // where it was is forwarded (`Runtime::moved_groups`).
+            let mut adopted = Adopted::Here;
+            if let Some(there) = &parked.transplanted {
+                let data = compositions.data(composition);
+                let here = crate::local::map_at(compositions, data, provider);
+                let forced = !crate::local::same_entries(there, &here);
+                if forced {
+                    let frame = frames.last_mut().expect("just started");
+                    frame.forced = true;
+                    if *providers_invalid == 0 {
+                        *providers_invalid = frames.len();
+                    }
                 }
+                adopted = Adopted::Transplanted { forced };
             }
-            return (op, Start::Composing, Some(attach));
+            return (op, Start::Composing(adopted), Some(attach));
         }
         if resolving {
             // Nothing to take: new content, as it was going to be.
             frame.inserting = true;
-            return (op, Start::Composing, None);
+            return (op, Start::Composing(Adopted::Here), None);
         }
         // A placeholder met elsewhere than at the cursor, a body around it having run again: new.
         if table[group].flags & MOVABLE_PENDING != 0 {
@@ -638,10 +666,10 @@ impl Runtime {
             table.movable.pending -= 1;
             table.movable.resolved += 1;
             frame.inserting = true;
-            return (op, Start::Composing, None);
+            return (op, Start::Composing(Adopted::Here), None);
         }
         if !frame.inserting {
-            return (op, Start::Composing, None);
+            return (op, Start::Composing(Adopted::Here), None);
         }
         table[group].flags |= MOVABLE;
         // The groups holding it, those holding a composition it's in too: a removal looks in them.
@@ -656,7 +684,7 @@ impl Runtime {
         let table = &mut compositions.data_mut(composition).table;
         // In paused content: new, as paused content doesn't take what's removed (D1305).
         if frame.region != crate::pausable::NO_REGION {
-            return (op, Start::Composing, None);
+            return (op, Start::Composing(Adopted::Here), None);
         }
         table[group].flags |= MOVABLE_PENDING;
         table.movable.pending += 1;
@@ -727,7 +755,13 @@ impl Runtime {
                 })
         })?;
         let source = &mut self.compositions.data_mut(from.index).table;
-        let parked = take_parked(source, identity)?;
+        let mut parked = take_parked(source, identity)?;
+        // What it last ran under: where it was parked, or where it came from before that.
+        let there = match parked.transplanted.take() {
+            Some(there) => there,
+            None => self.locals_where_parked(from, parked.provider),
+        };
+        let source = &mut self.compositions.data_mut(from.index).table;
         // What a nested one's taking out of what's around it is done by this pass.
         let detach = std::mem::take(&mut source.movable.detach);
         let pending = placeholders_under(source, parked.group);
@@ -737,15 +771,26 @@ impl Runtime {
         let target = &mut self.compositions.data_mut(composition).table;
         target.movable.detach.extend(detach);
         target.movable.pending += pending;
-        Some(Parked { group, nodes: parked.nodes, provider: NONE, transplanted: true })
+        Some(Parked { group, nodes: parked.nodes, provider: NONE, transplanted: Some(there) })
+    }
+
+    /// What was provided where content parked in `from` was, under `provider`.
+    fn locals_where_parked(
+        &self,
+        from: CompositionId,
+        provider: u32,
+    ) -> crate::local::CompositionLocalMap {
+        let data = self.compositions.get(from).expect("a live composition");
+        crate::local::map_at(&self.compositions, data, provider)
     }
 
     /// Moves `group`, in no tree, from `from`'s table to `to`'s: what's under its contexts is under
     /// `to` from now on.
     fn transplant(&mut self, from: CompositionId, to: CompositionId, group: u32) -> u32 {
-        let Runtime { compositions, scopes, .. } = self;
+        let Runtime { compositions, scopes, moved_groups, .. } = self;
         let mut contexts = std::mem::take(&mut compositions.contexts);
         let mut moved_contexts = Vec::new();
+        let mut moved = Vec::new();
         let (source, target) = compositions.two_tables(from, to);
         let new = move_group(
             source,
@@ -754,12 +799,14 @@ impl Runtime {
             &mut contexts,
             to,
             &mut moved_contexts,
+            &mut moved,
             group,
             NONE,
             NONE,
         );
         compositions.contexts = contexts;
         compositions.children_moved(from, to, &moved_contexts);
+        moved_groups.record(compositions, from, to, &moved);
         new
     }
 
@@ -785,6 +832,11 @@ impl Runtime {
         let source = &mut self.compositions.data_mut(id.index).table;
         let parked = std::mem::take(&mut source.movable.parked);
         for one in parked {
+            // What it last ran under: where it was parked, or where it came from before.
+            let there = match one.transplanted {
+                Some(there) => there,
+                None => self.locals_where_parked(id, one.provider),
+            };
             let group = self.transplant(id, parent, one.group);
             let target = &mut self.compositions.data_mut(parent.index).table;
             target.movable.pending += placeholders_under(target, group);
@@ -792,7 +844,7 @@ impl Runtime {
                 group,
                 nodes: one.nodes,
                 provider: NONE,
-                transplanted: true,
+                transplanted: Some(there),
             });
         }
         if !self.movable_pool.contains(&parent) {
@@ -984,4 +1036,67 @@ fn retire_placeholder(
     }
     group.slots.clear();
     table.free(placeholder);
+}
+
+/// Where the groups content moved to another composition went, for what names them by place and
+/// wasn't made again (a node's `CompositionLocalAnchor` and `CompositeKeyToken`): consulted only
+/// when such a handle finds its place no longer what it named (D1511).
+pub(crate) struct MovedGroups {
+    /// A composition's index and a group of it, to where that group went; made at the first move.
+    map: Option<Box<MovedMap>>,
+}
+
+type MovedMap = std::collections::HashMap<(u32, u32), (CompositionId, u32)>;
+
+impl MovedGroups {
+    pub(crate) const fn new() -> MovedGroups {
+        MovedGroups { map: None }
+    }
+
+    /// Above this, a move first drops what leads nowhere live.
+    const SWEEP: usize = 1024;
+
+    fn record(
+        &mut self,
+        compositions: &crate::runtime::Compositions,
+        from: CompositionId,
+        to: CompositionId,
+        moved: &[(u32, u32)],
+    ) {
+        let map = self.map.get_or_insert_with(Default::default);
+        if map.len() > Self::SWEEP {
+            map.retain(|_, (id, group)| {
+                compositions.get(*id).is_some_and(|data| {
+                    data.table
+                        .groups
+                        .get(*group as usize)
+                        .is_some_and(|g| g.kind != GroupKind::Free)
+                })
+            });
+        }
+        for &(old, new) in moved {
+            map.insert((from.index, old), (to, new));
+        }
+    }
+
+    /// Where `group` of the composition at `index` went, following moves on, the first place `ok`
+    /// takes.
+    pub(crate) fn follow(
+        &self,
+        index: u32,
+        group: u32,
+        mut ok: impl FnMut(CompositionId, u32) -> bool,
+    ) -> Option<(CompositionId, u32)> {
+        let map = self.map.as_ref()?;
+        let mut at = (index, group);
+        // A chain of moves is short; a cycle of stale entries isn't followed for ever.
+        for _ in 0..32 {
+            let &(id, group) = map.get(&at)?;
+            if ok(id, group) {
+                return Some((id, group));
+            }
+            at = (id.index, group);
+        }
+        None
+    }
 }

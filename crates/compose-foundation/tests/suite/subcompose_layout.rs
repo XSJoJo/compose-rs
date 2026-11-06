@@ -2503,6 +2503,9 @@ impl Counts {
     }
 }
 
+/// What the content of `boxWithConstraintsAndIndirectContent` calls, set where it's first called.
+type Indirect = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+
 // Compose: compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/AndroidInstrumentedMovableContentTests.kt, boxWithConstraintsAndIndirectContent
 #[test]
 fn content_set_inside_a_box_with_constraints_moves_out_and_back() {
@@ -2511,7 +2514,7 @@ fn content_set_inside_a_box_with_constraints_moves_out_and_back() {
     let (x, c) = (extract.handle(), counts.clone());
     let mut ui = compose_test(move || {
         // The content the movable content calls, set where it's first called.
-        let content: Rc<RefCell<Option<Rc<dyn Fn()>>>> = remember(Rc::default);
+        let content: Indirect = remember(Rc::default);
         let into = content.clone();
         let movable = remember(move || {
             movable_content_of(move || {
@@ -2544,7 +2547,8 @@ fn content_set_inside_a_box_with_constraints_moves_out_and_back() {
         ui.on_node_with_text("Movable text").assert_exists();
     }
     // Its state stayed through the moves across the subcomposition's edge; its body ran again at
-    // each (D1308: a move between compositions composes all of it).
+    // each, as `BoxWithConstraints` provides a local of its own there (D1511: under the same
+    // locals, it wouldn't).
     assert_eq!(counts.made.get(), 1);
     assert_eq!(counts.bodies.get(), 4);
 }

@@ -825,7 +825,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1305 | [runtime](decisions/runtime.md#d1305) | current |
 | D1306 | [runtime](decisions/runtime.md#d1306) | current |
 | D1307 | [runtime](decisions/runtime.md#d1307) | current |
-| D1308 | [runtime](decisions/runtime.md#d1308) | current |
+| D1308 | [runtime](decisions/runtime.md#d1308) | revised by [D1511](decisions/runtime.md#d1511) |
 | D1309 | [ui-and-layout](decisions/ui-and-layout.md#d1309) | current |
 | D1310 | [ui-and-layout](decisions/ui-and-layout.md#d1310) | current |
 | D1311 | [ui-and-layout](decisions/ui-and-layout.md#d1311) | current |

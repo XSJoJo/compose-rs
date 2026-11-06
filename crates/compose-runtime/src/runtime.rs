@@ -99,6 +99,8 @@ pub(crate) struct Runtime {
     pub stack_trace: Option<Box<crate::stack_trace::PendingTrace>>,
     /// Traces begun on this thread (`compose_stack_trace_sequence`).
     pub stack_trace_sequence: u64,
+    /// Where content moved across compositions went, for handles naming its old places (D1511).
+    pub moved_groups: crate::movable::MovedGroups,
     /// A group guard was dropped by an unwinding panic in this pass, leaving its group open.
     pub abandoned_groups: bool,
     /// The depth (`frames.len()`) of the reusable group whose content is being reused, or 0:
@@ -169,6 +171,7 @@ impl Runtime {
             stack_trace_mode: crate::stack_trace::ComposeStackTraceMode::Auto,
             stack_trace: None,
             stack_trace_sequence: 0,
+            moved_groups: crate::movable::MovedGroups::new(),
             abandoned_groups: false,
             reusing: 0,
             providers_invalid: 0,
@@ -839,6 +842,13 @@ impl Compositions {
             .get_disjoint_mut([a.index as usize, b.index as usize])
             .expect("two compositions");
         (&mut a.data.as_mut().expect("live").table, &mut b.data.as_mut().expect("live").table)
+    }
+
+    /// The composition at `index`, if one's there.
+    pub fn live_id_at(&self, index: u32) -> Option<CompositionId> {
+        let entry = self.entries.get(index as usize)?;
+        entry.data.as_ref()?;
+        Some(CompositionId { index, generation: entry.generation })
     }
 
     /// The live composition at `index`.

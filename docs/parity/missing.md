@@ -67,4 +67,4 @@ Written and tested on the host, but not yet confirmed on a phone:
 ## Known costs against Compose's shape
 
 - A focus change in a text field costs about 10 % more than before the decoration box work, and a keystroke about 5 %.
-- Movable content moved across compositions re-runs its body (D1308; a design for not doing so is in [design/movable-across-compositions.md](design/movable-across-compositions.md)), and moved to another applier (another host's tree) it's new. `Dialog` and `Popup` are in their caller's composition here, so content moving into them keeps its state.
+- Movable content moved to another applier (another host's tree) is new, its state not moved (D1511). Across compositions sharing a tree it moves as Compose's, composing again only under other locals; `Dialog` and `Popup` are in their caller's composition here, so moving into them keeps state.

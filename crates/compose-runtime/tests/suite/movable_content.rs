@@ -3658,11 +3658,15 @@ fn what_moves_composes_before_what_is_new() {
         });
         Subcompose!(move || {
             let (new_one, other) = (new_one.clone(), other.clone());
-            key(t.get(), move || {
-                if t.get() {
-                    new_one();
-                    other();
-                }
+            // Under other locals, so what moves composes there, as what's new does (D1511).
+            CompositionLocalProvider(MOVED_STATIC.provides(1), move || {
+                let (new_one, other) = (new_one.clone(), other.clone());
+                key(t.get(), move || {
+                    if t.get() {
+                        new_one();
+                        other();
+                    }
+                });
             });
         });
     });
@@ -4466,10 +4470,14 @@ fn a_parents_effect_runs_a_childs_late_work_before_setting_its_content() {
             child.set_content(move || {
                 t.get();
                 let away = away.clone();
-                key(m.get(), move || {
-                    if m.get() {
-                        away();
-                    }
+                // Under other locals, so the moved content's side effect runs again (D1511).
+                CompositionLocalProvider(MOVED_STATIC.provides(1), move || {
+                    let away = away.clone();
+                    key(m.get(), move || {
+                        if m.get() {
+                            away();
+                        }
+                    });
                 });
             });
             child
@@ -4495,4 +4503,140 @@ fn a_parents_effect_runs_a_childs_late_work_before_setting_its_content() {
     composition.recompose();
     assert_eq!(*log.borrow(), ["parent", "moved", "new content"]);
     composition.dispose();
+}
+
+// ---- Across compositions without composing again (D1511) -------------------------------------------
+
+/// Where the content of [`across`] is called: the main composition, or one of two subcompositions,
+/// the second under a provider of its own if `provided`.
+fn across(content: Callback, position: MutableState<i32>, provided: bool) -> CompositionTest {
+    let mut test = composition_test();
+    test.compose(move || {
+        let content = content.clone();
+        Row!(move || {
+            let (main, first, second) = (content.clone(), content.clone(), content.clone());
+            key(position.get() == 0, move || {
+                if position.get() == 0 {
+                    main();
+                }
+            });
+            Subcompose!(move || {
+                let first = first.clone();
+                key(position.get() == 1, move || {
+                    if position.get() == 1 {
+                        first();
+                    }
+                });
+            });
+            let second = second.clone();
+            let call = move || {
+                let second = second.clone();
+                Subcompose!(move || {
+                    let second = second.clone();
+                    key(position.get() == 2, move || {
+                        if position.get() == 2 {
+                            second();
+                        }
+                    });
+                });
+            };
+            if provided {
+                CompositionLocalProvider(MOVED_STATIC.provides(5), call);
+            } else {
+                call();
+            }
+        });
+    });
+    test
+}
+
+/// What moved content counts, and what it reads where it runs.
+#[derive(Clone, Default)]
+struct Runs {
+    bodies: Rc<Cell<u32>>,
+    made: Rc<Cell<u32>>,
+    read: Rc<Cell<i32>>,
+}
+
+fn counted(runs: &Runs) -> Callback {
+    let runs = runs.clone();
+    movable_content_of(move || {
+        runs.bodies.set(runs.bodies.get() + 1);
+        let made = runs.made.clone();
+        remember(move || made.set(made.get() + 1));
+        runs.read.set(MOVED_STATIC.current());
+        Marker();
+    })
+}
+
+/// Content moved between compositions under the same locals keeps its nodes and state and doesn't
+/// run again, as Compose's composes it again only if the locals differ.
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/MovableContentTests.kt, moveContent_subcompose
+#[test]
+fn content_moved_across_compositions_under_the_same_locals_isnt_composed_again() {
+    let runs = Runs::default();
+    let position = mutable_state_of(0);
+    let mut test = across(counted(&runs), position.handle(), false);
+    let marker = find_view(&test, "Marker").expect("composed");
+    for to in [1, 2, 1, 0, 2, 0] {
+        position.set(to);
+        test.expect_changes();
+        assert_eq!(find_view(&test, "Marker"), Some(marker), "the node moved");
+    }
+    assert_eq!((runs.bodies.get(), runs.made.get()), (1, 1));
+    test.dispose();
+}
+
+/// Under other locals, it composes again, reading them, as an in-composition move does.
+#[test]
+fn content_moved_across_compositions_under_other_locals_composes_again() {
+    let runs = Runs::default();
+    let position = mutable_state_of(0);
+    let mut test = across(counted(&runs), position.handle(), true);
+    assert_eq!(runs.read.get(), 0);
+    position.set(2);
+    test.expect_changes();
+    assert_eq!((runs.bodies.get(), runs.read.get()), (2, 5));
+    position.set(1);
+    test.expect_changes();
+    assert_eq!((runs.bodies.get(), runs.read.get()), (3, 0));
+    // The same locals as where it was: not again.
+    position.set(0);
+    test.expect_changes();
+    assert_eq!((runs.bodies.get(), runs.made.get()), (3, 1));
+    test.dispose();
+}
+
+/// What a node keeps of where it was made, a provider's anchor and a composite key token inside the
+/// content, still reads there after moves across compositions, as nothing ran to make new ones.
+#[test]
+fn anchors_and_key_tokens_in_moved_content_follow_it() {
+    type Kept = Rc<RefCell<Option<(CompositionLocalAnchor, CompositeKeyToken, u64)>>>;
+    let kept: Kept = Rc::default();
+    let k = kept.clone();
+    let content = movable_content_of(move || {
+        let k = k.clone();
+        CompositionLocalProvider(MOVED_STATIC.provides(7), move || {
+            let k = k.clone();
+            remember(move || {
+                *k.borrow_mut() = Some((
+                    current_composition_local_anchor(),
+                    current_composite_key_token(),
+                    current_composite_key_hash_code(),
+                ));
+            });
+            Marker();
+        });
+    });
+    let position = mutable_state_of(0);
+    let mut test = across(content, position.handle(), false);
+    let (anchor, token, hash) = kept.borrow().expect("composed");
+    assert_eq!((anchor.get(&MOVED_STATIC), composite_key_hash_of(token)), (7, hash));
+    for to in [1, 2, 0, 2] {
+        position.set(to);
+        test.expect_changes();
+        assert_eq!(anchor.get(&MOVED_STATIC), 7, "the anchor at {to}");
+        assert_eq!(composite_key_hash_of(token), hash, "the token at {to}");
+    }
+    test.dispose();
 }

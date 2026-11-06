@@ -463,6 +463,18 @@ fn entries_visible_from(
     }
 }
 
+/// Whether two maps hold the same holders, in any order: what's provided at two places, maybe of
+/// two compositions, is the same.
+pub(crate) fn same_entries(first: &CompositionLocalMap, second: &CompositionLocalMap) -> bool {
+    first.entries.len() == second.entries.len()
+        && first.entries.iter().all(|entry| {
+            second
+                .entries
+                .iter()
+                .any(|other| other.local == entry.local && Rc::ptr_eq(&other.holder, &entry.holder))
+        })
+}
+
 /// Whether what's provided at two provider groups of a composition is the same.
 pub(crate) fn same_locals_at(
     compositions: &Compositions,
@@ -580,15 +592,21 @@ impl CompositionLocalAnchor {
     /// Its composition, if its provider is as it was. A composition being disposed is still there
     /// for its nodes' `on_detach`.
     fn data<'a>(&self, runtime: &'a Runtime) -> Option<&'a CompositionData> {
-        let disposing = runtime.disposing_data.iter().find(|(id, _)| *id == self.composition);
-        let data = match disposing {
-            Some((_, data)) => data,
-            None => runtime.compositions.get(self.composition)?,
-        };
-        let provider = data.table.groups.get(self.provider as usize)?;
-        (provider.kind != crate::slot_table::GroupKind::Free
-            && provider.provider_version() == self.version)
-            .then_some(data)
+        provider_at(runtime, self.composition, self.provider, self.version)
+    }
+
+    /// Its composition and provider: where they are, or, moved with content to another
+    /// composition, where they went (D1511). Its version names that state of that provider.
+    fn resolve<'a>(&self, runtime: &'a Runtime) -> Option<(&'a CompositionData, u32)> {
+        if let Some(data) = self.data(runtime) {
+            return Some((data, self.provider));
+        }
+        let (id, provider) = runtime.moved_groups.follow(
+            self.composition.index,
+            self.provider,
+            |id, provider| provider_at(runtime, id, provider, self.version).is_some(),
+        )?;
+        Some((provider_at(runtime, id, provider, self.version)?, provider))
     }
 
     fn table<'a>(&self, runtime: &'a Runtime) -> Option<&'a crate::slot_table::SlotTable> {
@@ -617,9 +635,8 @@ impl CompositionLocalAnchor {
             return CompositionLocalMap::empty();
         }
         let entries = with_runtime(|runtime| {
-            let data = self.data(runtime);
-            data.map_or_else(Vec::new, |data| {
-                entries_visible_from(&runtime.compositions, data, self.provider)
+            self.resolve(runtime).map_or_else(Vec::new, |(data, provider)| {
+                entries_visible_from(&runtime.compositions, data, provider)
             })
         });
         CompositionLocalMap { entries: entries.into() }
@@ -674,9 +691,27 @@ impl CompositionLocalAnchor {
             return None;
         }
         with_runtime(|runtime| {
-            find_from(&runtime.compositions, self.data(runtime)?, self.provider, local)
+            let (data, provider) = self.resolve(runtime)?;
+            find_from(&runtime.compositions, data, provider, local)
         })
     }
+}
+
+/// `id`'s data, being disposed or not, if its group `provider` is a provider at `version`.
+fn provider_at(
+    runtime: &Runtime,
+    id: CompositionId,
+    provider: u32,
+    version: u32,
+) -> Option<&CompositionData> {
+    let disposing = runtime.disposing_data.iter().find(|(other, _)| *other == id);
+    let data = match disposing {
+        Some((_, data)) => data,
+        None => runtime.compositions.get(id)?,
+    };
+    let group = data.table.groups.get(provider as usize)?;
+    (group.kind != crate::slot_table::GroupKind::Free && group.provider_version() == version)
+        .then_some(data)
 }
 
 /// The anchor of the composable composing now. Costs a look at its group: what every layout

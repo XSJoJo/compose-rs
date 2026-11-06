@@ -764,6 +764,8 @@ impl OuterPass {
             // Made as a panic unwinds passes, each adding its own.
             stack_trace: _,
             stack_trace_sequence: _,
+            // Whole-thread, as moves are.
+            moved_groups: _,
         } = runtime;
         active.is_some().then(|| {
             Box::new(OuterPass {
