@@ -108,7 +108,7 @@ pub const DEFAULT_SHADOW_COLOR: Color = Color::BLACK;
 /// A layer's rarely set properties, out of line in [`GraphicsLayerScope::extras`] and
 /// [`LayerProperties::extras`] (`None` for all their defaults), so a layer without them, as most
 /// are, carries and copies a pointer's worth: its shadow colors and its render effect.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct LayerExtras {
     /// The ambient shadow's color (its alpha scaled by the platform's ambient shadow alpha).
     pub ambient_shadow_color: Color,
@@ -139,6 +139,19 @@ impl Default for LayerExtras {
     }
 }
 
+/// A copy of `extras`: nothing to do for the usual none, so the clone of a layer's properties,
+/// made for each group each frame, stays a copy inlined where it's made (`Box`'s clone, an
+/// allocation, kept out of line).
+#[inline(always)]
+fn clone_extras(extras: &Option<Box<LayerExtras>>) -> Option<Box<LayerExtras>> {
+    #[cold]
+    #[inline(never)]
+    fn boxed(extras: &LayerExtras) -> Box<LayerExtras> {
+        Box::new(*extras)
+    }
+    extras.as_deref().map(boxed)
+}
+
 /// Reading a layer's extras, their defaults when it has none.
 macro_rules! extras_getters {
     () => {
@@ -160,7 +173,7 @@ macro_rules! extras_getters {
 }
 
 /// The properties a graphics layer applies, as Compose's `GraphicsLayerScope`.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(PartialEq, Debug)]
 pub struct GraphicsLayerScope {
     pub alpha: f32,
     pub scale_x: f32,
@@ -208,6 +221,17 @@ impl Default for GraphicsLayerScope {
             extras: None,
             size: Size::ZERO,
             density: Density::default(),
+        }
+    }
+}
+
+impl Clone for GraphicsLayerScope {
+    #[inline]
+    fn clone(&self) -> Self {
+        GraphicsLayerScope {
+            shape: self.shape.clone(),
+            extras: clone_extras(&self.extras),
+            ..*self
         }
     }
 }
@@ -594,7 +618,7 @@ impl GraphicsLayerNode {
 /// A graphics layer's properties as its group carries them
 /// ([`DrawGroup::layer`](crate::platform::DrawGroup)), as a render node's: in its group's
 /// coordinates.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(PartialEq, Debug)]
 pub struct LayerProperties {
     /// In 0..=1.
     pub alpha: f32,
@@ -619,6 +643,17 @@ pub struct LayerProperties {
     pub density: f32,
     /// Its layer's shadow colors and render effect, `None` for their defaults.
     pub extras: Option<Box<LayerExtras>>,
+}
+
+impl Clone for LayerProperties {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        LayerProperties {
+            outline: self.outline.clone(),
+            extras: clone_extras(&self.extras),
+            ..*self
+        }
+    }
 }
 
 impl LayerProperties {
@@ -649,7 +684,7 @@ impl LayerProperties {
             compositing_strategy: layer.compositing_strategy,
             bounds,
             density: layer.density.density,
-            extras: layer.extras.clone(),
+            extras: clone_extras(&layer.extras),
         }
     }
 
