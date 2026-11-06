@@ -1401,8 +1401,8 @@ impl Handle {
             if let (Some(node), Some(child), Some(constraints)) =
                 (prefetch.node.get(), child, constraints)
             {
-                // What measuring it wrote (a nested list's items, a `BoxWithConstraints`'
-                // constraints) is composed and measured too, as a frame's rounds do.
+                // What measuring it wrote (a nested list's items) is composed and measured too,
+                // as a frame's rounds do.
                 for _ in 0..3 {
                     if let Some(size) = scope.premeasure(node, child, constraints) {
                         let vertical = prefetch.vertical.get();

@@ -500,6 +500,51 @@ pub(crate) fn read_if_valid(
     }
 }
 
+/// Whether a read now registers anywhere, outside a calculation's own reads: a computed state's
+/// is then a derived state's, else it's calculated as it is (`computedStateOf`'s value).
+pub(crate) fn read_is_tracked() -> bool {
+    with_runtime(|runtime| {
+        let scope = runtime.reading_scope();
+        let snapshots = &runtime.snapshots;
+        let calculation = snapshots.observing_calculation();
+        match runtime.observing {
+            // A calculation's: what it reads, a computed state's reads too, are its dependencies.
+            Some(observing) if calculation == Some(observing) => false,
+            Some(observing) => {
+                if observing.exclusive || scope.is_none() || calculation.is_some() {
+                    snapshots.observes_at(observing.depth)
+                } else {
+                    snapshots.composition_reads()
+                }
+            }
+            None => !scope.is_none() && snapshots.composition_reads(),
+        }
+    })
+}
+
+/// The scope a read now registers with, if it's one of `composition`'s: what a composition
+/// observer hears read (`tooling`).
+#[cfg(feature = "composition-observer")]
+pub(crate) fn scope_reading_in(composition: crate::runtime::CompositionId) -> Option<ScopeId> {
+    with_runtime(|runtime| {
+        if runtime.active.is_none_or(|active| active.composition != composition) {
+            return None;
+        }
+        let scope = runtime.reading_scope();
+        if scope.is_none() || !runtime.snapshots.composition_reads() {
+            return None;
+        }
+        match runtime.observing {
+            Some(observing)
+                if observing.exclusive || runtime.snapshots.observing_calculation().is_some() =>
+            {
+                None
+            }
+            _ => Some(scope),
+        }
+    })
+}
+
 /// Registers a read of derived state `id`, brought up to date. Read observers heard it already.
 pub(crate) fn register_read_of(id: StateId, at: &'static Location<'static>) {
     if let Read::Stale(error) = with_runtime(|runtime| read_cell_in(runtime, id, at)) {
@@ -724,6 +769,7 @@ pub(crate) fn invalidate_cell(runtime: &mut Runtime, id: StateId, told: Told) {
             PassFrames::of(*active, frames),
             reader.scope,
             None,
+            crate::runtime::cause(Some(id)),
         );
         true
     });
@@ -771,6 +817,7 @@ pub(crate) fn invalidate_cell(runtime: &mut Runtime, id: StateId, told: Told) {
                 PassFrames::of(*active, frames),
                 reader.scope,
                 Some(cell),
+                crate::runtime::cause(Some(cell)),
             );
             true
         });
@@ -810,6 +857,7 @@ pub(crate) fn invalidate_result_readers(id: StateId) {
                     PassFrames::of(*active, frames),
                     reader.scope,
                     None,
+                    crate::runtime::cause(Some(id)),
                 );
                 true
             });
@@ -1645,7 +1693,7 @@ impl<T: 'static> MutableState<T> {
 
     /// A read-only view of the same cell.
     pub fn as_state(&self) -> State<T> {
-        State { handle: *self, derived: false }
+        State { handle: *self, derived: false, computed: false }
     }
 
     /// The old value, for the caller to tell of the write and drop; `None` if there's nothing left
@@ -1704,6 +1752,8 @@ pub struct State<T: 'static> {
     handle: MutableState<T>,
     /// A derived state's: a read validates it first, in its own cell type.
     derived: bool,
+    /// Of those, a computed state's (`computed_state_of`).
+    computed: bool,
 }
 
 impl<T: 'static> Clone for State<T> {
@@ -1736,7 +1786,22 @@ impl<T: 'static> State<T> {
 
     /// A derived state's handle.
     pub(crate) fn of_derived(handle: MutableState<T>) -> State<T> {
-        State { handle, derived: true }
+        State { handle, derived: true, computed: false }
+    }
+
+    /// A computed state's handle.
+    pub(crate) fn of_computed(handle: MutableState<T>) -> State<T> {
+        State { handle, derived: true, computed: true }
+    }
+
+    /// A derived or computed state's read.
+    #[track_caller]
+    fn read_derived<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        if self.computed {
+            crate::computed::read(self.handle.id, f)
+        } else {
+            crate::derived::read(self.handle.id, f)
+        }
     }
 
     #[track_caller]
@@ -1749,7 +1814,7 @@ impl<T: 'static> State<T> {
 
     #[track_caller]
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
-        if self.derived { crate::derived::read(self.handle.id, f) } else { self.handle.with(f) }
+        if self.derived { self.read_derived(f) } else { self.handle.with(f) }
     }
 
     #[track_caller]
@@ -1760,7 +1825,7 @@ impl<T: 'static> State<T> {
         if !self.derived {
             return self.handle.try_get();
         }
-        self.handle.is_alive().then(|| crate::derived::read(self.handle.id, T::clone))
+        self.handle.is_alive().then(|| self.read_derived(T::clone))
     }
 }
 

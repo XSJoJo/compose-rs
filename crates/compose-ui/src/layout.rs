@@ -353,6 +353,46 @@ impl IntrinsicMeasureScope<'_> {
         self.tree.node(measurable.node).parent_data
     }
 
+    /// The fractions its `fill_max_width` and `fill_max_height` fill, horizontally and
+    /// vertically, as Compose's `FillModifierParentData`: what `FlexBox` grows a child by when it
+    /// sets no grow of its own. Folded from the tail to the head as Compose's parent data: a
+    /// fill's fractions are the data when none came before it, and another kind of parent data
+    /// (a `layout_id`, a `weight`, an `align`) replaces them unless it holds them
+    /// (`ParentDataModifierNode::holds_fill_fractions`); a delegate's replaces them. Read from
+    /// its modifier when asked, so that layouts that don't ask pay nothing.
+    pub fn fill_fractions(&self, measurable: Measurable) -> (Option<f32>, Option<f32>) {
+        use crate::modifier::Element;
+        use crate::node_chain::NodeKinds;
+        let node = self.tree.node(measurable.node);
+        // The data so far: its fractions if it holds them (no data holds none and takes a
+        // fill's), `None` if it's another kind.
+        let mut fractions = Some((None, None));
+        for (element, entry) in node.modifier.elements().iter().zip(&node.chain).rev() {
+            match element {
+                Element::Fill(fill) => {
+                    if let Some((horizontal, vertical)) = &mut fractions {
+                        *horizontal = fill.horizontal.or(*horizontal);
+                        *vertical = fill.vertical.or(*vertical);
+                    }
+                }
+                Element::Weight(..)
+                | Element::Align(_)
+                | Element::AlignBlock(_)
+                | Element::FillCrossAxis(_) => fractions = None,
+                Element::Custom(_) if entry.kinds.any(NodeKinds::PARENT_DATA) => {
+                    let holds = entry.own.any(NodeKinds::PARENT_DATA)
+                        && entry
+                            .node
+                            .as_parent_data()
+                            .is_some_and(|data| data.holds_fill_fractions());
+                    fractions = if holds { Some(fractions.unwrap_or_default()) } else { None };
+                }
+                _ => {}
+            }
+        }
+        fractions.unwrap_or_default()
+    }
+
     /// The smallest width `measurable` can take at `height` and still paint its content
     /// correctly, as `IntrinsicMeasurable.minIntrinsicWidth`.
     pub fn min_intrinsic_width(&mut self, measurable: IntrinsicMeasurable, height: i32) -> i32 {
@@ -657,6 +697,16 @@ impl<'a> MeasureScope<'a> {
         (block.1)(&mut Measured { scope: self, placeable })
     }
 
+    /// Runs `block` on `placeable` as a `Measured`, as Compose's `AlignmentLineProvider.Block`
+    /// does for a layout reading a line a block of its own gives (`FlexBox`'s `alignItems`).
+    pub fn with_measured<R>(
+        &mut self,
+        placeable: &Placeable,
+        block: impl FnOnce(&mut Measured<'_, '_>) -> R,
+    ) -> R {
+        block(&mut Measured { scope: self, placeable })
+    }
+
     /// `ModifierNode::baselines` of the node measuring changed, or came: who read one hears.
     pub fn baselines_changed(&mut self) {
         if self.base.tree.alignment_lines_read {
@@ -793,7 +843,7 @@ pub fn emit_layout_node(
     modifier: Modifier,
     measure_policy: Rc<dyn MeasurePolicy>,
     content: impl FnOnce(),
-) {
+) -> compose_runtime::platform::NodeRef {
     let composer = current();
     let node = composer.start_reusable_node(compose_runtime::key_of("compose_ui::Layout"), || {
         crate::tree::LayoutNode::new(measure_policy.clone())
@@ -845,4 +895,5 @@ pub fn emit_layout_node(
     });
     content();
     composer.end_group();
+    node
 }

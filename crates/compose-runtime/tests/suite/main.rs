@@ -5,15 +5,18 @@
 extern crate compose_runtime as compose;
 
 mod composition;
+mod composition_and_computed_state;
 mod composition_and_derived_state;
 mod composition_api;
 mod composition_context;
 mod composition_fuzz;
 mod composition_local;
+mod composition_observer;
 mod composition_reusing;
 mod composition_snapshot;
 mod composition_tree_fuzz;
 mod compound_hash_key;
+mod computed_snapshot_state;
 mod derive_saveable;
 mod derived_snapshot_state;
 mod effects;

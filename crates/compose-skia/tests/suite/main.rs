@@ -4,7 +4,9 @@
 mod border_shapes;
 mod brush;
 mod capture;
+mod color_filters;
 mod line_height;
+mod painter;
 mod paragraph;
 mod path_semantics;
 mod path_steps;
@@ -20,3 +22,4 @@ mod skia;
 mod text_brush;
 mod text_painter;
 mod text_reuse;
+mod vectors;

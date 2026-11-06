@@ -64,6 +64,59 @@ pub(crate) struct Scopes {
     /// The conditions of the scopes invalid on conditions (`ScopeEntry::conditional`), by index:
     /// rare, so kept out of the entries, which a pass scans.
     conditions: crate::hash::KeyMap<u32, Vec<crate::state::StateId>>,
+    /// While a composition has an observer (`tooling`): scope events, to tell outside the borrow.
+    #[cfg(feature = "composition-observer")]
+    pub log: Option<Vec<crate::tooling::ScopeEvent>>,
+    /// How many compositions have an observer.
+    #[cfg(feature = "composition-observer")]
+    observed: u32,
+    /// The last observer set's token.
+    #[cfg(feature = "composition-observer")]
+    observer_tokens: u64,
+}
+
+#[cfg(feature = "composition-observer")]
+impl Scopes {
+    /// A composition has an observer now: scope events are logged. Gives its token.
+    pub fn observer_set(&mut self) -> u64 {
+        self.observed += 1;
+        self.log.get_or_insert_with(Vec::new);
+        self.observer_tokens += 1;
+        self.observer_tokens
+    }
+
+    /// A composition's observer was removed or replaced.
+    pub fn observer_removed(&mut self) {
+        self.observed -= 1;
+        self.stop_logging_if_unobserved();
+    }
+
+    /// Nothing's logged once no composition has an observer and what was logged is told.
+    pub fn stop_logging_if_unobserved(&mut self) {
+        if self.observed == 0 && self.log.as_ref().is_some_and(Vec::is_empty) {
+            self.log = None;
+        }
+    }
+
+    /// Whether any composition has an observer.
+    #[inline]
+    pub fn observing(&self) -> bool {
+        self.observed != 0
+    }
+
+    /// Logs a scope event.
+    #[cold]
+    #[inline(never)]
+    pub fn log_observed(
+        &mut self,
+        composition: u32,
+        scope: ScopeId,
+        kind: crate::tooling::ScopeEventKind,
+    ) {
+        if let Some(log) = &mut self.log {
+            log.push(crate::tooling::ScopeEvent { composition, scope, kind, observer: None });
+        }
+    }
 }
 
 impl Scopes {
@@ -75,6 +128,12 @@ impl Scopes {
             compaction: 0,
             compactions: 0,
             conditions: crate::hash::KeyMap::with_hasher(std::hash::BuildHasherDefault::new()),
+            #[cfg(feature = "composition-observer")]
+            log: None,
+            #[cfg(feature = "composition-observer")]
+            observed: 0,
+            #[cfg(feature = "composition-observer")]
+            observer_tokens: 0,
         }
     }
 
@@ -136,6 +195,11 @@ impl Scopes {
     }
 
     pub fn free(&mut self, id: ScopeId) {
+        #[cfg(feature = "composition-observer")]
+        if self.log.is_some() {
+            let composition = self.entries[id.index as usize].composition;
+            self.log_observed(composition, id, crate::tooling::ScopeEventKind::Disposed);
+        }
         let entry = &mut self.entries[id.index as usize];
         debug_assert_eq!(entry.generation, id.generation, "freeing a stale scope");
         entry.generation = entry.generation.wrapping_add(1);
@@ -201,13 +265,18 @@ impl Scopes {
 }
 
 /// The recompose scope of a restartable composable, as Compose's `RecomposeScope`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct RecomposeScope {
     pub(crate) id: ScopeId,
     pub(crate) _not_send: PhantomData<*const ()>,
 }
 
 impl RecomposeScope {
+    #[cfg(feature = "composition-observer")]
+    pub(crate) fn of(id: ScopeId) -> RecomposeScope {
+        RecomposeScope { id, _not_send: PhantomData }
+    }
+
     /// Schedules the scope's composable to run again in the next pass. Does nothing if the scope
     /// has left the composition.
     pub fn invalidate(&self) {

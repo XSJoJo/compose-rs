@@ -459,7 +459,23 @@ Its loop wakes by `Compositions::recomposer_wake`, set while a loop runs, pushed
 
 **F7, a whole pass through a paused region.** A region's removals don't park: `parking` is off for the removal when the frame's in a region (both removal sites in `composer.rs`), as paused content takes no part in moves (D1305). Three scenes on the mock couldn't get a whole pass to park in a region, the region's own scopes being its resumes' (`pausable.rs`); the guard's there for what those miss, and no mutation of it fails a test. `content_in_a_paused_region_a_whole_pass_removes_doesnt_move` holds the scene: made anew, the node once.
 
-**Not done.** Moves on `UiTree` wait for C4, which gives it `contains` and lending. `movableContent_virtual_node` and the four `AndroidInstrumentedMovableContentTests` need `SubcomposeLayout`, with dialogs and popups after that. `placeholders_under` and its counting across a transplant are defensive since late walks run only what moved.
+**Not done.** `movableContent_virtual_node` and the four `AndroidInstrumentedMovableContentTests` need more of `SubcomposeLayout`, with dialogs and popups after that. `placeholders_under` and its counting across a transplant are defensive since late walks run only what moved.
+
+### C4 (D1309)
+
+`crates/compose-ui/src/subcompose.rs`, with virtual nodes in `tree.rs` and `BoxWithConstraints` in foundation. The state is `Rc<SubcomposeLayoutState>`, slots in the order of their virtual nodes: those of this measurement, those kept for reuse, those precomposed, as Compose's `foldedChildren` with `reusableCount` and `precomposedCount`; lookups are linear, for C8 to look at.
+
+**Virtual nodes** are narrower than §3.4's: only the applier and the slots' moves know of them. A child of one has `parent` the layout and `virtual_parent` the slot, in the layout's `children` at the slot's offset and in the slot's own. Every pass reads the layout's flattened list, so 74 sites stay as they are.
+
+**A slot's pass in a measurement** enters the access window's `enter()`, so it's shut, then lends the tree. `with_lent_applier` needs the shared applier's `RefCell` held, which `with_tree` does around layout. `UiTree::placeholder()` has no key: no handle names it, and its `Drop` unregisters nothing. A pass's effects run in the lend: a coordinates query there answers busy (`LayoutCoordinates::is_busy`), which is what `a_query_in_a_slots_effect_finds_the_tree_busy` pins. Checked against `SubcomposeLayoutTest`: it reads coordinates only in placement blocks (`subcomposeCoordinates`) and `onGloballyPositioned`, and both see the tree.
+
+**The frame loop** needs nothing: `UiHost::frame` recomposes the tree, a slot invalid composing there through the shared applier per node operation, before layout; its measurement then finds it clean. A measurement's `measure_runs` and the layout's observation aren't told of what a slot reads (`without_read_observation`).
+
+**The layout's slots are the layout's.** `SubcomposeLayoutState` holds a policy and finds the layout; the slots are `SubcompositionsState`, kept by the layout's group across reuse, as Compose's are its `LayoutNode`'s. So a new state takes over the same slots, with its policy (compared by identity): what's composed goes out of use for the next measurement. The group's effect forgotten with the node still there (`onDeactivate`, `onReuse`) deactivates every slot and makes it `ReusedSlotId`, for any next measurement to take; the kept value dropped (`onRelease`) disposes them, after what the group's own effects did, where Compose's goes in the node's release. Slots deactivate at once, as Compose's do with an `outOfFrameExecutor` or forced, never through `ReusableContentHost`'s active flag (D1310).
+
+**Paused precomposition** (D1311) is `pausable_subcomposition` for every slot, as Compose's `ReusableComposition` and `PausableComposition` are one class. `create_paused_precomposition` sets the content and composes nothing; a measurement taking the slot completes and applies it if its content's the same, and cancels it if not.
+
+**Not here.** Lookahead. Lazy lists stay as they are until C8, so `LOCAL_CONSTRAINTS_HINT` stays, `BoxWithConstraints` providing it to what's inside. `movableContent_virtual_node` and the other device tests of movable content in subcompositions are for after paused precomposition.
 
 ### C5 and C7 (D1305, D1306)
 

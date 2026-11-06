@@ -1764,7 +1764,7 @@ impl MeasurePolicy for LazyGridLayout {
         let cross_room = (cross_max - cross_before - cross_after).max(0);
         let cross_spacing = info.cross_arrangement.spacing(&density);
         let slots = self.slots(cross_room, cross_spacing, density);
-        // A cell's constraints, for the items composing for theirs (`BoxWithConstraints`).
+        // A cell's constraints, for what's composed in it that guesses at its own (a nested list).
         let hint = cell_constraints(vertical, slots.sizes[0]);
         if state.item_constraints_written.replace(Some(hint)) != Some(hint) {
             state.item_constraints.set(Some(hint));

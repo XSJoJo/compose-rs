@@ -53,8 +53,18 @@ fn focus_and_select_all(ui: &mut ComposeTestRule) {
         KeyModifiers { ctrl: true, ..Default::default() }
     };
     let key = Key::Character('a');
-    ui.host().send_key(KeyEvent { key, kind: KeyEventType::KeyDown, modifiers });
-    ui.host().send_key(KeyEvent { key, kind: KeyEventType::KeyUp, modifiers });
+    ui.host().send_key(KeyEvent {
+        key,
+        kind: KeyEventType::KeyDown,
+        modifiers,
+        from_soft_keyboard: false,
+    });
+    ui.host().send_key(KeyEvent {
+        key,
+        kind: KeyEventType::KeyUp,
+        modifiers,
+        from_soft_keyboard: false,
+    });
     ui.wait_for_idle();
 }
 

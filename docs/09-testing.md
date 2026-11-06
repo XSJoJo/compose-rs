@@ -73,6 +73,8 @@ MIRIFLAGS="-Zmiri-ignore-leaks -Zmiri-tree-borrows" cargo +nightly miri test -p 
     focus_tests::requesting focus_tests::restoring focus_tests::states
 ```
 
+A change to `SubcomposeLayout` or what a slot's pass does in a measurement (D1309) adds `cargo +nightly miri test -p compose-foundation --test suite -- subcompose_layout`, in both models. It holds a custom node's `on_attach` and a focus callback asking coordinates in a lend (`a_node_attached_in_a_lend_asks_the_tree`, `a_focus_callback_in_a_lend_asks_the_tree`).
+
 `-Zmiri-ignore-leaks` because of a leak that's deliberate and harmless: `compose_runtime`'s `EXECUTOR` is a `ManuallyDrop<Executor>` in a thread-local (`executor.rs`), so dropping tasks at a thread's exit can't run their drops after the runtime they use is gone: 3 allocations per test thread. Isolation doesn't need disabling. `focus_tests::candidates` is left out: its tables build a host per row, past what's useful here. `properties`, `ordered` and `directional` take about 10 minutes each under Stacked Borrows. `only_unsafe_module` in the suite fails if `unsafe` appears anywhere else in the crate.
 
 ## Android

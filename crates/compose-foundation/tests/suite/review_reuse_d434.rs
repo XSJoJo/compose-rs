@@ -342,6 +342,7 @@ fn a_selection_does_not_move_to_the_item_reusing_the_selected_ones_text() {
             key: compose_ui::Key::DirectionRight,
             kind,
             modifiers,
+            from_soft_keyboard: false,
         });
     }
     ui.wait_for_idle();

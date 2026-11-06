@@ -257,7 +257,7 @@ pub(crate) fn DateInputTextField(
         is_error = is_error,
         visual_transformation = transformation,
         keyboard_options = KeyboardOptions {
-            auto_correct_enabled: false,
+            auto_correct_enabled: Some(false),
             keyboard_type: KeyboardType::Number,
             ime_action: ImeAction::Done,
             ..KeyboardOptions::DEFAULT

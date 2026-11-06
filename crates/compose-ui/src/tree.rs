@@ -88,7 +88,7 @@ impl NodeId {
         NodeId { index: bits as u32, generation: (bits >> 32) as u32 }
     }
 
-    fn to_ref(self) -> NodeRef {
+    pub(crate) fn to_ref(self) -> NodeRef {
         NodeRef::new((self.generation as u64) << 32 | self.index as u64)
     }
 
@@ -122,8 +122,20 @@ pub(crate) struct Layer {
 
 /// One UI element, as Compose's `LayoutNode`.
 pub struct LayoutNode {
+    /// The node that lays it out, past any virtual node between them.
     pub(crate) parent: Option<NodeId>,
+    /// What it lays out, in order: those of its virtual nodes too, flattened, as Compose's
+    /// `_unfoldedChildren`, so no pass knows about those. A virtual node's are its own.
     pub(crate) children: Vec<Measurable>,
+    /// A virtual node, as `LayoutNode(isVirtual = true)`: a slot of a `SubcomposeLayout`, with its
+    /// children in its parent's. It's never measured, placed or drawn.
+    pub(crate) is_virtual: bool,
+    /// The virtual node it's a child of.
+    pub(crate) virtual_parent: Option<NodeId>,
+    /// Its virtual nodes, in the order their children come in `children`.
+    pub(crate) virtual_children: Vec<NodeId>,
+    /// A `SubcomposeLayout`: its slots change its children while it's measured.
+    pub(crate) composes_while_measured: bool,
     pub(crate) policy: Rc<dyn MeasurePolicy>,
     pub(crate) modifier: Modifier,
     pub(crate) chain: Vec<ChainEntry>,
@@ -233,6 +245,10 @@ impl LayoutNode {
         LayoutNode {
             parent: None,
             children: Vec::new(),
+            is_virtual: false,
+            virtual_parent: None,
+            virtual_children: Vec::new(),
+            composes_while_measured: false,
             policy,
             modifier: Modifier,
             chain: Vec::new(),
@@ -475,6 +491,9 @@ pub struct UiTree {
     next_inner_layer: u64,
     /// The tree's key in the thread's registry of trees, which its nodes' handles name it by.
     pub(crate) key: u32,
+    /// A `SubcomposeLayout` composing its slots while it's measured: what they change of its
+    /// children isn't a reason to measure it again, as `ignoreRemeasureRequests`.
+    pub(crate) ignoring_remeasure: Option<NodeId>,
     /// The modifier nodes' lifecycle steps the pass under way queued, run when it ends
     /// (lifecycle.rs); kept for its capacity.
     pub(crate) lifecycle: Vec<crate::lifecycle::Lifecycle>,
@@ -519,19 +538,51 @@ pub struct UiTree {
 
 impl Drop for UiTree {
     fn drop(&mut self) {
-        crate::node_context::unregister_tree(self.key);
+        if self.key != NO_TREE_KEY {
+            crate::node_context::unregister_tree(self.key);
+        }
+    }
+}
+
+/// A tree registered nowhere: [`UiTree::placeholder`].
+const NO_TREE_KEY: u32 = u32::MAX;
+
+impl compose_runtime::platform::LendableApplier for UiTree {
+    fn placeholder() -> UiTree {
+        UiTree::placeholder()
     }
 }
 
 impl UiTree {
     pub fn new(density: Density, text_measurer: Box<dyn TextMeasurer>) -> UiTree {
+        let focus_requests = Rc::new(crate::focus_requester::FocusRequests::default());
+        let key = crate::node_context::register_tree(&focus_requests);
+        UiTree::with_key(density, text_measurer, focus_requests, key)
+    }
+
+    /// What's in a measurement's hands while it lends its tree to a pass composing a slot: nothing
+    /// asks it anything, its window being shut, and no handle names it (D1309).
+    pub fn placeholder() -> UiTree {
+        UiTree::with_key(
+            Density::new(1.0),
+            Box::new(crate::fixed_text::FixedTextMeasurer::new()),
+            Rc::default(),
+            NO_TREE_KEY,
+        )
+    }
+
+    fn with_key(
+        density: Density,
+        text_measurer: Box<dyn TextMeasurer>,
+        focus_requests: Rc<crate::focus_requester::FocusRequests>,
+        key: u32,
+    ) -> UiTree {
         let mut root = LayoutNode::new(Rc::new(StackMeasurePolicy));
         root.density = density;
         root.placed = true;
         root.attached = true;
-        let focus_requests = Rc::new(crate::focus_requester::FocusRequests::default());
-        let key = crate::node_context::register_tree(&focus_requests);
         UiTree {
+            ignoring_remeasure: None,
             slots: vec![Slot { generation: 0, node: Some(root) }],
             free: Vec::new(),
             root: NodeId { index: 0, generation: 0 },
@@ -895,6 +946,9 @@ impl UiTree {
     }
 
     fn invalidate_measure_with(&mut self, node: NodeId, whole: bool) {
+        if self.ignoring_remeasure == Some(node) {
+            return;
+        }
         let Some(value) = self.get_mut(node) else { return };
         if value.deactivated {
             // Deactivated content (kept for reuse) isn't measured; reused, it is if it asked
@@ -914,10 +968,78 @@ impl UiTree {
         value.needs_measure = true;
         let mut parent = value.parent;
         while let Some(id) = parent {
+            // What's under what's being measured: it measures what it wants of it.
+            if self.ignoring_remeasure == Some(id) {
+                break;
+            }
             let value = self.node_mut(id);
             value.subtree_needs_measure = true;
             parent = value.parent;
         }
+    }
+
+    /// Where a node given to `parent` goes: the node that lays it out, how many of that one's
+    /// children come before `parent`'s, and the virtual node if `parent` is one.
+    fn host_of(&self, parent: NodeId) -> (NodeId, usize, Option<NodeId>) {
+        let value = self.node(parent);
+        if !value.is_virtual {
+            return (parent, 0, None);
+        }
+        let host = value.parent.expect("a virtual node has its layout's");
+        let before = self.node(host).virtual_children.iter().take_while(|other| **other != parent);
+        let offset = before.map(|other| self.node(*other).children.len()).sum();
+        (host, offset, Some(parent))
+    }
+
+    /// A virtual node of `host`, `at` among those it has, with no children yet.
+    pub(crate) fn add_virtual_node(&mut self, host: NodeId, at: usize) -> NodeId {
+        let mut node = LayoutNode::new(Rc::new(StackMeasurePolicy));
+        node.is_virtual = true;
+        node.parent = Some(host);
+        let id = self.alloc(node);
+        self.node_mut(host).virtual_children.insert(at, id);
+        id
+    }
+
+    /// `host`'s virtual node at `from` goes to `to`, its children with it.
+    pub(crate) fn move_virtual_node(&mut self, host: NodeId, from: usize, to: usize) {
+        if from == to {
+            return;
+        }
+        let node = self.node(host).virtual_children[from];
+        let (_, offset, _) = self.host_of(node);
+        let count = self.node(node).children.len();
+        let moved: SmallVec<[Measurable; 8]> =
+            self.node_mut(host).children.drain(offset..offset + count).collect();
+        let value = self.node_mut(host);
+        value.virtual_children.remove(from);
+        value.virtual_children.insert(to, node);
+        let (_, offset, _) = self.host_of(node);
+        let value = self.node_mut(host);
+        value.children.splice(offset..offset, moved);
+        self.invalidate_measure(host);
+    }
+
+    /// `host`'s virtual node `node` goes, with what's still under it.
+    pub(crate) fn remove_virtual_node(&mut self, host: NodeId, node: NodeId) {
+        let Some(value) = self.get(node) else { return };
+        let count = value.children.len();
+        if self.get(host).is_some() {
+            let (_, offset, _) = self.host_of(node);
+            let value = self.node_mut(host);
+            value.children.drain(offset..offset + count);
+            value.virtual_children.retain(|other| *other != node);
+            self.invalidate_measure(host);
+        }
+        self.free_subtree(node);
+    }
+
+    /// The nodes of a virtual node, as measurables, without what's deactivated.
+    pub(crate) fn virtual_measurables(&self, node: NodeId) -> Vec<Measurable> {
+        (self.node(node).children.iter())
+            .filter(|child| self.get(child.node).is_some_and(|value| !value.deactivated))
+            .copied()
+            .collect()
     }
 
     /// compose-rs's optimizations beyond Compose's rendering this tree's host uses
@@ -1805,6 +1927,7 @@ impl UiTree {
             slot.generation = slot.generation.wrapping_add(1);
             self.free.push(id.index);
             stack.extend(value.children.iter().map(|child| child.node));
+            stack.extend(value.virtual_children.iter().copied());
             if let Some(observer) = &self.observer {
                 observer.forget(observation_key(id, Observation::Measure));
                 observer.forget(observation_key(id, Observation::Draw));
@@ -1858,9 +1981,14 @@ impl Applier for UiTree {
         self.root.to_ref()
     }
 
+    fn contains(&self, node: NodeRef) -> bool {
+        self.get(NodeId::from_ref(node)).is_some()
+    }
+
     fn insert(&mut self, parent: NodeRef, index: usize, mut node: LayoutNode) -> NodeRef {
-        let parent = NodeId::from_ref(parent);
+        let (parent, offset, slot) = self.host_of(NodeId::from_ref(parent));
         node.parent = Some(parent);
+        node.virtual_parent = slot;
         // Attached with its parent; the first of a new subtree attaches the subtree's modifier
         // nodes when the pass ends, children's first, as Compose's `LayoutNode.attach`.
         let parent_value = self.node(parent);
@@ -1872,8 +2000,12 @@ impl Applier for UiTree {
             self.queue_lifecycle(crate::lifecycle::Lifecycle::Attach(id));
         }
         let length = self.node(parent).children.len();
-        assert!(index <= length, "compose-ui: insert at {index} past {length} children");
-        self.node_mut(parent).children.insert(index, Measurable { node: id, layer: 0 });
+        assert!(offset + index <= length, "compose-ui: insert at {index} past {length} children");
+        let child = Measurable { node: id, layer: 0 };
+        self.node_mut(parent).children.insert(offset + index, child);
+        if let Some(slot) = slot {
+            self.node_mut(slot).children.insert(index, child);
+        }
         self.refresh_chain(id);
         self.refresh_custom_parent_data(id);
         self.invalidate_measure(parent);
@@ -1892,13 +2024,19 @@ impl Applier for UiTree {
     }
 
     fn attach(&mut self, parent: NodeRef, index: usize, node: NodeRef) {
-        let (parent, id) = (NodeId::from_ref(parent), NodeId::from_ref(node));
+        let id = NodeId::from_ref(node);
+        let (parent, offset, slot) = self.host_of(NodeId::from_ref(parent));
         let length = self.node(parent).children.len();
-        assert!(index <= length, "compose-ui: attach at {index} past {length} children");
+        assert!(offset + index <= length, "compose-ui: attach at {index} past {length} children");
         let value = self.node_mut(id);
         assert!(value.parent.is_none(), "compose-ui: attaching a node that has a parent");
         value.parent = Some(parent);
-        self.node_mut(parent).children.insert(index, Measurable { node: id, layer: 0 });
+        value.virtual_parent = slot;
+        let child = Measurable { node: id, layer: 0 };
+        self.node_mut(parent).children.insert(offset + index, child);
+        if let Some(slot) = slot {
+            self.node_mut(slot).children.insert(index, child);
+        }
         self.invalidate_measure(parent);
         // In the tree now, its subtree too: their modifier nodes are attached when the pass ends.
         let parent_value = self.node(parent);
@@ -1918,12 +2056,17 @@ impl Applier for UiTree {
     }
 
     fn remove(&mut self, parent: NodeRef, index: usize, count: usize) {
-        let parent = NodeId::from_ref(parent);
-        let removed: SmallVec<[Measurable; 8]> =
-            self.node_mut(parent).children.drain(index..index + count).collect();
+        let (parent, offset, slot) = self.host_of(NodeId::from_ref(parent));
+        let removed: SmallVec<[Measurable; 8]> = (self.node_mut(parent).children)
+            .drain(offset + index..offset + index + count)
+            .collect();
+        if let Some(slot) = slot {
+            self.node_mut(slot).children.drain(index..index + count);
+        }
         for child in removed {
             let Some(value) = self.get_mut(child.node) else { continue };
             value.parent = None;
+            value.virtual_parent = None;
             value.placed = false;
             // Out of the tree, its subtree too: their modifier nodes are detached when the pass
             // ends (or when it releases them, first), as Compose's `LayoutNode.detach`.
@@ -1943,14 +2086,19 @@ impl Applier for UiTree {
     }
 
     fn move_nodes(&mut self, parent: NodeRef, from: usize, to: usize, count: usize) {
-        let parent = NodeId::from_ref(parent);
-        let children = &mut self.node_mut(parent).children;
+        let (parent, offset, slot) = self.host_of(NodeId::from_ref(parent));
         let destination = if from > to { to } else { to - count };
-        assert!(destination + count <= children.len(), "compose-ui: move past the end");
-        if destination < from {
-            children[destination..from + count].rotate_right(count);
-        } else if destination > from {
-            children[from..destination + count].rotate_left(count);
+        let rotate = |children: &mut [Measurable]| {
+            assert!(destination + count <= children.len(), "compose-ui: move past the end");
+            if destination < from {
+                children[destination..from + count].rotate_right(count);
+            } else if destination > from {
+                children[from..destination + count].rotate_left(count);
+            }
+        };
+        rotate(&mut self.node_mut(parent).children[offset..]);
+        if let Some(slot) = slot {
+            rotate(&mut self.node_mut(slot).children);
         }
         self.invalidate_measure(parent);
     }
@@ -2040,10 +2188,14 @@ impl Applier for UiTree {
     fn release(&mut self, node: NodeRef) {
         let node = NodeId::from_ref(node);
         let Some(value) = self.get(node) else { return };
+        let slot = value.virtual_parent;
         if let Some(parent) = value.parent {
             // A node of a poisoned composition, still attached.
             if let Some(parent_value) = self.get_mut(parent) {
                 parent_value.children.retain(|child| child.node != node);
+            }
+            if let Some(slot) = slot.and_then(|slot| self.get_mut(slot)) {
+                slot.children.retain(|child| child.node != node);
             }
             self.invalidate_measure(parent);
         }

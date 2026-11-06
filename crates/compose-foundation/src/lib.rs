@@ -16,6 +16,7 @@ mod dark_theme;
 mod fling;
 pub mod gestures;
 mod image;
+mod input_transformation;
 pub mod layout;
 pub mod lazy;
 mod mutator;
@@ -26,11 +27,14 @@ pub mod scrollbar;
 pub mod shape;
 mod text;
 mod text_field;
+mod text_field_buffer;
+mod text_field_state;
 pub mod text_input;
+mod text_undo;
 pub mod tooltip;
 
 pub use compose_ui::{
-    Alignment, AnnotatedString, Color, FontFamily, FontStyle, ImageBitmap, Modifier,
+    Alignment, AnnotatedString, Brush, Color, FontFamily, FontStyle, ImageBitmap, Modifier,
     RECTANGLE_SHAPE, Role, Shape, SpanStyle, TextAlign, TextDecoration, TextOverflow, TextStyle,
 };
 
@@ -53,7 +57,8 @@ pub use gestures::{
     remember_draggable_2d_state, remember_draggable_state, remember_scrollable_state,
     scrollable_state,
 };
-pub use image::{ContentScale, Image};
+pub use image::{ContentScale, Image, PainterImage, VectorImage};
+pub use input_transformation::{InputTransform, InputTransformation, KeyboardActionHandler};
 pub use lazy::pager::{
     HorizontalPager, PageInfo, PageSize, PagerDefaults, PagerLayoutInfo, PagerScope,
     PagerSnapDistance, PagerState, VerticalPager, pager_key, pager_snap_distance_at_most,
@@ -92,10 +97,13 @@ pub use text::{
     BasicAnnotatedText, BasicText, DisableSelection, LOCAL_TEXT_SELECTION_COLORS,
     SelectionContainer, TextSelectionColors,
 };
-pub use text_field::{BasicTextField, inner_text_field_only};
+pub use text_field::{BasicTextField, BasicTextFieldOfState, inner_text_field_only};
+pub use text_field_buffer::{ChangeList, TextFieldBuffer};
+pub use text_field_state::{TextFieldLineLimits, TextFieldState, remember_text_field_state};
 pub use text_input::{
     ImeAction, ImeOptions, KeyboardActions, KeyboardCapitalization, KeyboardOptions, KeyboardType,
     OffsetMapping, PasswordVisualTransformation, TransformedText, VisualTransform,
     VisualTransformation,
 };
+pub use text_undo::UndoState;
 pub use tooltip::{TooltipArea, TooltipPlacement};

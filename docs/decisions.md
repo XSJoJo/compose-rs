@@ -17,11 +17,11 @@ The log is split by area into the files below, one table each, rows in number or
 
 | File | Covers | Rows |
 |---|---|---|
-| [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 171 |
-| [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 382 |
-| [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 66 |
+| [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 174 |
+| [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 392 |
+| [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 72 |
 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md) | Lazy lists and grids, item reuse, the policy of composing only what is in view, prefetch. | 103 |
-| [android-drawing](decisions/android-drawing.md) | The display list and its replayer, render nodes and repaint boundaries, paths, shadows, layers. | 28 |
+| [android-drawing](decisions/android-drawing.md) | The display list and its replayer, render nodes and repaint boundaries, paths, shadows, layers. | 29 |
 | [android-host-and-performance](decisions/android-host-and-performance.md) | The view and activity glue, the frame loop, the hint session, jank, startup, memory, and the optimization flags. | 31 |
 | [desktop](decisions/desktop.md) | The desktop host: window, Skia rendering, input and events. | 6 |
 | [benchmarks](decisions/benchmarks.md) | The benchmark apps, protocols and rounds, and how results are read. | 35 |
@@ -688,6 +688,12 @@ The log is split by area into the files below, one table each, rows in number or
 | D1125 | [text](decisions/text.md#d1125) | current |
 | D1126 | [text](decisions/text.md#d1126) | current |
 | D1127 | [text](decisions/text.md#d1127) | current |
+| D1128 | [text](decisions/text.md#d1128) | current |
+| D1129 | [text](decisions/text.md#d1129) | current |
+| D1130 | [text](decisions/text.md#d1130) | current |
+| D1131 | [text](decisions/text.md#d1131) | revised by [D1132](decisions/text.md#d1132) |
+| D1132 | [text](decisions/text.md#d1132) | current |
+| D1133 | [text](decisions/text.md#d1133) | current |
 | D1150 | [ui-and-layout](decisions/ui-and-layout.md#d1150) | current |
 | D1151 | [ui-and-layout](decisions/ui-and-layout.md#d1151) | current |
 | D1152 | [ui-and-layout](decisions/ui-and-layout.md#d1152) | current |
@@ -819,6 +825,9 @@ The log is split by area into the files below, one table each, rows in number or
 | D1306 | [runtime](decisions/runtime.md#d1306) | current |
 | D1307 | [runtime](decisions/runtime.md#d1307) | current |
 | D1308 | [runtime](decisions/runtime.md#d1308) | current |
+| D1309 | [ui-and-layout](decisions/ui-and-layout.md#d1309) | current |
+| D1310 | [ui-and-layout](decisions/ui-and-layout.md#d1310) | current |
+| D1311 | [ui-and-layout](decisions/ui-and-layout.md#d1311) | current |
 | D1350 | [ui-and-layout](decisions/ui-and-layout.md#d1350) | current |
 | D1351 | [ui-and-layout](decisions/ui-and-layout.md#d1351) | current |
 | D1352 | [ui-and-layout](decisions/ui-and-layout.md#d1352) | current |
@@ -836,6 +845,8 @@ The log is split by area into the files below, one table each, rows in number or
 | D1364 | [ui-and-layout](decisions/ui-and-layout.md#d1364) | current |
 | D1365 | [ui-and-layout](decisions/ui-and-layout.md#d1365) | current |
 | D1366 | [ui-and-layout](decisions/ui-and-layout.md#d1366) | current |
+| D1367 | [ui-and-layout](decisions/ui-and-layout.md#d1367) | current |
+| D1368 | [ui-and-layout](decisions/ui-and-layout.md#d1368) | current |
 | D1400 | [api-and-tooling](decisions/api-and-tooling.md#d1400) | revised by [D1402](api-and-tooling.md#d1402), [D1403](api-and-tooling.md#d1403) |
 | D1401 | [api-and-tooling](decisions/api-and-tooling.md#d1401) | current |
 | D1402 | [api-and-tooling](decisions/api-and-tooling.md#d1402) | current |
@@ -879,6 +890,9 @@ The log is split by area into the files below, one table each, rows in number or
 | D1501 | [runtime](decisions/runtime.md#d1501) | current |
 | D1502 | [runtime](decisions/runtime.md#d1502) | current |
 | D1503 | [runtime](decisions/runtime.md#d1503) | current |
+| D1504 | [runtime](decisions/runtime.md#d1504) | current |
+| D1505 | [runtime](decisions/runtime.md#d1505) | current |
+| D1506 | [runtime](decisions/runtime.md#d1506) | current |
 | D1550 | [ui-and-layout](decisions/ui-and-layout.md#d1550) | current |
 | D1551 | [ui-and-layout](decisions/ui-and-layout.md#d1551) | current |
 | D1552 | [ui-and-layout](decisions/ui-and-layout.md#d1552) | current |
@@ -889,7 +903,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1557 | [ui-and-layout](decisions/ui-and-layout.md#d1557) | current |
 | D1558 | [ui-and-layout](decisions/ui-and-layout.md#d1558) | current |
 | D1559 | [ui-and-layout](decisions/ui-and-layout.md#d1559) | revised by [D1568](decisions/ui-and-layout.md#d1568) |
-| D1560 | [ui-and-layout](decisions/ui-and-layout.md#d1560) | current |
+| D1560 | [ui-and-layout](decisions/ui-and-layout.md#d1560) | revised by D1900 |
 | D1561 | [ui-and-layout](decisions/ui-and-layout.md#d1561) | current |
 | D1562 | [ui-and-layout](decisions/ui-and-layout.md#d1562) | current |
 | D1563 | [ui-and-layout](decisions/ui-and-layout.md#d1563) | current |
@@ -899,6 +913,9 @@ The log is split by area into the files below, one table each, rows in number or
 | D1567 | [ui-and-layout](decisions/ui-and-layout.md#d1567) | current |
 | D1568 | [ui-and-layout](decisions/ui-and-layout.md#d1568) | current |
 | D1569 | [ui-and-layout](decisions/ui-and-layout.md#d1569) | current |
+| D1570 | [ui-and-layout](decisions/ui-and-layout.md#d1570) | current |
+| D1571 | [ui-and-layout](decisions/ui-and-layout.md#d1571) | current |
+| D1572 | [ui-and-layout](decisions/ui-and-layout.md#d1572) | current |
 | D1650 | [ui-and-layout](decisions/ui-and-layout.md#d1650) | current |
 | D1651 | [ui-and-layout](decisions/ui-and-layout.md#d1651) | current |
 | D1652 | [ui-and-layout](decisions/ui-and-layout.md#d1652) | current |
@@ -923,3 +940,6 @@ The log is split by area into the files below, one table each, rows in number or
 | D1671 | [text](decisions/text.md#d1671) | current |
 | D1672 | [ui-and-layout](decisions/ui-and-layout.md#d1672) | current |
 | D1673 | [text](decisions/text.md#d1673) | current |
+| D1900 | [android-drawing](decisions/android-drawing.md#d1900) | current |
+| D1901 | [ui-and-layout](decisions/ui-and-layout.md#d1901) | current |
+| D1902 | [ui-and-layout](decisions/ui-and-layout.md#d1902) | current |

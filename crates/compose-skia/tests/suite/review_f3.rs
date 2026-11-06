@@ -159,8 +159,14 @@ fn random_editing_with_an_input_method_does_not_panic() {
                             key,
                             kind: KeyEventType::KeyDown,
                             modifiers,
+                            from_soft_keyboard: false,
                         });
-                        ui.host().send_key(KeyEvent { key, kind: KeyEventType::KeyUp, modifiers });
+                        ui.host().send_key(KeyEvent {
+                            key,
+                            kind: KeyEventType::KeyUp,
+                            modifiers,
+                            from_soft_keyboard: false,
+                        });
                     }
                     3 | 4 => {
                         let text = POOL[rng.below(POOL.len())];

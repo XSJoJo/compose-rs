@@ -121,7 +121,7 @@ fn field(
 fn a_focused_field_gives_the_host_its_keyboard_options() {
     let options = KeyboardOptions {
         capitalization: KeyboardCapitalization::Words,
-        auto_correct_enabled: false,
+        auto_correct_enabled: Some(false),
         keyboard_type: KeyboardType::Email,
         ime_action: ImeAction::Next,
     };

@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use compose_android::serialize::{
-    GroupCache, Resources, Writer, operand_bytes, tag, write_display_list,
+    GroupCache, Resources, Writer, color_filter, operand_bytes, tag, write_display_list,
 };
 use compose_android::text::{AndroidTextMeasurer, LaidOut, TextBackend};
 use compose_runtime::platform;
@@ -114,7 +114,7 @@ fn image_op(image: ImageBitmap) -> DrawOp {
         src: Rect::new(0.0, 0.0, w, h),
         dst: Rect::new(0.0, 0.0, w.max(1.0), h.max(1.0)),
         alpha: 1.0,
-        tint: None,
+        color_filter: None,
     }
 }
 
@@ -380,34 +380,42 @@ fn the_lifecycle_states_are_in_androidx_s_order() {
 
 // ---- A bitmap's tint on the wire ------------------------------------------------------------
 
-/// `Replayer.kt` reads, after the tag: the id, the two rects, the alpha, and last the tint, 0 being
-/// none; and the operation after it follows exactly there.
+/// `Replayer.kt` reads, after the tag: the id, the two rects, the alpha, and last the color
+/// filter, its kind (0 none) then its values (a tint: its color and mode); and the operation
+/// after it follows exactly there.
 #[test]
-fn an_images_tint_goes_last_on_the_wire() {
+fn an_images_color_filter_goes_last_on_the_wire() {
     let tinted = |tint: Option<Color>| {
         let mut resources = Resources::default();
         let mut out = Writer::default();
         let mut list = DisplayList::default();
         let image = ImageBitmap::from_rgba_premultiplied(1, 1, vec![255, 0, 0, 255]);
+        let color_filter = tint.map(|tint| list.push_color_filter(ColorFilter::tint(tint)));
         list.push(DrawOp::DrawImage {
             image,
             src: Rect::new(0.0, 0.0, 1.0, 1.0),
             dst: Rect::new(0.0, 0.0, 1.0, 1.0),
             alpha: 1.0,
-            tint,
+            color_filter,
         });
         list.push(DrawOp::DrawRect(Rect::new(0.0, 0.0, 1.0, 1.0), Paint::fill(Color::RED)));
         write_display_list(&list, &mut resources, &mut GroupCache::default(), &mut out);
         out.bytes
     };
-    const OPERANDS: usize = 4 + 32 + 4 + 4;
-    for (tint, wire) in [(Some(Color::BLUE), Color::BLUE.argb()), (None, 0)] {
+    const FIXED: usize = 4 + 32 + 4;
+    for (tint, filter_bytes) in [(Some(Color::BLUE), 1 + 4 + 1), (None, 1)] {
         let bytes = tinted(tint);
         let at = bytes.iter().position(|byte| *byte == tag::DRAW_IMAGE).expect("the image");
-        assert_eq!(operand_bytes(&bytes, at), OPERANDS);
-        let last = at + 1 + OPERANDS - 4;
-        let written = u32::from_le_bytes(bytes[last..last + 4].try_into().unwrap());
-        assert_eq!(written, wire);
-        assert_eq!(bytes[at + 1 + OPERANDS], tag::DRAW_RECT, "the next operation follows");
+        assert_eq!(operand_bytes(&bytes, at), FIXED + filter_bytes);
+        let filter = at + 1 + FIXED;
+        if tint.is_some() {
+            assert_eq!(bytes[filter], color_filter::BLEND_MODE);
+            let written = u32::from_le_bytes(bytes[filter + 1..filter + 5].try_into().unwrap());
+            assert_eq!(written, Color::BLUE.argb());
+            assert_eq!(bytes[filter + 5], BlendMode::SrcIn as u8);
+        } else {
+            assert_eq!(bytes[filter], color_filter::NONE);
+        }
+        assert_eq!(bytes[filter + filter_bytes], tag::DRAW_RECT, "the next operation follows");
     }
 }

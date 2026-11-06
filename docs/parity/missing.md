@@ -10,29 +10,30 @@ These are on local branches, so they're not lost, but each still has to finish i
 
 | Work | Branch | State |
 |---|---|---|
-| `SubcomposeLayout`, `BoxWithConstraints` on it | `worktree-agent-a12dfd51d71063a72` | Review found a blocker: reused content panics. Being fixed. Paused precomposition is left. |
 | Stretch and glow overscroll | `worktree-agent-ad25708f190fdec81` | Being built, not reviewed. Design: [stretch-overscroll.md](design/stretch-overscroll.md). |
+| The grid layout, `Grid` (D1368) | `foundation-grid` | Built, with all 79 of `GridTest` ported; not reviewed. |
 
 ## The big missing things
 
 ### 1. Modern text fields (the largest gap)
-- **`TextFieldState` and the state-based `BasicTextField`** (about 700 tests), with `InputTransformation`, `OutputTransformation`, `TextFieldLineLimits`, undo, and `BasicSecureTextField` (about 100). Today's fields are value-based. The keyboard path it needed is now on main.
+- **`TextFieldState` and the state-based `BasicTextField`** (about 700 tests; [design](design/text-field-state.md)). Steps 1 to 3 of six are built: `TextFieldState` (`edit`, its helpers, saver, `remember_text_field_state`), `TextFieldBuffer` with its `ChangeList`, `TextFieldLineLimits`, `BasicTextFieldOfState` over the value field's node and the keyboard path, undo in the state (`UndoState`, Compose's merge rules), `InputTransformation` with Compose's prebuilt ones, `KeyboardActionHandler` and the keyboard options' unspecified values (D1128 to D1133); about 260 of Compose's tests ported. **Still missing:** `OutputTransformation` and the single line's new lines shown as spaces; `on_text_layout`, `scroll_state`, the default width of ten "H" and the rest of `BasicTextFieldTest`, the key, semantics, scroll and focus tests; Material 3's state-based `TextField`s; styles in the state; `BasicSecureTextField` (about 100).
 - **Touch text selection** (about 230): handles and selection gestures in text and fields.
 - **Text context menu** (about 290), **magnifier** (about 80), **handwriting** (about 85), **autofill** (about 165), **text links** (about 55).
 
 ### 2. Layout and composition foundations
-- **The rest of lookahead:** lazy grids and staggered grids in a scope (lists are in, D1226, simpler than Compose's: `animate_item` moves an item toward where the pass that's now puts it, not toward its lookahead position); the `SubcomposeLayout` cases (waiting on C4); and the rest of `LookaheadScopeTest`: shared elements' tests, six on internal nodes to rewrite as scenes, two with movable content, and about a dozen still to port (direct manipulation, nested placement, skipped placement, `transformFrom`, a pager, a lazy list with animated items, the `align` form of the coordinates' consistency, `isLookingAhead` with intrinsics). The scope, the pass, `approach_layout`, `local_lookahead_position_of_with` (a scroll left out if asked, D1225), the intrinsics and baseline cases and the scene tests are in.
-- **After `SubcomposeLayout`:** lazy layouts moved onto subcomposition (C8), so items compose during measure as in Compose. Today they compose in rounds, the root of several differences.
+- **The rest of lookahead:** lazy grids and staggered grids in a scope (lists are in, D1226, simpler than Compose's: `animate_item` moves an item toward where the pass that's now puts it, not toward its lookahead position); the `SubcomposeLayout` cases (PL-9, now that it's in); and the rest of `LookaheadScopeTest`: shared elements' tests, six on internal nodes to rewrite as scenes, two with movable content, and about a dozen still to port (direct manipulation, nested placement, skipped placement, `transformFrom`, a pager, a lazy list with animated items, the `align` form of the coordinates' consistency, `isLookingAhead` with intrinsics). The scope, the pass, `approach_layout`, `local_lookahead_position_of_with` (a scroll left out if asked, D1225), the intrinsics and baseline cases and the scene tests are in.
+- **Lazy layouts on subcomposition (C8):** `SubcomposeLayout`, its reuse and paused precomposition are in, and lazy layouts move onto it next, so items compose during measure as in Compose. Today they compose in rounds, the root of several differences.
 - **Place-with-layer** in compose-ui (`placeWithLayer`, what `offset_with` wants too). Until it lands, `animate_item` has a visible bug: modifiers before it in the chain neither move nor fade (D1472), and lookahead scopes aren't told apart; its grid and staggered tests are partly ported.
 - **Shared elements and `animateBounds`** (about 95), which wait on lookahead.
 - **`Modifier.onLayoutRectChanged` and its callbacks** (about 160).
-- **`FlexBox`** (about 95) and **the grid layout** (about 80).
 - **Android view interop**, `AndroidView` and hosting (about 280).
-- **Runtime:** computed state (about 55), composition observers, error traces, composition data.
+- **Runtime:** composition registration observers (`Recomposer.observe`, about 11), error traces (about 33), composition data (about 15).
 
 ### 3. Graphics
-- **`GraphicsLayer` as an object** (about 95), **blend modes and color filters** (about 85), **color spaces** (about 70), **`Painter`** (about 45), offscreen canvas and bitmaps.
-- **Vector graphics** (about 90) and **animated image vectors** (about 20).
+- **`GraphicsLayer` as an object** (about 95), **color spaces** (about 70), offscreen canvas and bitmaps.
+- **`Painter`** is in (D1901): `Painter`, `BitmapPainter`, `ColorPainter`, `Modifier.paint`, `Image(painter)` (`PainterImage`) and Material's `Icon(painter)` with a color or a `ColorProducer` tint. Still missing: `BrushPainter`, `FilterQuality`, and `painterResource`.
+- **Blend modes and color filters** are in (D1900): `BlendMode`, `ColorFilter`'s tint, lighting and matrix, `ColorMatrix`, on paints, images and layers, on Skia and Android (checked on the phone with the demo's `graphics` tab: filters, blend modes, tinted icons and a vector). Still missing: `Brush.composite`, a blend mode on `drawImage`, and a graphics layer's `colorFilter` and `blendMode`.
+- **Vector graphics** are in (D1902): `ImageVector` and its builder, `PathNode`, `PathParser`, `VectorPainter` with `remember_vector_painter`, groups with transforms and clip paths, a recorded drawing kept per size, `Image(imageVector)` (`VectorImage`). Still missing: trim paths (waits on `PathMeasure`), stroke joins and miters, vector composition (`Group`/`Path` composables and `rememberVectorPainter { }`), and **animated image vectors** (about 20).
 - **Blur** (about 80), **drop and inner shadows** (about 45), brush and path extras, polygon shapes (about 65).
 
 ### 4. Foundation
@@ -40,7 +41,8 @@ These are on local branches, so they're not lost, but each still has to finish i
 - **Gestures and scrolling:** `transformable` (about 40), 2D scrolling (about 45), `bringIntoView` (about 90 across two rows), public lazy layout API (about 40), `BeyondBoundsLayout` (about 35).
 
 ### 5. Material 3
-- **Whole components missing:** carousel (about 100), floating toolbar (about 80), search bar (about 65), toggle button (about 50), wide navigation rail (about 45), button group (about 45), wavy progress (about 45), short navigation bar (about 35), split button (about 35), loading indicator (about 20), FAB menu (about 15).
+- **Whole components missing:** carousel (about 100), floating toolbar (about 80), search bar (about 65), wide navigation rail (about 45), wavy progress (about 45), short navigation bar (about 35), loading indicator (about 20), FAB menu (about 15).
+- **Done lately:** toggle buttons (D1570), the button group with its overflow (D1571), the split button (D1572).
 - **Dynamic color** (about 25), `TimeScroll` and time picker dialogs, Material transitions.
 - **Adaptive libraries,** window size classes and the navigation suite, planned last.
 - Many existing components are `partial`: they exist, with tests or details left.

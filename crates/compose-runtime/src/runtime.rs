@@ -121,6 +121,9 @@ pub(crate) struct ActivePass {
     /// The pass is composing (not applying its end-of-pass changes): the composer may be used,
     /// and state writes are a misuse.
     pub composing: bool,
+    /// Its composition has an observer (`tooling`), as it began: its scopes are logged.
+    #[cfg(feature = "composition-observer")]
+    pub observed: bool,
 }
 
 impl Runtime {
@@ -310,7 +313,7 @@ pub(crate) fn frames_requested(runtime: &Runtime) -> bool {
 pub(crate) fn invalidate_scope(runtime: &mut Runtime, id: ScopeId) -> bool {
     let Runtime { scopes, compositions, frame_requests, active, frames, .. } = runtime;
     let pass = PassFrames::of(*active, frames);
-    invalidate_scope_parts(scopes, compositions, frame_requests, pass, id, None)
+    invalidate_scope_parts(scopes, compositions, frame_requests, pass, id, None, cause(None))
 }
 
 /// The frames of the pass composing now, for an invalidation made during it to tell whether the
@@ -324,7 +327,7 @@ impl PassFrames<'_> {
     /// The composing pass's frames, if one is composing.
     pub fn of(active: Option<ActivePass>, frames: &mut [Frame]) -> Option<PassFrames<'_>> {
         match active {
-            Some(ActivePass { composition, composing: true }) => {
+            Some(ActivePass { composition, composing: true, .. }) => {
                 Some(PassFrames { composition: composition.index, frames })
             }
             _ => None,
@@ -377,6 +380,23 @@ struct ScopeLocation {
     group: u32,
 }
 
+/// What invalidated a scope, for a composition observer (`tooling`): nothing without them.
+#[cfg(feature = "composition-observer")]
+pub(crate) type Cause = Option<crate::state::StateId>;
+#[cfg(not(feature = "composition-observer"))]
+#[derive(Clone, Copy)]
+pub(crate) struct Cause;
+
+/// The state that invalidated a scope, as [`Cause`].
+#[inline(always)]
+#[cfg_attr(not(feature = "composition-observer"), allow(unused_variables))]
+pub(crate) fn cause(state: Option<crate::state::StateId>) -> Cause {
+    #[cfg(feature = "composition-observer")]
+    return state;
+    #[cfg(not(feature = "composition-observer"))]
+    Cause
+}
+
 /// Marks a scope invalid, outright or (with `condition`) only if that derived state's value
 /// changed, and its ancestors dirty. Returns whether a frame request was queued.
 ///
@@ -392,7 +412,16 @@ pub(crate) fn invalidate_scope_parts(
     pass: Option<PassFrames<'_>>,
     id: ScopeId,
     condition: Option<crate::state::StateId>,
+    #[cfg_attr(not(feature = "composition-observer"), allow(unused_variables))] cause: Cause,
 ) -> bool {
+    #[cfg(feature = "composition-observer")]
+    if scopes.log.is_some()
+        && let Some(scope) = scopes.get(id)
+        && crate::tooling::observed(compositions, scope.composition)
+    {
+        let composition = scope.composition;
+        scopes.log_observed(composition, id, crate::tooling::ScopeEventKind::Invalidated(cause));
+    }
     let Some(scope) = scopes.get_mut(id) else {
         return false;
     };
@@ -497,7 +526,7 @@ pub(crate) fn scope_is_ahead(
     ahead_of_the_pass(table, pass.frames, scope.group).is_some()
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct CompositionId {
     pub index: u32,
     pub generation: u32,
@@ -612,6 +641,12 @@ pub(crate) struct CompositionData {
     pub deferred: Deferred,
     /// The paused composition in progress, if any (Compose's `pendingPausedComposition`).
     pub paused: Option<Box<crate::pausable::Paused>>,
+    /// Its observer (`tooling`), with its token.
+    #[cfg(feature = "composition-observer")]
+    pub observer: Option<(u64, Rc<dyn crate::tooling::CompositionObserver>)>,
+    /// The observer of its pass in progress, as it began.
+    #[cfg(feature = "composition-observer")]
+    pub pass_observer: Option<Rc<dyn crate::tooling::CompositionObserver>>,
 }
 
 impl CompositionData {
@@ -637,6 +672,10 @@ impl CompositionData {
             provider_epoch: None,
             deferred: Deferred::default(),
             paused: None,
+            #[cfg(feature = "composition-observer")]
+            observer: None,
+            #[cfg(feature = "composition-observer")]
+            pass_observer: None,
         }
     }
 
@@ -751,6 +790,12 @@ impl Compositions {
             return None;
         }
         entry.data.as_ref()
+    }
+
+    /// The data of the composition at `index`, if it's there.
+    #[cfg(feature = "composition-observer")]
+    pub fn data_at(&self, index: u32) -> Option<&CompositionData> {
+        self.entries.get(index as usize)?.data.as_ref()
     }
 
     /// The data of a live composition, by index: for scopes and passes, which hold an index

@@ -1756,3 +1756,88 @@ fn a_detached_node_s_traversal_finds_what_it_can_and_doesn_t_panic() {
     });
     assert_eq!(children, 0);
 }
+
+/// As the tests' `ReverseMeasureLayout`: a `SubcomposeLayout` whose slots are composed and measured
+/// last first, and placed first first, which is their draw order.
+fn reverse_measure_layout(modifier: Modifier, contents: Vec<Callback>) {
+    let policy = compose_ui::subcompose::subcompose_policy(move |scope, constraints| {
+        let (mut width, mut height) = (constraints.min_width, constraints.min_height);
+        let mut slots: Vec<Vec<Placeable>> = Vec::new();
+        for (index, content) in contents.iter().rev().enumerate() {
+            let placeables = scope
+                .subcompose(index, content.clone())
+                .into_iter()
+                .map(|measurable| scope.measure(measurable, constraints))
+                .collect::<Vec<_>>();
+            for placeable in &placeables {
+                width = width.max(placeable.width);
+                height = height.max(placeable.height);
+            }
+            slots.insert(0, placeables);
+        }
+        for placeable in slots.iter().flatten() {
+            scope.place(placeable, 0, 0);
+        }
+        scope.layout(width, height)
+    });
+    use compose_ui::subcompose::SubcomposeLayout;
+    SubcomposeLayout!(modifier = modifier, measure_policy = policy);
+}
+
+fn leaf_content(label: &'static str) -> Callback {
+    Callback::new(move || Leaf(nodes(&[label])))
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/node/ModifierNodeVisitChildrenTest.kt, visitChildrenInOtherLayoutNodesInDrawOrder_subcompose
+#[test]
+fn visiting_children_in_draw_order_goes_by_placement_in_a_subcompose_layout() {
+    let _host = show(|| {
+        reverse_measure_layout(
+            nodes(&["node"]),
+            vec![leaf_content("child_1"), leaf_content("child_2"), leaf_content("child_3")],
+        )
+    });
+    assert_eq!(visit_children("node", NodeKinds::ANY, true), ["child_1", "child_2", "child_3"]);
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/node/ModifierNodeVisitSubtreeIfTest.kt, visitsItemsAcrossLayoutNodesInDrawOrder_subcompose
+#[test]
+fn a_conditional_subtree_visit_in_draw_order_goes_by_placement_in_a_subcompose_layout() {
+    let _host = show(|| {
+        reverse_measure_layout(
+            nodes(&["node"]),
+            vec![leaf_content("child_1"), leaf_content("child_2"), leaf_content("child_3")],
+        )
+    });
+    assert_eq!(
+        visit_subtree("node", NodeKinds::ANY, true, |_| true),
+        ["child_1", "child_2", "child_3"]
+    );
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/node/ModifierNodeVisitSubtreeTest.kt, differentLayoutNodesInDrawOrder_subcompose
+#[test]
+fn a_subtree_visit_in_draw_order_goes_by_placement_in_a_subcompose_layout() {
+    let _host = show(|| {
+        reverse_measure_layout(
+            nodes(&["node"]),
+            vec![
+                leaf_content("child_1"),
+                Callback::new(|| {
+                    Stack!(modifier = nodes(&["child_2"]), {
+                        Leaf(nodes(&["child_3"]));
+                    });
+                }),
+                Callback::new(|| {
+                    Stack!({
+                        Leaf(nodes(&["child_4"]));
+                    });
+                }),
+            ],
+        )
+    });
+    assert_eq!(
+        visit_subtree("node", NodeKinds::ANY, true, |_| true),
+        ["child_1", "child_2", "child_3", "child_4"]
+    );
+}

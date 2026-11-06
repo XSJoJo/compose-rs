@@ -1508,6 +1508,7 @@ fn shift_tab_does_not_go_to_the_tooltip() {
         key: Key::Tab,
         kind: compose_ui::KeyEventType::KeyDown,
         modifiers: compose_ui::KeyModifiers { shift: true, ..Default::default() },
+        from_soft_keyboard: false,
     };
     ui.host().send_key(down);
     advance(&mut ui, 16);

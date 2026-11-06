@@ -209,6 +209,8 @@ impl Runtime {
         reusable: bool,
     ) -> (NodeOp, NodeStart) {
         let composition = self.check_composing();
+        #[cfg(feature = "composition-observer")]
+        let observed = self.active.is_some_and(|active| active.observed);
         let Runtime {
             compositions,
             scopes,
@@ -431,6 +433,11 @@ impl Runtime {
                 // then the scope may still skip, and its reads from the last run stay current.
                 frame.saved_epoch = scope.epoch;
                 frame.scope = group.scope;
+                #[cfg(feature = "composition-observer")]
+                if observed {
+                    let enter = crate::tooling::ScopeEventKind::Enter;
+                    scopes.log_observed(composition, group.scope, enter);
+                }
                 if conditional {
                     scopes.clear_conditions(group.scope);
                 }
@@ -462,6 +469,8 @@ impl Runtime {
 
     pub(crate) fn end_group(&mut self, restart: Option<fn(&dyn Any)>) -> NodeOp {
         let composition = self.check_composing();
+        #[cfg(feature = "composition-observer")]
+        let observed = self.active.is_some_and(|active| active.observed);
         let Runtime {
             compositions,
             scopes,
@@ -493,6 +502,10 @@ impl Runtime {
             self.providers_invalid = 0;
         }
         frames.pop();
+        #[cfg(feature = "composition-observer")]
+        if observed && restart.is_some() {
+            scopes.log_observed(composition, frame.scope, crate::tooling::ScopeEventKind::Exit);
+        }
 
         let mut op = NodeOp::None;
         if !frame.skipped {

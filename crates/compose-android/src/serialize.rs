@@ -27,8 +27,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
 use compose_ui::{
-    Color, CompositingStrategy, ImageBitmap, Offset, Outline, Paint, PaintStyle, PathCommand,
-    PathData, PathFillType, PathOperation, PathStep, Rect, StrokeCap, TileMode,
+    BlendMode, Color, ColorFilter, CompositingStrategy, ImageBitmap, Offset, Outline, Paint,
+    PaintStyle, PathCommand, PathData, PathFillType, PathOperation, PathStep, Rect, StrokeCap,
+    TileMode,
     platform::Shader,
     platform::{
         DisplayList, DrawGroup, DrawOp, Optimization, Optimizations, fits_in, single_drawing,
@@ -84,6 +85,9 @@ pub mod tag {
     pub const DROP_PATH: u8 = 21;
     pub const DEFINE_IMAGE: u8 = 22;
     pub const DROP_IMAGE: u8 = 23;
+    /// A layer with a paint (`DrawOp::SaveLayer`): bounds, alpha (f32), blend mode (u8), color
+    /// filter.
+    pub const SAVE_LAYER: u8 = 24;
 }
 
 /// A path command's kind, as `Replayer.kt` reads it.
@@ -103,6 +107,17 @@ pub mod step {
     pub const FILL: u8 = 3;
     pub const COMBINE_OR: u8 = 4;
 }
+
+/// A color filter's kind, as `Replayer.kt` reads it.
+pub mod color_filter {
+    pub const NONE: u8 = 0;
+    pub const BLEND_MODE: u8 = 1;
+    pub const LIGHTING: u8 = 2;
+    pub const COLOR_MATRIX: u8 = 3;
+}
+
+/// A recording's shaders and color filters, which its paints, images and layers name by index.
+type Tables<'a> = (&'a [Shader], &'a [ColorFilter]);
 
 /// A paint's shader kind, as `Replayer.kt` reads it.
 pub mod shader {
@@ -146,11 +161,14 @@ impl Writer {
     fn color(&mut self, color: Color) {
         self.u32(color.argb());
     }
-    /// Color, style (0 fill, 1 stroke), stroke width, cap (0 butt, 1 round, 2 square), then
-    /// its shader (from `shaders`): see [`Writer::shader`]. Faded by `alpha` (folded layers'):
-    /// its color's alpha, or its shader's. A gradient that is a solid color (see [`shading`])
-    /// is that color at the shader's alpha, with no shader.
-    fn paint(&mut self, paint: &Paint, shaders: &[Shader], alpha: f32) {
+    /// Color, style flags (1 stroke, 2 a blend mode follows, 4 a color filter follows), stroke
+    /// width, cap (0 butt, 1 round, 2 square), its shader (from `shaders`): see
+    /// [`Writer::shader`]; then its blend mode (u8, Compose's order) if not `SrcOver`, and its
+    /// color filter (from `filters`, [`Writer::color_filter`]) if any: a plain paint's bytes are
+    /// what they were before either. Faded by `alpha` (folded layers'): its color's alpha, or
+    /// its shader's. A gradient that is a solid color (see [`shading`]) is that color at the
+    /// shader's alpha, with no shader.
+    fn paint(&mut self, paint: &Paint, (shaders, filters): Tables<'_>, alpha: f32) {
         let shading = paint
             .shader()
             .and_then(|index| shaders.get(index.0 as usize))
@@ -162,13 +180,16 @@ impl Writer {
             Shading::Color | Shading::Gradient(_) => paint.color,
         };
         self.color(faded(color, alpha));
+        let filter = paint.color_filter().and_then(|index| filters.get(index.0 as usize));
+        let blended = paint.blend_mode != BlendMode::SrcOver;
+        let flags = u8::from(blended) << 1 | u8::from(filter.is_some()) << 2;
         match paint.style {
             PaintStyle::Fill => {
-                self.u8(0);
+                self.u8(flags);
                 self.f32(0.0);
             }
             PaintStyle::Stroke(width) => {
-                self.u8(1);
+                self.u8(flags | 1);
                 self.f32(width);
             }
         }
@@ -182,6 +203,36 @@ impl Writer {
                 self.shader(shader, shader.alpha() * alpha.clamp(0.0, 1.0));
             }
             Shading::Color | Shading::Solid(..) => self.u8(shader::NONE),
+        }
+        if blended {
+            self.u8(paint.blend_mode as u8);
+        }
+        if let Some(filter) = filter {
+            self.color_filter(Some(filter));
+        }
+    }
+    /// A color filter: its kind (a [`color_filter`] constant), then for a blend mode filter
+    /// its color and mode (u8), for lighting its multiply and add colors, for a matrix its 20
+    /// values, row-major, offsets in 0 to 255 (as `android.graphics.ColorMatrix`).
+    fn color_filter(&mut self, filter: Option<&ColorFilter>) {
+        match filter {
+            None => self.u8(color_filter::NONE),
+            Some(ColorFilter::BlendMode { color, blend_mode }) => {
+                self.u8(color_filter::BLEND_MODE);
+                self.color(*color);
+                self.u8(*blend_mode as u8);
+            }
+            Some(ColorFilter::Lighting { multiply, add }) => {
+                self.u8(color_filter::LIGHTING);
+                self.color(*multiply);
+                self.color(*add);
+            }
+            Some(ColorFilter::ColorMatrix(matrix)) => {
+                self.u8(color_filter::COLOR_MATRIX);
+                for value in matrix.values {
+                    self.f32(value);
+                }
+            }
         }
     }
     /// A shader's definition, then its alpha: its kind (a [`shader`] constant), tile mode (0
@@ -614,8 +665,9 @@ pub fn operand_bytes(bytes: &[u8], at: usize) -> usize {
         tag::DRAW_ROUND_RECT => painted(32),
         tag::DRAW_PARAGRAPH => 12,
         tag::SAVE_LAYER_ALPHA => 16 + 4,
+        tag::SAVE_LAYER => 16 + 4 + 1 + color_filter_bytes(bytes, at + 1 + 16 + 4 + 1),
         tag::TRANSFORM => 28,
-        tag::DRAW_IMAGE => 4 + 32 + 4 + 4,
+        tag::DRAW_IMAGE => 4 + 32 + 4 + color_filter_bytes(bytes, at + 1 + 4 + 32 + 4),
         tag::DRAW_SHADOW => 1 + 32 + 4 + 12 + 4 + 8,
         tag::DRAW_ARC => painted(16 + 8 + 1),
         tag::DRAW_PATH => painted(4 + 16),
@@ -626,18 +678,39 @@ pub fn operand_bytes(bytes: &[u8], at: usize) -> usize {
 /// The bytes of the paint at `at` ([`Writer::paint`]).
 fn paint_bytes(bytes: &[u8], at: usize) -> usize {
     let count_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+    let flags = bytes[at + 4];
     let kind_at = at + 4 + 1 + 4 + 1;
     let geometry = match bytes[kind_at] {
-        shader::NONE => return kind_at + 1 - at,
+        shader::NONE => 0,
         shader::LINEAR => 16,
         shader::RADIAL => 12,
         shader::SWEEP => 8,
         other => panic!("not a shader kind: {other}"),
     };
-    let colors_at = kind_at + 2 + geometry;
-    let stops_at = colors_at + 4 + 4 * count_at(colors_at);
-    let alpha_at = stops_at + 4 + 4 * count_at(stops_at);
-    alpha_at + 4 - at
+    let mut end = kind_at + 1;
+    if bytes[kind_at] != shader::NONE {
+        let colors_at = kind_at + 2 + geometry;
+        let stops_at = colors_at + 4 + 4 * count_at(colors_at);
+        end = stops_at + 4 + 4 * count_at(stops_at) + 4;
+    }
+    if flags & 2 != 0 {
+        end += 1;
+    }
+    if flags & 4 != 0 {
+        end += color_filter_bytes(bytes, end);
+    }
+    end - at
+}
+
+/// The bytes of the color filter at `at` ([`Writer::color_filter`]).
+fn color_filter_bytes(bytes: &[u8], at: usize) -> usize {
+    1 + match bytes[at] {
+        color_filter::NONE => 0,
+        color_filter::BLEND_MODE => 4 + 1,
+        color_filter::LIGHTING => 8,
+        color_filter::COLOR_MATRIX => 80,
+        other => panic!("not a color filter kind: {other}"),
+    }
 }
 
 fn write_path(writer: &mut Writer, id: u32, path: &PathData) {
@@ -1221,7 +1294,8 @@ impl<'a> Serializer<'a> {
                 continue;
             }
             let alpha: f32 = self.folds.iter().map(|(_, alpha)| alpha).product();
-            write_op(&ops[index], alpha, &recording.shaders, self.resources, self.out);
+            let tables = (&recording.shaders[..], &recording.color_filters[..]);
+            write_op(&ops[index], alpha, tables, self.resources, self.out);
         }
         for rest in &boundaries[boundary..] {
             child = self.write_reference(rest.key, child);
@@ -1346,15 +1420,18 @@ impl<'a> Serializer<'a> {
     }
 }
 
-/// Writes `op`, its paint faded by `alpha` (the folded layers around it), its shader from
-/// `shaders`.
+/// Writes `op`, its paint faded by `alpha` (the folded layers around it), its shader and color
+/// filter from `tables`.
 fn write_op(
     op: &DrawOp,
     alpha: f32,
-    shaders: &[Shader],
+    tables: Tables<'_>,
     resources: &mut Resources,
     out: &mut Writer,
 ) {
+    let filter = |index: &Option<compose_ui::platform::ColorFilterIndex>| {
+        index.and_then(|index| tables.1.get(index.0 as usize))
+    };
     match op {
         DrawOp::Save => out.u8(tag::SAVE),
         DrawOp::Restore => out.u8(tag::RESTORE),
@@ -1374,19 +1451,19 @@ fn write_op(
         DrawOp::DrawRect(rect, paint) => {
             out.u8(tag::DRAW_RECT);
             out.rect(rect);
-            out.paint(paint, shaders, alpha);
+            out.paint(paint, tables, alpha);
         }
         DrawOp::DrawRoundRect(rect, radii, paint) => {
             out.u8(tag::DRAW_ROUND_RECT);
             out.rect(rect);
             out.radii(radii);
-            out.paint(paint, shaders, alpha);
+            out.paint(paint, tables, alpha);
         }
         DrawOp::DrawLine(from, to, paint) => {
             out.u8(tag::DRAW_LINE);
             out.offset(*from);
             out.offset(*to);
-            out.paint(paint, shaders, alpha);
+            out.paint(paint, tables, alpha);
         }
         DrawOp::DrawParagraph(handle, offset) => {
             out.u8(tag::DRAW_PARAGRAPH);
@@ -1398,6 +1475,13 @@ fn write_op(
             out.rect(bounds);
             out.f32(*alpha);
         }
+        DrawOp::SaveLayer { bounds, alpha, color_filter, blend_mode } => {
+            out.u8(tag::SAVE_LAYER);
+            out.rect(bounds);
+            out.f32(*alpha);
+            out.u8(*blend_mode as u8);
+            out.color_filter(filter(color_filter));
+        }
         DrawOp::Transform { pivot, scale, rotation, translation } => {
             out.u8(tag::TRANSFORM);
             out.offset(*pivot);
@@ -1406,15 +1490,14 @@ fn write_op(
             out.f32(*rotation);
             out.offset(*translation);
         }
-        DrawOp::DrawImage { image, src, dst, alpha, tint } => {
+        DrawOp::DrawImage { image, src, dst, alpha, color_filter } => {
             let id = resources.image_id(image);
             out.u8(tag::DRAW_IMAGE);
             out.u32(id);
             out.rect(src);
             out.rect(dst);
             out.f32(*alpha);
-            // 0, a transparent tint, is none: `draw_image_tinted` leaves those out.
-            out.color(tint.unwrap_or(Color::TRANSPARENT));
+            out.color_filter(filter(color_filter));
         }
         DrawOp::DrawShadow { outline, elevation, light, light_radius, ambient, spot, .. } => {
             out.u8(tag::DRAW_SHADOW);
@@ -1433,7 +1516,7 @@ fn write_op(
             out.f32(*start_angle);
             out.f32(*sweep_angle);
             out.u8(u8::from(*use_center));
-            out.paint(paint, shaders, alpha);
+            out.paint(paint, tables, alpha);
         }
         DrawOp::DrawPath { path, offset, scale, paint } => {
             let id = resources.path_id(path);
@@ -1442,7 +1525,7 @@ fn write_op(
             out.offset(*offset);
             out.f32(scale.0);
             out.f32(scale.1);
-            out.paint(paint, shaders, alpha);
+            out.paint(paint, tables, alpha);
         }
         DrawOp::ClipPath { path, offset } => {
             let id = resources.path_id(path);
@@ -1497,6 +1580,122 @@ mod tests {
         assert_eq!(out.bytes[0], tag::DRAW_RECT);
         assert_eq!(f32::from_le_bytes(out.bytes[13..17].try_into().unwrap()), 4.0);
         assert_eq!(read_u32(&out.bytes, 17), 0xFF00_0000);
+    }
+
+    /// A blended, filtered paint flags both in its style byte and writes them after its shader;
+    /// a layer with a paint writes its bounds, alpha, mode and filter; the reader's lengths
+    /// (`operand_bytes`) land on the next operation.
+    #[test]
+    fn a_paints_blend_mode_and_filter_follow_its_shader() {
+        let mut list = DisplayList::default();
+        let matrix = list.push_color_filter(ColorFilter::color_matrix(Default::default()));
+        let paint = Paint::stroke(Color::BLACK, 2.0)
+            .with_blend_mode(BlendMode::Multiply)
+            .with_color_filter(matrix);
+        list.push(DrawOp::DrawRect(Rect::new(0.0, 0.0, 1.0, 1.0), paint));
+        let lighting = list.push_color_filter(ColorFilter::lighting(Color::RED, Color::BLUE));
+        list.push(DrawOp::SaveLayer {
+            bounds: Rect::new(0.0, 0.0, 1.0, 1.0),
+            alpha: 0.5,
+            color_filter: Some(lighting),
+            blend_mode: BlendMode::Screen,
+        });
+        list.push(DrawOp::Restore);
+        let (mut resources, mut out) = (Resources::default(), Writer::default());
+        write_display_list(&list, &mut resources, &mut GroupCache::default(), &mut out);
+        let bytes = &out.bytes;
+        assert_eq!(bytes[1 + 16 + 4], 1 | 2 | 4, "stroke, blend mode, filter");
+        let after_shader = 1 + 16 + 4 + 1 + 4 + 1 + 1;
+        assert_eq!(bytes[after_shader], BlendMode::Multiply as u8);
+        assert_eq!(bytes[after_shader + 1], color_filter::COLOR_MATRIX);
+        assert_eq!(f32::from_le_bytes(bytes[after_shader + 2..][..4].try_into().unwrap()), 1.0);
+        let layer = 1 + operand_bytes(bytes, 0);
+        assert_eq!(layer, after_shader + 2 + 80);
+        assert_eq!(bytes[layer], tag::SAVE_LAYER);
+        assert_eq!(bytes[layer + 1 + 20], BlendMode::Screen as u8);
+        assert_eq!(bytes[layer + 1 + 21], color_filter::LIGHTING);
+        assert_eq!(read_u32(bytes, layer + 1 + 22), Color::RED.argb());
+        assert_eq!(bytes[layer + 1 + operand_bytes(bytes, layer)], tag::RESTORE);
+    }
+
+    /// A paint with only a blend mode flags 2 and writes the mode after its shader; one with only
+    /// a filter flags 4 and writes the filter there: each bit says which follows, read back
+    /// apart.
+    #[test]
+    fn a_blend_mode_alone_and_a_filter_alone_have_their_own_flags() {
+        let mut list = DisplayList::default();
+        let rect = Rect::new(0.0, 0.0, 1.0, 1.0);
+        let blended = Paint::fill(Color::RED).with_blend_mode(BlendMode::Xor);
+        list.push(DrawOp::DrawRect(rect, blended));
+        let tint = list.push_color_filter(ColorFilter::tint(Color::BLUE));
+        list.push(DrawOp::DrawRect(rect, Paint::fill(Color::RED).with_color_filter(tint)));
+        list.push(DrawOp::Restore);
+        let (mut resources, mut out) = (Resources::default(), Writer::default());
+        write_display_list(&list, &mut resources, &mut GroupCache::default(), &mut out);
+        let bytes = &out.bytes;
+        let after_shader = 1 + 16 + 4 + 1 + 4 + 1 + 1;
+        assert_eq!(bytes[1 + 16 + 4], 2, "fill, a blend mode");
+        assert_eq!(bytes[after_shader], BlendMode::Xor as u8);
+        let second = 1 + operand_bytes(bytes, 0);
+        assert_eq!(second, after_shader + 1);
+        assert_eq!(bytes[second], tag::DRAW_RECT);
+        assert_eq!(bytes[second + 1 + 16 + 4], 4, "fill, a filter");
+        assert_eq!(bytes[second + after_shader], color_filter::BLEND_MODE);
+        assert_eq!(read_u32(bytes, second + after_shader + 1), Color::BLUE.argb());
+        assert_eq!(bytes[second + after_shader + 5], BlendMode::SrcIn as u8);
+        assert_eq!(bytes[second + 1 + operand_bytes(bytes, second)], tag::RESTORE);
+    }
+
+    // Compose: compose/ui/ui-graphics/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/AndroidBlendModeTest.kt, testBlendModeClearMapsToPorterDuffClear and the other mappings
+    /// `Replayer.kt` reads the tags, filter kinds and blend modes this writes: its constants and
+    /// its table of Android's modes, in Compose's order, are this file's.
+    #[test]
+    fn the_replayer_reads_the_same_constants_and_modes() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../android/compose-rs/src/main/java/rs/compose/android/Replayer.kt"
+        );
+        let kotlin = std::fs::read_to_string(path).expect("the replayer");
+        let constant = |name: &str| -> u8 {
+            let line = kotlin
+                .lines()
+                .find(|line| line.trim().starts_with(&format!("const val {name} = ")))
+                .unwrap_or_else(|| panic!("{name} in Replayer.kt"));
+            line.rsplit(' ').next().unwrap().parse().unwrap()
+        };
+        assert_eq!(constant("SAVE_LAYER"), tag::SAVE_LAYER);
+        assert_eq!(constant("DRAW_IMAGE"), tag::DRAW_IMAGE);
+        assert_eq!(constant("FILTER_NONE"), color_filter::NONE);
+        assert_eq!(constant("FILTER_BLEND_MODE"), color_filter::BLEND_MODE);
+        assert_eq!(constant("FILTER_LIGHTING"), color_filter::LIGHTING);
+        assert_eq!(constant("FILTER_COLOR_MATRIX"), color_filter::COLOR_MATRIX);
+        assert_eq!(constant("BLEND_SRC_OVER"), BlendMode::SrcOver as u8);
+        let table = kotlin.split("BLEND_MODES = arrayOf(").nth(1).expect("the modes").split(')');
+        let android: Vec<String> = table
+            .into_iter()
+            .next()
+            .unwrap()
+            .split(',')
+            .map(|name| name.trim().trim_start_matches("BlendMode.").replace('_', ""))
+            .filter(|name| !name.is_empty())
+            .collect();
+        let compose: Vec<String> = (0..=BlendMode::Luminosity as u8)
+            .map(|index| format!("{:?}", mode_at(index)).to_uppercase())
+            .collect();
+        assert_eq!(android, compose);
+    }
+
+    /// The blend mode whose index is `index`.
+    fn mode_at(index: u8) -> BlendMode {
+        use BlendMode::*;
+        [
+            Clear, Src, Dst, SrcOver, DstOver, SrcIn, DstIn, SrcOut, DstOut, SrcAtop, DstAtop, Xor,
+            Plus, Modulate, Screen, Overlay, Darken, Lighten, ColorDodge, ColorBurn, Hardlight,
+            Softlight, Difference, Exclusion, Multiply, Hue, Saturation, Color, Luminosity,
+        ]
+        .into_iter()
+        .find(|mode| *mode as u8 == index)
+        .unwrap()
     }
 
     /// A layer carries its bounds, as Compose's `Canvas.saveLayer(bounds, paint)`: the replayer
@@ -1788,7 +1987,7 @@ mod tests {
             src: Rect::new(0.0, 0.0, 1.0, 1.0),
             dst: Rect::new(0.0, 0.0, 1.0, 1.0),
             alpha: 1.0,
-            tint: None,
+            color_filter: None,
         });
         let mut out = Writer::default();
         write_display_list(&list, resources, &mut GroupCache::default(), &mut out);

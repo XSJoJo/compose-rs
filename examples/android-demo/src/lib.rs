@@ -12,6 +12,7 @@ compose_android::export_apps! {
     "counter" => HostedCounter,
     "todo" => todo::TodoApp,
     "gallery" => gallery::Gallery,
+    "graphics" => gallery::Graphics,
 }
 
 /// The counter, with what the Kotlin app passes it (the tab it's in, a property) and an event

@@ -10,34 +10,68 @@ pub use compose_ui::{ImeAction, ImeOptions, KeyboardCapitalization, KeyboardType
 /// A field's keyboard, as Compose's `KeyboardOptions`:
 /// `KeyboardOptions { ime_action: ImeAction::Done, ..KeyboardOptions::DEFAULT }`. On-screen
 /// keyboards read them (`UiHost::text_input_options`); desktop keyboards ignore all but the
-/// action.
+/// action. What isn't said (`Unspecified`, `None`) takes another's options, an input
+/// transformation's ([`fill_unspecified_values_with`](Self::fill_unspecified_values_with)), or
+/// Compose's default when the field asks the input method (D1133).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct KeyboardOptions {
     /// What the keyboard capitalizes on its own.
     pub capitalization: KeyboardCapitalization,
-    /// Whether the keyboard may correct words as they're typed (Compose's `autoCorrectEnabled`,
-    /// true when unspecified).
-    pub auto_correct_enabled: bool,
+    /// Whether the keyboard may correct words as they're typed (Compose's `autoCorrectEnabled`;
+    /// `None`: not said, true in the end).
+    pub auto_correct_enabled: Option<bool>,
     pub keyboard_type: KeyboardType,
     pub ime_action: ImeAction,
 }
 
 impl KeyboardOptions {
+    /// Nothing said, as `KeyboardOptions.Default`.
     pub const DEFAULT: KeyboardOptions = KeyboardOptions {
-        capitalization: KeyboardCapitalization::None,
-        auto_correct_enabled: true,
-        keyboard_type: KeyboardType::Text,
-        ime_action: ImeAction::Default,
+        capitalization: KeyboardCapitalization::Unspecified,
+        auto_correct_enabled: None,
+        keyboard_type: KeyboardType::Unspecified,
+        ime_action: ImeAction::Unspecified,
     };
 
-    /// What the field asks of the input method, as Compose's `toImeOptions(singleLine)`.
+    /// What the field asks of the input method, as Compose's `toImeOptions(singleLine)`: what
+    /// isn't said is Compose's default.
     pub fn to_ime_options(&self, single_line: bool) -> ImeOptions {
         ImeOptions {
             single_line,
-            capitalization: self.capitalization,
-            auto_correct: self.auto_correct_enabled,
-            keyboard_type: self.keyboard_type,
-            ime_action: self.ime_action,
+            capitalization: match self.capitalization {
+                KeyboardCapitalization::Unspecified => KeyboardCapitalization::None,
+                capitalization => capitalization,
+            },
+            auto_correct: self.auto_correct_enabled.unwrap_or(true),
+            keyboard_type: match self.keyboard_type {
+                KeyboardType::Unspecified => KeyboardType::Text,
+                keyboard_type => keyboard_type,
+            },
+            ime_action: match self.ime_action {
+                ImeAction::Unspecified => ImeAction::Default,
+                ime_action => ime_action,
+            },
+        }
+    }
+
+    /// These options, what they don't say taken from `other`, as Compose's
+    /// `fillUnspecifiedValuesWith`.
+    pub fn fill_unspecified_values_with(&self, other: Option<&KeyboardOptions>) -> KeyboardOptions {
+        let Some(other) = other else { return *self };
+        KeyboardOptions {
+            capitalization: match self.capitalization {
+                KeyboardCapitalization::Unspecified => other.capitalization,
+                capitalization => capitalization,
+            },
+            auto_correct_enabled: self.auto_correct_enabled.or(other.auto_correct_enabled),
+            keyboard_type: match self.keyboard_type {
+                KeyboardType::Unspecified => other.keyboard_type,
+                keyboard_type => keyboard_type,
+            },
+            ime_action: match self.ime_action {
+                ImeAction::Unspecified => other.ime_action,
+                ime_action => ime_action,
+            },
         }
     }
 }

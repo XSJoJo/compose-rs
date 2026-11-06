@@ -374,9 +374,9 @@ fn the_core_icons_parse_within_their_viewport() {
     let all = icons::filled::all();
     assert_eq!(all.len(), 49);
     for icon in all {
-        assert_eq!((icon.viewport_width, icon.viewport_height), (24.0, 24.0));
-        let commands = icon.paths[0].0.commands();
-        assert!(commands.len() > 2, "{}", icon.name);
+        assert_eq!((icon.viewport_width(), icon.viewport_height()), (24.0, 24.0));
+        let commands = icon.solid_fills().expect("a filled icon")[0].0.commands();
+        assert!(commands.len() > 2, "{}", icon.name());
         for command in commands {
             let points: &[Offset] = match command {
                 compose_ui::PathCommand::MoveTo(point) | compose_ui::PathCommand::LineTo(point) => {
@@ -390,7 +390,7 @@ fn the_core_icons_parse_within_their_viewport() {
                 assert!(
                     (-0.5..=24.5).contains(&point.x) && (-0.5..=24.5).contains(&point.y),
                     "{} {point:?}",
-                    icon.name
+                    icon.name()
                 );
             }
         }

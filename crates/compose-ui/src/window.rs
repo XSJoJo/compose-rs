@@ -308,6 +308,45 @@ impl MeasurePolicy for HostLayout {
         scope.layout(0, 0)
     }
 
+    // No size whatever it's asked, as Compose's popup's layout (a node of no children, its
+    // content in a window of its own): the defaults would measure the overlays at the window's
+    // size, unbounded in an intrinsic measurement.
+    fn min_intrinsic_width(
+        &self,
+        _: &mut crate::layout::IntrinsicMeasureScope<'_>,
+        _: &[crate::layout::IntrinsicMeasurable],
+        _: i32,
+    ) -> i32 {
+        0
+    }
+
+    fn min_intrinsic_height(
+        &self,
+        _: &mut crate::layout::IntrinsicMeasureScope<'_>,
+        _: &[crate::layout::IntrinsicMeasurable],
+        _: i32,
+    ) -> i32 {
+        0
+    }
+
+    fn max_intrinsic_width(
+        &self,
+        _: &mut crate::layout::IntrinsicMeasureScope<'_>,
+        _: &[crate::layout::IntrinsicMeasurable],
+        _: i32,
+    ) -> i32 {
+        0
+    }
+
+    fn max_intrinsic_height(
+        &self,
+        _: &mut crate::layout::IntrinsicMeasureScope<'_>,
+        _: &[crate::layout::IntrinsicMeasurable],
+        _: i32,
+    ) -> i32 {
+        0
+    }
+
     fn debug_name(&self) -> &'static str {
         "PopupHost"
     }

@@ -12,9 +12,9 @@
 use compose::animation::*;
 use compose::foundation::layout::*;
 use compose::foundation::{
-    LazyColumn, LazyListScope, LazyListState, PasswordVisualTransformation, ScrollModifiers,
-    TooltipArea, VerticalScrollbar, is_system_in_dark_theme, remember_lazy_list_scrollbar_adapter,
-    remember_lazy_list_state, remember_scroll_state,
+    LazyColumn, LazyListScope, LazyListState, PainterImage, PasswordVisualTransformation,
+    ScrollModifiers, TooltipArea, VectorImage, VerticalScrollbar, is_system_in_dark_theme,
+    remember_lazy_list_scrollbar_adapter, remember_lazy_list_state, remember_scroll_state,
 };
 use compose::material3::*;
 use compose::navigation::*;
@@ -802,4 +802,120 @@ fn FieldDialog(dialog: MutableState<bool>) {
             });
         },
     );
+}
+
+/// Color filters, blend modes, painters and vectors, a row each, to check a platform draws them
+/// as the desktop does (D1900, D1901, D1902). A tap on the last icon changes the tint it reads
+/// while drawing.
+#[composable]
+pub fn Graphics() {
+    // A 2 × 2 bitmap: red, green, blue, white.
+    let bitmap = remember(|| {
+        let pixels = [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255];
+        ImageBitmap::from_rgba_premultiplied(2, 2, pixels.to_vec())
+    });
+    let mut gray = ColorMatrix::new();
+    gray.set_to_saturation(0.0);
+    let filters = [
+        None,
+        Some(ColorFilter::tint(Color::MAGENTA)),
+        Some(ColorFilter::lighting(Color::from_rgb(255, 128, 255), Color::from_rgb(0, 64, 0))),
+        Some(ColorFilter::color_matrix(gray)),
+    ];
+    let vector = remember(rotated_square);
+    let blue = remember(|| mutable_state_of(false));
+    Column!(
+        modifier = Modifier.padding(16.dp()),
+        vertical_arrangement = Arrangement::spaced_by(12.dp()),
+        {
+            Text!("Color filters on a bitmap: none, tint, lighting, gray");
+            Row!(horizontal_arrangement = Arrangement::spaced_by(8.dp()), {
+                for filter in filters {
+                    PainterImage!(
+                        Painter::new(BitmapPainter::new(bitmap.clone())),
+                        None::<&str>,
+                        modifier = Modifier.size(64.dp()),
+                        content_scale = ContentScale::FillBounds,
+                        color_filter = filter
+                    );
+                }
+            });
+            Text!("Blend modes over yellow: multiply, screen, difference, clear");
+            Row!(horizontal_arrangement = Arrangement::spaced_by(8.dp()), {
+                for mode in [
+                    BlendMode::Multiply,
+                    BlendMode::Screen,
+                    BlendMode::Difference,
+                    BlendMode::Clear,
+                ] {
+                    Canvas(
+                        Modifier.size(64.dp()).graphics_layer_with(GraphicsLayerScope {
+                            compositing_strategy: CompositingStrategy::Offscreen,
+                            ..GraphicsLayerScope::default()
+                        }),
+                        move |scope| {
+                            let bounds = scope.bounds();
+                            scope.draw_rect(bounds, Paint::fill(Color::YELLOW));
+                            let inner = Rect::new(16.0, 16.0, bounds.right, bounds.bottom);
+                            let paint = Paint::fill(Color::from_rgb(0, 128, 255));
+                            scope.draw_rect(inner, paint.with_blend_mode(mode));
+                        },
+                    );
+                }
+            });
+            Text!("Tinted icons: a vector, a painter, a tint read while drawing");
+            Row!(horizontal_arrangement = Arrangement::spaced_by(8.dp()), {
+                Icon!(icons::filled::star(), Some("Star"), tint = Color::from_rgb(0, 128, 0));
+                PainterIcon!(
+                    remember_vector_painter(&icons::filled::favorite()),
+                    Some("Favorite"),
+                    tint = Color::RED
+                );
+                let producer = remember(move || {
+                    ColorProducer(std::rc::Rc::new(move || {
+                        if blue.get() { Color::BLUE } else { Color::MAGENTA }
+                    }))
+                });
+                PainterIconWithTintProducer!(
+                    remember_vector_painter(&icons::filled::star()),
+                    Some(producer),
+                    Some("A star tinted when drawn"),
+                    modifier = Modifier.clickable(move || blue.set(!blue.get()))
+                );
+            });
+            Text!("A vector: a group rotated, a gradient fill, a stroke");
+            VectorImage!(
+                vector.clone(),
+                Some("A rotated square"),
+                modifier = Modifier.size(96.dp())
+            );
+        }
+    );
+}
+
+/// A gray square with a smaller one in it, turned an eighth, filled with a gradient and stroked.
+fn rotated_square() -> ImageVector {
+    let gray = VectorPath { fill: Some(Brush::solid(Color::LIGHT_GRAY)), ..Default::default() };
+    let turned = VectorGroup { rotation: 45.0, pivot_x: 12.0, pivot_y: 12.0, ..Default::default() };
+    let inner = VectorPath {
+        fill: Some(Brush::horizontal_gradient([Color::BLUE, Color::CYAN])),
+        stroke: Some(Brush::solid(Color::BLACK)),
+        stroke_line_width: 1.0,
+        ..Default::default()
+    };
+    ImageVector::builder(64.dp(), 64.dp(), 24.0, 24.0)
+        .path(gray, |path| {
+            path.move_to(2.0, 2.0)
+                .line_to(22.0, 2.0)
+                .line_to(22.0, 22.0)
+                .line_to(2.0, 22.0)
+                .close();
+        })
+        .group(turned, |group| {
+            group.path(inner, |path| {
+                path.move_to(7.0, 7.0).line_to(17.0, 7.0).line_to(17.0, 17.0);
+                path.line_to(7.0, 17.0).close();
+            });
+        })
+        .build()
 }

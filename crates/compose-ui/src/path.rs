@@ -313,8 +313,13 @@ impl PartialEq for PathData {
 }
 
 impl PathData {
-    fn empty() -> PathData {
+    pub(crate) fn empty() -> PathData {
         PathData::with_id(NEXT_IDENTITY.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Contents being built (not shared yet) take `fill_type`.
+    pub(crate) fn set_fill_type(&mut self, fill_type: PathFillType) {
+        self.fill_type = fill_type;
     }
 
     fn with_id(id: u64) -> PathData {
@@ -598,7 +603,7 @@ impl PathData {
         turned.abs() < 1.5 * std::f32::consts::TAU
     }
 
-    fn push(&mut self, command: PathCommand) {
+    pub(crate) fn push(&mut self, command: PathCommand) {
         let draws = !matches!(command, PathCommand::MoveTo(_) | PathCommand::Close);
         let first = !self.has_current && self.steps.is_empty();
         if draws && (first || matches!(self.commands.last(), Some(PathCommand::Close))) {
@@ -1591,7 +1596,7 @@ impl Parser<'_> {
 /// An SVG elliptical arc from `from` to `to`, as cubic Béziers (each covering at most a quarter
 /// turn), from the SVG spec's endpoint-to-center conversion.
 #[allow(clippy::too_many_arguments)]
-fn svg_arc(
+pub(crate) fn svg_arc(
     path: &mut PathData,
     from: Offset,
     to: Offset,
@@ -1674,40 +1679,6 @@ fn svg_arc(
             end,
         ));
         theta = next;
-    }
-}
-
-/// A vector image, as Compose's `ImageVector`: paths in a viewport, drawn at a default size.
-#[derive(Clone, PartialEq, Debug)]
-pub struct ImageVector {
-    pub name: &'static str,
-    pub default_width: crate::unit::Dp,
-    pub default_height: crate::unit::Dp,
-    pub viewport_width: f32,
-    pub viewport_height: f32,
-    /// Each path's contents with its fill (`None`: black, as Material's icons; tinted by
-    /// `Icon`). Shared: a clone copies nothing.
-    pub paths: Arc<[(Arc<PathData>, Option<crate::graphics::Color>)]>,
-}
-
-impl ImageVector {
-    /// A 24 dp icon of one path in a 24 × 24 viewport, from SVG path data, as Material's icons.
-    pub fn icon(name: &'static str, data: &str) -> ImageVector {
-        let path = parse_svg(data).unwrap_or_else(|error| panic!("icon {name}: {error}"));
-        ImageVector {
-            name,
-            default_width: crate::unit::Dp(24.0),
-            default_height: crate::unit::Dp(24.0),
-            viewport_width: 24.0,
-            viewport_height: 24.0,
-            paths: Arc::from(vec![(Arc::new(path), None)]),
-        }
-    }
-}
-
-impl compose_runtime::ComposeArg for ImageVector {
-    fn same(&self, other: &Self) -> bool {
-        self.name == other.name && Arc::ptr_eq(&self.paths, &other.paths)
     }
 }
 

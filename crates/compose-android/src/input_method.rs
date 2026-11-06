@@ -534,8 +534,9 @@ impl InputConnection<'_> {
                 for key in std::iter::repeat_n(Key::Backspace, (*before).max(0) as usize)
                     .chain(std::iter::repeat_n(Key::Delete, (*after).max(0) as usize))
                 {
-                    ui.send_key(KeyEvent::down(key));
-                    ui.send_key(KeyEvent::up(key));
+                    // The keyboard's, as its own keys are (`FLAG_SOFT_KEYBOARD`).
+                    ui.send_key(KeyEvent { from_soft_keyboard: true, ..KeyEvent::down(key) });
+                    ui.send_key(KeyEvent { from_soft_keyboard: true, ..KeyEvent::up(key) });
                 }
             }
             Edit::SetComposingRegion(..) | Edit::SetSelection(..) => {}

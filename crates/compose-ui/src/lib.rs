@@ -20,6 +20,7 @@ mod border;
 mod brush;
 mod clickable;
 mod clipboard;
+mod color_filter;
 mod configuration;
 mod constraints;
 mod content_scale;
@@ -65,6 +66,7 @@ mod nodes;
 mod observer_node;
 mod optimizations;
 mod overlay;
+mod painter;
 mod paragraph;
 mod paragraph_style;
 mod parent_data;
@@ -86,6 +88,7 @@ mod semantics_node;
 mod semantics_properties;
 mod semantics_sort;
 mod span_style;
+pub mod subcompose;
 mod text;
 mod text_attributes;
 mod text_editing;
@@ -101,6 +104,7 @@ mod tree;
 #[allow(unsafe_code)]
 mod tree_access;
 mod unit;
+mod vector;
 mod velocity_tracker;
 mod view_configuration;
 mod window;
@@ -113,6 +117,7 @@ mod word_boundary;
 pub mod platform {
     pub use crate::brush::{Gradient, Shader, ShaderIndex};
     pub use crate::clipboard::MemoryClipboard;
+    pub use crate::color_filter::ColorFilterIndex;
     pub use crate::configuration::{
         Insets, InsetsType, InsetsVisibility, LOCAL_WINDOW_INSETS_SOURCE, PlatformWindowInsets,
         WindowInsetsSource,
@@ -190,6 +195,7 @@ pub use border::{BorderRenderer, BorderStroke};
 pub use brush::{Brush, ColorStops, TileMode};
 pub use clickable::TAP_INDICATION_DELAY;
 pub use clipboard::{ClipboardManager, LOCAL_CLIPBOARD_MANAGER};
+pub use color_filter::{BlendMode, ColorFilter, ColorMatrix};
 pub use configuration::{
     Configuration, HostEvents, HostProps, LOCAL_CONFIGURATION, LOCAL_HOST_EVENTS, LOCAL_HOST_PROPS,
     PropValue, ScreenOrientation,
@@ -274,12 +280,13 @@ pub use nested_scroll::{
 pub use node_context::{NodeContext, NodeHandle};
 pub use observer_node::ObserverModifierNode;
 pub use overlay::{PopupPositionProvider, WindowPosition};
+pub use painter::{BitmapPainter, ColorPainter, CustomPainter, Painter};
 pub use paragraph::{Paragraph, TextLayoutInput};
 pub use paragraph_style::ParagraphStyle;
 pub use parent_data::{LayoutIdParentData, ParentDataModifierNode};
 pub use path::{
-    CornerRadius, ImageVector, Matrix, Path, PathCommand, PathData, PathDirection, PathError,
-    PathFillType, PathOperation, PathStep, RoundRect,
+    CornerRadius, Matrix, Path, PathCommand, PathData, PathDirection, PathError, PathFillType,
+    PathOperation, PathStep, RoundRect,
 };
 pub use pinnable::{FocusPin, LOCAL_PINNABLE_CONTAINER, PinnableContainer, PinnedHandle};
 pub use placeholder::{Placeholder, PlaceholderVerticalAlign, Placeholders};
@@ -348,6 +355,10 @@ pub use tree_access::TreeRef;
 pub use unit::{
     Density, Dp, DpOffset, DpRect, DpSize, IntOffset, IntSize, Offset, Rect, Size, TextUnit,
     TextUnitType, UnitExt,
+};
+pub use vector::{
+    ImageVector, ImageVectorBuilder, PathBuilder, PathNode, PathParser, VectorGroup, VectorNode,
+    VectorPainter, VectorPath, add_path_nodes, nodes_to_path, path_data, remember_vector_painter,
 };
 pub use velocity_tracker::{
     Velocity, VelocityTracker, VelocityTracker1D, VelocityTrackingStrategy, poly_fit_least_squares,

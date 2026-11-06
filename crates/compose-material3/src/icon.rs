@@ -25,7 +25,7 @@ pub fn Icon(
     #[default(crate::Modifier)] modifier: Modifier,
     #[default(crate::LOCAL_CONTENT_COLOR.current())] tint: Color,
 ) {
-    let (width, height) = (image_vector.default_width, image_vector.default_height);
+    let (width, height) = (image_vector.default_width(), image_vector.default_height());
     let modifier = match content_description {
         Some(description) => modifier.semantics(move |config| {
             config.set_content_description(description.clone());
@@ -60,6 +60,75 @@ pub fn BitmapIcon(
     );
 }
 
+/// What `painter` paints as an icon, as Compose's `Icon(painter, …)` (named apart, D181): its
+/// intrinsic size, or 24 dp without one, fitted (`ContentScale::Fit`), drawn through
+/// `ColorFilter.tint(tint)` (by default the content color), or in its own colors with
+/// `Color::UNSPECIFIED`.
+#[composable]
+#[allow(non_snake_case)]
+pub fn PainterIcon(
+    painter: compose_ui::Painter,
+    content_description: Option<impl Into<compose_ui::SharedString>>,
+    #[default(crate::Modifier)] modifier: Modifier,
+    #[default(crate::LOCAL_CONTENT_COLOR.current())] tint: Color,
+) {
+    let color_filter = tint.is_specified().then(|| compose_ui::ColorFilter::tint(tint));
+    let modifier = default_size_for(modifier, &painter).paint_with(
+        painter,
+        true,
+        Alignment::CENTER,
+        compose_ui::ContentScale::Fit,
+        1.0,
+        color_filter,
+    );
+    let modifier = match content_description {
+        Some(description) => modifier.semantics(move |config| {
+            config.set_content_description(description.clone());
+            config.set_role(Role::Image);
+        }),
+        None => modifier,
+    };
+    Box!(modifier = modifier);
+}
+
+/// What `painter` paints as an icon, tinted by the color `tint` gives when it's drawn, as
+/// Compose's `Icon(painter, tint: ColorProducer?, …)`: a state `tint` reads draws the icon
+/// again, without composing it again. `None` draws it in its own colors.
+#[composable]
+#[allow(non_snake_case)]
+pub fn PainterIconWithTintProducer(
+    painter: compose_ui::Painter,
+    tint: Option<compose_ui::ColorProducer>,
+    content_description: Option<impl Into<compose_ui::SharedString>>,
+    #[default(crate::Modifier)] modifier: Modifier,
+) {
+    // Drawn in a layer filtered by the tint, as Compose's (a graphics layer's `colorFilter`).
+    let modifier = modifier.draw_with_content(move |scope| {
+        let Some(tint) = &tint else {
+            scope.draw_content();
+            return;
+        };
+        let filter = compose_ui::ColorFilter::tint((tint.0)());
+        let bounds = scope.bounds();
+        scope.save_layer(bounds, 1.0, Some(&filter), compose_ui::BlendMode::SrcOver);
+        scope.draw_content();
+        scope.restore();
+    });
+    PainterIcon(painter, content_description, modifier, Color::UNSPECIFIED);
+}
+
+/// `modifier` sized to an icon's default 24 dp when `painter` has no intrinsic size (or an
+/// infinite one), as Compose's `defaultSizeFor`.
+fn default_size_for(modifier: Modifier, painter: &compose_ui::Painter) -> Modifier {
+    let size = painter.intrinsic_size();
+    let unspecified = size.width.is_nan() && size.height.is_nan();
+    if unspecified || (size.width.is_infinite() && size.height.is_infinite()) {
+        modifier.size(24.dp())
+    } else {
+        modifier
+    }
+}
+
 struct IconElement {
     image_vector: ImageVector,
     tint: Color,
@@ -68,14 +137,19 @@ struct IconElement {
 struct IconNode {
     image_vector: ImageVector,
     tint: Color,
+    /// What draws a vector that isn't only solid fills, made the first time it's drawn.
+    painter: Option<compose_ui::Painter>,
 }
 
 impl ModifierNodeElement for IconElement {
     type Node = IconNode;
     fn create(&self) -> IconNode {
-        IconNode { image_vector: self.image_vector.clone(), tint: self.tint }
+        IconNode { image_vector: self.image_vector.clone(), tint: self.tint, painter: None }
     }
     fn update(&self, node: &mut IconNode) {
+        if !node.image_vector.ptr_eq(&self.image_vector) {
+            node.painter = None;
+        }
         node.image_vector = self.image_vector.clone();
         node.tint = self.tint;
     }
@@ -97,19 +171,40 @@ impl ModifierNode for IconNode {
 impl DrawModifierNode for IconNode {
     /// The paths, their viewport fitted in the node (its aspect ratio kept) and centered on
     /// whole pixels, as Compose's `Icon` (`ContentScale.Fit`, `Alignment.Center`'s rounding):
-    /// Android draws a small path from a mask, unfiltered there (D190).
+    /// Android draws a small path from a mask, unfiltered there (D190). A vector that isn't
+    /// only solid fills (strokes, gradients, groups, a mirror or a tint of its own) is drawn by
+    /// its `VectorPainter`, as Compose's `Icon(rememberVectorPainter(imageVector))`.
     fn draw(&mut self, scope: &mut DrawScope<'_>) {
         let size = scope.size();
         let vector = &self.image_vector;
-        let scale = (size.width / vector.viewport_width).min(size.height / vector.viewport_height);
+        let (viewport_width, viewport_height) = (vector.viewport_width(), vector.viewport_height());
+        let scale = (size.width / viewport_width).min(size.height / viewport_height);
         let offset = Offset::new(
-            centered(size.width, vector.viewport_width * scale),
-            centered(size.height, vector.viewport_height * scale),
+            centered(size.width, viewport_width * scale),
+            centered(size.height, viewport_height * scale),
         );
-        for (path, fill) in vector.paths.iter() {
+        let mirrored =
+            vector.auto_mirror() && scope.layout_direction() == compose_ui::LayoutDirection::Rtl;
+        let own_tint = vector.tint_color().is_specified() && !self.tint.is_specified();
+        let fills = vector.solid_fills().filter(|_| !mirrored && !own_tint);
+        let Some(fills) = fills else {
+            let painter = self.painter.get_or_insert_with(|| {
+                compose_ui::Painter::new(compose_ui::VectorPainter::new(
+                    vector.clone(),
+                    scope.density(),
+                ))
+            });
+            let filter = self.tint.is_specified().then(|| compose_ui::ColorFilter::tint(self.tint));
+            let drawn = compose_ui::Size::new(viewport_width * scale, viewport_height * scale);
+            scope.translate(offset.x, offset.y, |scope| {
+                painter.draw(scope, drawn, 1.0, filter.as_ref());
+            });
+            return;
+        };
+        for (path, own) in fills {
             // Tinted as `SrcIn`: the tint, as opaque as the path; untinted, the path's own
-            // color (black if it has none, as Material's icons).
-            let own = fill.unwrap_or(Color::BLACK);
+            // color.
+            let own = *own;
             let color = if self.tint.is_specified() {
                 self.tint
                     .with_alpha(self.tint.alpha() as f32 / 255.0 * (own.alpha() as f32 / 255.0))

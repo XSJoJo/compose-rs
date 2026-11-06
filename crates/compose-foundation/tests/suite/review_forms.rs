@@ -307,27 +307,43 @@ fn a_lazy_item_reads_the_focus_manager_and_keyboard_controller() {
 
 /// A panicking background closure re-raises in the awaiting task: out of the host's frame (a
 /// crash, as an uncaught exception in Compose's `LaunchedEffect`). Caught, the UI goes on.
+///
+/// The closure waits for the test to release it: run at once, it could finish while
+/// `compose_test` still waits for idle, whose run would then raise the panic outside the
+/// test's catch (a warm pool thread on a busy machine made that a flake).
 #[test]
 fn a_background_panic_surfaces_from_the_frame_and_the_ui_goes_on() {
     let text = mutable_state_of(String::from("a"));
     let handle = text.handle();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let released = Rc::new(RefCell::new(Some(released)));
     let mut ui = compose_test(move || {
+        let released = released.clone();
         compose_runtime::LaunchedEffect((), async move {
-            compose_runtime::spawn_background(|| -> u32 { panic!("work failed") }).await;
+            let released = released.borrow_mut().take().expect("the effect launches once");
+            compose_runtime::spawn_background(move || -> u32 {
+                let _ = released.recv();
+                panic!("work failed")
+            })
+            .await;
         });
         BasicText!(handle.get());
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let mut surfaced = false;
-    while std::time::Instant::now() < deadline {
+    // The task awaits the held work: the UI is idle, nothing raised.
+    ui.wait_for_idle();
+    ui.on_node_with_text("a").assert_exists();
+    release.send(()).unwrap();
+    // The work's thread is real: wait (in real time) for its panic to reach the task.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let panic = loop {
         let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ui.wait_for_idle()));
-        if step.is_err() {
-            surfaced = true;
-            break;
+        if let Err(panic) = step {
+            break panic;
         }
+        assert!(std::time::Instant::now() < deadline, "the work's panic never surfaced");
         std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    assert!(surfaced);
+    };
+    assert_eq!(panic.downcast_ref::<&str>(), Some(&"work failed"));
     text.set(String::from("b"));
     ui.wait_for_idle();
     ui.on_node_with_text("b").assert_exists();
