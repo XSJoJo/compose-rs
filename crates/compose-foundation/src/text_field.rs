@@ -14,8 +14,9 @@ use compose_runtime::snapshots::Snapshot as RuntimeSnapshot;
 use compose_runtime::{Callback, ComposeArg, composable};
 
 use crate::output_transformation::{
-    IndexTransformationType, OffsetMappingCalculator, SelectionWedgeAffinity, WedgeAffinity,
-    index_transformation_type, map_to_transformed, next_cursor_position, transformed_text,
+    IndexTransformationType, OffsetMappingCalculator, SelectionWedgeAffinity, ShownToInputMethod,
+    WedgeAffinity, index_transformation_type, map_from_transformed, map_to_transformed,
+    next_cursor_position, transformed_text,
 };
 use crate::text_field_buffer::TextFieldCharSequence;
 use crate::text_undo::TextFieldEditUndoBehavior;
@@ -143,9 +144,10 @@ pub fn inner_text_field_only(inner_text_field: Callback) {
 ///
 /// `output_transformation` changes what's shown of the state, not the state: the cursor never
 /// goes inside what it inserted or replaced, and a single line shows a new line as a space
-/// (D1134).
+/// (D1134); the input method reads what's shown (D1135). `on_text_layout` hears each new layout of
+/// what's shown (D1136).
 ///
-/// Not yet Compose's (docs/parity/design/text-field-state.md): `on_text_layout`, `scroll_state`.
+/// Not yet Compose's (docs/parity/design/text-field-state.md): `scroll_state`.
 #[composable]
 pub fn BasicTextFieldOfState(
     state: TextFieldState,
@@ -161,6 +163,7 @@ pub fn BasicTextFieldOfState(
     #[default(crate::Brush::solid(crate::Color::BLACK))] cursor_brush: compose_ui::Brush,
     #[default(None)] output_transformation: Option<OutputTransformation>,
     #[default(crate::inner_text_field_only)] decorator: impl Fn(Callback) + 'static,
+    #[default(None)] on_text_layout: Option<impl Fn(compose_ui::TextLayoutResult) + 'static>,
 ) {
     line_limits.validate();
     // What the field's options don't say, its transformation's say, as Compose's
@@ -181,6 +184,7 @@ pub fn BasicTextFieldOfState(
         interaction_source,
         input_transformation,
         output_transformation,
+        on_text_layout: on_text_layout.map(compose_runtime::callback),
         // What its default action uses, read where it's composed, as Compose's node's
         // `currentValueOf`: only for a handler, which calls it outside the event.
         default_action: on_keyboard_action.as_ref().map(|_| {
@@ -223,6 +227,7 @@ pub(crate) struct StateTextFieldElement {
     pub interaction_source: Option<compose_ui::MutableInteractionSource>,
     pub input_transformation: Option<InputTransformation>,
     pub output_transformation: Option<OutputTransformation>,
+    pub on_text_layout: Option<Callback<dyn Fn(compose_ui::TextLayoutResult)>>,
     pub on_keyboard_action: Option<KeyboardActionHandler>,
     pub default_action: Option<DefaultActionTargets>,
 }
@@ -280,6 +285,7 @@ impl ModifierNodeElement for StateTextFieldElement {
         link.on_keyboard_action = self.on_keyboard_action.clone();
         link.default_action = self.default_action.clone();
         link.shown_transformation = self.shown_transformation();
+        link.on_text_layout = self.on_text_layout.clone();
         node.state = Some(Box::new(link));
         // What the state holds, read without observing it: composition isn't to recompose on it.
         RuntimeSnapshot::without_read_observation(|| node.adopt_state());
@@ -301,10 +307,14 @@ impl ModifierNodeElement for StateTextFieldElement {
         link.input_transformation = self.input_transformation.clone();
         link.on_keyboard_action = self.on_keyboard_action.clone();
         link.default_action = self.default_action.clone();
+        link.on_text_layout = self.on_text_layout.clone();
         let shown_transformation = self.shown_transformation();
         if link.shown_transformation != shown_transformation {
             link.shown_transformation = shown_transformation;
             node.invalidate_paragraph();
+            // The input method reads what's shown: it starts over with the new text, as
+            // Compose's session restarts for a new output transformation (D1135).
+            node.restart_input = true;
         }
         if node.style != self.style || node.single_line != single_line {
             if node.style != self.style {
@@ -349,6 +359,7 @@ impl ModifierNodeElement for StateTextFieldElement {
             && other.interaction_source == self.interaction_source
             && other.input_transformation == self.input_transformation
             && other.output_transformation == self.output_transformation
+            && same_layout_callback(&other.on_text_layout, &self.on_text_layout)
             && match (&other.on_keyboard_action, &self.on_keyboard_action) {
                 (Some(a), Some(b)) => a.same(b),
                 (None, None) => true,
@@ -382,6 +393,18 @@ enum ShownMapping {
     Output(Rc<OffsetMappingCalculator>),
 }
 
+/// The same text layout callback, or none in both.
+fn same_layout_callback(
+    a: &Option<Callback<dyn Fn(compose_ui::TextLayoutResult)>>,
+    b: &Option<Callback<dyn Fn(compose_ui::TextLayoutResult)>>,
+) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a.same(b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 /// How a key moves the cursor over what an output transformation shows.
 #[derive(Clone, Copy)]
 enum Motion {
@@ -389,6 +412,19 @@ enum Motion {
     Word,
     LineEdge,
     TextEdge,
+}
+
+impl Motion {
+    /// A key's motion with the line or word modifier held, else by a cluster.
+    fn of(by_line: bool, by_word: bool) -> Motion {
+        if by_line {
+            Motion::LineEdge
+        } else if by_word {
+            Motion::Word
+        } else {
+            Motion::Cluster
+        }
+    }
 }
 
 /// What made an edit of a state-based field, for its state: whether the input method restarts
@@ -426,6 +462,12 @@ pub(crate) struct StateLink {
     /// The commands being applied are the input method's: what they replace is kept as what they
     /// changed, as Compose's `imeReplace` (D1132).
     input_method_edit: bool,
+    /// What the input method was shown, for the commands being applied (D1135).
+    input_method_shown: Option<Rc<dyn compose_ui::ShownText>>,
+    /// Hears each new layout (D1136).
+    on_text_layout: Option<Callback<dyn Fn(compose_ui::TextLayoutResult)>>,
+    /// The paragraph it last heard of.
+    heard_layout: Option<ParagraphHandle>,
     /// The edit being made is one of its own in the state's history (a cut, a paste, a selection
     /// deleted), as Compose's `NeverMerge`.
     never_merge: bool,
@@ -459,6 +501,9 @@ impl StateLink {
             command_edits: None,
             typed_by: None,
             input_method_edit: false,
+            input_method_shown: None,
+            on_text_layout: None,
+            heard_layout: None,
             never_merge: false,
             restart,
             listener,
@@ -469,6 +514,21 @@ impl StateLink {
             shown_transformation: None,
             wedge_affinity: SelectionWedgeAffinity::default(),
         }
+    }
+
+    /// `value` as the input method reads it: through the output transformation, its selection
+    /// and composition mapped (by the wedge affinity), as Compose's `visualText` (D1135).
+    fn shown_to_input_method(&self, value: &TextFieldCharSequence) -> TextFieldValue {
+        if let Some(transformation) = &self.shown_transformation
+            && let Some((shown, mapping)) = transformed_text(value, transformation)
+        {
+            let affinity = Some(self.wedge_affinity);
+            let selection = map_to_transformed(value.selection, &mapping, affinity);
+            let composition =
+                value.composition.map(|range| map_to_transformed(range, &mapping, affinity));
+            return TextFieldValue::new(shown, selection, composition);
+        }
+        TextFieldValue::new(&*value.text, value.selection, value.composition)
     }
 
     /// Listens to `state` for its rule of restarting the input method, as the input session's
@@ -814,6 +874,56 @@ pub(crate) struct TextFieldNode {
 }
 
 impl TextFieldNode {
+    /// What the field laid out, as its text layout result: what's shown, at the text's
+    /// constraints.
+    fn layout_result_with(
+        &self,
+        measurer: &mut dyn compose_ui::platform::TextMeasurer,
+        font_family_resolver: compose_ui::FontFamilyResolver,
+        default_locale_list: compose_ui::LocaleList,
+    ) -> Option<compose_ui::TextLayoutResult> {
+        let (paragraph, constraints) = (self.paragraph?, self.constraints?);
+        let text = self.shown_text.clone().unwrap_or_else(|| self.text.clone());
+        let input = compose_ui::TextLayoutInput {
+            text: text.into(),
+            style: self.style.clone(),
+            max_lines: if self.single_line { 1 } else { u32::MAX },
+            soft_wrap: !self.single_line,
+            overflow: compose_ui::TextOverflow::Clip,
+            density: self.density?,
+            layout_direction: self.direction,
+            font_family_resolver,
+            default_locale_list,
+            constraints,
+            placeholders: None,
+        };
+        let size = constraints.constrain(measurer.metrics(paragraph).size);
+        Some(compose_ui::TextLayoutResult::new(input, measurer.paragraph(paragraph), size))
+    }
+
+    /// A state-based field's `on_text_layout` hears each new layout (a paragraph laid out
+    /// again), after the layout pass, as Compose's `onTextLayout` at each new measurement
+    /// (D1136).
+    fn tell_text_layout(&mut self, scope: &mut MeasureScope<'_>, paragraph: ParagraphHandle) {
+        let Some(link) = self.state.as_ref() else { return };
+        let Some(callback) = link.on_text_layout.clone() else { return };
+        if link.heard_layout == Some(paragraph) {
+            return;
+        }
+        let resolver = scope.current_value_of(&compose_ui::LOCAL_FONT_FAMILY_RESOLVER);
+        let locales = scope.current_value_of(&compose_ui::LOCAL_LOCALE_LIST);
+        let result = {
+            let mut measurer = scope.text_measurer();
+            self.layout_result_with(&mut *measurer, resolver, locales)
+        };
+        if let Some(link) = self.state.as_mut() {
+            link.heard_layout = Some(paragraph);
+        }
+        if let Some(result) = result {
+            scope.run_after_layout(move || callback(result));
+        }
+    }
+
     /// A state-based field's: takes in the state's value if it was changed elsewhere since the
     /// node last saw it (a programmatic `edit`, another field over the state). Returns whether it
     /// did. The history is the state's (D1132); what the state no longer composes isn't
@@ -1104,8 +1214,11 @@ impl TextFieldNode {
             selection,
             composition,
         ));
-        if let Some(link) = &self.state {
+        if let Some(link) = self.state.as_mut() {
             processor.track_edits(link.input_method_edit);
+            if let Some(shown) = link.input_method_shown.take() {
+                processor.show(shown);
+            }
         }
         let value = processor.apply(commands);
         if let Some(link) = self.state.as_mut() {
@@ -1152,14 +1265,33 @@ impl TextFieldNode {
     }
 
     /// `apply_commands` of an input method's commands, typing: a state-based field keeps what
-    /// they replace as what they changed, as Compose's `imeReplace`.
+    /// they replace as what they changed, as Compose's `imeReplace`. Their offsets are in what
+    /// the input method was shown if it `read` the text (`input_method_value`): a state-based
+    /// field's output transformation's, mapped back as Compose's commands do (D1135); a
+    /// platform's preedit reads nothing.
     fn apply_input_method_commands(
         &mut self,
         commands: &[&dyn EditCommand],
+        read: bool,
         context: &mut EventContext<'_>,
     ) {
         if let Some(link) = self.state.as_mut() {
             link.input_method_edit = true;
+            if read && let Some(transformation) = &link.shown_transformation {
+                let value = TextFieldCharSequence::new(
+                    Rc::from(self.text.as_str()),
+                    TextRange::new(self.anchor, self.cursor),
+                    None,
+                );
+                link.input_method_shown = transformed_text(&value, transformation).map(
+                    |(shown, mapping)| -> Rc<dyn compose_ui::ShownText> {
+                        Rc::new(ShownToInputMethod {
+                            mapping: Rc::new(mapping),
+                            length: shown.len(),
+                        })
+                    },
+                );
+            }
         }
         self.apply_commands(commands, true, context);
         if let Some(link) = self.state.as_mut() {
@@ -1308,6 +1440,21 @@ impl TextFieldNode {
         forward: bool,
         context: &mut EventContext<'_>,
     ) -> Option<std::ops::Range<usize>> {
+        let (_, cursor, mapping) = self.step_over_output(motion, forward, context)?;
+        // As Compose's `placeCursorBeforeCharAt(cursor)`: what the shown offset maps to.
+        let untransformed =
+            crate::output_transformation::map_from_transformed(TextRange::at(cursor), &mapping);
+        Some(untransformed.min()..untransformed.max())
+    }
+
+    /// `move_over_output`'s step in the shown text: from where the cursor's shown, to where it
+    /// goes, with the mapping; the wedge affinity taken.
+    fn step_over_output(
+        &mut self,
+        motion: Motion,
+        forward: bool,
+        context: &mut EventContext<'_>,
+    ) -> Option<(usize, usize, Rc<OffsetMappingCalculator>)> {
         let Some(ShownMapping::Output(mapping)) = self.mapping.clone() else { return None };
         let shown = self.shown_text.clone()?;
         let from = self.shown(self.cursor).min(shown.len());
@@ -1334,10 +1481,47 @@ impl TextFieldNode {
         if let (Some(link), Some(affinity)) = (self.state.as_mut(), affinity) {
             link.wedge_affinity = SelectionWedgeAffinity::both(affinity);
         }
-        // As Compose's `placeCursorBeforeCharAt(cursor)`: what the shown offset maps to.
-        let untransformed =
-            crate::output_transformation::map_from_transformed(TextRange::at(cursor), &mapping);
-        Some(untransformed.min()..untransformed.max())
+        Some((from, cursor, mapping))
+    }
+
+    /// Backspace or Delete by `motion` in what an output transformation shows, as Compose's
+    /// `deleteMovement` in its visual text: the shown range the cursor moves over, mapped back,
+    /// is deleted (nothing, over only an insertion: the cursor goes past it), and the wedge
+    /// affinity goes back to the start. Returns whether there was one to delete in.
+    fn delete_over_output(
+        &mut self,
+        motion: Motion,
+        forward: bool,
+        context: &mut EventContext<'_>,
+    ) -> bool {
+        let Some((from, to, mapping)) = self.step_over_output(motion, forward, context) else {
+            return false;
+        };
+        let shown = TextRange::new(from.min(to), from.max(to));
+        let range = map_from_transformed(shown, &mapping);
+        let range = range.min()..range.max();
+        if self.anchor != self.cursor {
+            // A selection shown as a cursor: what's deleted is the motion's alone.
+            self.anchor = self.cursor;
+        }
+        if range.is_empty() {
+            self.move_cursor(range.start, false, context);
+        } else {
+            self.delete(range, context);
+        }
+        if let Some(link) = self.state.as_mut() {
+            link.wedge_affinity = SelectionWedgeAffinity::both(WedgeAffinity::Start);
+        }
+        context.invalidate_measure();
+        context.invalidate_semantics();
+        true
+    }
+
+    /// Whether the selection, not empty, shows as a cursor (it's a range an output
+    /// transformation deleted).
+    fn selection_shown_as_cursor(&self) -> bool {
+        matches!(self.mapping, Some(ShownMapping::Output(_)))
+            && self.shown_range(self.selection()).is_empty()
     }
 
     /// `move_over_output` from a key: the cursor moves there (the anchor with it, unless
@@ -1415,16 +1599,33 @@ impl TextFieldNode {
     /// transformation inserted or replaced, at the edge whose cursor is nearer the tap, as
     /// Compose's `placeCursorAtNearestOffset`; in an insertion, by the side the cursor's shown on.
     fn tap_offset(&mut self, position: Offset, context: &mut EventContext<'_>) -> Option<usize> {
-        let Some(ShownMapping::Output(mapping)) = self.mapping.clone() else {
-            return self.offset_at(position, context);
-        };
         let paragraph = self.paragraph?;
-        let index = context.text_measurer().hit_test(paragraph, position).offset;
+        let (offset, moved) = {
+            let mut measurer = context.text_measurer();
+            self.tap_offset_in(&mut *measurer, paragraph, position)
+        };
+        if moved {
+            context.invalidate_semantics();
+        }
+        Some(offset)
+    }
+
+    /// `tap_offset` with `measurer` on `paragraph`, an event's or a measurement's (a tap before
+    /// the field was laid out): the offset, and whether the wedge affinity changed.
+    fn tap_offset_in(
+        &mut self,
+        measurer: &mut dyn compose_ui::platform::TextMeasurer,
+        paragraph: ParagraphHandle,
+        position: Offset,
+    ) -> (usize, bool) {
+        let index = measurer.hit_test(paragraph, position).offset;
+        let Some(ShownMapping::Output(mapping)) = self.mapping.clone() else {
+            return (floor_char_boundary(&self.text, self.original_of(index)), false);
+        };
         let (kind, untransformed, retransformed) = index_transformation_type(index, &mapping);
         // Whether the replacement's or insertion's start is the nearer edge (by the cursors'
         // rects, as Compose's `findClosestRect`).
         let nearer_start = kind != IndexTransformationType::Untransformed && {
-            let measurer = context.text_measurer();
             let distance = |offset| {
                 let rect = measurer.cursor_rect(paragraph, offset);
                 let dx = (rect.left - position.x).max(position.x - rect.right).max(0.0);
@@ -1433,6 +1634,7 @@ impl TextFieldNode {
             };
             distance(retransformed.start) < distance(retransformed.end)
         };
+        let mut moved = false;
         let offset = match kind {
             IndexTransformationType::Untransformed | IndexTransformationType::Deletion => {
                 untransformed.start
@@ -1444,14 +1646,14 @@ impl TextFieldNode {
                     && link.wedge_affinity != affinity
                 {
                     link.wedge_affinity = affinity;
-                    context.invalidate_semantics();
+                    moved = true;
                 }
                 untransformed.start
             }
             IndexTransformationType::Replacement if nearer_start => untransformed.start,
             IndexTransformationType::Replacement => untransformed.end,
         };
-        Some(floor_char_boundary(&self.text, offset))
+        (floor_char_boundary(&self.text, offset), moved)
     }
 
     /// The start or end of the visual (wrapped) line the cursor is on, from the measurer.
@@ -1824,11 +2026,16 @@ impl LayoutModifierNode for TextFieldNode {
                 );
                 self.paragraph = Some(paragraph);
                 self.constraints = Some(constraints);
+                // A new layout to hear (its handle may be the last one's, released).
+                if let Some(link) = self.state.as_mut() {
+                    link.heard_layout = None;
+                }
             }
             let paragraph = self.paragraph.expect("laid out");
             if let Some(tap) = self.pending_tap.take() {
-                let offset = scope.text_measurer().hit_test(paragraph, tap + self.scroll).offset;
-                self.cursor = floor_char_boundary(&self.text, self.original_of(offset));
+                let position = tap + self.scroll;
+                let mut measurer = scope.text_measurer();
+                self.cursor = self.tap_offset_in(&mut *measurer, paragraph, position).0;
                 self.anchor = self.cursor;
             }
             paragraph
@@ -1875,6 +2082,7 @@ impl LayoutModifierNode for TextFieldNode {
                 scroll_into_view(self.scroll.y, rect.top, rect.bottom, visible, max),
             );
         }
+        self.tell_text_layout(scope, paragraph);
         let placeable = scope.measure(content, Constraints::fixed(size.width, size.height));
         scope.place(&placeable, 0, 0);
         // A tap resolved here moved the cursor.
@@ -2435,7 +2643,13 @@ impl TextFieldNode {
                 self.insert("\t", false, context);
                 true
             }
-            Key::Backspace | Key::Delete if editable && !self.selection().is_empty() => {
+            // A selection shown as a cursor (a deleted range) deletes by the motion, as
+            // Compose's `deleteMovement` from its visual selection.
+            Key::Backspace | Key::Delete
+                if editable
+                    && !self.selection().is_empty()
+                    && !self.selection_shown_as_cursor() =>
+            {
                 if let Some(link) = self.state.as_mut() {
                     // As Compose's `deleteSelectedText`: a step of its own.
                     link.never_merge = true;
@@ -2444,6 +2658,10 @@ impl TextFieldNode {
                 true
             }
             Key::Backspace if editable => {
+                let motion = Motion::of(by_line, by_word);
+                if self.delete_over_output(motion, false, context) {
+                    return true;
+                }
                 let start = if by_line {
                     self.line_edge(false, context)
                 } else if by_word {
@@ -2455,6 +2673,10 @@ impl TextFieldNode {
                 true
             }
             Key::Delete if editable => {
+                let motion = if by_word { Motion::Word } else { Motion::Cluster };
+                if self.delete_over_output(motion, true, context) {
+                    return true;
+                }
                 let end = if by_word {
                     self.next_word(self.cursor)
                 } else {
@@ -2467,13 +2689,7 @@ impl TextFieldNode {
                 // Left is backward in left-to-right text, forward in right-to-left text.
                 let backward = (key == Key::DirectionLeft) != right_to_left;
                 let selection = self.selection();
-                let motion = if by_line {
-                    Motion::LineEdge
-                } else if by_word {
-                    Motion::Word
-                } else {
-                    Motion::Cluster
-                };
+                let motion = Motion::of(by_line, by_word);
                 // A selection collapses where it's shown as one (not a deleted range, shown as a
                 // cursor), as Compose's `collapseLeftOr` in its visual text.
                 let collapses = !by_line
@@ -2622,9 +2838,9 @@ impl KeyInputModifierNode for TextFieldNode {
             Some((from, to)) => {
                 let select =
                     SetSelectionCommand::new((start + from) as isize, (start + to) as isize);
-                self.apply_input_method_commands(&[&composing, &select], context);
+                self.apply_input_method_commands(&[&composing, &select], false, context);
             }
-            None => self.apply_input_method_commands(&[&composing], context),
+            None => self.apply_input_method_commands(&[&composing], false, context),
         }
         self.preedit = self.composition.is_some();
         self.publish_state_in(EditSource::InputMethod, context);
@@ -2635,11 +2851,10 @@ impl KeyInputModifierNode for TextFieldNode {
         if !self.enabled || self.read_only {
             return None;
         }
-        // A state-based field's is its state's, which an edit elsewhere may have changed since.
+        // A state-based field's is its state's, which an edit elsewhere may have changed since,
+        // as it's shown.
         if let Some(link) = &self.state {
-            return link.state.current_untracked().map(|value| {
-                TextFieldValue::new(&*value.text, value.selection, value.composition)
-            });
+            return link.state.current_untracked().map(|value| link.shown_to_input_method(&value));
         }
         let composition =
             self.composition.clone().map(|range| TextRange::new(range.start, range.end));
@@ -2658,7 +2873,7 @@ impl KeyInputModifierNode for TextFieldNode {
         self.adopt_state_in(context);
         self.preferred_x = None;
         self.preedit = false;
-        self.apply_input_method_commands(commands, context);
+        self.apply_input_method_commands(commands, true, context);
         self.publish_state_in(EditSource::InputMethod, context);
         true
     }
@@ -2669,6 +2884,9 @@ impl KeyInputModifierNode for TextFieldNode {
         }
         if let Some(link) = &self.state {
             return link.state.current_untracked().map(|state| {
+                if link.shown_transformation.is_some() {
+                    return link.shown_to_input_method(&state) == *value;
+                }
                 value.text() == &*state.text
                     && value.selection() == state.selection
                     && value.composition() == state.composition
@@ -2701,10 +2919,13 @@ impl KeyInputModifierNode for TextFieldNode {
             .composition
             .as_ref()
             .map_or((u64::MAX, u64::MAX), |range| (range.start as u64, range.end as u64));
+        // The wedge affinity in the top bits: a move across an insertion moves the cursor shown.
+        let affinity = self.wedge_affinity();
+        let side = |affinity: WedgeAffinity| u64::from(affinity == WedgeAffinity::End) << 63;
         Some([
             paragraph.0,
-            self.cursor as u64,
-            self.anchor as u64,
+            self.cursor as u64 | side(affinity.end),
+            self.anchor as u64 | side(affinity.start),
             composition_start,
             composition_end,
             self.scroll.x.to_bits() as u64,
@@ -2924,24 +3145,10 @@ impl SemanticsModifierNode for TextFieldNode {
         &mut self,
         context: &mut EventContext<'_>,
     ) -> Option<compose_ui::TextLayoutResult> {
-        let (paragraph, constraints) = (self.paragraph?, self.constraints?);
-        let text = self.shown_text.clone().unwrap_or_else(|| self.text.clone());
-        let input = compose_ui::TextLayoutInput {
-            text: text.into(),
-            style: self.style.clone(),
-            max_lines: if self.single_line { 1 } else { u32::MAX },
-            soft_wrap: !self.single_line,
-            overflow: compose_ui::TextOverflow::Clip,
-            density: self.density?,
-            layout_direction: self.direction,
-            font_family_resolver: context.current_value_of(&compose_ui::LOCAL_FONT_FAMILY_RESOLVER),
-            default_locale_list: context.current_value_of(&compose_ui::LOCAL_LOCALE_LIST),
-            constraints,
-            placeholders: None,
-        };
-        let measurer = context.text_measurer();
-        let size = constraints.constrain(measurer.metrics(paragraph).size);
-        Some(compose_ui::TextLayoutResult::new(input, measurer.paragraph(paragraph), size))
+        let resolver = context.current_value_of(&compose_ui::LOCAL_FONT_FAMILY_RESOLVER);
+        let locales = context.current_value_of(&compose_ui::LOCAL_LOCALE_LIST);
+        let mut measurer = context.text_measurer();
+        self.layout_result_with(&mut *measurer, resolver, locales)
     }
 }
 
@@ -3009,7 +3216,17 @@ impl TextFieldNode {
                     };
                     floor_char_boundary(&self.text, original)
                 };
-                let (anchor, cursor) = (at(start), at(end));
+                let (anchor, cursor) = match &self.mapping {
+                    // A state-based field's: what the shown range touches, as Compose's
+                    // `selectCharsIn` (a cursor inside a replacement selects what it replaced).
+                    Some(ShownMapping::Output(mapping)) => {
+                        let range = TextRange::new(start as usize, end as usize);
+                        let range = map_from_transformed(range, mapping);
+                        let at = |offset| floor_char_boundary(&self.text, offset);
+                        (at(range.start), at(range.end))
+                    }
+                    _ => (at(start), at(end)),
+                };
                 if (anchor, cursor) == (self.anchor, self.cursor) {
                     return false;
                 }

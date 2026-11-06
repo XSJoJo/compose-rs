@@ -279,18 +279,58 @@ fn the_texts_ends_are_the_shown_texts() {
     assert_eq!((state.selection(), cursor_told(&mut ui)), (TextRange::at(0), 0));
 }
 
-/// A selection set through semantics is in what's shown: inside a replacement, the cursor goes
-/// to its nearer edge.
+/// A selection set through semantics is in what's shown, and selects what it touches of the
+/// state, as Compose's `selectCharsIn`: a cursor inside a replacement selects what it replaced.
 #[test]
-fn a_selection_set_in_what_is_shown_goes_to_a_replacements_nearer_edge() {
+fn a_selection_set_in_what_is_shown_selects_what_it_touches() {
     let (mut ui, state) =
-        field_showing("zaz", TextRange::at(0), |buffer| buffer.replace(1, 2, "bbbb"));
-    for (shown, expected) in [(4, 2), (2, 1), (5, 2), (6, 3)] {
+        field_showing("abcd", TextRange::at(0), |buffer| buffer.replace(1, 3, "efg"));
+    for (shown, expected) in
+        [((0, 2), (0, 3)), ((2, 2), (1, 3)), ((4, 4), (3, 3)), ((5, 1), (4, 1))]
+    {
         ui.on_node_with_tag("field").perform_semantics_action_with(&A::SET_SELECTION, |set| {
-            set(shown, shown, false);
+            set(shown.0, shown.1, false);
         });
-        assert_eq!(state.selection(), TextRange::at(expected), "shown {shown}");
+        let expected = TextRange::new(expected.0, expected.1);
+        assert_eq!(state.selection(), expected, "shown {shown:?}");
     }
+}
+
+/// Backspace and Delete delete what they step over in what's shown, mapped back, as Compose's
+/// `deleteMovement` in its visual text: a whole replacement, nothing of an insertion (the cursor
+/// goes before it), and from a selection shown as a cursor by the motion alone.
+#[test]
+fn backspace_and_delete_go_by_what_is_shown() {
+    let replace = |buffer: &mut TextFieldBuffer| buffer.replace(1, 3, "efg");
+    let (mut ui, state) = field_showing("abcd", TextRange::at(3), replace);
+    press(&mut ui, Key::Backspace, PLAIN);
+    assert_eq!((state.text().to_string(), state.selection()), ("ad".to_string(), TextRange::at(1)));
+    let (mut ui, state) = field_showing("abcd", TextRange::at(1), replace);
+    press(&mut ui, Key::Delete, PLAIN);
+    assert_eq!((state.text().to_string(), state.selection()), ("ad".to_string(), TextRange::at(1)));
+
+    let (mut ui, state) = field_showing("ab", TextRange::at(1), |buffer| buffer.insert(1, "-"));
+    press(&mut ui, Key::DirectionRight, PLAIN);
+    assert_eq!(cursor_told(&mut ui), 2, "after the dash");
+    press(&mut ui, Key::Backspace, PLAIN);
+    assert_eq!(told(&mut ui), ("a-b".to_string(), TextRange::at(1)), "only before the dash");
+    assert_eq!(state.text().as_str(), "ab");
+    press(&mut ui, Key::Backspace, PLAIN);
+    assert_eq!(state.text().as_str(), "b");
+    // Delete over only an insertion deletes nothing, and the cursor stays shown before it.
+    let (mut ui, state) = field_showing("ab", TextRange::at(1), |buffer| buffer.insert(1, "-"));
+    press(&mut ui, Key::Delete, PLAIN);
+    assert_eq!(told(&mut ui), ("a-b".to_string(), TextRange::at(1)));
+    assert_eq!(state.text().as_str(), "ab");
+
+    // ">wedge  insertionghi<" with "def" deleted: the cursor on it selects it, shown as one.
+    let (mut ui, state) = field_showing("abc def ghi", TextRange::at(3), mixed);
+    press(&mut ui, Key::DirectionRight, PLAIN);
+    assert_eq!(state.selection(), TextRange::new(4, 7));
+    press(&mut ui, Key::Backspace, PLAIN);
+    // The shown step back is over the space before it, which maps to the space and the hidden
+    // "def" both, as Compose's `mapFromTransformed` gives.
+    assert_eq!(state.text().as_str(), "abc ghi");
 }
 
 /// A field's character advance with its 10 sp text (half an em in the test measurer).
@@ -326,6 +366,33 @@ fn a_tap_inside_a_replacement_or_an_insertion_goes_to_its_nearer_edge() {
     assert_eq!((state.selection(), cursor_told(&mut ui)), (TextRange::at(1), 5));
     tap(&mut ui, 3.0 * w - 1.0);
     assert_eq!((state.selection(), cursor_told(&mut ui)), (TextRange::at(1), 1));
+}
+
+/// A tap before the field is laid out again (just after typing) is resolved when it is, by the
+/// same rule: nearer an insertion's end, the cursor shows after it.
+#[test]
+fn a_tap_resolved_at_the_next_measure_goes_by_the_same_rule() {
+    let (mut ui, state) = field_showing("zz", TextRange::at(0), |buffer| buffer.insert(1, "bbbb"));
+    let (w, y) = (advance(&ui), advance(&ui));
+    let position = Offset::new(4.0 * w + 1.0, y);
+    let host = ui.host();
+    // "yzz" shown "ybbbbzz", laid out at the next frame, the tap resolved then.
+    host.send_text("y");
+    host.send_pointer(compose_ui::PointerEvent::press(position));
+    host.send_pointer(compose_ui::PointerEvent::release(position));
+    ui.wait_for_idle();
+    assert_eq!(told(&mut ui), ("ybbbbzz".to_string(), TextRange::at(5)));
+    assert_eq!(state.selection(), TextRange::at(1));
+}
+
+/// A step across an insertion changes what a keyboard following the cursor hears of it.
+#[test]
+fn a_step_across_an_insertion_changes_the_cursor_anchor() {
+    let (mut ui, _) = field_showing("ab", TextRange::at(1), |buffer| buffer.insert(1, "efg"));
+    let before = ui.host().cursor_anchor_key().expect("laid out").0;
+    press(&mut ui, Key::DirectionRight, PLAIN);
+    assert_eq!(cursor_told(&mut ui), 4);
+    assert_ne!(ui.host().cursor_anchor_key().expect("laid out").0, before);
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldOutputTransformationGesturesIntegrationTest.kt, clickingAroundReplacement_movesCursorToEdgesOfReplacement_withLineBreak

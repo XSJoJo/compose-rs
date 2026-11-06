@@ -550,8 +550,19 @@ impl TextFieldBuffer {
     /// sensible too.
     fn text_will_change(&mut self, start: usize, end: usize, new_length: usize, hardware: bool) {
         self.changes.track_change(start, end, new_length, hardware);
+        // One character for one as long (a byte offset can't fall inside either): nothing to map,
+        // as Compose's skips one unit for one, so a transformation going character by character
+        // keeps the mapping short.
         if let Some(mapping) = &mut self.offset_mapping {
-            mapping.record_edit_operation(start, end, new_length);
+            let (min, max) = (start.min(end), start.max(end));
+            let one_for_one = max - min == new_length
+                && self
+                    .text
+                    .get(min..max)
+                    .is_some_and(|replaced| replaced.chars().nth(1).is_none());
+            if !one_for_one {
+                mapping.record_edit_operation(start, end, new_length);
+            }
         }
         self.selection = adjust_text_range(self.selection, start, end, new_length);
     }
