@@ -229,8 +229,9 @@ fn an_item_scrolled_away_tells_its_listener_only_if_it_had_the_focus() {
                 move |scope: LazyListScope| {
                     for index in [0, 1] {
                         scope.item_keyed(index, move || {
-                            // Reused, the node's updated element hears it (D1282): any of them.
-                            let first = index == 0 || holds != Holds::Nothing;
+                            // The first item's: the second is composed new as the first leaves
+                            // (subcomposition, D1312), and its own listener hears its own state.
+                            let first = index == 0;
                             let listening =
                                 Modifier.size(10.dp()).on_focus_changed(move |it: FocusState| {
                                     if first {
@@ -1480,7 +1481,9 @@ fn a_focused_item_reused_for_another_key_tells_the_listener_that_was_there() {
     heard.borrow_mut().clear();
     first.set(1);
     ui.wait_for_idle();
-    assert_eq!(heard.borrow().first(), Some(&(0, FocusState::Inactive)));
+    // The new key's item composes first, its listener hearing its own state; the item that had the
+    // focus is let go after the measurement (subcomposition, D1312) and tells its listener.
+    assert!(heard.borrow().contains(&(0, FocusState::Inactive)), "{:?}", heard.borrow());
     assert_eq!(ui.host().with_tree(|tree| tree.focused()), None);
 }
 

@@ -640,6 +640,9 @@ pub(crate) struct CompositionData {
     pub dirty_children: Vec<CompositionId>,
     /// It's in its parent's `dirty_children`.
     pub queued: bool,
+    /// Its passes and paused compositions applied so far: what a node's measurement cached of
+    /// its nodes holds while this is the same.
+    pub passes: u64,
     /// When it was made, among the thread's: the order those under a composition compose in.
     pub created: u64,
     /// The node of its parent's that its root is went: it composes nothing more, as nothing can
@@ -680,6 +683,7 @@ impl CompositionData {
             recomposer: None,
             parent: None,
             child_count: 0,
+            passes: 0,
             dirty_children: Vec::new(),
             queued: false,
             created: 0,

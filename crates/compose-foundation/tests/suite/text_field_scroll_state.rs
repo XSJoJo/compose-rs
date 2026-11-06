@@ -2,6 +2,9 @@
 
 #![allow(non_snake_case)]
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use compose_foundation::gestures::ScrollableState;
 use compose_foundation::layout::*;
 use compose_foundation::*;
@@ -598,4 +601,74 @@ fn a_shrinking_field_or_container_does_not_crash() {
     size.set(0.0);
     ui.wait_for_idle();
     ui.on_node_with_tag("field").assert_exists();
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldScrollTest.kt, textFieldScroll_restoresScrollerPosition
+#[test]
+fn the_scroll_is_restored() {
+    let state = text_state(LONG_TEXT, TextRange::ZERO);
+    let remembered: Rc<Cell<Option<ScrollState>>> = Rc::default();
+    let into = remembered.clone();
+    let mut ui = ComposeTestRule::sized(compose_ui::IntSize::new(600, 600), || {});
+    let mut tester = StateRestorationTester::new();
+    tester.set_content(&mut ui, move || {
+        let scroll = remember_scroll_state(0);
+        into.set(Some(scroll));
+        BasicTextFieldOfState!(
+            state,
+            modifier = Modifier.size((300.dp(), 50.dp())).test_tag("field"),
+            line_limits = TextFieldLineLimits::SingleLine,
+            scroll_state = Some(scroll),
+        );
+    });
+    ui.on_node_with_tag("field").perform_touch_input(|touch| touch.swipe_left());
+    ui.wait_for_idle();
+    let swiped = remembered.get().expect("composed").value();
+    assert!(swiped > 0);
+    remembered.set(None);
+    tester.emulate_save_and_restore(&mut ui);
+    assert_eq!(remembered.get().expect("composed again").value(), swiped);
+}
+
+/// A focused field shrinking under its cursor follows it by its own scroll, the column around
+/// it, scrolled to its end with the field above, staying where it is.
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldScrollTest.kt, cursorScrolledIntoView_whenHeightChanges_inVerticallyScrollableField_scrollsButNoBiv
+#[test]
+fn a_shrinking_field_follows_its_cursor_without_scrolling_the_column() {
+    let state = text_state("a\na\na\na\na", TextRange::ZERO);
+    let field_scroll = scroll(0);
+    let column_scroll = scroll(0);
+    let height: MutableState<Option<f32>> = Box::leak(Box::new(mutable_state_of(None))).handle();
+    let mut ui = compose_test(move || {
+        let modifier = Modifier.fill_max_size().padding(32.dp()).vertical_scroll(column_scroll);
+        Column!(modifier = modifier, {
+            let field = match height.get() {
+                Some(height) => Modifier.height(height.dp()),
+                None => Modifier,
+            };
+            BasicTextFieldOfState!(
+                state,
+                modifier = field.test_tag("field"),
+                scroll_state = Some(field_scroll),
+            );
+            Box!(Modifier.fill_max_width().height(4000.dp()));
+        });
+    });
+    ui.on_node_with_tag("field").perform_touch_input(|touch| {
+        let bottom = touch.bottom_center();
+        touch.click_at(bottom);
+    });
+    ui.wait_for_idle();
+    assert_eq!((field_scroll.value(), field_scroll.max_value()), (0, 0));
+    assert_eq!(column_scroll.value(), 0);
+    run(&mut ui, async move {
+        let _ = column_scroll.scroll_to(column_scroll.max_value()).await;
+    });
+    let density = ui.density().density;
+    let field_height = ui.on_node_with_tag("field").fetch_semantics_snapshot().bounds.height();
+    height.set(Some(field_height / density - 1.0));
+    ui.wait_for_idle();
+    assert!(field_scroll.max_value() > 0);
+    assert_eq!(field_scroll.value(), field_scroll.max_value());
+    assert_eq!(column_scroll.value(), column_scroll.max_value());
 }

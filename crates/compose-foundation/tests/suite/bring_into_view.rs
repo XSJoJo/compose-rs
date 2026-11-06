@@ -405,6 +405,72 @@ type LocalRect = Rc<dyn Fn() -> Option<Rect>>;
 /// What a fake responder does when asked: given what to show, a future.
 type OnBringIntoView = Rc<dyn Fn(Rc<dyn Fn() -> Option<Rect>>) -> LocalBoxFuture<'static, ()>>;
 
+/// A spec that always goes `distance`, counting how often it's asked.
+struct Fixed {
+    distance: f32,
+    asked: Rc<Cell<u32>>,
+}
+
+impl BringIntoViewSpec for Fixed {
+    fn calculate_scroll_distance(&self, _: f32, _: f32, _: f32) -> f32 {
+        self.asked.set(self.asked.get() + 1);
+        self.distance
+    }
+}
+
+// A lazy list reads the spec where it's composed too, as Compose's lazy layouts' wrap
+// `LocalBringIntoViewSpec` (`rememberLazyLayoutBringIntoViewSpec`): a custom one says how far it
+// goes; its item asks half out of the viewport.
+#[test]
+fn a_lazy_list_asks_the_spec_where_it_is_composed_how_far_to_go() {
+    for dir in DIRS {
+        let requester = BringIntoViewRequester::new();
+        let given = requester.clone();
+        let asked = Rc::new(Cell::new(0));
+        let spec: Rc<dyn BringIntoViewSpec> =
+            Rc::new(Fixed { distance: 30.0, asked: asked.clone() });
+        let owner = LazyListState::new(0, 0);
+        let state = *owner;
+        let mut ui = window(move || {
+            let _ = &owner;
+            let given = given.clone();
+            CompositionLocalProvider(
+                LOCAL_BRING_INTO_VIEW_SPEC.provides(spec.clone()),
+                move || {
+                    let given = given.clone();
+                    let content = move |scope: LazyListScope| {
+                        let given = given.clone();
+                        scope.items(10, move |index| {
+                            let ask = if index == 3 {
+                                Modifier.bring_into_view_requester(given.clone())
+                            } else {
+                                Modifier
+                            };
+                            Box!(modifier = dir.size(60.0, 50.0).then(ask));
+                        });
+                    };
+                    match dir {
+                        Dir::Vertical => LazyColumn!(
+                            modifier = Modifier.size(200.dp()),
+                            state = state,
+                            move |scope: LazyListScope| content(scope)
+                        ),
+                        Dir::Horizontal => LazyRow!(
+                            modifier = Modifier.size(200.dp()),
+                            state = state,
+                            move |scope: LazyListScope| content(scope)
+                        ),
+                    }
+                },
+            );
+        });
+        bring(&mut ui, &requester, None);
+        ui.wait_for_idle();
+        let first = (state.first_visible_item_index(), state.first_visible_item_scroll_offset());
+        assert_eq!((asked.get(), first), (1, (0, 30)));
+    }
+}
+
 /// As the tests' `fakeScrollable`: a responder offsetting the rect for its parents by `offset`,
 /// handling a request with `on_bring_into_view`.
 struct Fake {
@@ -1480,4 +1546,68 @@ fn a_scrollable_keeps_its_focused_child_in_view_when_it_shrinks() {
         // Its trailing edge at the viewport's end.
         assert_eq!(state.value(), 50, "vertical: {}", dir == Dir::Vertical);
     }
+}
+
+/// A focused node in a column placed deep in padded boxes is scrolled to the column's edge: the
+/// walk finds where each container is from the outermost down (D1149), the boxes' offsets counted.
+#[test]
+fn a_focused_node_in_a_column_inside_padded_boxes_scrolls_just_into_view() {
+    let scroll_state = **Box::leak(Box::new(ScrollState::new(0)));
+    let mut ui = compose_test(move || {
+        Box!(Modifier.padding(50.dp()), {
+            Box!(Modifier.padding(30.dp()), {
+                Column!(modifier = Modifier.height(100.dp()).vertical_scroll(scroll_state), {
+                    Box!(Modifier.height(150.dp()));
+                    Box!(Modifier.size(20.dp()).focusable().test_tag("target"));
+                    Box!(Modifier.height(300.dp()));
+                });
+            });
+        });
+    });
+    ui.wait_for_idle();
+    ui.on_node_with_tag("target").request_focus();
+    ui.wait_for_idle();
+    let density = ui.density().density;
+    // Its bottom at the column's: 150 + 20 - 100 dp scrolled.
+    assert!(
+        (scroll_state.value() as f32 - 70.0 * density).abs() <= 1.0,
+        "scrolled {}",
+        scroll_state.value()
+    );
+}
+
+/// The same for a lazy list, which answers at once with where it showed the item: the rect it's
+/// asked is where the item is in it, the boxes around counted.
+#[test]
+fn a_focused_item_of_a_list_inside_padded_boxes_scrolls_just_into_view() {
+    let kept: Rc<RefCell<Option<compose_foundation::lazy::LazyListState>>> = Rc::default();
+    let into = kept.clone();
+    let mut ui = compose_test(move || {
+        let state = compose_foundation::lazy::remember_lazy_list_state(0, 0);
+        *into.borrow_mut() = Some(state);
+        Box!(Modifier.padding(50.dp()), {
+            Box!(Modifier.padding(30.dp()), {
+                compose_foundation::lazy::LazyColumn!(
+                    modifier = Modifier.height(100.dp()),
+                    state = state,
+                    move |scope: compose_foundation::lazy::LazyListScope| {
+                        scope.items(20, move |item| {
+                            Box!(
+                                Modifier.size(40.dp()).focusable().test_tag(format!("item {item}"))
+                            );
+                        });
+                    }
+                );
+            });
+        });
+    });
+    ui.wait_for_idle();
+    ui.on_node_with_tag("item 2").request_focus();
+    ui.wait_for_idle();
+    let state = kept.borrow().expect("composed");
+    let density = ui.density().density;
+    // Item 2 (80 to 120 dp) shown to its end: 20 dp scrolled.
+    let scrolled = state.first_visible_item_index() as f32 * 40.0 * density
+        + state.first_visible_item_scroll_offset() as f32;
+    assert!((scrolled - 20.0 * density).abs() <= 1.0, "scrolled {scrolled}");
 }

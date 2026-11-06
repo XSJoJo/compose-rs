@@ -417,6 +417,19 @@ pub struct UiTree {
     pub(crate) hovered: Vec<crate::dispatch::HitEntry>,
     /// Where the mouse is, in the root, while it's in the window and no button is held.
     pub(crate) mouse: Option<crate::unit::Offset>,
+    /// A trackpad's pan is in progress: the hover comes over nothing new until it ends.
+    pub(crate) panning: bool,
+    /// An indirect pointer input node was ever in the tree: until then their dispatch and the
+    /// focus's cancels cost nothing (D1675).
+    pub(crate) has_indirect_pointer_input: bool,
+    /// The indirect pointer input nodes on the focus's path when the focus last changed or an
+    /// event last went there, innermost first: those that go before the focus moves are told the
+    /// stream ended as they go.
+    pub(crate) indirect_focus_path:
+        Vec<(NodeId, crate::node_chain::EntryId, crate::node_chain::EntryId)>,
+    /// What turns a stream of them into focus moves, made with the first.
+    pub(crate) indirect_navigation:
+        Option<Box<crate::indirect_pointer::IndirectPointerNavigationGestureDetector>>,
     /// Observes the state measure policies and custom nodes read (D71), keyed by node.
     pub(crate) observer: Option<Rc<compose_runtime::platform::ReadObserver>>,
     pub(crate) measure_runs: u64,
@@ -623,6 +636,10 @@ impl UiTree {
             first_down_primary_only: true,
             hovered: Vec::new(),
             mouse: None,
+            panning: false,
+            has_indirect_pointer_input: false,
+            indirect_focus_path: Vec::new(),
+            indirect_navigation: None,
             observer: None,
             measure_runs: 0,
             focus_requests,
@@ -1046,6 +1063,13 @@ impl UiTree {
             self.invalidate_measure(host);
         }
         self.free_subtree(node);
+    }
+
+    /// The first node of a virtual node not deactivated, as a measurable.
+    pub(crate) fn first_virtual_measurable(&self, node: NodeId) -> Option<Measurable> {
+        (self.node(node).children.iter())
+            .find(|child| self.get(child.node).is_some_and(|value| !value.deactivated))
+            .copied()
     }
 
     /// The nodes of a virtual node, as measurables, without what's deactivated.
@@ -1584,11 +1608,14 @@ impl UiTree {
             entry.aggregate = aggregate;
         }
         value.kinds = aggregate;
+        let indirect = aggregate.any(NodeKinds::INDIRECT_POINTER_INPUT);
         for (index, entry) in value.chain.iter_mut().enumerate() {
             if entry.kinds.any(NodeKinds::LAYOUT) {
                 value.layout_indices.push(index as u16);
             }
         }
+        self.has_indirect_pointer_input |= indirect;
+        let value = self.node_mut(node);
         // A repaint boundary keeps what it draws: its layer's properties apart if its first
         // drawing modifier is a graphics layer (which makes it one, as each of Compose's
         // graphics layers is a layer). Each other graphics layer is a group of its own inside
@@ -2165,6 +2192,8 @@ impl Applier for UiTree {
         if value.deactivated {
             return;
         }
+        self.focus_subtree_deactivating(node);
+        let Some(value) = self.get_mut(node) else { return };
         value.placed = false;
         value.subtree_needs_measure = false;
         self.tell_unplaced_going(node);

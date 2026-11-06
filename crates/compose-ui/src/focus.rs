@@ -345,6 +345,9 @@ impl UiTree {
         if previous != target {
             let generation = &self.focus_requests.focus_generation;
             generation.set(generation.get().wrapping_add(1));
+            if self.has_indirect_pointer_input {
+                self.indirect_focus_moved(previous);
+            }
         }
     }
 
@@ -1486,6 +1489,23 @@ impl UiTree {
 
     /// `node` is being reset (reused or deactivated): the active target on it loses the focus, as
     /// `FocusTargetNode.onReset`.
+    /// `node`'s content is deactivated, outer nodes first: the focus, if it's anywhere in it,
+    /// goes now, while what's above it is still there to be told, as Compose's
+    /// `deactivatedActiveParentFocusNodeSendsFocusEvent`.
+    pub(crate) fn focus_subtree_deactivating(&mut self, node: NodeId) {
+        self.in_each_window(|tree| {
+            let Some(active) = tree.focus.active else { return };
+            let mut at = Some(active.node);
+            while let Some(current) = at {
+                if current == node {
+                    tree.clear_active_target(true, true);
+                    return;
+                }
+                at = tree.parent_of(current);
+            }
+        });
+    }
+
     pub(crate) fn focus_node_resetting(&mut self, node: NodeId) {
         self.in_each_window(|tree| {
             if tree.focus.active.is_some_and(|active| active.node == node) {
@@ -1875,24 +1895,49 @@ impl UiTree {
     /// A rect in a chain entry's layer is what of it to show; `None`, all of it.
     pub(crate) fn bring_focused_into_view(
         &mut self,
-        requests: Vec<crate::input::BringIntoViewRequest>,
+        requests: crate::input::BringIntoViewRequests,
     ) {
         if self.focus.moved_by_tree {
             return;
         }
+        // The nodes whose walk no node answered: a request of one of their ancestors would walk
+        // a part of the same path, and is skipped (a text field's decoration, around its node,
+        // with no scrolling container around: D1149).
+        let mut unanswered: SmallVec<[NodeId; 2]> = SmallVec::new();
         // Each container queues them and shows the largest that fits, as Compose's
         // `ContentInViewNode` (D1145, D1376).
         for (node, what) in requests {
-            if self.get(node).is_none() {
+            if self.get(node).is_none()
+                || unanswered.iter().any(|&below| self.walk_reaches(below, node))
+            {
                 continue;
             }
             if self.is_laid_out(node) {
-                match what {
+                let answered = match what {
                     Some((entry, rect)) => self.bring_entry_rect_into_view(node, entry, rect),
-                    None => self.bring_into_view(node),
+                    None => self.bring_node_into_view(node),
+                };
+                if !answered {
+                    unanswered.push(node);
                 }
             } else {
                 self.bring_into_view_after_layout = Some(node);
+            }
+        }
+    }
+
+    /// Whether a walk bringing `from` into view goes through `node`'s whole chain: `node` is an
+    /// ancestor of `from`, short of an overlay's root (an overlay's containers are its own).
+    fn walk_reaches(&self, from: NodeId, node: NodeId) -> bool {
+        let mut at = from;
+        loop {
+            let value = self.node(at);
+            match value.parent {
+                Some(parent) if !value.overlay => at = parent,
+                _ => return false,
+            }
+            if at == node {
+                return true;
             }
         }
     }

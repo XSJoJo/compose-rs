@@ -13,6 +13,7 @@ use std::rc::Rc;
 use compose_runtime::snapshots::Snapshot as RuntimeSnapshot;
 use compose_runtime::{Callback, ComposeArg, composable};
 
+use crate::key_mapping::{KeyCommand, KeyMapping};
 use crate::output_transformation::{
     IndexTransformationType, OffsetMappingCalculator, SelectionWedgeAffinity, ShownToInputMethod,
     WedgeAffinity, index_transformation_type, map_from_transformed, map_to_transformed,
@@ -81,9 +82,7 @@ pub fn BasicTextField(
         crate::text::validate_min_max_lines(min_lines, max_lines);
     }
     let interaction_source_for_press = if enabled { interaction_source.clone() } else { None };
-    let field_focused = compose_runtime::remember(FieldFocused::default);
     let element: Rc<dyn AnyModifierNodeElement> = Rc::new(TextFieldElement {
-        field_focused: field_focused.clone(),
         value,
         on_value_change,
         enabled,
@@ -113,7 +112,7 @@ pub fn BasicTextField(
         // An I-beam over the field, as Compose Desktop's text fields.
         modifier
             .semantics_with(true, |_| {})
-            .then_custom(FocusOnTap { interaction_source: press_source, field_focused })
+            .then_custom(FocusOnTap { interaction_source: press_source })
             .pointer_hover_icon(compose_ui::PointerIcon::Text),
         crate::Alignment::TOP_START,
         // The decoration's size is the field's: a field given a size passes it on.
@@ -176,9 +175,7 @@ pub fn BasicTextFieldOfState(
         keyboard_options.fill_unspecified_values_with(transformation_options.as_ref());
     let text_style = phone_direction(text_style, keyboard_options);
     let interaction_source_for_press = if enabled { interaction_source.clone() } else { None };
-    let field_focused = compose_runtime::remember(FieldFocused::default);
     let element: Rc<dyn AnyModifierNodeElement> = Rc::new(StateTextFieldElement {
-        field_focused: field_focused.clone(),
         state,
         enabled,
         read_only,
@@ -233,7 +230,7 @@ pub fn BasicTextFieldOfState(
     crate::layout::Box(
         modifier
             .semantics_with(true, |_| {})
-            .then_custom(FocusOnTap { interaction_source: press_source, field_focused })
+            .then_custom(FocusOnTap { interaction_source: press_source })
             .pointer_hover_icon(compose_ui::PointerIcon::Text),
         crate::Alignment::TOP_START,
         true,
@@ -268,8 +265,6 @@ fn phone_direction(style: TextStyle, options: KeyboardOptions) -> TextStyle {
 
 /// The state-based field's element: the value-based field's node, tied to `state` (D1130).
 pub(crate) struct StateTextFieldElement {
-    /// Whether the field has the focus, for its decoration's node (D1145).
-    pub field_focused: FieldFocused,
     pub state: TextFieldState,
     pub enabled: bool,
     pub read_only: bool,
@@ -321,7 +316,6 @@ impl ModifierNodeElement for StateTextFieldElement {
         let (single_line, min_lines, max_lines) = self.line_limits.lines();
         let (cursor_color, cursor_brush) = self.cursor();
         let mut node = TextFieldElement {
-            field_focused: self.field_focused.clone(),
             value: String::new(),
             on_value_change: Callback::new(|_: String| {}),
             enabled: self.enabled,
@@ -355,7 +349,6 @@ impl ModifierNodeElement for StateTextFieldElement {
     fn update(&self, node: &mut TextFieldNode) {
         let (single_line, min_lines, max_lines) = self.line_limits.lines();
         let (cursor_color, cursor_brush) = self.cursor();
-        node.field_focused = self.field_focused.clone();
         let link = node.state.as_mut().expect("a state-based field's node");
         if link.state != self.state {
             // Another state: its value is taken at the next measurement, which this update asks.
@@ -430,7 +423,6 @@ impl ModifierNodeElement for StateTextFieldElement {
 
     fn same(&self, other: &Self) -> bool {
         other.state == self.state
-            && Rc::ptr_eq(&other.field_focused, &self.field_focused)
             && other.enabled == self.enabled
             && other.read_only == self.read_only
             && other.style == self.style
@@ -493,22 +485,11 @@ fn same_layout_callback(
 #[derive(Clone, Copy)]
 enum Motion {
     Cluster,
+    /// Backward by a code point, or an emoji whole: Backspace's.
+    CodePointOrEmoji,
     Word,
     LineEdge,
     TextEdge,
-}
-
-impl Motion {
-    /// A key's motion with the line or word modifier held, else by a cluster.
-    fn of(by_line: bool, by_word: bool) -> Motion {
-        if by_line {
-            Motion::LineEdge
-        } else if by_word {
-            Motion::Word
-        } else {
-            Motion::Cluster
-        }
-    }
 }
 
 /// What made an edit of a state-based field, for its state: whether the input method restarts
@@ -666,8 +647,6 @@ impl StateLink {
 }
 
 pub(crate) struct TextFieldElement {
-    /// Whether the field has the focus, for its decoration's node (D1145).
-    pub field_focused: FieldFocused,
     pub value: String,
     pub on_value_change: Callback<dyn Fn(String)>,
     pub enabled: bool,
@@ -691,7 +670,6 @@ impl ModifierNodeElement for TextFieldElement {
     type Node = TextFieldNode;
     fn create(&self) -> TextFieldNode {
         TextFieldNode {
-            field_focused: self.field_focused.clone(),
             window: None,
             pin: Default::default(),
             is_focus_target: self.enabled,
@@ -749,7 +727,6 @@ impl ModifierNodeElement for TextFieldElement {
     }
 
     fn update(&self, node: &mut TextFieldNode) {
-        node.field_focused = self.field_focused.clone();
         if node.value != self.value {
             node.value = self.value.clone();
             node.awaiting_value = false;
@@ -804,7 +781,6 @@ impl ModifierNodeElement for TextFieldElement {
 
     fn same(&self, other: &Self) -> bool {
         other.value == self.value
-            && Rc::ptr_eq(&other.field_focused, &self.field_focused)
             && other.on_value_change.ptr_eq(&self.on_value_change)
             && other.enabled == self.enabled
             && other.read_only == self.read_only
@@ -996,12 +972,7 @@ pub(crate) struct TextFieldNode {
     shown_text: Option<String>,
     /// A state-based field's state (`BasicTextFieldOfState`); `None` for a value-based field.
     state: Option<Box<StateLink>>,
-    /// Whether it has the focus, for its decoration's node, which then shows it whole (D1145).
-    field_focused: FieldFocused,
 }
-
-/// Whether a field's node has the focus, shared with its decoration's `FocusOnTapNode`.
-pub(crate) type FieldFocused = Rc<Cell<bool>>;
 
 impl TextFieldNode {
     /// What the field laid out, as its text layout result: what's shown, at the text's
@@ -1154,14 +1125,11 @@ impl TextFieldNode {
     /// A state-based field's cursor, shown by the containers around it once the layout is over
     /// when it moved or the text's size changed while it shows (focused and written to), as
     /// Compose's `updateScrollState` brings it into view (D1141): typing a new line at the bottom of
-    /// a field in a scrolling column scrolls the column.
+    /// a field in a scrolling column scrolls the column. Asked only while the cursor shows.
     #[inline(never)]
     fn reveal_cursor(&mut self, scope: &mut MeasureScope<'_>, text: IntSize, short: bool) {
         let Some(cursor) = self.cursor_rect else { return };
         let collapsed = self.anchor == self.cursor;
-        if !(self.focused && self.enabled && !self.read_only) {
-            return;
-        }
         let scroll = self.scroll;
         let Some(link) = self.state.as_mut() else { return };
         let moved = link.revealed.is_none_or(|(previous, size)| {
@@ -1792,6 +1760,9 @@ impl TextFieldNode {
                 .graphemes(true)
                 .next_back()
                 .map_or(from, |cluster| from - cluster.len()),
+            // Backspace's: a code point or an emoji of what's shown, as Compose's
+            // `moveCursorPrevByCodePointOrEmoji` on its visual text (D1148).
+            Motion::CodePointOrEmoji => code_point_or_emoji_before(&shown, from),
             Motion::Word if forward => next_word_in(&shown, from),
             Motion::Word => previous_word_in(&shown, from),
             Motion::LineEdge => self.line_edge_in(&shown, from, forward, |offset| offset, context),
@@ -2490,7 +2461,9 @@ impl LayoutModifierNode for TextFieldNode {
         // The text scrolls to keep the cursor in view, as Compose's: sideways on a single line,
         // down in a multi-line field.
         let rect = self.cursor_rect.unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
-        // Whether the scroll fell short of showing the cursor (D1145).
+        // A state-based field shows its cursor after its layout while the cursor shows (D1141).
+        let reveals = self.state.is_some() && self.focused && self.enabled && !self.read_only;
+        // Whether the scroll fell short of showing the cursor (D1145): only asked then.
         let short;
         if let Some(scroll_state) = self.state.as_ref().and_then(|link| link.scroll_state) {
             short = self.scroll_by_state(
@@ -2505,7 +2478,7 @@ impl LayoutModifierNode for TextFieldNode {
             let visible = (size.width - cursor_width).max(0) as f32;
             let max = metrics.size.width as f32 - visible;
             let scrolled = scroll_into_view(self.scroll.x, rect.left, rect.left, visible, max);
-            short = self.state.is_some()
+            short = reveals
                 && (scroll_into_view(self.scroll.x, rect.left, rect.left, visible, f32::MAX)
                     - scrolled)
                     .abs()
@@ -2515,14 +2488,14 @@ impl LayoutModifierNode for TextFieldNode {
             let visible = size.height as f32;
             let max = metrics.size.height as f32 - visible;
             let scrolled = scroll_into_view(self.scroll.y, rect.top, rect.bottom, visible, max);
-            short = self.state.is_some()
+            short = reveals
                 && (scroll_into_view(self.scroll.y, rect.top, rect.bottom, visible, f32::MAX)
                     - scrolled)
                     .abs()
                     >= 1.0;
             self.scroll = Offset::new(0.0, scrolled);
         }
-        if self.state.is_some() {
+        if reveals {
             self.reveal_cursor(scope, metrics.size, short);
         }
         self.tell_text_layout(scope, paragraph);
@@ -2938,7 +2911,8 @@ impl FocusTargetModifierNode for TextFieldNode {
             return;
         }
         self.focused = focused;
-        self.field_focused.set(focused);
+        // Its decoration is told, as the field's gaining the focus shows it whole (D1145).
+        tell_decoration(focused, context);
         self.tell_focus(focused);
         if focused {
             // Its cursor, as Compose's `bringSelectionEndIntoView`, beside the whole field its
@@ -2996,11 +2970,6 @@ fn key_is_not_tab(key: Key) -> bool {
     key != Key::Tab
 }
 
-/// Cmd on macOS, Ctrl elsewhere: shortcuts and their key mappings, as Compose Desktop's.
-fn is_macos() -> bool {
-    cfg!(target_os = "macos")
-}
-
 impl TextFieldNode {
     /// Tells `interaction_source` the focus came or went, as `focusable`'s.
     fn tell_focus(&mut self, focused: bool) {
@@ -3020,14 +2989,16 @@ impl TextFieldNode {
             return false;
         }
         let editable = !self.read_only;
-        let mut modifiers = event.modifiers;
-        // Shortcuts: Cmd on macOS, Ctrl elsewhere. On macOS, Ctrl moves and deletes as Cocoa's
-        // Emacs-style bindings, as Compose Desktop's key mapping.
-        let shortcut = if is_macos() { modifiers.meta } else { modifiers.ctrl };
-        let emacs = is_macos() && modifiers.ctrl && !modifiers.meta;
+        let modifiers = event.modifiers;
+        let mapping = KeyMapping::current();
         // Typed keys: the text arrives as committed text (`on_text_input`); the field takes the
-        // key, down and up, so its ancestors' shortcuts and clicks don't.
-        if editable && !shortcut && !emacs && matches!(event.key, Key::Character(_) | Key::Space) {
+        // key, down and up, so its ancestors' shortcuts and clicks don't. Shortcuts (Cmd on
+        // macOS, Ctrl elsewhere) and macOS's Emacs bindings (Ctrl) are mapped.
+        if editable
+            && matches!(event.key, Key::Character(_) | Key::Space)
+            && !mapping.shortcut(modifiers)
+            && !mapping.emacs(modifiers)
+        {
             return true;
         }
         if event.kind != KeyEventType::KeyDown {
@@ -3039,245 +3010,231 @@ impl TextFieldNode {
         if self.preedit || self.preedit_interrupted {
             return key_is_not_tab(event.key);
         }
-        // The keypad's navigation keys as the others, as Compose's key mapping (D1147).
-        let mut key = KeyEvent::without_num_pad(event.key);
-        if emacs && let Key::Character(c) = key {
-            let mapped = match c.to_ascii_lowercase() {
-                'a' => Key::MoveHome,
-                'e' => Key::MoveEnd,
-                'b' => Key::DirectionLeft,
-                'f' => Key::DirectionRight,
-                'p' => Key::DirectionUp,
-                'n' => Key::DirectionDown,
-                'd' => Key::Delete,
-                'h' => Key::Backspace,
-                'k' if editable => {
-                    let end = self.line_edge(true, context);
-                    // At a line's end, the new line goes.
-                    let end = if end == self.cursor { self.next_boundary(end) } else { end };
-                    self.delete(self.cursor..end.max(self.cursor), context);
-                    return true;
-                }
-                _ => return false,
-            };
-            key = mapped;
-            modifiers.ctrl = false;
+        // The platform's key mapping, as Compose's `keyMapping.map(event)` (D1148); a command
+        // editing the text isn't a read-only field's.
+        let Some((command, select)) = mapping.map(event.key, modifiers) else { return false };
+        if command.edits_text() && !editable {
+            return false;
         }
-        let extend = modifiers.shift;
-        // Word motion (and paragraphs with Up and Down): Option on macOS, Ctrl elsewhere. Line
-        // motion (and the text's ends with Up and Down): Cmd on macOS, Alt elsewhere, as Compose's
-        // Android key mapping (`platformDefaultKeyMapping`, D1147).
-        let by_word = if is_macos() { modifiers.alt } else { modifiers.ctrl };
-        let by_line = if is_macos() {
-            modifiers.meta
-        } else {
-            modifiers.alt && !modifiers.ctrl && !modifiers.meta
-        };
-        if !matches!(key, Key::DirectionUp | Key::DirectionDown) {
+        // Up, Down and the pages keep the horizontal position, as Compose's cached x.
+        if !matches!(
+            command,
+            KeyCommand::Up | KeyCommand::Down | KeyCommand::PageUp | KeyCommand::PageDown
+        ) {
             self.preferred_x = None;
         }
-        // The clipboard's own keys, and Insert's (Ctrl+Insert copies, Shift+Insert pastes), as
-        // Compose's `commonKeyMapping` (D1147).
-        let plain = !modifiers.shift && !modifiers.alt && !shortcut;
-        let clipboard_key = match key {
-            Key::Copy if plain => Some('c'),
-            Key::Cut if plain => Some('x'),
-            Key::Paste if plain => Some('v'),
-            Key::Insert if shortcut && !modifiers.shift && !modifiers.alt => Some('c'),
-            Key::Insert if modifiers.shift && !shortcut && !modifiers.alt => Some('v'),
-            _ => None,
-        };
-        let shortcut_key = match key {
-            Key::Character(c) if shortcut => Some(c),
-            _ => clipboard_key,
-        };
-        if let Some(c) = shortcut_key {
-            let selected = self.text[self.selection()].to_string();
-            match c.to_ascii_lowercase() {
-                'a' => {
-                    self.anchor = 0;
-                    self.cursor = self.text.len();
-                    context.invalidate_measure();
+        // A state-based field's arrow moving nothing (at the text's edge) isn't taken, so the
+        // focus moves on, as Compose's `TextFieldKeyEventHandler` (the selection unchanged); the
+        // value-based field takes it, as Compose's `TextFieldKeyInput` (D1149).
+        let edge_free = self.state.is_some()
+            && matches!(
+                command,
+                KeyCommand::Up | KeyCommand::Down | KeyCommand::LeftChar | KeyCommand::RightChar
+            );
+        let before = edge_free.then(|| self.shown_selection());
+        let taken = self.run_key_command(command, select, context);
+        taken && before.is_none_or(|before| before != self.shown_selection())
+    }
+
+    /// The selection as shown: its ends and, of a state-based field, which side of an insertion
+    /// each is shown on.
+    fn shown_selection(&self) -> (usize, usize, Option<SelectionWedgeAffinity>) {
+        (self.anchor, self.cursor, self.state.as_ref().map(|link| link.wedge_affinity))
+    }
+
+    /// What `command` does, as Compose's `TextFieldKeyEventHandler`; `select` extends the
+    /// selection. Returns whether the key is taken.
+    fn run_key_command(
+        &mut self,
+        command: KeyCommand,
+        select: bool,
+        context: &mut EventContext<'_>,
+    ) -> bool {
+        use KeyCommand as C;
+        match command {
+            // A password can't be copied nor cut, as Compose's.
+            C::Copy => {
+                let selection = self.selection();
+                if !self.is_password() && !selection.is_empty() {
+                    context.clipboard().set_text(&self.text[selection]);
                 }
-                // A password can't be copied nor cut, as Compose's.
-                'c' if self.is_password() => {}
-                'x' if self.is_password() => {}
-                'c' if !selected.is_empty() => context.clipboard().set_text(&selected),
-                'x' if !selected.is_empty() && editable => {
-                    context.clipboard().set_text(&selected);
+            }
+            C::Cut => {
+                let selection = self.selection();
+                if !self.is_password() && !selection.is_empty() {
+                    context.clipboard().set_text(&self.text[selection]);
                     self.replace_selection("", false, context);
                     self.restart_after_outside_edit();
                 }
-                'v' if editable => {
-                    if let Some(pasted) = context.clipboard().get_text() {
-                        self.insert(&pasted, false, context);
-                        self.restart_after_outside_edit();
-                    }
-                }
-                'z' if editable => self.undo(modifiers.shift, context),
-                'y' if editable && !is_macos() => self.undo(true, context),
-                // The selection collapsed to its end, as Compose's `DESELECT` (D1147).
-                '\\' if !modifiers.shift && !modifiers.alt => {
-                    self.anchor = self.cursor;
-                    context.invalidate_measure();
-                }
-                // Ctrl+H deletes back, as Compose's (macOS's Ctrl+H is the Emacs binding's).
-                'h' if editable && !is_macos() && !modifiers.alt => {
-                    return self.on_key_event_here(
-                        &KeyEvent {
-                            key: Key::Backspace,
-                            modifiers: compose_ui::KeyModifiers::default(),
-                            ..*event
-                        },
-                        context,
-                    );
-                }
-                _ => return false,
             }
-            return true;
+            C::Paste => {
+                if let Some(pasted) = context.clipboard().get_text() {
+                    self.insert(&pasted, false, context);
+                    self.restart_after_outside_edit();
+                }
+            }
+            C::SelectAll => {
+                self.anchor = 0;
+                self.cursor = self.text.len();
+                context.invalidate_measure();
+            }
+            C::Undo => self.undo(false, context),
+            C::Redo => self.undo(true, context),
+            // The selection collapsed to its end, as Compose's `DESELECT` (D1147).
+            C::Deselect => {
+                self.anchor = self.cursor;
+                context.invalidate_measure();
+            }
+            // In a multi-line field, Tab types a tab, as Compose's; a single line's moves focus.
+            C::Tab if self.single_line => return false,
+            C::Tab => self.insert("\t", false, context),
+            // A single line's Enter performs its action, as Compose's `onImeActionPerformed`.
+            C::NewLine if self.single_line => {
+                let action = self.keyboard_options.to_ime_options(true).ime_action;
+                return self.perform_ime_action(action, context);
+            }
+            C::NewLine => self.insert("\n", false, context),
+            // The D-pad's center shows a state-based field's on-screen keyboard, as Compose's
+            // `CENTER`; the value-based field's leaves it to its focus, as `TextFieldKeyInput`.
+            C::Center if self.state.is_some() => context.show_software_keyboard(),
+            C::Center => return false,
+            // macOS's Ctrl+K: to the line's end; at it, the new line goes.
+            C::KillToLineEnd => {
+                let end = self.line_edge(true, context);
+                let end = if end == self.cursor { self.next_boundary(end) } else { end };
+                self.delete(self.cursor..end.max(self.cursor), context);
+            }
+            C::DeletePrevChar
+            | C::DeleteNextChar
+            | C::DeletePrevWord
+            | C::DeleteNextWord
+            | C::DeleteFromLineStart
+            | C::DeleteToLineEnd => self.delete_by_key(command, context),
+            C::LeftChar
+            | C::RightChar
+            | C::LeftWord
+            | C::RightWord
+            | C::LineLeft
+            | C::LineRight => {
+                self.move_sideways(command, select, context);
+            }
+            // Taken even with nothing to move to, as Compose's: not left to a scroll around.
+            C::PageUp | C::PageDown => {
+                let cursor = self.by_page(command == C::PageDown, context);
+                self.move_cursor(cursor, select, context);
+            }
+            C::Up | C::Down => {
+                let cursor = self.vertical(command == C::Down, context);
+                self.move_cursor(cursor, select, context);
+            }
+            // By paragraphs, as Compose's `NEXT_PARAGRAPH` and `PREV_PARAGRAPH` (D1147).
+            C::PrevParagraph | C::NextParagraph => {
+                let cursor = if command == C::NextParagraph {
+                    paragraph_end(&self.text, self.cursor)
+                } else {
+                    paragraph_start(&self.text, self.cursor)
+                };
+                self.move_cursor(cursor, select, context);
+            }
+            C::Home | C::End => {
+                let end = command == C::End;
+                if !self.move_over_output_in(Motion::TextEdge, end, select, context) {
+                    let cursor = if end { self.text.len() } else { 0 };
+                    self.move_cursor(cursor, select, context);
+                }
+            }
+            // The start and end of the visual (wrapped) line.
+            C::LineStart | C::LineEnd => {
+                let end = command == C::LineEnd;
+                if !self.move_over_output_in(Motion::LineEdge, end, select, context) {
+                    let cursor = self.line_edge(end, context);
+                    self.move_cursor(cursor, select, context);
+                }
+            }
         }
+        true
+    }
+
+    /// A deletion's key, as Compose's `deleteMovement`: a selection goes; else what the motion
+    /// moves over.
+    fn delete_by_key(&mut self, command: KeyCommand, context: &mut EventContext<'_>) {
+        use KeyCommand as C;
+        // A selection shown as a cursor (a deleted range) deletes by the motion, as Compose's
+        // `deleteMovement` from its visual selection.
+        if !self.selection().is_empty() && !self.selection_shown_as_cursor() {
+            if let Some(link) = self.state.as_mut() {
+                // As Compose's `deleteSelectedText`: a step of its own.
+                link.never_merge = true;
+            }
+            self.replace_selection("", false, context);
+            return;
+        }
+        let (motion, forward) = match command {
+            C::DeletePrevChar => (Motion::CodePointOrEmoji, false),
+            C::DeleteNextChar => (Motion::Cluster, true),
+            C::DeletePrevWord => (Motion::Word, false),
+            C::DeleteNextWord => (Motion::Word, true),
+            C::DeleteFromLineStart => (Motion::LineEdge, false),
+            _ => (Motion::LineEdge, true),
+        };
+        if self.delete_over_output(motion, forward, context) {
+            return;
+        }
+        let cursor = self.cursor;
+        let range = match command {
+            // A code point, or an emoji whole, as Compose's `moveCursorPrevByCodePointOrEmoji`
+            // (D1147).
+            C::DeletePrevChar => code_point_or_emoji_before(&self.text, cursor)..cursor,
+            C::DeletePrevWord => self.previous_word(cursor).min(cursor)..cursor,
+            C::DeleteFromLineStart => self.line_edge(false, context).min(cursor)..cursor,
+            C::DeleteNextChar => cursor..self.next_boundary(cursor),
+            C::DeleteNextWord => cursor..self.next_word(cursor).max(cursor),
+            // To the line's end, as Compose's `DELETE_TO_LINE_END`.
+            _ => cursor..self.line_edge(true, context).max(cursor),
+        };
+        self.delete(range, context);
+    }
+
+    /// Left and Right by characters, words or to the line's sides: backward in left-to-right
+    /// text, forward in right-to-left text.
+    fn move_sideways(&mut self, command: KeyCommand, select: bool, context: &mut EventContext<'_>) {
+        use KeyCommand as C;
         let right_to_left = self
             .paragraph
             .is_some_and(|paragraph| context.text_measurer().is_right_to_left(paragraph));
-        match key {
-            // In a multi-line field, a plain Tab types a tab, as Compose's; Shift+Tab moves focus.
-            Key::Tab if editable && !self.single_line && !extend && !shortcut && !modifiers.alt => {
-                self.insert("\t", false, context);
-                true
-            }
-            // A selection shown as a cursor (a deleted range) deletes by the motion, as
-            // Compose's `deleteMovement` from its visual selection.
-            Key::Backspace | Key::Delete
-                if editable
-                    && !self.selection().is_empty()
-                    && !self.selection_shown_as_cursor() =>
-            {
-                if let Some(link) = self.state.as_mut() {
-                    // As Compose's `deleteSelectedText`: a step of its own.
-                    link.never_merge = true;
-                }
-                self.replace_selection("", false, context);
-                true
-            }
-            Key::Backspace if editable => {
-                let motion = Motion::of(by_line, by_word);
-                if self.delete_over_output(motion, false, context) {
-                    return true;
-                }
-                let start = if by_line {
-                    self.line_edge(false, context)
-                } else if by_word {
-                    self.previous_word(self.cursor)
-                } else {
-                    // A code point, or an emoji whole, as Compose's
-                    // `moveCursorPrevByCodePointOrEmoji` (D1147).
-                    code_point_or_emoji_before(&self.text, self.cursor)
-                };
-                self.delete(start.min(self.cursor)..self.cursor, context);
-                true
-            }
-            Key::Delete if editable => {
-                let motion = Motion::of(by_line, by_word);
-                if self.delete_over_output(motion, true, context) {
-                    return true;
-                }
-                // To the line's end (Alt, or Cmd on macOS), as Compose's `DELETE_TO_LINE_END`.
-                let end = if by_line {
-                    self.line_edge(true, context)
-                } else if by_word {
-                    self.next_word(self.cursor)
-                } else {
-                    self.next_boundary(self.cursor)
-                };
-                self.delete(self.cursor..end.max(self.cursor), context);
-                true
-            }
-            Key::DirectionLeft | Key::DirectionRight => {
-                // Left is backward in left-to-right text, forward in right-to-left text.
-                let backward = (key == Key::DirectionLeft) != right_to_left;
-                let selection = self.selection();
-                let motion = Motion::of(by_line, by_word);
-                // A selection collapses where it's shown as one (not a deleted range, shown as a
-                // cursor), as Compose's `collapseLeftOr` in its visual text.
-                let collapses = !by_line
-                    && !by_word
-                    && !extend
-                    && !selection.is_empty()
-                    && !self.shown_range(selection.clone()).is_empty();
-                if !collapses && self.move_over_output_in(motion, !backward, extend, context) {
-                    return true;
-                }
-                let cursor = if by_line {
-                    self.line_edge(!backward, context)
-                } else if by_word {
-                    if backward {
-                        self.previous_word(self.cursor)
-                    } else {
-                        self.next_word(self.cursor)
-                    }
-                } else if collapses {
-                    // Without Shift, an arrow collapses a selection to its side.
-                    if backward { selection.start } else { selection.end }
-                } else if backward {
-                    self.previous_boundary(self.cursor)
-                } else {
-                    self.next_boundary(self.cursor)
-                };
-                self.move_cursor(cursor, extend, context);
-                true
-            }
-            // Taken even with nothing to move to, as Compose's: not left to a scroll around.
-            Key::PageUp | Key::PageDown => {
-                let cursor = self.by_page(key == Key::PageDown, context);
-                self.move_cursor(cursor, extend, context);
-                true
-            }
-            Key::DirectionUp | Key::DirectionDown => {
-                let down = key == Key::DirectionDown;
-                if by_line && self.move_over_output_in(Motion::TextEdge, down, extend, context) {
-                    return true;
-                }
-                let cursor = if by_line {
-                    if down { self.text.len() } else { 0 }
-                } else if by_word {
-                    // By paragraphs, as Compose's `NEXT_PARAGRAPH` and `PREV_PARAGRAPH` (D1147).
-                    if down {
-                        paragraph_end(&self.text, self.cursor)
-                    } else {
-                        paragraph_start(&self.text, self.cursor)
-                    }
-                } else {
-                    self.vertical(down, context)
-                };
-                self.move_cursor(cursor, extend, context);
-                true
-            }
-            // The start and end of the visual (wrapped) line, or of the text with Ctrl.
-            Key::MoveHome | Key::MoveEnd => {
-                let end = key == Key::MoveEnd;
-                let motion = if modifiers.ctrl { Motion::TextEdge } else { Motion::LineEdge };
-                if self.move_over_output_in(motion, end, extend, context) {
-                    return true;
-                }
-                let cursor = if modifiers.ctrl {
-                    if end { self.text.len() } else { 0 }
-                } else {
-                    self.line_edge(end, context)
-                };
-                self.move_cursor(cursor, extend, context);
-                true
-            }
-            Key::Enter | Key::NumPadEnter if editable && !self.single_line => {
-                self.insert("\n", false, context);
-                true
-            }
-            // A single line's Enter performs its action, as Compose's `onImeActionPerformed`.
-            Key::Enter | Key::NumPadEnter if self.single_line => {
-                let action = self.keyboard_options.to_ime_options(true).ime_action;
-                self.perform_ime_action(action, context)
-            }
-            _ => false,
+        let left = matches!(command, C::LeftChar | C::LeftWord | C::LineLeft);
+        let backward = left != right_to_left;
+        let motion = match command {
+            C::LineLeft | C::LineRight => Motion::LineEdge,
+            C::LeftWord | C::RightWord => Motion::Word,
+            _ => Motion::Cluster,
+        };
+        let selection = self.selection();
+        // A selection collapses where it's shown as one (not a deleted range, shown as a cursor),
+        // as Compose's `collapseLeftOr` in its visual text.
+        let collapses = matches!(motion, Motion::Cluster)
+            && !select
+            && !selection.is_empty()
+            && !self.shown_range(selection.clone()).is_empty();
+        if !collapses && self.move_over_output_in(motion, !backward, select, context) {
+            return;
         }
+        let cursor = match motion {
+            Motion::LineEdge => self.line_edge(!backward, context),
+            Motion::Word if backward => self.previous_word(self.cursor),
+            Motion::Word => self.next_word(self.cursor),
+            // Without Shift, an arrow collapses a selection to its side.
+            _ if collapses => {
+                if backward {
+                    selection.start
+                } else {
+                    selection.end
+                }
+            }
+            _ if backward => self.previous_boundary(self.cursor),
+            _ => self.next_boundary(self.cursor),
+        };
+        self.move_cursor(cursor, select, context);
     }
 }
 
@@ -3770,11 +3727,16 @@ impl TextFieldNode {
                 if is_cut && !editable {
                     return false;
                 }
+                let end = selected.end;
                 let selected = self.text[selected].to_string();
                 context.clipboard().set_text(&selected);
                 if is_cut {
                     self.replace_selection("", false, context);
                     self.restart_after_outside_edit();
+                } else {
+                    // Copied, the selection collapses to its end, as Compose's
+                    // `copy(cancelSelection = true)` for both fields.
+                    self.move_cursor(end, false, context);
                 }
                 true
             }
@@ -3806,7 +3768,22 @@ impl TextFieldNode {
 /// the `FocusableNode` of Compose's `TextFieldDecoratorModifier` (D1145).
 struct FocusOnTap {
     interaction_source: Option<compose_ui::MutableInteractionSource>,
-    field_focused: FieldFocused,
+}
+
+/// The key the field's node finds its decoration's `FocusOnTapNode` by, to tell it of its focus.
+static FIELD_DECORATION: compose_ui::TraverseKey =
+    compose_ui::TraverseKey::new("TextFieldDecoration");
+
+/// Tells the decoration's `FocusOnTapNode` around the field whether the field has the focus
+/// (D1145): found when the focus changes, so no state is shared through the composition (D1149).
+fn tell_decoration(focused: bool, context: &mut compose_ui::NodeContext<'_>) {
+    let Some(mut decoration) = context.find_nearest_ancestor_with_key(&FIELD_DECORATION) else {
+        return;
+    };
+    let node: &mut dyn ModifierNode = &mut *decoration;
+    if let Some(decoration) = node.downcast_mut::<FocusOnTapNode>() {
+        decoration.field_focused = focused;
+    }
 }
 
 #[derive(Default)]
@@ -3814,7 +3791,8 @@ struct FocusOnTapNode {
     pressed: bool,
     interaction_source: Option<compose_ui::MutableInteractionSource>,
     press: Option<compose_ui::Press>,
-    field_focused: FieldFocused,
+    /// Whether the field below has the focus, as its node tells it.
+    field_focused: bool,
     /// The field's focus when it was last told: shown when it's gained.
     focused: bool,
 }
@@ -3836,14 +3814,9 @@ impl FocusOnTapNode {
 impl ModifierNodeElement for FocusOnTap {
     type Node = FocusOnTapNode;
     fn create(&self) -> FocusOnTapNode {
-        FocusOnTapNode {
-            interaction_source: self.interaction_source.clone(),
-            field_focused: self.field_focused.clone(),
-            ..Default::default()
-        }
+        FocusOnTapNode { interaction_source: self.interaction_source.clone(), ..Default::default() }
     }
     fn update(&self, node: &mut Self::Node) {
-        node.field_focused = self.field_focused.clone();
         if node.interaction_source != self.interaction_source {
             node.end_press(false);
             node.interaction_source = self.interaction_source.clone();
@@ -3851,7 +3824,6 @@ impl ModifierNodeElement for FocusOnTap {
     }
     fn same(&self, other: &Self) -> bool {
         self.interaction_source == other.interaction_source
-            && Rc::ptr_eq(&self.field_focused, &other.field_focused)
     }
     fn name(&self) -> &'static str {
         "focus_on_tap"
@@ -3870,13 +3842,23 @@ impl ModifierNode for FocusOnTapNode {
     fn on_detach(&mut self, _context: &mut compose_ui::NodeContext<'_>) {
         self.end_press(false);
     }
+
+    fn as_traversable(&mut self) -> Option<&mut dyn compose_ui::TraversableNode> {
+        Some(self)
+    }
+}
+
+impl compose_ui::TraversableNode for FocusOnTapNode {
+    fn traverse_key(&self) -> &'static compose_ui::TraverseKey {
+        &FIELD_DECORATION
+    }
 }
 
 impl compose_ui::FocusEventModifierNode for FocusOnTapNode {
     /// The field gaining the focus (not another target in its decoration) is shown whole, if its
     /// containers can, as Compose's `FocusableNode.onFocusStateChange` (D1145).
     fn on_focus_event(&mut self, _state: compose_ui::FocusState, context: &mut EventContext<'_>) {
-        let focused = self.field_focused.get();
+        let focused = self.field_focused;
         if focused && !self.focused {
             context.bring_into_view();
         }
@@ -3944,6 +3926,10 @@ impl compose_ui::PointerInputModifierNode for FocusOnTapNode {
         self.end_press(false);
     }
 }
+
+#[cfg(test)]
+#[path = "text_field_key_mapping_tests.rs"]
+mod key_mapping_tests;
 
 #[cfg(test)]
 mod tests {

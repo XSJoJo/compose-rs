@@ -1163,6 +1163,13 @@ pub trait ModifierNode: Any {
     fn as_pointer_input(&mut self) -> Option<&mut dyn PointerInputModifierNode> {
         None
     }
+    /// What hears the indirect pointer events of the focus it holds or is around, as
+    /// `IndirectPointerInputModifierNode` (D1675).
+    fn as_indirect_pointer_input(
+        &mut self,
+    ) -> Option<&mut dyn crate::indirect_pointer::IndirectPointerInputModifierNode> {
+        None
+    }
     fn as_semantics(&mut self) -> Option<&mut dyn SemanticsModifierNode> {
         None
     }

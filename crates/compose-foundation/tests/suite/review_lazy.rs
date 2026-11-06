@@ -456,7 +456,8 @@ fn a_frame_that_composes_in_its_relayout_loop_reports_it_recomposed() {
     state.dispatch_raw_delta(200.0);
     let stats = ui.host().frame();
     assert_eq!(state.first_visible_item_index(), 10);
-    assert!(stats.recomposed, "{stats:?}");
+    // The rows compose in the list's measurement (D1312): the frame ran their bodies.
+    assert!(stats.bodies_run > 0, "{stats:?}");
 }
 
 /// Input: a `LazyColumn` of 1000 rows; a drag up by 50 px in moves of 10 px.

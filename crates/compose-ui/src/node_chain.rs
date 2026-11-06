@@ -89,6 +89,7 @@ impl NodeKinds {
             | NodeKinds::FOCUS_EVENT.0
             | NodeKinds::FOCUS_REQUESTER.0
             | NodeKinds::KEY_INPUT.0
+            | NodeKinds::INDIRECT_POINTER_INPUT.0
             | NodeKinds::TRAVERSABLE.0
             | NodeKinds::COMPOSITION_LOCAL_CONSUMER.0
             | NodeKinds::LOCALS.0
@@ -156,6 +157,7 @@ impl NodeKinds {
         add(node.as_focus_properties().is_some(), NodeKinds::FOCUS_PROPERTIES);
         add(node.as_focus_event().is_some(), NodeKinds::FOCUS_EVENT);
         add(node.as_key_input().is_some(), NodeKinds::KEY_INPUT);
+        add(node.as_indirect_pointer_input().is_some(), NodeKinds::INDIRECT_POINTER_INPUT);
         add(node.as_global_position_aware().is_some(), NodeKinds::GLOBAL_POSITION_AWARE);
         add(node.as_unplaced_aware().is_some(), NodeKinds::UNPLACED);
         add(node.as_parent_data().is_some(), NodeKinds::PARENT_DATA);

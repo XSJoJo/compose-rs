@@ -856,6 +856,60 @@ fn a_short_field_focused_is_shown_whole() {
     }
 }
 
+/// A focusable icon in a field's decoration, focused, is shown alone: the field, not a target in
+/// its decoration, gaining the focus asks for the whole decorated field, as Compose's
+/// `TextFieldDecoratorModifier`'s `FocusableNode`, which the inner field's focus drives (D1145).
+// Compose: compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/text/input/internal/TextFieldDecoratorModifier.kt, onFocusEvent (no test of its own)
+#[test]
+fn a_focused_icon_in_the_decoration_doesnt_show_the_whole_field() {
+    for state_based in [false, true] {
+        let scroll_state = **Box::leak(Box::new(ScrollState::new(0)));
+        let state = state_of("text");
+        let mut ui = compose_test(move || {
+            let decorator = |inner: Callback| {
+                Column!({
+                    inner();
+                    Box!(Modifier.size(10.dp()).focusable().test_tag("icon"));
+                    Box!(Modifier.height(30.dp()));
+                });
+            };
+            Column!(modifier = Modifier.height(100.dp()).vertical_scroll(scroll_state), {
+                Box!(Modifier.height(60.dp()));
+                if state_based {
+                    BasicTextFieldOfState!(
+                        state,
+                        modifier = Modifier.test_tag("field"),
+                        decorator = decorator,
+                    );
+                } else {
+                    BasicTextField!(
+                        "text".to_string(),
+                        |_| {},
+                        modifier = Modifier.test_tag("field"),
+                        decoration_box = decorator,
+                    );
+                }
+                Box!(Modifier.height(300.dp()));
+            });
+        });
+        ui.wait_for_idle();
+        let density = ui.density().density;
+        let icon = ui.on_node_with_tag_unmerged("icon").get_unclipped_bounds_in_root();
+        assert!(icon.bottom.0 * density <= 100.0 * density, "the icon shows: {:?}", icon.bottom);
+        ui.on_node_with_tag_unmerged("icon").request_focus();
+        ui.wait_for_idle();
+        assert_eq!(scroll_state.value(), 0, "state {state_based}: the icon showed already");
+        ui.on_node_with_tag("field").request_focus();
+        ui.wait_for_idle();
+        let field = ui.on_node_with_tag("field").get_unclipped_bounds_in_root();
+        assert!(
+            (field.bottom.0 * density - 100.0 * density).abs() <= 1.0,
+            "state {state_based}: the field ends at {:?}",
+            field.bottom
+        );
+    }
+}
+
 /// A field taller than the column scrolling it, mostly above it, shows its cursor (its first
 /// line) when focused, as Compose's `bringSelectionEndIntoView`, not its bottom: both fields
 /// (D1141). Its whole is asked for too (D1145), but it doesn't fit.

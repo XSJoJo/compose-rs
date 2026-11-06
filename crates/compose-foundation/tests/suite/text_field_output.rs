@@ -268,14 +268,22 @@ fn arrows_over_every_kind_of_change_select_what_was_deleted() {
     assert_eq!(shown, at(&[21, 20, 19, 18, 17, 8, 7, 6, 1, 0]));
 }
 
-/// Ctrl with Home or End goes to the shown text's ends: past the insertions there.
+/// The text's ends (Cmd with Up or Down on macOS, Alt on Android) are the shown text's: past the
+/// insertions there. Compose Desktop's default mapping (Linux, Windows) has no key to them
+/// (D1148).
 #[test]
 fn the_texts_ends_are_the_shown_texts() {
+    let line = if cfg!(target_os = "macos") {
+        KeyModifiers { meta: true, ..PLAIN }
+    } else if cfg!(target_os = "android") {
+        KeyModifiers { alt: true, ..PLAIN }
+    } else {
+        return;
+    };
     let (mut ui, state) = field_showing("abc def ghi", TextRange::at(0), mixed);
-    let ctrl = KeyModifiers { ctrl: true, ..PLAIN };
-    press(&mut ui, Key::MoveEnd, ctrl);
+    press(&mut ui, Key::DirectionDown, line);
     assert_eq!((state.selection(), cursor_told(&mut ui)), (TextRange::at(11), 21));
-    press(&mut ui, Key::MoveHome, ctrl);
+    press(&mut ui, Key::DirectionUp, line);
     assert_eq!((state.selection(), cursor_told(&mut ui)), (TextRange::at(0), 0));
 }
 
@@ -331,6 +339,51 @@ fn backspace_and_delete_go_by_what_is_shown() {
     // The shown step back is over the space before it, which maps to the space and the hidden
     // "def" both, as Compose's `mapFromTransformed` gives.
     assert_eq!(state.text().as_str(), "abc ghi");
+}
+
+/// Backspace goes back by a code point, or an emoji whole, of what's shown, as Compose's
+/// `moveCursorPrevByCodePointOrEmoji` on its visual text: behind a formatting insertion, the
+/// second of two combining marks goes alone and a skin-toned emoji whole (D1148).
+// Compose: compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/text/input/internal/selection/TextPreparedSelection.kt, moveCursorPrevByCodePointOrEmoji
+#[test]
+fn backspace_goes_back_by_a_code_point_of_what_is_shown() {
+    let prefix = |buffer: &mut TextFieldBuffer| buffer.insert(0, "(");
+    for (text, left) in [("e\u{301}\u{302}", "e\u{301}"), ("a\u{1F44D}\u{1F3FD}", "a")] {
+        let (mut ui, state) = field_showing(text, TextRange::at(text.len()), prefix);
+        assert_eq!(told(&mut ui).0, format!("({text}"));
+        press(&mut ui, Key::Backspace, PLAIN);
+        assert_eq!((state.text().as_str(), state.selection()), (left, TextRange::at(left.len())));
+    }
+}
+
+/// A secure field goes back by a code point of what it shows too, as Compose's: the glyph just
+/// typed, revealed, loses its last combining mark; a masked glyph goes whole.
+// Compose: compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/text/input/internal/selection/TextPreparedSelection.kt, moveCursorPrevByCodePointOrEmoji
+#[test]
+fn a_secure_fields_backspace_goes_back_by_a_code_point_of_what_is_shown() {
+    let state = **Box::leak(Box::new(TextFieldState::new("")));
+    let mut ui = ComposeTestRule::with_manual_clock(move || {
+        BasicSecureTextField!(
+            state,
+            modifier = Modifier.test_tag("field"),
+            text_obfuscation_mode = TextObfuscationMode::RevealLastTyped,
+        );
+    });
+    ui.on_node_with_tag("field").request_focus();
+    ui.wait_for_idle();
+    ui.on_node_with_tag("field").perform_text_input("ab");
+    ui.on_node_with_tag("field").perform_text_input("e\u{301}\u{302}");
+    let mut laid_out: Vec<compose_ui::TextLayoutResult> = Vec::new();
+    ui.on_node_with_tag("field").perform_semantics_action_with(&A::GET_TEXT_LAYOUT_RESULT, |get| {
+        get(&mut laid_out);
+    });
+    let shown = laid_out.pop().expect("a layout").layout_input.text.text().to_string();
+    assert_eq!(shown, "\u{2022}\u{2022}e\u{301}\u{302}", "the last glyph shown");
+    press(&mut ui, Key::Backspace, PLAIN);
+    assert_eq!(state.text().as_str(), "abe\u{301}");
+    // Masked now: the glyph goes whole.
+    press(&mut ui, Key::Backspace, PLAIN);
+    assert_eq!(state.text().as_str(), "ab");
 }
 
 /// A field's character advance with its 10 sp text (half an em in the test measurer).

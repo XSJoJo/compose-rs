@@ -48,6 +48,7 @@ mod graphics_layer_object;
 mod host;
 mod image;
 mod indication;
+mod indirect_pointer;
 mod input;
 mod input_mode;
 mod interaction;
@@ -250,6 +251,11 @@ pub use graphics_layer_object::{GraphicsLayer, remember_graphics_layer};
 pub use host::LOCAL_DENSITY;
 pub use image::{ImageBitmap, decode_image_bytes, remember_image_resource};
 pub use indication::{Indication, IndicationNodeFactory, LOCAL_INDICATION};
+pub use indirect_pointer::{
+    IndirectPointerEvent, IndirectPointerEventPrimaryDirectionalMotionAxis,
+    IndirectPointerEventType, IndirectPointerInputChange, IndirectPointerInputModifierNode,
+    IndirectPointerNavigationGestureDetector,
+};
 pub use input::{
     EventContext, Key, KeyEvent, KeyEventType, KeyModifiers, PointerEvent, PointerEventPass,
     PointerEventType, PointerIcon, PointerId, PointerType, WheelStep,

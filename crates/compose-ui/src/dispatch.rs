@@ -111,6 +111,8 @@ impl LiveChange {
         change.pointer_type = event.pointer_type;
         change.scroll_delta = event.scroll_delta;
         change.wheel_step = event.wheel_step;
+        change.pan_offset = event.pan_offset;
+        change.scale_factor = event.scale_factor;
         change.sharing(self.consumed.clone())
     }
 
@@ -406,16 +408,33 @@ impl UiTree {
                 _ => event,
             };
             let position = event.position;
+            let mut previous = previous;
+            // A pan or pinch starting while a button is held ends that press first: what it
+            // pressed is cancelled, as Compose's fake fingers take the pointer over (a host
+            // releases the buttons first; this is for one that doesn't).
+            if matches!(event.kind, PointerEventType::PanStart | PointerEventType::ScaleStart)
+                && previous.is_some_and(|it| it.pressed)
+            {
+                self.cancel_pointer(event.pointer);
+                previous = None;
+            }
             let captured = self.captures.iter().position(|(pointer, _)| *pointer == event.pointer);
             // Another of a mouse's buttons: it stays with what the first one pressed.
             let already_down = event.pointer_type == crate::input::PointerType::Mouse
                 && captured.is_some()
                 && previous.is_some_and(|it| it.pressed);
+            // A trackpad's pan or pinch keeps what it starts on, as a press does: Compose's is a
+            // stream of fake fingers.
             let path = match (event.kind, captured) {
                 (PointerEventType::Press, Some(captured)) if already_down => {
                     self.captures[captured].1.clone()
                 }
-                (PointerEventType::Press, captured) => {
+                (
+                    PointerEventType::Press
+                    | PointerEventType::PanStart
+                    | PointerEventType::ScaleStart,
+                    captured,
+                ) => {
                     if let Some(captured) = captured {
                         self.captures.remove(captured);
                     }
@@ -426,28 +445,48 @@ impl UiTree {
                 (PointerEventType::Release, Some(captured)) if !event.pressed => {
                     self.captures.remove(captured).1
                 }
+                (PointerEventType::PanEnd | PointerEventType::ScaleEnd, Some(captured)) => {
+                    self.captures.remove(captured).1
+                }
                 (
-                    PointerEventType::Release | PointerEventType::Move | PointerEventType::Unknown,
+                    PointerEventType::Release
+                    | PointerEventType::Move
+                    | PointerEventType::Unknown
+                    | PointerEventType::PanMove
+                    | PointerEventType::ScaleChange,
                     Some(captured),
                 ) => self.captures[captured].1.clone(),
                 _ => self.hit_test(position),
             };
             // A mouse's hover: what it left hears `Exit`, what it came over `Enter`, as Compose's
-            // (not while a button is held: a drag stays with what it pressed).
+            // (not while a button is held: a drag stays with what it pressed; nor in a pinch,
+            // whose fingers don't hover).
             let is_mouse = event.pointer_type == crate::input::PointerType::Mouse;
             let hovering = is_mouse
                 && event.kind != PointerEventType::Scroll
+                && !event.kind.is_scale()
                 && (!event.pressed || (event.kind == PointerEventType::Press && !already_down));
             if is_mouse && event.kind != PointerEventType::Scroll {
                 self.mouse = (!event.pressed).then_some(position);
+                if event.kind.is_pan() {
+                    self.panning = event.kind != PointerEventType::PanEnd;
+                }
             }
+            let mut path = path;
             if hovering {
-                let now = if event.kind == PointerEventType::Release || captured.is_some() {
+                let now = if event.kind.is_pan() && captured.is_some() {
+                    self.still_under(&path, position)
+                } else if event.kind == PointerEventType::Release || captured.is_some() {
                     self.hit_test(position)
                 } else {
                     path.clone()
                 };
-                self.update_hover(now, event, &mut actions, &mut requests);
+                let entered = self.update_hover(now, event, &mut actions, &mut requests);
+                // A hover move hears `Enter` where it comes in, not the move too, as Compose's
+                // `HitPathTracker` makes the move an `Enter` there.
+                if event.kind == PointerEventType::Move && !entered.is_empty() {
+                    path.retain(|entry| !entered.contains(entry));
+                }
             }
             // For a press, whether something before each entry (around it) waits for a gesture past
             // it, as Compose's `hasWaitingParent`.
@@ -784,13 +823,14 @@ impl UiTree {
 
     /// Moves the mouse's hover to the entries of `now`: `Exit` to those it left, `Enter` to
     /// those it came over (in the main pass).
+    /// Returns the entries it came over.
     fn update_hover(
         &mut self,
         now: Vec<HitEntry>,
         event: PointerEvent,
         actions: &mut Vec<Action>,
         requests: &mut Requests,
-    ) {
+    ) -> Vec<HitEntry> {
         let before = std::mem::take(&mut self.hovered);
         let same = |a: &HitEntry, b: &HitEntry| {
             a.node == b.node && a.index == b.index && a.version == b.version
@@ -802,6 +842,7 @@ impl UiTree {
         self.deliver_hover(&left, PointerEventType::Exit, event, actions, requests);
         self.deliver_hover(&entered, PointerEventType::Enter, event, actions, requests);
         self.hovered = now;
+        entered
     }
 
     /// Delivers `kind` (`Enter` or `Exit`) to `entries` (outer to inner), each its own event,
@@ -851,13 +892,25 @@ impl UiTree {
         icon.unwrap_or_default()
     }
 
+    /// What of `path` is still under `position`: a pan comes over nothing new, as Compose's
+    /// suppresses its hit tests; what scrolls away from under the cursor exits.
+    fn still_under(&mut self, path: &[HitEntry], position: Offset) -> Vec<HitEntry> {
+        let under = self.hit_test(position);
+        path.iter().filter(|entry| under.contains(entry)).copied().collect()
+    }
+
     /// Hit-tests the resting mouse again (after a layout moved what's under it): what it left
-    /// hears `Exit`, what it's now over `Enter`.
+    /// hears `Exit`, what it's now over `Enter` (nothing new during a trackpad's pan).
     pub fn refresh_hover(&mut self) -> Vec<Action> {
         let mut actions = Vec::new();
         let Some(position) = self.mouse else { return actions };
         let mut requests = Requests::default();
-        let now = self.hit_test(position);
+        let now = if self.panning {
+            let hovered = self.hovered.clone();
+            self.still_under(&hovered, position)
+        } else {
+            self.hit_test(position)
+        };
         self.update_hover(now, PointerEvent::moved(position, false), &mut actions, &mut requests);
         self.apply_requests(requests, &mut actions);
         actions
@@ -868,6 +921,7 @@ impl UiTree {
         let mut actions = Vec::new();
         let mut requests = Requests::default();
         self.mouse = None;
+        self.panning = false;
         self.pointer_states.retain(|it| it.1.pressed);
         let mut event = PointerEvent::moved(Offset::new(-1.0, -1.0), false);
         event.kind = PointerEventType::Exit;
@@ -879,6 +933,7 @@ impl UiTree {
     /// Ends every pointer gesture in progress, as when the window loses the pointer.
     pub fn cancel_pointers(&mut self) {
         self.pointer_states.clear();
+        self.panning = false;
         let mut told: Vec<HitEntry> = Vec::new();
         for (_, path) in std::mem::take(&mut self.captures) {
             for entry in path {
@@ -959,12 +1014,23 @@ impl UiTree {
     /// The path ends at the overlay holding the focus, as a window's keys stay in it; with
     /// nothing focused, keys go to the topmost overlay that takes the focus (a dialog's Escape).
     fn key_path(&mut self) -> Vec<(NodeId, usize, EntryId)> {
+        let focused = self.focus.active;
+        let start = focused.map(|active| active.node).or_else(|| self.modal_overlay());
+        self.kind_path(start, focused, NodeKinds::KEY_INPUT)
+    }
+
+    /// The nodes of `kind` from `start` up, innermost first, each node's delegates of the kind in
+    /// delegation order: in `target`'s layout node, those before the next target after it (what's
+    /// below that target is its, as `lastLocalNode`). It ends at an overlay.
+    fn kind_path(
+        &mut self,
+        start: Option<NodeId>,
+        target: Option<crate::focus::FocusTargetRef>,
+        kind: NodeKinds,
+    ) -> Vec<(NodeId, usize, EntryId)> {
         let mut path = Vec::new();
-        let focused = self.focused();
-        let mut node = focused.or_else(|| self.modal_overlay());
-        // From the last before the next target after the active one: what's below that target is
-        // its, as `lastLocalNode`.
-        let mut end = self.focus.active.filter(|_| focused.is_some()).and_then(|active| {
+        let mut node = start;
+        let mut end = target.and_then(|active| {
             let index = self.target_index(active)?;
             let chain = &self.node(active.node).chain;
             chain[index + 1..]
@@ -974,23 +1040,200 @@ impl UiTree {
         });
         while let Some(id) = node {
             let value = self.node_mut(id);
-            for index in (0..end.take().unwrap_or(value.chain.len())).rev() {
-                let entry = &mut value.chain[index];
-                if !entry.kinds.any(NodeKinds::KEY_INPUT) {
-                    continue;
+            let end = end.take().unwrap_or(value.chain.len());
+            if value.kinds.any(kind) {
+                for index in (0..end).rev() {
+                    let entry = &mut value.chain[index];
+                    if !entry.kinds.any(kind) {
+                        continue;
+                    }
+                    // The node, or each of its delegates of the kind.
+                    dispatch_for_kind(
+                        &mut *entry.node,
+                        entry.own,
+                        kind,
+                        EntryId::NO_DELEGATE,
+                        &mut |_, delegate| path.push((id, index, delegate)),
+                    );
                 }
-                // The node, or each of its delegates that takes keys.
-                dispatch_for_kind(
-                    &mut *entry.node,
-                    entry.own,
-                    NodeKinds::KEY_INPUT,
-                    EntryId::NO_DELEGATE,
-                    &mut |_, delegate| path.push((id, index, delegate)),
-                );
             }
             node = if value.overlay { None } else { value.parent };
         }
         path
+    }
+
+    // ---- Indirect pointers (D1675) ---------------------------------------------------------
+
+    /// The indirect pointer input nodes on `target`'s path, innermost first: its own (up to the
+    /// next target in its chain) and its ancestors', as Compose's `focusedIndirectPointerInputNode`
+    /// and its `ancestors`; the chain entries' ids, which outlive a move.
+    fn indirect_path_of(
+        &mut self,
+        target: Option<crate::focus::FocusTargetRef>,
+    ) -> Vec<(NodeId, EntryId, EntryId)> {
+        let Some(active) = target.filter(|active| self.get(active.node).is_some()) else {
+            return Vec::new();
+        };
+        let path =
+            self.kind_path(Some(active.node), Some(active), NodeKinds::INDIRECT_POINTER_INPUT);
+        path.into_iter()
+            .map(|(node, index, delegate)| (node, self.node(node).chain[index].id, delegate))
+            .collect()
+    }
+
+    /// Runs `f` on the indirect pointer input node of `entry` (a chain entry's id), if it's still
+    /// there.
+    fn with_indirect_node(
+        &mut self,
+        (node, entry, delegate): (NodeId, EntryId, EntryId),
+        actions: &mut Vec<Action>,
+        requests: &mut Requests,
+        f: impl FnOnce(
+            &mut dyn crate::indirect_pointer::IndirectPointerInputModifierNode,
+            &mut EventContext<'_>,
+        ),
+    ) {
+        let Some(index) =
+            self.get(node).and_then(|value| value.chain.iter().position(|it| it.id == entry))
+        else {
+            return;
+        };
+        self.with_event_context(node, index, delegate, actions, requests, None, false, |n, c| {
+            if let Some(handler) = n.as_indirect_pointer_input() {
+                f(handler, c);
+            }
+        });
+    }
+
+    /// The focus moved from `previous`: the indirect pointer input nodes no longer on its path are
+    /// told their stream ended, innermost first, as `AndroidComposeView.onFocusChanged`.
+    pub(crate) fn indirect_focus_moved(&mut self, previous: Option<crate::focus::FocusTargetRef>) {
+        let mut before = std::mem::take(&mut self.indirect_focus_path);
+        for entry in self.indirect_path_of(previous) {
+            if !before.contains(&entry) {
+                before.push(entry);
+            }
+        }
+        let after = self.indirect_path_of(self.focus.active);
+        let (mut actions, mut requests) = (Vec::new(), Requests::default());
+        for entry in before {
+            if !after.contains(&entry) {
+                self.with_indirect_node(entry, &mut actions, &mut requests, |node, _| {
+                    node.on_cancel_indirect_pointer_input()
+                });
+            }
+        }
+        self.indirect_focus_path = after;
+        self.apply_requests(requests, &mut actions);
+        self.pending_actions.append(&mut actions);
+    }
+
+    /// Entries removed from `node`'s chain: those on the focus's path are told their stream ended
+    /// as they go, as Compose's are when the focus leaves them with their node.
+    pub(crate) fn indirect_entries_removed(
+        &mut self,
+        node: NodeId,
+        entries: &mut [(crate::node_chain::ChainEntry, usize)],
+    ) {
+        for (entry, _) in entries.iter_mut() {
+            if !entry.kinds.any(NodeKinds::INDIRECT_POINTER_INPUT) {
+                continue;
+            }
+            let id = entry.id;
+            let path = &mut self.indirect_focus_path;
+            let on_path: Vec<EntryId> =
+                path.iter().filter(|it| it.0 == node && it.1 == id).map(|it| it.2).collect();
+            path.retain(|it| !(it.0 == node && it.1 == id));
+            if !on_path.is_empty() {
+                dispatch_for_kind(
+                    &mut *entry.node,
+                    entry.own,
+                    NodeKinds::INDIRECT_POINTER_INPUT,
+                    EntryId::NO_DELEGATE,
+                    &mut |delegate_node, delegate| {
+                        if on_path.contains(&delegate)
+                            && let Some(handler) = delegate_node.as_indirect_pointer_input()
+                        {
+                            handler.on_cancel_indirect_pointer_input();
+                        }
+                    },
+                );
+            }
+        }
+    }
+
+    /// Sends an indirect pointer event to what has the focus, as Compose's
+    /// `FocusOwnerImpl.dispatchIndirectPointerEvent`: its indirect pointer input nodes, `Initial`
+    /// from the outermost in, `Main` back out, `Final` in again (a node's delegates each pass in
+    /// delegation order). Then, as `AndroidComposeView`, the navigation gesture detector: a fling
+    /// along the primary axis moves the focus. Returns whether a change was consumed, and the
+    /// queued actions.
+    pub fn dispatch_indirect_pointer(
+        &mut self,
+        event: &crate::indirect_pointer::IndirectPointerEvent,
+    ) -> (bool, Vec<Action>) {
+        let (mut actions, mut requests) = (Vec::new(), Requests::default());
+        // Not while the focus system has invalidations to resolve, as Compose's (b/379289347):
+        // the detector still hears it, unconsumed.
+        let pending = self.focus.recheck_active
+            || !self.focus.invalidated_events.is_empty()
+            || !self.focus.target_flips.is_empty();
+        let path = if pending { Vec::new() } else { self.indirect_path_of(self.focus.active) };
+        // A node's delegates together.
+        let mut groups: Vec<std::ops::Range<usize>> = Vec::new();
+        for (at, entry) in path.iter().enumerate() {
+            match groups.last_mut() {
+                Some(group) if path[group.start].0 == entry.0 && path[group.start].1 == entry.1 => {
+                    group.end = at + 1
+                }
+                _ => groups.push(at..at + 1),
+            }
+        }
+        for pass in [PointerEventPass::Initial, PointerEventPass::Main, PointerEventPass::Final] {
+            let mut order: Vec<&std::ops::Range<usize>> = groups.iter().collect();
+            if pass != PointerEventPass::Main {
+                order.reverse();
+            }
+            for group in order {
+                for &entry in &path[group.clone()] {
+                    self.with_indirect_node(entry, &mut actions, &mut requests, |node, context| {
+                        node.on_indirect_pointer_event(event, pass, context)
+                    });
+                }
+            }
+        }
+        if !pending {
+            self.indirect_focus_path = path;
+        }
+        self.apply_requests(requests, &mut actions);
+        let consumed = !pending && event.is_consumed();
+        let configuration = self.view_configuration();
+        let direction = self
+            .indirect_navigation
+            .get_or_insert_with(Default::default)
+            .on_indirect_pointer_event(event, consumed, &configuration);
+        if let Some(direction) = direction {
+            self.move_focus_with(direction, false);
+        }
+        // What a focus change queued (a cancel's, the focus's events), with or without a fling.
+        actions.append(&mut self.pending_actions);
+        (consumed, actions)
+    }
+
+    /// Ends the indirect pointer stream: what has the focus is told, innermost first, as
+    /// `dispatchIndirectPointerCancel`, and the navigation detector ignores the rest of it.
+    pub fn cancel_indirect_pointer(&mut self) -> Vec<Action> {
+        let (mut actions, mut requests) = (Vec::new(), Requests::default());
+        for entry in self.indirect_path_of(self.focus.active) {
+            self.with_indirect_node(entry, &mut actions, &mut requests, |node, _| {
+                node.on_cancel_indirect_pointer_input()
+            });
+        }
+        if let Some(detector) = &mut self.indirect_navigation {
+            detector.cancel_current_event_stream();
+        }
+        self.apply_requests(requests, &mut actions);
+        actions
     }
 
     /// Sends a key event to the focused node and its ancestors until one consumes it; an
