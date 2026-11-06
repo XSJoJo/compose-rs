@@ -218,3 +218,22 @@ fn a_frame_keeps_each_recordings_filters_and_dumps_them() {
         "rect 0,0 1x1 #FF000000 lighting #FFFFFFFF #FF0000FF\nrect 0,0 1x1 #00000000 blend Clear\n"
     );
 }
+
+/// A quarter turn puts the sine where Compose's rotations do: plus on the first channel's row,
+/// minus on the second's.
+#[test]
+fn a_quarter_turn_puts_each_sine_where_composes_does() {
+    let mut red = ColorMatrix::new();
+    red.set_to_rotate_red(90.0);
+    assert_near(1.0, red.get(1, 2));
+    assert_near(-1.0, red.get(2, 1));
+    assert_near(0.0, red.get(1, 1));
+    let mut green = ColorMatrix::new();
+    green.set_to_rotate_green(90.0);
+    assert_near(-1.0, green.get(0, 2));
+    assert_near(1.0, green.get(2, 0));
+    let mut blue = ColorMatrix::new();
+    blue.set_to_rotate_blue(90.0);
+    assert_near(1.0, blue.get(0, 1));
+    assert_near(-1.0, blue.get(1, 0));
+}

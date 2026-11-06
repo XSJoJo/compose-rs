@@ -1618,6 +1618,34 @@ mod tests {
         assert_eq!(bytes[layer + 1 + operand_bytes(bytes, layer)], tag::RESTORE);
     }
 
+    /// A paint with only a blend mode flags 2 and writes the mode after its shader; one with only
+    /// a filter flags 4 and writes the filter there: each bit says which follows, read back
+    /// apart.
+    #[test]
+    fn a_blend_mode_alone_and_a_filter_alone_have_their_own_flags() {
+        let mut list = DisplayList::default();
+        let rect = Rect::new(0.0, 0.0, 1.0, 1.0);
+        let blended = Paint::fill(Color::RED).with_blend_mode(BlendMode::Xor);
+        list.push(DrawOp::DrawRect(rect, blended));
+        let tint = list.push_color_filter(ColorFilter::tint(Color::BLUE));
+        list.push(DrawOp::DrawRect(rect, Paint::fill(Color::RED).with_color_filter(tint)));
+        list.push(DrawOp::Restore);
+        let (mut resources, mut out) = (Resources::default(), Writer::default());
+        write_display_list(&list, &mut resources, &mut GroupCache::default(), &mut out);
+        let bytes = &out.bytes;
+        let after_shader = 1 + 16 + 4 + 1 + 4 + 1 + 1;
+        assert_eq!(bytes[1 + 16 + 4], 2, "fill, a blend mode");
+        assert_eq!(bytes[after_shader], BlendMode::Xor as u8);
+        let second = 1 + operand_bytes(bytes, 0);
+        assert_eq!(second, after_shader + 1);
+        assert_eq!(bytes[second], tag::DRAW_RECT);
+        assert_eq!(bytes[second + 1 + 16 + 4], 4, "fill, a filter");
+        assert_eq!(bytes[second + after_shader], color_filter::BLEND_MODE);
+        assert_eq!(read_u32(bytes, second + after_shader + 1), Color::BLUE.argb());
+        assert_eq!(bytes[second + after_shader + 5], BlendMode::SrcIn as u8);
+        assert_eq!(bytes[second + 1 + operand_bytes(bytes, second)], tag::RESTORE);
+    }
+
     // Compose: compose/ui/ui-graphics/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/AndroidBlendModeTest.kt, testBlendModeClearMapsToPorterDuffClear and the other mappings
     /// `Replayer.kt` reads the tags, filter kinds and blend modes this writes: its constants and
     /// its table of Android's modes, in Compose's order, are this file's.

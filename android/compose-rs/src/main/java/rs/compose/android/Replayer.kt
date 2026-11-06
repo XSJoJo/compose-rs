@@ -1567,6 +1567,13 @@ internal class Replayer(var text: TextMeasurer) {
         shaderNext = 0
         paintShader = null
         paint.shader = null
+        filters.fill(null)
+        filterCount = 0
+        filterNext = 0
+        paintFilter = null
+        paint.colorFilter = null
+        bitmapPaint.colorFilter = null
+        layerPaint.colorFilter = null
     }
 
     private companion object {

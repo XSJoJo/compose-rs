@@ -142,3 +142,18 @@ fn an_extent_fits_bounds_that_hold_it() {
     assert!(!fits_in(Rect::new(5.0, 15.0, 10.0, 10.0), bounds));
     assert!(!fits_in(Rect::new(5.0, 5.0, 10.0, 10.0), Rect::new(20.0, 20.0, 0.0, 0.0)));
 }
+
+/// A blended or filtered fill isn't one a layer's alpha can fade: a blend mode combines with
+/// what's under it, and a filter can change the alpha it's given (D1900). No extent, so no
+/// layer is folded into it.
+#[test]
+fn a_blended_or_filtered_fill_has_no_extent() {
+    let rect = Rect::new(0.0, 0.0, 4.0, 4.0);
+    let blended = Paint::fill(Color::RED).with_blend_mode(BlendMode::Multiply);
+    assert_eq!(extent(vec![DrawOp::DrawRect(rect, blended)]), None);
+    let mut list = DisplayList::default();
+    let filter = list.push_color_filter(ColorFilter::tint(Color::BLUE));
+    let filtered = Paint::fill(Color::RED).with_color_filter(filter);
+    assert_eq!(extent(vec![DrawOp::DrawRect(rect, filtered)]), None);
+    assert_eq!(extent(vec![DrawOp::DrawRect(rect, Paint::fill(Color::RED))]), Some(rect));
+}
