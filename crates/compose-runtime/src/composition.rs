@@ -196,6 +196,12 @@ impl Composition {
         with_runtime(|runtime| self.invalid_in_tree(runtime))
     }
 
+    /// [`has_invalidations`](Self::has_invalidations) as of the changes sent so far: what a
+    /// measurement asks per item, the turn's changes sent before the layout.
+    pub fn has_sent_invalidations(&self) -> bool {
+        with_runtime(|runtime| self.invalid_in_tree(runtime))
+    }
+
     #[inline]
     fn invalid_in_tree(&self, runtime: &mut Runtime) -> bool {
         let compositions = &runtime.compositions;

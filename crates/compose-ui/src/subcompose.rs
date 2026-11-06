@@ -1022,7 +1022,8 @@ impl SubcomposeMeasureScope<'_, '_> {
             }
             (slot.composition.clone()?, slot.node)
         };
-        if composition.has_invalidations() {
+        // The changes of the turn were sent before the layout: what's invalid is known.
+        if composition.has_sent_invalidations() {
             return None;
         }
         self.state.inner.borrow_mut().current_index += 1;
