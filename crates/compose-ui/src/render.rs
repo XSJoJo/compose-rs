@@ -151,6 +151,15 @@ impl UiTree {
     /// kept boundary drawing it is drawn again in this frame. A measurement it invalidates is
     /// left to the next frame, which the write asked for (as before boundaries kept anything).
     pub fn draw(&mut self) -> bool {
+        if self.placed_layer_nodes == 0 {
+            self.draw_pass::<false>()
+        } else {
+            self.draw_pass::<true>()
+        }
+    }
+
+    /// `draw`, `P` saying whether a node has a layer placed with one (D1909).
+    fn draw_pass<const P: bool>(&mut self) -> bool {
         let _pass = crate::graphics_layer_object::DrawPass::enter();
         // Drawing runs what they'd have run for a query.
         self.new_layers.clear();
@@ -174,7 +183,7 @@ impl UiTree {
         // Cleared first: the last frame's groups let go of the recordings they shared, which a
         // boundary drawn again records into in place.
         recording.clear();
-        self.draw_node(self.root_id(), &mut recording, observer.as_deref());
+        self.draw_node::<P>(self.root_id(), &mut recording, observer.as_deref());
         // The overlays, over everything, each where its provider put it.
         for index in 0..self.overlays.len() {
             let node = self.overlays[index];
@@ -184,15 +193,15 @@ impl UiTree {
             let placed = value.layers[0].offset;
             let at = value.overlay_origin - Offset::new(placed.x as f32, placed.y as f32);
             translate(&mut recording, at);
-            self.draw_node(node, &mut recording, observer.as_deref());
+            self.draw_node::<P>(node, &mut recording, observer.as_deref());
             translate(&mut recording, negate(at));
         }
         let mut groups = mem::take(&mut recording.groups);
-        self.draw_boundaries(&recording.boundaries, &mut groups, observer.as_deref());
+        self.draw_boundaries::<P>(&recording.boundaries, &mut groups, observer.as_deref());
         recording.groups = groups;
         if self.keeps_unplaced_groups() {
             let mut kept = mem::take(&mut recording.kept);
-            self.draw_kept(&mut kept);
+            self.draw_kept::<P>(&mut kept);
             recording.kept = kept;
         }
         self.display_list = recording;
@@ -230,21 +239,30 @@ impl UiTree {
     /// window's pixels without the other windows over it ([`draw`](Self::draw) records them
     /// all into one list).
     pub fn window_display_list(&mut self, window: Option<NodeId>) -> DisplayList {
+        if self.placed_layer_nodes == 0 {
+            self.window_display_list_of::<false>(window)
+        } else {
+            self.window_display_list_of::<true>(window)
+        }
+    }
+
+    /// `window_display_list`, `P` saying whether a node has a layer placed with one (D1909).
+    fn window_display_list_of<const P: bool>(&mut self, window: Option<NodeId>) -> DisplayList {
         let mut recording = DisplayList::default();
         match window {
-            None => self.draw_node(self.root_id(), &mut recording, None),
+            None => self.draw_node::<P>(self.root_id(), &mut recording, None),
             Some(node) => {
                 if let Some(value) = self.get(node).filter(|value| value.overlay && value.placed) {
                     let placed = value.layers[0].offset;
                     let at = value.overlay_origin - Offset::new(placed.x as f32, placed.y as f32);
                     translate(&mut recording, at);
-                    self.draw_node(node, &mut recording, None);
+                    self.draw_node::<P>(node, &mut recording, None);
                     translate(&mut recording, negate(at));
                 }
             }
         }
         let mut groups = mem::take(&mut recording.groups);
-        self.draw_boundaries(&recording.boundaries, &mut groups, None);
+        self.draw_boundaries::<P>(&recording.boundaries, &mut groups, None);
         recording.groups = groups;
         recording
     }
@@ -310,14 +328,14 @@ impl UiTree {
     /// them changed, so nothing is drawn.
     ///
     /// [`note_kept`]: UiTree::note_kept
-    fn draw_kept(&mut self, kept: &mut Vec<DrawGroup>) {
+    fn draw_kept<const P: bool>(&mut self, kept: &mut Vec<DrawGroup>) {
         let mut nodes = mem::take(&mut self.kept);
         nodes.retain(|node| self.stays_kept(*node));
         if nodes.len() > KEPT_CAPACITY {
             nodes.drain(..nodes.len() - KEPT_CAPACITY);
         }
         for node in &nodes {
-            self.draw_boundary(*node, kept, None);
+            self.draw_boundary::<P>(*node, kept, None);
         }
         self.kept = nodes;
     }
@@ -390,6 +408,15 @@ impl UiTree {
     /// Called between frames, after `prefetch`, by a platform that records groups (Android's
     /// render nodes): the frame revealing an item then neither draws nor records it.
     pub fn draw_ahead(&mut self) -> Option<Vec<DrawGroup>> {
+        if self.placed_layer_nodes == 0 {
+            self.draw_ahead_of::<false>()
+        } else {
+            self.draw_ahead_of::<true>()
+        }
+    }
+
+    /// `draw_ahead`, `P` saying whether a node has a layer placed with one (D1909).
+    fn draw_ahead_of<const P: bool>(&mut self) -> Option<Vec<DrawGroup>> {
         let _pass = crate::graphics_layer_object::DrawPass::enter();
         let node = loop {
             if self.measured_ahead.is_empty() {
@@ -402,14 +429,14 @@ impl UiTree {
         };
         let observer = self.observer.clone();
         let mut groups = Vec::new();
-        self.draw_boundary(node, &mut groups, observer.as_deref());
+        self.draw_boundary::<P>(node, &mut groups, observer.as_deref());
         Some(groups)
     }
 
     /// Records `node`; a custom node draws under observation (`observer`), so a state write it
     /// read draws again (D71). A repaint boundary is recorded by reference: `draw_boundary`
     /// draws it.
-    fn draw_node(
+    fn draw_node<const P: bool>(
         &mut self,
         node: NodeId,
         list: &mut DisplayList,
@@ -433,13 +460,13 @@ impl UiTree {
         let custom = value.kinds.any(NodeKinds::OBSERVED);
         match observer.filter(|_| custom) {
             Some(observer) => observer.observe(observation_key(node, Observation::Draw), || {
-                self.draw_node_observed(node, list, Some(observer))
+                self.draw_node_observed::<P>(node, list, Some(observer))
             }),
-            None => self.draw_node_observed(node, list, observer),
+            None => self.draw_node_observed::<P>(node, list, observer),
         }
     }
 
-    fn draw_node_observed(
+    fn draw_node_observed<const P: bool>(
         &mut self,
         node: NodeId,
         list: &mut DisplayList,
@@ -448,19 +475,19 @@ impl UiTree {
         let position = self.node(node).layers[0].offset;
         let position = Offset::new(position.x as f32, position.y as f32);
         translate(list, position);
-        self.draw_content(node, list, observer);
+        self.draw_content::<P>(node, list, observer);
         translate(list, negate(position));
     }
 
     /// Draws `node`'s chain and children, in its own coordinates.
-    fn draw_content(
+    fn draw_content<const P: bool>(
         &mut self,
         node: NodeId,
         list: &mut DisplayList,
         observer: Option<&compose_runtime::platform::ReadObserver>,
     ) {
         let origins = self.layer_origins(node);
-        self.draw_chain(node, 0, 0, &origins, list, observer);
+        self.draw_chain::<P>(node, 0, 0, &origins, list, observer);
     }
 
     /// Each layer's origin in `node`, on the stack for the chains components have (a checkbox's
@@ -480,7 +507,7 @@ impl UiTree {
     /// Appends to `groups` the group of each boundary in `boundaries` (a recording's), in
     /// order, each followed by the ones nested in it. Returns whether one's version changed,
     /// and whether one draws anything.
-    fn draw_boundaries(
+    fn draw_boundaries<const P: bool>(
         &mut self,
         boundaries: &[Boundary],
         groups: &mut Vec<DrawGroup>,
@@ -489,9 +516,9 @@ impl UiTree {
         let (mut changed, mut draws) = (false, false);
         for boundary in boundaries {
             let (version_changed, drawn) = if boundary.key & INNER_LAYER_KEY != 0 {
-                self.list_inner_layer(boundary.key, groups, observer)
+                self.list_inner_layer::<P>(boundary.key, groups, observer)
             } else {
-                self.draw_boundary(NodeId::from_bits(boundary.key), groups, observer)
+                self.draw_boundary::<P>(NodeId::from_bits(boundary.key), groups, observer)
             };
             changed |= version_changed;
             draws |= drawn;
@@ -503,7 +530,7 @@ impl UiTree {
     /// content drawn again first if something it drew from changed, else shared from what it
     /// kept (not copied), without running its draw code. Returns whether its version changed,
     /// and whether it draws anything.
-    fn draw_boundary(
+    fn draw_boundary<const P: bool>(
         &mut self,
         node: NodeId,
         groups: &mut Vec<DrawGroup>,
@@ -533,9 +560,9 @@ impl UiTree {
             match observer.filter(|_| custom) {
                 Some(observer) => observer
                     .observe(observation_key(node, Observation::Draw), || {
-                        self.draw_content(node, &mut recording, Some(observer))
+                        self.draw_content::<P>(node, &mut recording, Some(observer))
                     }),
-                None => self.draw_content(node, &mut recording, observer),
+                None => self.draw_content::<P>(node, &mut recording, observer),
             }
             let retained = self.node_mut(node).retained.as_mut().expect("a repaint boundary");
             match Arc::get_mut(&mut retained.recording) {
@@ -546,9 +573,18 @@ impl UiTree {
         }
         // Its size (the pivot, the clip) may have changed with its content.
         if dirty || layer_dirty {
-            let layer = self.layer_ahead(node).or_else(|| self.layer_properties(node, observer));
+            let layer = if P {
+                (self.layer_ahead_placed(node))
+                    .or_else(|| self.layer_properties_placed(node, observer))
+            } else {
+                self.layer_ahead(node).or_else(|| self.layer_properties(node, observer))
+            };
             if let Some(properties) = &layer {
-                self.note_layer_transparency(node, properties);
+                if P {
+                    self.note_layer_transparency_placed(node, properties);
+                } else {
+                    self.note_layer_transparency(node, properties);
+                }
             }
             if let Some(retained) = self.node_mut(node).retained.as_mut() {
                 retained.layer = layer;
@@ -567,7 +603,8 @@ impl UiTree {
             descendants: 0,
             empty: true,
         });
-        let (nested, nested_draws) = self.draw_boundaries(&content.boundaries, groups, observer);
+        let (nested, nested_draws) =
+            self.draw_boundaries::<P>(&content.boundaries, groups, observer);
         // A shadow is a drawing too, under no content (as a Compose layer's).
         let shadow = groups[index].layer.as_ref().is_some_and(|layer| layer.casts_shadow());
         let draws = !content.ops.is_empty() || nested_draws || shadow;
@@ -615,7 +652,7 @@ impl UiTree {
     /// as its node last drew it (with what draws the node), its version new if it was drawn
     /// since it was last listed or a nested group's changed. Returns whether its version
     /// changed, and whether it draws anything.
-    fn list_inner_layer(
+    fn list_inner_layer<const P: bool>(
         &mut self,
         key: u64,
         groups: &mut Vec<DrawGroup>,
@@ -640,7 +677,7 @@ impl UiTree {
             if placement.is_some() {
                 self.draw_placed_layer(node, entry, &origins, &mut unused, observer);
             } else {
-                self.draw_inner_layer(node, entry, layer, &origins, &mut unused, observer);
+                self.draw_inner_layer::<P>(node, entry, layer, &origins, &mut unused, observer);
             }
         }
         let inner = owner.and_then(|node| {
@@ -670,7 +707,8 @@ impl UiTree {
             descendants: 0,
             empty: true,
         });
-        let (nested, nested_draws) = self.draw_boundaries(&content.boundaries, groups, observer);
+        let (nested, nested_draws) =
+            self.draw_boundaries::<P>(&content.boundaries, groups, observer);
         // A shadow is a drawing too, under no content (as a Compose layer's).
         let shadow = groups[index].layer.as_ref().is_some_and(|layer| layer.casts_shadow());
         let draws = !content.ops.is_empty() || nested_draws || shadow;
@@ -704,7 +742,7 @@ impl UiTree {
     /// the chain and the children, into its own recording, which `list` draws by reference
     /// where it is. Returns whether `entry` is one.
     #[allow(clippy::too_many_arguments)]
-    fn draw_inner_layer(
+    fn draw_inner_layer<const P: bool>(
         &mut self,
         node: NodeId,
         entry: usize,
@@ -753,7 +791,7 @@ impl UiTree {
                     Arc::get_mut(&mut inner.recording).map(mem::take).unwrap_or_default();
                 recording.clear();
                 tree.semantics_changed |= transparency_changed;
-                tree.draw_chain(node, entry + 1, layer, origins, &mut recording, observer);
+                tree.draw_chain::<P>(node, entry + 1, layer, origins, &mut recording, observer);
                 let inner = &mut tree.node_mut(node).inner_layers[slot];
                 match Arc::get_mut(&mut inner.recording) {
                     Some(kept) => *kept = recording,
@@ -841,7 +879,7 @@ impl UiTree {
                 recording.clear();
                 tree.semantics_changed |= transparency_changed;
                 let outer = tree.recording_placed.replace((node, start));
-                tree.draw_chain(node, start, layer, origins, &mut recording, observer);
+                tree.draw_chain::<true>(node, start, layer, origins, &mut recording, observer);
                 tree.recording_placed = outer;
                 let inner = &mut tree.node_mut(node).inner_layers[slot];
                 match Arc::get_mut(&mut inner.recording) {
@@ -867,10 +905,6 @@ impl UiTree {
     /// `node`'s group layer drawn with `properties`: a service hears of its alpha coming to or
     /// leaving none, which hides what's under it or shows it (D1293).
     fn note_layer_transparency(&mut self, node: NodeId, properties: &LayerProperties) {
-        if self.placed_layer_nodes != 0 {
-            self.note_layer_transparency_placed(node, properties);
-            return;
-        }
         let value = self.node(node);
         let Some(index) = value.retained.as_ref().and_then(|retained| retained.layer_entry) else {
             return;
@@ -893,9 +927,6 @@ impl UiTree {
 
     /// The properties computed ahead for `node`'s layer, if they're for what it is now.
     fn layer_ahead(&mut self, node: NodeId) -> Option<LayerProperties> {
-        if self.placed_layer_nodes != 0 {
-            return self.layer_ahead_placed(node);
-        }
         let retained = self.node_mut(node).retained.as_mut()?;
         retained.layer_ahead.as_ref()?;
         let (properties, density, direction) = retained.layer_ahead.take()?;
@@ -987,7 +1018,7 @@ impl UiTree {
     /// `draw_after`s of the entries drawn here. An entry drawing its content
     /// (`draw_with_content`) draws the rest of the chain and the children where it asks. A
     /// boundary's graphics layer whose properties are its group's isn't drawn here.
-    fn draw_chain(
+    fn draw_chain<const P: bool>(
         &mut self,
         node: NodeId,
         from: usize,
@@ -996,7 +1027,7 @@ impl UiTree {
         list: &mut DisplayList,
         observer: Option<&compose_runtime::platform::ReadObserver>,
     ) {
-        if self.placed_layer_nodes != 0 {
+        if P {
             self.draw_chain_placed(node, from, layer, origins, list, observer);
             return;
         }
@@ -1012,14 +1043,14 @@ impl UiTree {
                 let bits = value.chain[index].kinds;
                 if bits.any(NodeKinds::DRAW) && lifted != Some(index as u16) {
                     // An inner layer draws the rest in a group of its own.
-                    if self.draw_inner_layer(node, index, layer, origins, list, observer) {
+                    if self.draw_inner_layer::<P>(node, index, layer, origins, list, observer) {
                         self.draw_afters(node, &after, origins, list);
                         return;
                     }
                     let value = self.node_mut(node);
                     if value.chain[index].state & entry_state::DELEGATING != 0 {
                         let next_layer = layer + usize::from(bits.any(NodeKinds::LAYOUT));
-                        self.draw_delegating_entry(
+                        self.draw_delegating_entry::<P>(
                             node, index, layer, next_layer, origins, list, observer,
                         );
                         self.draw_afters(node, &after, origins, list);
@@ -1064,7 +1095,7 @@ impl UiTree {
                     };
                     if draws_content {
                         let mut content = |list: &mut DisplayList| {
-                            access.enter().draw_chain(
+                            access.enter().draw_chain::<P>(
                                 node,
                                 index + 1,
                                 next_layer,
@@ -1107,7 +1138,7 @@ impl UiTree {
                 let child = self.node(node).children[index].node;
                 // Overlays are drawn last, over everything.
                 if !self.node(child).overlay {
-                    self.draw_node(child, list, observer);
+                    self.draw_node::<P>(child, list, observer);
                 }
             }
             translate(list, negate(content));
@@ -1145,14 +1176,14 @@ impl UiTree {
                 let bits = value.chain[index].kinds;
                 if bits.any(NodeKinds::DRAW) && lifted != Some(index as u16) {
                     // An inner layer draws the rest in a group of its own.
-                    if self.draw_inner_layer(node, index, layer, origins, list, observer) {
+                    if self.draw_inner_layer::<true>(node, index, layer, origins, list, observer) {
                         self.draw_afters(node, &after, origins, list);
                         return;
                     }
                     let value = self.node_mut(node);
                     if value.chain[index].state & entry_state::DELEGATING != 0 {
                         let next_layer = layer + usize::from(bits.any(NodeKinds::LAYOUT));
-                        self.draw_delegating_entry(
+                        self.draw_delegating_entry::<true>(
                             node, index, layer, next_layer, origins, list, observer,
                         );
                         self.draw_afters(node, &after, origins, list);
@@ -1197,7 +1228,7 @@ impl UiTree {
                     };
                     if draws_content {
                         let mut content = |list: &mut DisplayList| {
-                            access.enter().draw_chain(
+                            access.enter().draw_chain::<true>(
                                 node,
                                 index + 1,
                                 next_layer,
@@ -1245,7 +1276,7 @@ impl UiTree {
                 let child = self.node(node).children[index].node;
                 // Overlays are drawn last, over everything.
                 if !self.node(child).overlay {
-                    self.draw_node(child, list, observer);
+                    self.draw_node::<true>(child, list, observer);
                 }
             }
             translate(list, negate(content));
@@ -1258,7 +1289,7 @@ impl UiTree {
     /// order, each with what's inside it as its content (so two drawing their content draw it
     /// twice, as Compose's; one that doesn't hides it).
     #[allow(clippy::too_many_arguments)]
-    fn draw_delegating_entry(
+    fn draw_delegating_entry<const P: bool>(
         &mut self,
         node: NodeId,
         index: usize,
@@ -1293,7 +1324,14 @@ impl UiTree {
                     locals,
                 };
                 let mut content = |list: &mut DisplayList| {
-                    access.enter().draw_chain(node, index + 1, next_layer, origins, list, observer)
+                    access.enter().draw_chain::<P>(
+                        node,
+                        index + 1,
+                        next_layer,
+                        origins,
+                        list,
+                        observer,
+                    )
                 };
                 if draw.draws_content() {
                     let mut content_scope = crate::draw_modifiers::ContentDrawScope {

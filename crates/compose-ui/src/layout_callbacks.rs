@@ -1296,6 +1296,9 @@ impl UiTree {
         before_entry: Option<usize>,
         size: IntSize,
     ) -> Rect {
+        if self.placed_layer_nodes != 0 {
+            return self.rect_in_root_placed(node, layer, before_entry, size);
+        }
         let (width, height) = (size.width as f32, size.height as f32);
         let corners = self.map_all_to_root(
             node,
@@ -1324,8 +1327,41 @@ impl UiTree {
         before_entry: Option<usize>,
         point: Offset,
     ) -> Offset {
+        if self.placed_layer_nodes != 0 {
+            let [point] = self.map_all_to_root_placed(node, layer, before_entry, [point]);
+            return point;
+        }
         let [point] = self.map_all_to_root(node, layer, before_entry, [point]);
         point
+    }
+
+    /// `rect_in_root` while a node has a layer placed with one (D1909): the branch is taken
+    /// before the corners are, which keeps `map_all_to_root` as it was inlined on main.
+    #[cold]
+    #[inline(never)]
+    fn rect_in_root_placed(
+        &self,
+        node: NodeId,
+        layer: usize,
+        before_entry: Option<usize>,
+        size: IntSize,
+    ) -> Rect {
+        let (width, height) = (size.width as f32, size.height as f32);
+        let corners = self.map_all_to_root_placed(
+            node,
+            layer,
+            before_entry,
+            [
+                Offset::new(0.0, 0.0),
+                Offset::new(width, 0.0),
+                Offset::new(0.0, height),
+                Offset::new(width, height),
+            ],
+        );
+        let min = |pick: fn(&Offset) -> f32| corners.iter().map(pick).fold(f32::INFINITY, f32::min);
+        let max =
+            |pick: fn(&Offset) -> f32| corners.iter().map(pick).fold(f32::NEG_INFINITY, f32::max);
+        Rect::new(min(|p| p.x), min(|p| p.y), max(|p| p.x), max(|p| p.y))
     }
 
     /// `map_to_root` of several points, one walk up for them all.
@@ -1336,9 +1372,6 @@ impl UiTree {
         before_entry: Option<usize>,
         points: [Offset; N],
     ) -> [Offset; N] {
-        if self.placed_layer_nodes != 0 {
-            return self.map_all_to_root_placed::<N>(node, layer, before_entry, points);
-        }
         let (mut current, mut layer, mut before) = (node, layer, before_entry);
         let mut points = points;
         loop {
