@@ -174,12 +174,6 @@ pub(crate) struct SlotPosition {
 }
 
 impl Runtime {
-    /// Whether the pass in progress has an observer (`tooling`): set at its begin.
-    #[inline(always)]
-    fn pass_observed(&self) -> bool {
-        self.active.is_some_and(|active| active.observed)
-    }
-
     /// The index of the composition whose pass is composing.
     #[inline]
     pub(crate) fn check_composing(&self) -> u32 {
@@ -215,7 +209,8 @@ impl Runtime {
         reusable: bool,
     ) -> (NodeOp, NodeStart) {
         let composition = self.check_composing();
-        let observed = self.pass_observed();
+        #[cfg(feature = "composition-observer")]
+        let observed = self.active.is_some_and(|active| active.observed);
         let Runtime {
             compositions,
             scopes,
@@ -438,12 +433,10 @@ impl Runtime {
                 // then the scope may still skip, and its reads from the last run stay current.
                 frame.saved_epoch = scope.epoch;
                 frame.scope = group.scope;
+                #[cfg(feature = "composition-observer")]
                 if observed {
-                    scopes.log_observed(
-                        composition,
-                        group.scope,
-                        crate::tooling::ScopeEventKind::Enter,
-                    );
+                    let enter = crate::tooling::ScopeEventKind::Enter;
+                    scopes.log_observed(composition, group.scope, enter);
                 }
                 if conditional {
                     scopes.clear_conditions(group.scope);
@@ -476,7 +469,8 @@ impl Runtime {
 
     pub(crate) fn end_group(&mut self, restart: Option<fn(&dyn Any)>) -> NodeOp {
         let composition = self.check_composing();
-        let observed = self.pass_observed();
+        #[cfg(feature = "composition-observer")]
+        let observed = self.active.is_some_and(|active| active.observed);
         let Runtime {
             compositions,
             scopes,
@@ -508,6 +502,7 @@ impl Runtime {
             self.providers_invalid = 0;
         }
         frames.pop();
+        #[cfg(feature = "composition-observer")]
         if observed && restart.is_some() {
             scopes.log_observed(composition, frame.scope, crate::tooling::ScopeEventKind::Exit);
         }
@@ -1373,7 +1368,6 @@ fn start_group(kind: GroupKind, key: u64, data_key: u64) -> NodeStart {
     start_group_of(kind, key, data_key, false)
 }
 
-#[inline]
 fn start_group_of(kind: GroupKind, key: u64, data_key: u64, reusable: bool) -> NodeStart {
     let (op, start) =
         with_runtime(|runtime| runtime.start_group(kind, key, data_key, None, reusable));

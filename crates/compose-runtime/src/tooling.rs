@@ -8,6 +8,9 @@
 //! Scope events happen in the runtime's borrow, where an observer can't run: they're logged there
 //! and told outside it, in their order, before the next read a pass reports, at a pass's begin and
 //! end, and at a disposal. An invalidation is told by then: at the latest, the pass it causes.
+//!
+//! Behind the `composition-observer` feature, off by default: without it a pass takes no step for
+//! observers at all (D1505).
 
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -202,4 +205,51 @@ pub(crate) fn read_observer(
             observer.on_read_in_scope(&RecomposeScope::of(scope), value);
         }
     })
+}
+
+/// A pass of `id` begins: its observer, the one there now, if any, hears it, and what its scopes
+/// read. With none on the thread, one test.
+pub(crate) fn begin_pass(
+    id: CompositionId,
+    snapshot: &mut Option<crate::snapshots::PassSnapshot>,
+) -> Option<Rc<dyn CompositionObserver>> {
+    let observer = with_runtime(|runtime| {
+        if !runtime.scopes.observing() {
+            return None;
+        }
+        let observer = observer_of(&runtime.compositions, id.index)?;
+        if let Some(data) = runtime.compositions.get_mut(id) {
+            data.pass_observer = Some(observer.clone());
+        }
+        if let Some(active) = &mut runtime.active {
+            active.observed = true;
+        }
+        Some(observer)
+    })?;
+    flush();
+    observer.on_begin_composition(&ObservableComposition { id });
+    if let Some(snapshot) = snapshot {
+        snapshot.push_read_frame(read_observer(id, observer.clone()));
+    }
+    Some(observer)
+}
+
+/// A pass of `id` ends its composing: its observer hears it. Gives the observer back, to drop
+/// once the runtime's borrow is over.
+pub(crate) fn end_pass(
+    id: CompositionId,
+    observer: &mut Option<Rc<dyn CompositionObserver>>,
+) -> Option<Rc<dyn CompositionObserver>> {
+    let observer = observer.take()?;
+    flush();
+    observer.on_end_composition(&ObservableComposition { id });
+    Some(observer)
+}
+
+/// The observer the scopes of `id`, about to be disposed, go to.
+pub(crate) fn disposing(
+    runtime: &Runtime,
+    id: CompositionId,
+) -> Option<Rc<dyn CompositionObserver>> {
+    runtime.scopes.observing().then(|| observer_of(&runtime.compositions, id.index)).flatten()
 }

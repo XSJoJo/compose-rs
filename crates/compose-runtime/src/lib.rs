@@ -56,6 +56,7 @@ mod scope;
 mod slot_table;
 pub mod snapshots;
 mod state;
+#[cfg(feature = "composition-observer")]
 pub mod tooling;
 
 pub use background::{Background, spawn_background};

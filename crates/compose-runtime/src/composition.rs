@@ -111,10 +111,12 @@ impl Composition {
         if let Some(disposal) = disposal {
             disposal.run();
         }
+        #[cfg(feature = "composition-observer")]
         crate::tooling::flush();
     }
 
     /// Sets its observer, as `Composition.setObserver` (`tooling`).
+    #[cfg(feature = "composition-observer")]
     pub fn set_observer(
         &self,
         observer: impl crate::tooling::CompositionObserver,
@@ -123,6 +125,7 @@ impl Composition {
     }
 
     /// It, as an observer names it (`tooling::ObservableComposition`).
+    #[cfg(feature = "composition-observer")]
     pub fn observable(&self) -> crate::tooling::ObservableComposition {
         crate::tooling::ObservableComposition { id: self.id }
     }
@@ -363,6 +366,7 @@ impl Drop for Composition {
             return;
         };
         disposal.run();
+        #[cfg(feature = "composition-observer")]
         if !std::thread::panicking() {
             crate::tooling::flush();
         }
@@ -774,6 +778,7 @@ pub(crate) struct Pass {
     /// The pass it's nested in, if any.
     outer: Option<Box<OuterPass>>,
     /// Its composition's observer, as it began (`tooling`).
+    #[cfg(feature = "composition-observer")]
     observer: Option<Rc<dyn crate::tooling::CompositionObserver>>,
 }
 
@@ -796,7 +801,7 @@ impl Pass {
         if with_runtime(|runtime| runtime.active.is_some()) {
             flush_node_moves();
         }
-        let (applier, snapshot, outer, observer) = with_runtime(|runtime| {
+        let (applier, snapshot, outer) = with_runtime(|runtime| {
             let data = runtime.compositions.get_mut(id).expect("a live composition");
             if data.composing {
                 misuse(ComposeError::PassInProgress)
@@ -823,18 +828,6 @@ impl Pass {
                 return None;
             }
             crate::snapshots::PassSnapshot::check_can_begin(&runtime.snapshots);
-            // Its observer is the one there as it begins (`tooling`): with none on the thread, one
-            // test, and the pass logs nothing.
-            let observer = match runtime.scopes.observing() {
-                true => crate::tooling::observer_of(&runtime.compositions, id.index),
-                false => None,
-            };
-            let observed = observer.is_some();
-            if let Some(observer) = &observer
-                && let Some(data) = runtime.compositions.get_mut(id)
-            {
-                data.pass_observer = Some(observer.clone());
-            }
             // A late pass is for placeholders: what's above is for its next pass.
             let providers_changed = kind != PassKind::Late
                 && runtime.compositions.get(id).is_some_and(|data| data.parent.is_some())
@@ -865,7 +858,12 @@ impl Pass {
             }
             // What it writes of what's made before is a change, what it makes isn't (D756).
             let snapshot = crate::snapshots::PassSnapshot::begin(snapshots);
-            *active = Some(ActivePass { composition: id, composing: true, observed });
+            *active = Some(ActivePass {
+                composition: id,
+                composing: true,
+                #[cfg(feature = "composition-observer")]
+                observed: false,
+            });
             *abandoned_groups = false;
             *reusing = 0;
             // The sentinel's depth: to the end of the pass.
@@ -901,10 +899,17 @@ impl Pass {
                 resuming: false,
                 paused: false,
             });
-            Some((crate::context::resolve_applier(lent, &data.applier), snapshot, outer, observer))
+            Some((crate::context::resolve_applier(lent, &data.applier), snapshot, outer))
         })?;
-        let mut pass =
-            Pass { id, kind, finished: false, snapshot: Some(snapshot), outer, observer };
+        let mut pass = Pass {
+            id,
+            kind,
+            finished: false,
+            snapshot: Some(snapshot),
+            outer,
+            #[cfg(feature = "composition-observer")]
+            observer: None,
+        };
         applier
             .try_borrow_mut()
             .unwrap_or_else(|_| misuse(ComposeError::ApplierBusy))
@@ -913,12 +918,9 @@ impl Pass {
         if let Some(snapshot) = &mut pass.snapshot {
             snapshot.tell_tools();
         }
-        if let Some(observer) = pass.observer.clone() {
-            crate::tooling::flush();
-            observer.on_begin_composition(&crate::tooling::ObservableComposition { id });
-            if let Some(snapshot) = &mut pass.snapshot {
-                snapshot.push_read_frame(crate::tooling::read_observer(id, observer));
-            }
+        #[cfg(feature = "composition-observer")]
+        {
+            pass.observer = crate::tooling::begin_pass(id, &mut pass.snapshot);
         }
         Some(pass)
     }
@@ -1079,11 +1081,8 @@ impl Pass {
     /// as finishing from here until [`apply_work`].
     fn end_composing(&mut self, applier: Rc<RefCell<dyn ErasedApplier>>) -> Composed {
         // Kept till the borrow below is over: what drops last runs the observer's `Drop`.
-        let observer = self.observer.take();
-        if let Some(observer) = &observer {
-            crate::tooling::flush();
-            observer.on_end_composition(&crate::tooling::ObservableComposition { id: self.id });
-        }
+        #[cfg(feature = "composition-observer")]
+        let observer = crate::tooling::end_pass(self.id, &mut self.observer);
         let mut snapshot = self.snapshot.take().expect("the pass's snapshot");
         let outer = self.outer.take();
         let (deferred, freeing, removed_content) = with_runtime(|runtime| {
@@ -1102,11 +1101,13 @@ impl Pass {
             let data = runtime.compositions.get_mut(self.id).expect("a live composition");
             data.composing = false;
             data.finishing = true;
+            #[cfg(feature = "composition-observer")]
             if observer.is_some() {
                 data.pass_observer = None;
             }
             (std::mem::take(&mut data.deferred), freeing, data.table.movable.removed.take())
         });
+        #[cfg(feature = "composition-observer")]
         drop(observer);
         // From here on the slot table is consistent: a panic in an effect doesn't poison it.
         self.finished = true;
@@ -1693,14 +1694,16 @@ impl Drop for Pass {
         // A panic unwound through the pass. Nothing can be trusted to continue it; keep the
         // slot table for disposal, which frees everything exactly once. Its observer hears its end
         // still, as Compose's `finally`.
-        let observer = self.observer.take();
-        if let Some(observer) = &observer {
+        #[cfg(feature = "composition-observer")]
+        let observer = {
             let id = self.id;
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                crate::tooling::flush();
-                observer.on_end_composition(&crate::tooling::ObservableComposition { id });
-            }));
-        }
+            let observer = &mut self.observer;
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::tooling::end_pass(id, observer)
+            }))
+            .ok()
+            .flatten()
+        };
         let mut snapshot = self.snapshot.take();
         let outer = self.outer.take();
         // It began its changes and won't end them; those of what's around it go on.
@@ -1736,9 +1739,13 @@ impl Drop for Pass {
             if let Some(data) = runtime.compositions.get_mut(self.id) {
                 data.composing = false;
                 data.poisoned = true;
-                data.pass_observer = None;
+                #[cfg(feature = "composition-observer")]
+                {
+                    data.pass_observer = None;
+                }
             }
         });
+        #[cfg(feature = "composition-observer")]
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(observer)));
         // What it wrote applies, as `composing`'s `finally`, with the pass over: observers and
         // values' `Drop`s are user code, which may recompose, or panic with this one unwinding. A
@@ -1881,12 +1888,11 @@ impl Disposal {
             misuse(ComposeError::DisposedDuringPass)
         }
         // Its scopes' disposals go to its observer, its data gone (`tooling`).
-        let observer = match runtime.scopes.log {
-            Some(_) => crate::tooling::observer_of(&runtime.compositions, id.index),
-            None => None,
-        };
+        #[cfg(feature = "composition-observer")]
+        let observer = crate::tooling::disposing(runtime, id);
         let data = runtime.compositions.remove(id)?;
         let disposal = Disposal::empty(runtime, id, data);
+        #[cfg(feature = "composition-observer")]
         if let Some(observer) = observer {
             crate::tooling::tag_disposed(runtime, id.index, observer);
         }

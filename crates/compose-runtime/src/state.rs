@@ -524,6 +524,7 @@ pub(crate) fn read_is_tracked() -> bool {
 
 /// The scope a read now registers with, if it's one of `composition`'s: what a composition
 /// observer hears read (`tooling`).
+#[cfg(feature = "composition-observer")]
 pub(crate) fn scope_reading_in(composition: crate::runtime::CompositionId) -> Option<ScopeId> {
     with_runtime(|runtime| {
         if runtime.active.is_none_or(|active| active.composition != composition) {
@@ -768,7 +769,7 @@ pub(crate) fn invalidate_cell(runtime: &mut Runtime, id: StateId, told: Told) {
             PassFrames::of(*active, frames),
             reader.scope,
             None,
-            Some(id),
+            crate::runtime::cause(Some(id)),
         );
         true
     });
@@ -816,7 +817,7 @@ pub(crate) fn invalidate_cell(runtime: &mut Runtime, id: StateId, told: Told) {
                 PassFrames::of(*active, frames),
                 reader.scope,
                 Some(cell),
-                Some(cell),
+                crate::runtime::cause(Some(cell)),
             );
             true
         });
@@ -856,7 +857,7 @@ pub(crate) fn invalidate_result_readers(id: StateId) {
                     PassFrames::of(*active, frames),
                     reader.scope,
                     None,
-                    Some(id),
+                    crate::runtime::cause(Some(id)),
                 );
                 true
             });

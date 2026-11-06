@@ -11,5 +11,13 @@ futures-core.workspace = true
 log.workspace = true
 compose-macros.workspace = true
 
+[features]
+# `tooling::CompositionObserver` (D1505): off by default, a pass then takes no step for it.
+composition-observer = []
+
+[dev-dependencies]
+# Its own tests run with the observers on.
+compose-runtime = { path = ".", features = ["composition-observer"] }
+
 [lints]
 workspace = true
