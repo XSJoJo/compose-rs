@@ -2839,13 +2839,12 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
             state.first_index.set(rounded.0);
             state.first_offset.set(rounded.1);
         }
-        // The items wanted are placed: those in view, and those a focus search asked for beyond
-        // them (clipped away), so focus can move to them; those composed beyond the ones wanted
-        // (prefetched, kept behind) aren't, as Compose's: nothing draws or hits them until
-        // they're wanted. A focused one among those is placed, next to the others: focus
+        // The items wanted are placed, composed as they're measured: those in view, and those a
+        // focus search asked for beyond them (clipped away), so focus can move to them; those
+        // composed beyond the ones wanted (prefetched, kept behind) aren't, as Compose's: nothing
+        // draws or hits them until they're wanted. A focused one among those is placed, next to the others: focus
         // scrolls it in.
-        let (mut placed_start, mut placed_end) =
-            (composed_start.max(wanted_start), composed_end.min(wanted_end));
+        let (mut placed_start, mut placed_end) = (wanted_start, wanted_end);
         for key in state.pinned.get() {
             if let Some(pinned) = info.items.index_of(key, state.pinned_near.get()) {
                 if (placed_end..composed_end).contains(&pinned) {

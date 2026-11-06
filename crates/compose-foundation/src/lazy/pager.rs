@@ -273,7 +273,10 @@ impl PagerInner {
             self.page_size.set(size);
         }
         let laid = (viewport, before, after, size, spacing);
-        let changed = self.laid.replace(laid) != laid || self.relayout.replace(false);
+        // Both taken: a new size's flag goes with the measurement that saw it, which with no
+        // rounds may be the only one.
+        let relayout = self.relayout.replace(false);
+        let changed = self.laid.replace(laid) != laid || relayout;
         // The position is the page's, whatever else goes on: not the first visible item's.
         list.first_key.set(None);
         // As `matchPageWithKey`: the current page's key may have moved.

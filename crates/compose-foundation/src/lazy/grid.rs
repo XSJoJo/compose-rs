@@ -2269,8 +2269,7 @@ impl ItemsMeasurePolicy for LazyGridLayout {
         } else {
             (index, index)
         };
-        let (mut placed_start, mut placed_end) =
-            (composed_lines.0.max(wanted_start), composed_lines.1.min(wanted_end));
+        let (mut placed_start, mut placed_end) = (wanted_start, wanted_end);
         for key in state.pinned.get() {
             if let Some(pinned) = info.items.index_of(key, state.pinned_near.get()) {
                 let line = m.lines.line_of(pinned);
