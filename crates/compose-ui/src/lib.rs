@@ -330,7 +330,7 @@ pub use text_editing::{
     BackspaceCommand, CommitTextCommand, DeleteAllCommand, DeleteSurroundingTextCommand,
     DeleteSurroundingTextInCodePointsCommand, EditCommand, EditProcessor, EditingBuffer,
     FinishComposingTextCommand, MoveCursorCommand, SetComposingRegionCommand,
-    SetComposingTextCommand, SetSelectionCommand, TextFieldValue,
+    SetComposingTextCommand, SetSelectionCommand, ShownText, TextFieldValue,
 };
 pub use text_input::{
     CursorAnchor, CursorAnchorBox, CursorAnchorKey, ImeAction, ImeOptions, KeyboardCapitalization,

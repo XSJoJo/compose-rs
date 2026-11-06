@@ -172,6 +172,21 @@ impl ComposeArg for TextFieldValue {
     }
 }
 
+/// Where an input method's offsets are when a field shows it a transformed text, as Compose's
+/// `ImeEditCommandScope`'s `mapToTransformed`, `mapFromTransformed` and `transformedLength`: over
+/// the buffer's text as the commands found it (a batch's earlier edits aren't seen), in bytes.
+/// The commands carrying offsets from the input method (`SetComposingRegionCommand`,
+/// `DeleteSurroundingTextCommand`, `SetSelectionCommand`) take theirs as offsets of the shown
+/// text; the others edit the buffer's composition or selection, as Compose's.
+pub trait ShownText {
+    /// The shown text's length.
+    fn shown_length(&self) -> usize;
+    /// `range` of the buffer's text in the shown one.
+    fn map_to_shown(&self, range: TextRange) -> TextRange;
+    /// `range` of the shown text in the buffer's.
+    fn map_from_shown(&self, range: TextRange) -> TextRange;
+}
+
 /// The text an [`EditCommand`] edits, with its selection and composition, as Compose's
 /// `EditingBuffer`. Its operations are the crate's own, as Compose's are internal: commands
 /// edit it, applications go through [`EditProcessor`].
@@ -186,6 +201,8 @@ pub struct EditingBuffer {
     /// A replacement is kept as what it changed, its common prefix then suffix left out, as an
     /// input method's are (Compose's `imeReplace`).
     trim_edits: bool,
+    /// The text the input method was shown, when it isn't this one (`EditProcessor::show`).
+    shown: Option<std::rc::Rc<dyn ShownText>>,
 }
 
 impl EditingBuffer {
@@ -203,6 +220,7 @@ impl EditingBuffer {
             composition: None,
             edits: None,
             trim_edits: false,
+            shown: None,
         }
     }
 
@@ -509,12 +527,22 @@ fn clamped_range(buffer: &EditingBuffer, start: isize, end: isize) -> (usize, us
     (floor_char_boundary(text, min), ceil_char_boundary(text, max))
 }
 
+/// `start..end` of the text the input method was shown, in the buffer's (as it is if it was
+/// shown the buffer's): a negative end at the start, as Compose's commands map them.
+fn from_shown(buffer: &EditingBuffer, start: isize, end: isize) -> (isize, isize) {
+    let Some(shown) = &buffer.shown else { return (start, end) };
+    let range = TextRange::new(start.max(0) as usize, end.max(0) as usize);
+    let range = shown.map_from_shown(range);
+    (range.start as isize, range.end as isize)
+}
+
 impl EditCommand for SetComposingRegionCommand {
     fn apply_to(&self, buffer: &mut EditingBuffer) {
         if buffer.has_composition() {
             buffer.commit_composition();
         }
-        let (start, end) = clamped_range(buffer, self.start, self.end);
+        let (start, end) = from_shown(buffer, self.start, self.end);
+        let (start, end) = clamped_range(buffer, start, end);
         // An empty range is a cancelled composition (Android's `setComposingRegion` with
         // equal ends): none is set.
         if start < end {
@@ -621,6 +649,20 @@ impl DeleteSurroundingTextCommand {
 
 impl EditCommand for DeleteSurroundingTextCommand {
     fn apply_to(&self, buffer: &mut EditingBuffer) {
+        // The lengths are around the selection shown: what they cover there is deleted, as
+        // Compose's maps it back.
+        if let Some(shown) = buffer.shown.clone() {
+            let selection = shown.map_to_shown(buffer.selection());
+            let end = selection.max().saturating_add(self.length_after_cursor);
+            let after = TextRange::new(selection.max(), end.min(shown.shown_length()));
+            let (start, end) = range_of(buffer, shown.map_from_shown(after));
+            buffer.delete(start, end);
+            let start = selection.min().saturating_sub(self.length_before_cursor);
+            let before = shown.map_from_shown(TextRange::new(start, selection.min()));
+            let (start, end) = range_of(buffer, before);
+            buffer.delete(start, end);
+            return;
+        }
         let end = buffer.selection_end().saturating_add(self.length_after_cursor).min(buffer.len());
         let end = ceil_char_boundary(buffer.as_str(), end);
         buffer.delete(buffer.selection_end(), end);
@@ -706,9 +748,25 @@ impl SetSelectionCommand {
     }
 }
 
+/// `range` of the buffer's text kept in it, widened to the characters it touches.
+fn range_of(buffer: &EditingBuffer, range: TextRange) -> (usize, usize) {
+    clamped_range(buffer, range.min() as isize, range.max() as isize)
+}
+
 impl EditCommand for SetSelectionCommand {
     fn apply_to(&self, buffer: &mut EditingBuffer) {
-        let (start, end) = clamped_range(buffer, self.start, self.end);
+        // Kept in the shown text, then in the buffer's, as Compose's.
+        let (start, end) = match buffer.shown.clone() {
+            Some(shown) => {
+                let bounds = shown.map_to_shown(TextRange::new(0, buffer.len()));
+                let clamp = |offset: isize| {
+                    (offset.max(0) as usize).clamp(bounds.min(), bounds.max()) as isize
+                };
+                from_shown(buffer, clamp(self.start), clamp(self.end))
+            }
+            None => (self.start, self.end),
+        };
+        let (start, end) = clamped_range(buffer, start, end);
         buffer.set_selection(start, end);
     }
 
@@ -984,6 +1042,13 @@ impl EditProcessor {
     pub fn track_edits(&mut self, ime: bool) {
         self.buffer.edits.get_or_insert_with(Vec::new);
         self.buffer.trim_edits = ime;
+    }
+
+    /// Takes the commands' offsets from the input method as offsets of `shown`, the text it was
+    /// shown (a state-based field's output transformation's), as Compose's commands map them.
+    #[doc(hidden)]
+    pub fn show(&mut self, shown: std::rc::Rc<dyn ShownText>) {
+        self.buffer.shown = Some(shown);
     }
 
     /// What the commands applied since tracking began replaced, in order, each range in the text

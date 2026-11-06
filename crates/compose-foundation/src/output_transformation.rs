@@ -318,6 +318,29 @@ pub(crate) fn next_cursor_position(
     }
 }
 
+/// What an input method was shown of a state-based field: the shown text's offsets mapped to the
+/// state's, as Compose's `ImeEditCommandScope` maps them (D1135).
+pub(crate) struct ShownToInputMethod {
+    pub(crate) mapping: Rc<OffsetMappingCalculator>,
+    pub(crate) length: usize,
+}
+
+impl compose_ui::ShownText for ShownToInputMethod {
+    fn shown_length(&self) -> usize {
+        self.length
+    }
+
+    /// Without a wedge affinity: a cursor at an insertion is the whole insertion, as Compose's
+    /// `TransformedTextFieldState.mapToTransformed(range)`.
+    fn map_to_shown(&self, range: TextRange) -> TextRange {
+        map_to_transformed(range, &self.mapping, None)
+    }
+
+    fn map_from_shown(&self, range: TextRange) -> TextRange {
+        map_from_transformed(range, &self.mapping)
+    }
+}
+
 /// What a field shows of `value` through `transformation`, with the mapping its edits make, as
 /// Compose's `calculateTransformedText`; `None` if it changed nothing.
 pub(crate) fn transformed_text(
@@ -945,5 +968,29 @@ mod tests {
         let other = OutputTransformation::from_fn(|buffer| buffer.insert(3, "\n"));
         assert_eq!(single("abcdef", Some(&other)).as_deref(), Some("abc def"));
         assert_eq!(single("plain", None), None, "nothing changed");
+    }
+
+    /// A transformation going character by character, each for one as long, leaves nothing to
+    /// map, as Compose's skips one unit for one: its maps stay short.
+    #[test]
+    fn one_character_for_one_as_long_is_not_mapped() {
+        let each = |with: &'static str| {
+            move |buffer: &mut TextFieldBuffer| {
+                let mut index = 0;
+                while index < buffer.length() {
+                    let length = buffer.as_str()[index..].chars().next().map_or(1, char::len_utf8);
+                    buffer.replace(index, index + length, with);
+                    index += with.len();
+                }
+            }
+        };
+        let (text, mapping) = shown("abc", each("x"));
+        assert_eq!((text.as_str(), mapping.operations.len()), ("xxx", 0));
+        let (text, mapping) = shown("\u{e9}\u{e9}", each("\u{fc}"));
+        assert_eq!((text.as_str(), mapping.operations.len()), ("\u{fc}\u{fc}", 0));
+        // A byte for three: offsets move, so it's mapped.
+        let (text, mapping) = shown("ab", each("\u{2022}"));
+        assert_eq!((text.as_str(), mapping.operations.len()), ("\u{2022}\u{2022}", 2));
+        assert_eq!(mapping.map_from_source(1), TextRange::at(3));
     }
 }

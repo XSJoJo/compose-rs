@@ -96,6 +96,7 @@ mod text_field;
 mod text_field_decorator;
 mod text_field_label_position;
 mod text_field_layout;
+mod text_field_state;
 mod text_selection_colors;
 mod theme;
 mod time_picker;
