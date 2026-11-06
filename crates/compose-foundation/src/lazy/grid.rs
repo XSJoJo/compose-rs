@@ -16,26 +16,25 @@ use crate::OverscrollModifier;
 
 use compose_runtime::{ComposeArg, ImmutableList, ObjectHandle, Owned, composable};
 use compose_ui::{
-    Constraints, Density, Dp, IntOffset, IntSize, Layout, Measurable, MeasurePolicy, MeasureResult,
-    MeasureScope, Modifier, PaddingValues, Placeable, PrefetchScheduler,
+    Constraints, Density, Dp, IntOffset, IntSize, Measurable, MeasureResult, MeasureScope,
+    Modifier, PaddingValues, Placeable, PrefetchScheduler,
 };
 
 use super::item_animator;
 use super::layout_info::{LaidItem, LaidViewport};
-use super::slots::{ItemComposer, ItemsMeasurePolicy};
-use compose_ui::subcompose::SubcomposeMeasureScope;
-use std::collections::HashMap;
 use super::prefetch::{Laid, Policy, Units};
+use super::slots::{ItemComposer, ItemsMeasurePolicy};
 use super::{
-    BEYOND, FIRST_STEP, Interval, ItemStacking, Items, ItemsRef, LazyListInner,
-    LazyListState, LazyScrollElement, MOST_IN_A_ROUND, MOST_MISSING, Sizes, composed_range,
-    content_type_of,
+    BEYOND, FIRST_STEP, Interval, ItemStacking, Items, ItemsRef, LazyListInner, LazyListState,
+    LazyScrollElement, MOST_IN_A_ROUND, MOST_MISSING, Sizes, content_type_of,
 };
 use crate::gestures::{
     LocalBoxFuture, ScrollBlock, ScrollScope, ScrollableState, ScrollableStateExt,
 };
 use crate::layout::{HorizontalArrangement, MainAxisArrangement, VerticalArrangement};
 use crate::mutator::{MutatePriority, MutationInterrupted};
+use compose_ui::subcompose::SubcomposeMeasureScope;
+use std::collections::HashMap;
 
 /// How a grid's cross axis is cut into cells, as Compose's `GridCells`: a vertical grid's
 /// columns, a horizontal one's rows.
@@ -2605,7 +2604,8 @@ impl ItemsMeasurePolicy for LazyGridLayout {
         if let Some(post_scroll) = post_scroll {
             m.scope.run_after_layout(post_scroll);
         }
-        let shown = (m.lines.start(placed_start.min(lead)), m.lines.start(placed_end.max(end_index)));
+        let shown =
+            (m.lines.start(placed_start.min(lead)), m.lines.start(placed_end.max(end_index)));
         state.keep_composed(m.scope, m.composer, &children, composed, &apart, Some(shown));
         m.scope.layout(width, height)
     }

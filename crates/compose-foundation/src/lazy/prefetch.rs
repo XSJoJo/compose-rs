@@ -36,8 +36,8 @@ use std::ops::Range;
 use std::rc::{Rc, Weak};
 use std::time::Instant;
 
-use compose_ui::subcompose::{PausedPrecomposition, PrecomposedSlotHandle};
 use compose_ui::platform::{NodeId, Optimization, Optimizations};
+use compose_ui::subcompose::{PausedPrecomposition, PrecomposedSlotHandle};
 use compose_ui::{Constraints, Density, PrefetchRequest, PrefetchRequestScope, PrefetchScheduler};
 
 use super::cache_window::{
@@ -808,7 +808,11 @@ impl Prefetch {
 
     /// At a measurement's end: the slots kept precomposed out of the limits now go, and those it
     /// composed are its own.
-    pub(super) fn settle_precomposed(&self, limits: (usize, usize), composed: &dyn Fn(usize) -> bool) {
+    pub(super) fn settle_precomposed(
+        &self,
+        limits: (usize, usize),
+        composed: &dyn Fn(usize) -> bool,
+    ) {
         let mut kept = self.kept_slots.borrow_mut();
         if kept.is_empty() {
             return;
@@ -819,9 +823,9 @@ impl Prefetch {
             Some(units) => units.items_of(unit),
             None => Some(unit..unit + 1),
         };
-        let window = self.window_bounds().and_then(|(first, last)| {
-            Some((items_of(first)?.start, items_of(last)?.end))
-        });
+        let window = self
+            .window_bounds()
+            .and_then(|(first, last)| Some((items_of(first)?.start, items_of(last)?.end)));
 
         kept.retain(|(item, handle)| {
             if composed(*item) {

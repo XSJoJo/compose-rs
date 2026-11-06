@@ -16,20 +16,18 @@ use std::rc::Rc;
 
 use compose_runtime::{ComposeArg, ImmutableList, ObjectHandle, Owned, composable};
 use compose_ui::{
-    Constraints, Density, Dp, IntOffset, IntSize, Layout, Measurable, MeasurePolicy, MeasureResult,
-    MeasureScope, Modifier, PaddingValues, Placeable, PrefetchScheduler,
+    Constraints, Density, Dp, IntOffset, IntSize, Measurable, MeasureResult, Modifier,
+    PaddingValues, Placeable, PrefetchScheduler,
 };
 
 use super::grid::{CrossAxisCells, GridItemSpan, Slots};
 use super::item_animator;
-use super::slots::{ItemComposer, ItemsMeasurePolicy};
-use compose_ui::subcompose::SubcomposeMeasureScope;
 use super::layout_info::{LaidItem, LaidViewport};
 use super::prefetch::{Laid, LanesLaid, Policy, Units};
+use super::slots::{ItemComposer, ItemsMeasurePolicy};
 use super::{
     FIRST_STEP, Interval, ItemStacking, Items, ItemsRef, LazyListInner, LazyListState,
-    LazyScrollElement, ListObserver, MOST_IN_A_ROUND, MOST_MISSING, composed_range,
-    content_type_of,
+    LazyScrollElement, ListObserver, MOST_IN_A_ROUND, MOST_MISSING, content_type_of,
 };
 use crate::OverscrollModifier;
 use crate::gestures::{
@@ -37,6 +35,7 @@ use crate::gestures::{
 };
 use crate::layout::{HorizontalArrangement, MainAxisArrangement, VerticalArrangement};
 use crate::mutator::{MutatePriority, MutationInterrupted};
+use compose_ui::subcompose::SubcomposeMeasureScope;
 
 /// No spacing: what the defaults of a lazy layout's parameters name, whatever the caller imports.
 #[doc(hidden)]

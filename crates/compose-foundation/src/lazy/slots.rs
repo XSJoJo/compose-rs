@@ -15,7 +15,7 @@ use compose_ui::subcompose::{
 };
 use compose_ui::{Constraints, Measurable, MeasureResult, Modifier};
 
-use super::{ItemStacking, Items, ItemsRef, LazyItem, LazyListInner, LazyListState, prefetch};
+use super::{ItemStacking, Items, ItemsRef, LazyItem, LazyListState, prefetch};
 
 /// The most deactivated items kept for reuse per content type, as Compose's
 /// `MaxItemsToRetainForReuse`.
@@ -84,10 +84,13 @@ pub(super) struct ItemFactory {
 /// recomposing for a state of its own with the list's content changed sees the new items.
 #[derive(Default)]
 pub(super) struct ItemContents {
-    contents: RefCell<HashMap<u64, (Rc<std::cell::Cell<usize>>, Callback)>>,
+    contents: RefCell<HashMap<u64, ItemContent>>,
     /// Each item's content's scope, by key: run again when the list's content changes.
     pub(super) scopes: RefCell<HashMap<u64, compose_runtime::RecomposeScope>>,
 }
+
+/// An item's content, and the index its key was last found at.
+type ItemContent = (Rc<std::cell::Cell<usize>>, Callback);
 
 /// The contents kept at most; past it, those of keys no longer composed go.
 const MOST_CONTENTS: usize = 256;

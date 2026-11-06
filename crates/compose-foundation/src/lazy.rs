@@ -56,7 +56,7 @@ use std::rc::{Rc, Weak};
 
 use compose_runtime::{
     ComposeArg, CoroutineScope, ImmutableList, ObjectHandle, Owned, OwnedState,
-    SaveableStateHolder, composable, hash_key, key, mutable_state_of,
+    SaveableStateHolder, composable, hash_key, mutable_state_of,
 };
 use compose_ui::{
     Alignment, Constraints, Dp, EventContext, HorizontalAlignment, IntOffset, IntSize, Layout,
@@ -98,10 +98,6 @@ const MOST_MISSING: usize = 200;
 
 /// How far from its last index an item is looked for by key.
 const KEY_WINDOW: usize = 100;
-
-/// The most composed items looked for in the key window when the items change (D455): a
-/// change's cost stays bounded (each of the others is checked where the one before it went).
-const MOST_KEY_SEARCHES: usize = 8;
 
 /// Where a lazy list is scrolled, as Compose's `LazyListState`: the first visible item and how
 /// far it is scrolled off. Reading them in composition recomposes on scrolls.
@@ -205,7 +201,6 @@ struct LazyListInner {
     /// items composed for it, but those next to the ones wanted, and they're disposed rather
     /// than kept for reuse (no scroll brought them, D482).
     beyond_ended: Cell<bool>,
-    dispose_leaving: Cell<bool>,
     /// The sticking header's size, as last measured: what a focused item is scrolled out from under.
     sticking_size: Cell<i32>,
     /// The largest size across of the items last laid out (a list's).
@@ -455,7 +450,6 @@ impl LazyListInner {
             observer: RefCell::new(None),
             beyond_more: Cell::new((false, false)),
             beyond_ended: Cell::new(false),
-            dispose_leaving: Cell::new(false),
             core: crate::gestures::ScrollCore::new(),
             laid_out: layout_info::LaidOut::new(),
             density: Cell::new(1.0),
@@ -3336,21 +3330,6 @@ impl Sizes {
         }
         (self.sum / self.sizes.len() as i64).max(1) as i32
     }
-}
-
-/// The contiguous range of composed items (the children but a pinned one out of it).
-fn composed_range(children: &[usize], count: usize) -> (usize, usize) {
-    let mut start = None;
-    let mut end = 0;
-    for (position, &index) in children.iter().enumerate() {
-        if position > 0 && index != children[position - 1] + 1 {
-            break;
-        }
-        start.get_or_insert(index);
-        end = index + 1;
-    }
-    let start = start.unwrap_or(0).min(count);
-    (start, end.min(count).max(start))
 }
 
 /// The wheel and drags scroll the list (unless disabled: `user_scroll_enabled`).

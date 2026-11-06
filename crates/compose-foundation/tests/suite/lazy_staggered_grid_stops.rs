@@ -782,24 +782,3 @@ fn a_jump_to_lanes_far_apart_settles_and_finishes_soon() {
     let first = state.first_visible_item_index();
     assert!(first <= 4 || first == target, "{first}");
 }
-
-fn sizes_of(count: usize, item: i32, most: i32) -> Vec<i32> {
-    use_optimizations(Optimizations::NONE);
-    let sizes: Rc<RefCell<Vec<i32>>> = Rc::default();
-    let noted = sizes.clone();
-    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 2000), move || {
-        let noted = noted.clone();
-        LazyVerticalStaggeredGrid!(
-            StaggeredGridCells::Fixed(2),
-            modifier = Modifier
-                .height_in(0.dp(), Dp(most as f32))
-                .on_size_changed(move |size: IntSize| noted.borrow_mut().push(size.height)),
-            |scope: LazyStaggeredGridScope| {
-                scope.items(count, move |_| Spacer(Modifier.height(Dp(item as f32))));
-            }
-        );
-    });
-    ui.wait_for_idle();
-    sizes.borrow().clone()
-}
-

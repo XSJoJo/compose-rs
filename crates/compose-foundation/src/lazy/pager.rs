@@ -647,10 +647,10 @@ impl PagerState {
         let Some(inner) = self.inner() else { return };
         // Elsewhere, the window's requests are cancelled and the next scroll refills it, as
         // `snapToItem`'s `resetStrategy`.
-        if peek(&inner.current_page) != page || peek(&inner.current_fraction) != fraction {
-            if let Some(list) = inner.list.inner() {
-                list.prefetch.reset_window();
-            }
+        if (peek(&inner.current_page) != page || peek(&inner.current_fraction) != fraction)
+            && let Some(list) = inner.list.inner()
+        {
+            list.prefetch.reset_window();
         }
         inner.requested.set(Some((page, fraction)));
         inner.current_page.set(page);
