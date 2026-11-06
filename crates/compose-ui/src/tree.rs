@@ -419,6 +419,13 @@ pub struct UiTree {
     pub(crate) mouse: Option<crate::unit::Offset>,
     /// A trackpad's pan is in progress: the hover comes over nothing new until it ends.
     pub(crate) panning: bool,
+    /// A hover icon node was ever hovered: until then the pointer icon is the arrow, read for
+    /// nothing (D1676).
+    pub(crate) has_hover_icons: bool,
+    /// What a hovering stylus (or eraser) is over: its last hit path (D1677).
+    pub(crate) stylus_hovered: Vec<crate::dispatch::HitEntry>,
+    /// The hovering stylus's last event, while it hovers in the window.
+    pub(crate) stylus: Option<crate::input::PointerEvent>,
     /// An indirect pointer input node was ever in the tree: until then their dispatch and the
     /// focus's cancels cost nothing (D1675).
     pub(crate) has_indirect_pointer_input: bool,
@@ -637,6 +644,9 @@ impl UiTree {
             hovered: Vec::new(),
             mouse: None,
             panning: false,
+            has_hover_icons: false,
+            stylus_hovered: Vec::new(),
+            stylus: None,
             has_indirect_pointer_input: false,
             indirect_focus_path: Vec::new(),
             indirect_navigation: None,
@@ -1556,7 +1566,10 @@ impl UiTree {
         }
         // A pointer node come or gone (a change of its hit area comes with a layout, which
         // refreshes the hover anyway): not one only updated, as a clickable's new callback.
-        if structural.any(NodeKinds::POINTER_INPUT) && shown && self.mouse.is_some() {
+        if structural.any(NodeKinds::POINTER_INPUT)
+            && shown
+            && (self.mouse.is_some() || self.stylus.is_some())
+        {
             self.hover_stale = true;
         }
         if parent_data_changed && let Some(parent) = self.parent_of(node) {
@@ -1568,7 +1581,7 @@ impl UiTree {
     /// chain, so a gesture in progress continues on a node that was kept; captures of removed
     /// nodes are dropped.
     pub(crate) fn remap_captures(&mut self, node: NodeId, matched: &[Option<usize>]) {
-        if self.captures.is_empty() && self.hovered.is_empty() {
+        if self.captures.is_empty() && self.hovered.is_empty() && self.stylus_hovered.is_empty() {
             return;
         }
         let value = self.node(node);
@@ -1594,6 +1607,7 @@ impl UiTree {
         }
         // The hover too: what's hovered hears its exit after a chain change.
         self.hovered.retain_mut(remap);
+        self.stylus_hovered.retain_mut(remap);
     }
 
     /// Recomputes what the chain's nodes can do, its layers and its parent data. Returns
@@ -1873,8 +1887,10 @@ impl UiTree {
         // A hover stays tracked, as Compose's hit path keeps the reused node: its modifier nodes forget
         // theirs (`on_reset`), and the mouse resting there doesn't enter it again until it moves.
         let version = value.chain_version;
-        for entry in self.hovered.iter_mut().filter(|entry| entry.node == node) {
-            entry.version = version;
+        for entry in self.hovered.iter_mut().chain(self.stylus_hovered.iter_mut()) {
+            if entry.node == node {
+                entry.version = version;
+            }
         }
         if self.text_selection.as_ref().is_some_and(|selection| selection.container() == node) {
             self.text_selection = None;

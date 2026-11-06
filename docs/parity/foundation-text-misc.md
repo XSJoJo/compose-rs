@@ -12,17 +12,17 @@ What Compose's `compose/foundation/foundation` tests and public API in this area
 
 | Status | Files | @Test |
 |---|---:|---:|
-| `ported` | 35 | 421 |
+| `ported` | 37 | 445 |
 | `covered` | 11 | 59 |
 | `port` | 15 | 107 |
 | `partial` | 36 | 1,219 |
-| `feature:<name>` | 131 | 1,842 |
+| `feature:<name>` | 129 | 1,818 |
 | `n/a` | 77 | 1,022 |
 | **Total** | **305** | **4,670** |
 
 Of the `n/a` tests, 571 (48 files) test the **deprecated** value-based `BasicTextField` and its internals (see below) or `ClickableText`/`onFocusedBoundsChanged`, 389 (23 files) test Compose-internal data structures or helpers whose behaviour other files check through public API, and 28 (4 files) test Compose's own test infrastructure or compare a golden image. Three `feature:` rows (`textfield/TextFieldContextMenuTest`, `textfield/TextFieldTextContextMenuBuilderTest`, `textfield/TextFieldToolbarTest`) mix the legacy and state-based fields: their 41 legacy (`btf1`) tests are n/a too.
 
-By feature, the `feature:` rows wait on: `text-context-menu` 294 tests (21 files), `text-field-state` 255 (17), `touch-text-selection` 227 (10), `android-ime` 170 (13), `style-api` 159 (9), `handwriting` 84 (6), `border-parity` 79 (3), `magnifier` 78 (5), `text-field-styles` 67 (4), `polygon-shapes` 64 (4), `text-links` 56 (3), `content-receiver` 40 (4), `selection-state` 34, `drag-and-drop` 31 (4), `clickable-parity` 26 (4), `basic-marquee` 23, `android-external-surface` 20 (2), `hover-icon-override` 18, `android-window-rects` 16 (2), `text-auto-size` 15, `shapes` 14, `smart-selection` 13 (4), `background-text-measurement` 11, `cursor-blink` 11 (2), `basic-tooltip` 8, `dead-keys` 6, `inline-content` 6, `ui-text-substitution` 6 (2), `bring-into-view-requester` 4, `ui-text-async-fonts` 4, `basic-text-drawing` 3. The `partial` rows add more demand on `clickable-parity`, `focusable-parity` and `image-painter`, and on ui's input mode and indirect pointers (`ClickableTest`, `CombinedClickableTest`, `ToggleableTest`, `SelectableTest` and `FocusableTest`'s remaining scenarios).
+By feature, the `feature:` rows wait on: `text-context-menu` 294 tests (21 files), `text-field-state` 249 (16), `touch-text-selection` 227 (10), `android-ime` 170 (13), `style-api` 159 (9), `handwriting` 84 (6), `border-parity` 79 (3), `magnifier` 78 (5), `text-field-styles` 67 (4), `polygon-shapes` 64 (4), `text-links` 56 (3), `content-receiver` 40 (4), `selection-state` 34, `drag-and-drop` 31 (4), `clickable-parity` 26 (4), `basic-marquee` 23, `android-external-surface` 20 (2), `android-window-rects` 16 (2), `text-auto-size` 15, `shapes` 14, `smart-selection` 13 (4), `background-text-measurement` 11, `cursor-blink` 11 (2), `basic-tooltip` 8, `dead-keys` 6, `inline-content` 6, `ui-text-substitution` 6 (2), `bring-into-view-requester` 4, `ui-text-async-fonts` 4, `basic-text-drawing` 3. The `partial` rows add more demand on `clickable-parity`, `focusable-parity` and `image-painter`, and on ui's input mode and indirect pointers (`ClickableTest`, `CombinedClickableTest`, `ToggleableTest`, `SelectableTest` and `FocusableTest`'s remaining scenarios).
 
 **The value-based `BasicTextField` is deprecated.** At this commit both `BasicTextField(value: String, onValueChange, …)` and `BasicTextField(value: TextFieldValue, …)` are `@Deprecated("Use the BasicTextField(state: TextFieldState, ...) overload instead …")` (`BasicTextField.kt` lines 799 and 970). compose-rs's only text field is the `String` one (D96). So its tests (`textfield/**`, `text/CoreTextField*`, the `Legacy*` IME tests and the legacy internals) are `n/a` here, and the state-based field's tests (`text/input/**`) wait on `text-field-state`, even where compose-rs's field already does what they check (the rows say so). `KeyboardActions`, `KeyboardOptions` and `VisualTransformation` aren't deprecated themselves, but in foundation only the deprecated field takes `KeyboardActions` and `VisualTransformation`.
 
@@ -139,7 +139,7 @@ Paths are relative to `frameworks/support`. A status cites the compose-rs tests 
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/BasicTextBrushTest.kt` | 3 | toggling a solid, predefined-shader or custom-shader `Brush` in a `BasicText` style redraws | feature:basic-text-drawing — `TextStyle` has no `brush` yet (ui-text area) |
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/BasicTextDensityTest.kt` | 3 | a density change lays out simple, multi-paragraph and selectable text again | covered — partly: `text_reuse.rs` `a_new_density_or_direction_lays_the_text_out_anew_even_with_the_optimization` (string text); the annotated and selectable cases are left |
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/BasicTextGraphicsLayerTest.kt` | 2 | text modifiers don't add a graphics layer (string and annotated) | port — assert on the display list that a `BasicText` is no repaint boundary |
-| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/BasicTextHoverTest.kt` | 18 | pointer icon over selectable and non-selectable text inside boxes setting their own icon, with and without `overrideDescendants` | feature:hover-icon-override — selectable text shows no I-beam today, and `pointer_hover_icon` has no `override_descendants` |
+| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/BasicTextHoverTest.kt` | 18 | pointer icon over selectable and non-selectable text inside boxes setting their own icon, with and without `overrideDescendants` | ported — `text_hover_icon.rs` (ui's D1676): a selectable text shows the I-beam inside its modifier |
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/BasicTextIntrinsicWidthWrappingRegressionTest.kt` | 2 | text measured at its intrinsic width doesn't wrap (regression) | port — D104's `finalMaxWidth` rounding is what it checks |
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/BasicTextLayoutTest.kt` | 2 | 2^14+ character texts lay out without throwing (string and annotated) | port |
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/BasicTextLinkInteropTest.kt` | 1 | links in an `AndroidView` measured several times don't recompose forever | feature:text-links |
@@ -156,7 +156,7 @@ Paths are relative to `frameworks/support`. A status cites the compose-rs tests 
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/CoreTextFieldHandwritingGestureTest.kt` | 58 | legacy field: handwriting gestures | n/a: deprecated value-based `BasicTextField`; see `BasicTextFieldHandwritingGestureTest` |
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/CoreTextFieldHandwritingTest.kt` | 13 | legacy field: stylus handwriting start rules | n/a: deprecated value-based `BasicTextField`; see `BasicTextFieldHandwritingTest` |
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/CoreTextFieldHighlightTest.kt` | 1 | legacy field: autofill highlight colour | n/a: deprecated value-based `BasicTextField` |
-| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/CoreTextFieldHoverTest.kt` | 6 | legacy field: pointer icons | n/a: deprecated value-based `BasicTextField`; see `BasicTextFieldHoverTest` |
+| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/CoreTextFieldHoverTest.kt` | 6 | legacy field: pointer icons | n/a: deprecated value-based `BasicTextField`; see `BasicTextFieldHoverTest` (its scenarios also run on compose-rs's value-based field, `text_hover_icon.rs`) |
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/CoreTextFieldInputServiceIntegrationTest.kt` | 16 | legacy field: IME options and keyboard show/hide with focus | n/a: deprecated value-based `BasicTextField`; see `BasicTextFieldImmIntegrationTest` |
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/CoreTextFieldKeyboardScrollableInteractionTest.kt` | 1 | legacy field: keyboard opening scrolls the field into view | n/a: deprecated value-based `BasicTextField` |
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/CoreTextFieldPlatformSelectionBehaviorsTest.kt` | 3 | legacy field: smart selection | n/a: deprecated value-based `BasicTextField`; see `TextFieldPlatformSelectionBehaviorsTest` |
@@ -242,7 +242,7 @@ Paths are relative to `frameworks/support`. A status cites the compose-rs tests 
 | File (relative to `frameworks/support`) | @Test | Covers | Status |
 |---|---:|---|---|
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/AndroidTextInputSessionTest.kt` | 7 | Android text input session: EditorInfo, updates, editor actions, extracted text | feature:android-ime |
-| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/BasicTextFieldHoverTest.kt` | 6 | pointer icons over the field with boxes setting their own icon | feature:text-field-state — the I-beam exists on the value-based field (`hover.rs` `a_text_field_shows_an_i_beam`); overriding needs `hover-icon-override` |
+| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/BasicTextFieldHoverTest.kt` | 6 | pointer icons over the field with boxes setting their own icon | ported — `text_hover_icon.rs` on `BasicTextFieldOfState` (ui's D1676) |
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/ClipboardPasteStateTest.kt` | 3 | paste availability tracked without reading the clip | feature:text-context-menu — needs `ClipEntry`-style clipboard metadata (ui area) |
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/ComposeInputMethodManagerTest.kt` | 2 | each `restartInput` creates a new input connection | feature:android-ime |
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/CursorAnchorInfoBuilderTest.kt` | 23 | `CursorAnchorInfo` built from the layout: selection, composition, insertion marker, character bounds | feature:android-ime |
@@ -785,6 +785,7 @@ Sizes: S under a day, M a few days, L a week or two, XL multi-week. "Other area"
 
 ### hover-icon-override
 - **What:** selectable text (in a `SelectionContainer`) shows the I-beam, and an ancestor's `pointerHoverIcon(icon, overrideDescendants = true)` wins over its descendants'.
+- **Done** (ui's D1676).
 - **Tests:** `BasicTextHoverTest`, `text/input/internal/BasicTextFieldHoverTest`.
 - **Depends on:** other area: ui `pointer_hover_icon`'s `override_descendants`.
 - **Size:** S. **Experimental:** no.
@@ -859,7 +860,7 @@ Done (D1050–D1054): `interactions`, `indication`, `tri-state-toggleable`, `pro
 2. `tri-state-toggleable` (S), `clickable-parity` (M), `focusable-parity` (M), `mutator-mutex` (S), `progress-semantics` (S), `canvas-content-description` (S).
 3. `shapes` (L), then `border-parity` (M); `image-painter` (M) once ui has `Painter`.
 4. `text-field-state` (XL) with `keyboard-options-parity` (S) and `cursor-blink` (S): the largest block of tests, and the non-deprecated field. Then `undo-parity` (M), `input-transformation` (M), `output-transformation` (L), `secure-text-field` (M), `text-field-styles` (L).
-5. `text-selection-colors` (S), `hover-icon-override` (S), `selection-state` (M).
+5. `text-selection-colors` (S), `hover-icon-override` (S, done), `selection-state` (M).
 6. `touch-text-selection` (XL) with `magnifier` (M), then `text-context-menu` (L), `smart-selection` (M).
 7. `android-ime` (L), then `handwriting` (L) and `dead-keys` (S).
 8. `text-links` (L), `inline-content` (L), `text-auto-size` (M), `basic-text-drawing` (S), as ui-text lands what they need; `background-text-measurement` (M).

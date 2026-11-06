@@ -85,6 +85,7 @@ mod placement;
 mod platform_services;
 mod platform_text_style;
 mod pointer_event;
+mod pointer_icon;
 mod pointer_input;
 mod prefetch;
 mod relocation;
@@ -254,7 +255,7 @@ pub use indirect_pointer::{
 };
 pub use input::{
     EventContext, Key, KeyEvent, KeyEventType, KeyModifiers, PointerEvent, PointerEventPass,
-    PointerEventType, PointerIcon, PointerId, PointerType, WheelStep,
+    PointerEventType, PointerId, PointerType, WheelStep,
 };
 pub use input_mode::{InputMode, InputModeManager, LOCAL_INPUT_MODE_MANAGER};
 pub use interaction::{
@@ -329,6 +330,7 @@ pub use platform_text_style::{
 pub use pointer_event::{
     HistoricalChange, PointerButtons, PointerEvents, PointerInputChange, PointerKeyboardModifiers,
 };
+pub use pointer_icon::{HoverIcon, PointerIcon};
 pub use pointer_input::{AwaitPointerEvent, Axis, DragGestures, PointerInputScope, TapGestures};
 pub use prefetch::{
     LOCAL_PREFETCH_SCHEDULER, PrefetchClock, PrefetchRequest, PrefetchRequestScope,

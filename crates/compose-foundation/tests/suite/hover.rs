@@ -58,16 +58,16 @@ fn a_text_field_shows_an_i_beam() {
         Column!({
             BasicTextField!(String::new(), |_| {}, modifier = Modifier.size((100.dp(), 30.dp())));
             Box!(
-                modifier = Modifier.size(50.dp()).pointer_hover_icon(compose_ui::PointerIcon::Hand)
+                modifier = Modifier.size(50.dp()).pointer_hover_icon(compose_ui::PointerIcon::HAND)
             );
         });
     });
     ui.host().send_pointer(PointerEvent::moved(Offset::new(10.0, 10.0), false));
-    assert_eq!(ui.host().pointer_icon(), compose_ui::PointerIcon::Text);
+    assert_eq!(ui.host().pointer_icon(), compose_ui::PointerIcon::TEXT);
     ui.host().send_pointer(PointerEvent::moved(Offset::new(10.0, 50.0), false));
-    assert_eq!(ui.host().pointer_icon(), compose_ui::PointerIcon::Hand);
+    assert_eq!(ui.host().pointer_icon(), compose_ui::PointerIcon::HAND);
     ui.host().send_pointer(PointerEvent::moved(Offset::new(150.0, 150.0), false));
-    assert_eq!(ui.host().pointer_icon(), compose_ui::PointerIcon::Default);
+    assert_eq!(ui.host().pointer_icon(), compose_ui::PointerIcon::DEFAULT);
 }
 
 #[test]
@@ -109,4 +109,47 @@ fn a_tooltip_shows_after_the_pointer_rests_and_hides_when_it_leaves() {
     ui.host().send_pointer(PointerEvent::press(Offset::new(10.0, 10.0)));
     ui.advance_time_by_frame();
     ui.on_node_with_tag("tooltip").assert_does_not_exist();
+}
+
+// Compose: no test of its own (`HoverableNode` hears the `Enter` and `Exit` of any pointer, a
+// hovering stylus's too, D1677). A stylus hovering a clickable shows its state layer; its
+// modifiers changing while hovered (nothing laid out again, so nothing hit-tested again), the
+// stylus going out of range still ends the hover, as the
+// mouse's (`review_round6.rs` `a_hovered_clickable_whose_modifiers_change_still_hears_exit`).
+#[test]
+fn a_hovering_stylus_hovers_a_clickable_whose_modifiers_change() {
+    use compose_runtime::mutable_state_of;
+    use compose_ui::{PointerId, PointerType};
+    let bordered = mutable_state_of(false);
+    let handle = bordered.handle();
+    let mut ui = ComposeTestRule::sized(IntSize::new(200, 200), move || {
+        Column!({
+            let modifier = Modifier.size(50.dp());
+            // A background: the chain changes, nothing is measured again.
+            let modifier = if handle.get() { modifier.background(Color::BLUE) } else { modifier };
+            Box!(
+                modifier = modifier
+                    .clickable_with(
+                        ClickableOptions {
+                            indication: Color::RED.into(),
+                            ..ClickableOptions::DEFAULT
+                        },
+                        || {}
+                    )
+                    .size(48.dp())
+            );
+        });
+    });
+    let stylus = |x: f32, y: f32| {
+        PointerEvent::moved(Offset::new(x, y), false)
+            .with_pointer(PointerId(1), PointerType::Stylus)
+    };
+    ui.host().send_pointer(stylus(10.0, 10.0));
+    ui.wait_for_idle();
+    assert_eq!(layer_alpha(&mut ui), Some(20), "hovered");
+    bordered.set(true);
+    ui.wait_for_idle();
+    ui.host().send_stylus_left();
+    ui.wait_for_idle();
+    assert_eq!(layer_alpha(&mut ui), None, "no longer hovered");
 }

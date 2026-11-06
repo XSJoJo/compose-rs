@@ -462,7 +462,25 @@ impl UiTree {
                     self.panning = event.kind != PointerEventType::PanEnd;
                 }
             }
+            // A stylus's hover, as the mouse's (D1677): a press ends it, as Android's hover
+            // exit before a stylus touches down.
+            let stylus_hovering = !is_mouse
+                && matches!(
+                    event.pointer_type,
+                    crate::input::PointerType::Stylus | crate::input::PointerType::Eraser
+                )
+                && (self.stylus.is_some() || !event.pressed);
             let mut path = path;
+            if stylus_hovering {
+                let hovers = !event.pressed && event.kind == PointerEventType::Move;
+                self.stylus = hovers.then_some(event);
+                let now = if hovers { path.clone() } else { Vec::new() };
+                let hover = PointerEvent { pressed: false, ..event };
+                let entered = self.update_hover(now, hover, true, &mut actions, &mut requests);
+                if !entered.is_empty() {
+                    path.retain(|entry| !entered.contains(entry));
+                }
+            }
             if hovering {
                 let now = if event.kind.is_pan() && captured.is_some() {
                     self.still_under(&path, position)
@@ -471,7 +489,7 @@ impl UiTree {
                 } else {
                     path.clone()
                 };
-                let entered = self.update_hover(now, event, &mut actions, &mut requests);
+                let entered = self.update_hover(now, event, false, &mut actions, &mut requests);
                 // A hover move hears `Enter` where it comes in, not the move too, as Compose's
                 // `HitPathTracker` makes the move an `Enter` there.
                 if event.kind == PointerEventType::Move && !entered.is_empty() {
@@ -811,17 +829,19 @@ impl UiTree {
         })
     }
 
-    /// Moves the mouse's hover to the entries of `now`: `Exit` to those it left, `Enter` to
-    /// those it came over (in the main pass).
+    /// Moves the mouse's hover (a hovering `stylus`'s) to the entries of `now`: `Exit` to those
+    /// it left, `Enter` to those it came over (in the main pass).
     /// Returns the entries it came over.
     fn update_hover(
         &mut self,
         now: Vec<HitEntry>,
         event: PointerEvent,
+        stylus: bool,
         actions: &mut Vec<Action>,
         requests: &mut Requests,
     ) -> Vec<HitEntry> {
-        let before = std::mem::take(&mut self.hovered);
+        let before =
+            std::mem::take(if stylus { &mut self.stylus_hovered } else { &mut self.hovered });
         let same = |a: &HitEntry, b: &HitEntry| {
             a.node == b.node && a.index == b.index && a.version == b.version
         };
@@ -831,7 +851,11 @@ impl UiTree {
             now.iter().filter(|new| !before.iter().any(|old| same(old, new))).cloned().collect();
         self.deliver_hover(&left, PointerEventType::Exit, event, actions, requests);
         self.deliver_hover(&entered, PointerEventType::Enter, event, actions, requests);
-        self.hovered = now;
+        if stylus {
+            self.stylus_hovered = now;
+        } else {
+            self.hovered = now;
+        }
         entered
     }
 
@@ -865,21 +889,58 @@ impl UiTree {
         }
     }
 
-    /// The mouse pointer's look where it is: the innermost hovered node's icon.
-    pub fn pointer_icon(&mut self) -> crate::input::PointerIcon {
+    /// The mouse pointer's look where it is, as Compose's `PointerIconService.getIcon`: the
+    /// innermost hovered node's icon, unless one around it overrides its descendants (the
+    /// outermost such one's), the arrow over none (D1676).
+    pub fn pointer_icon(&mut self) -> crate::pointer_icon::PointerIcon {
+        if !self.has_hover_icons {
+            return crate::pointer_icon::PointerIcon::DEFAULT;
+        }
         let hovered = std::mem::take(&mut self.hovered);
-        let icon = hovered.iter().rev().find_map(|entry| {
-            let value = self.get_mut(entry.node)?;
-            if value.chain_version != entry.version {
-                return None;
-            }
-            value.chain[entry.index as usize]
-                .resolve(entry.delegate)?
-                .as_pointer_input()?
-                .hover_icon()
-        });
+        let icon = self.hover_icon_along(&hovered, false);
         self.hovered = hovered;
         icon.unwrap_or_default()
+    }
+
+    /// A hovering stylus's look where it is, as Compose's `PointerIconService.getStylusHoverIcon`:
+    /// as `pointer_icon`, but `None` over no `stylus_hover_icon` (the platform's own then).
+    pub fn stylus_hover_icon(&mut self) -> Option<crate::pointer_icon::PointerIcon> {
+        if !self.has_hover_icons || self.stylus_hovered.is_empty() {
+            return None;
+        }
+        let hovered = std::mem::take(&mut self.stylus_hovered);
+        let icon = self.hover_icon_along(&hovered, true);
+        self.stylus_hovered = hovered;
+        icon
+    }
+
+    /// The icon `path` (outer to inner) shows for the mouse or a `stylus`: the outermost
+    /// overriding its descendants, else the innermost.
+    fn hover_icon_along(
+        &mut self,
+        path: &[HitEntry],
+        stylus: bool,
+    ) -> Option<crate::pointer_icon::PointerIcon> {
+        let mut icon = None;
+        for entry in path {
+            let Some(value) = self.get_mut(entry.node) else { continue };
+            if value.chain_version != entry.version {
+                continue;
+            }
+            let Some(hover) = value.chain[entry.index as usize]
+                .resolve(entry.delegate)
+                .and_then(|node| node.as_pointer_input())
+                .and_then(|node| node.hover_icon())
+                .filter(|hover| hover.stylus == stylus)
+            else {
+                continue;
+            };
+            icon = Some(hover.icon.clone());
+            if hover.override_descendants {
+                break;
+            }
+        }
+        icon
     }
 
     /// What of `path` is still under `position`: a pan comes over nothing new, as Compose's
@@ -893,15 +954,34 @@ impl UiTree {
     /// hears `Exit`, what it's now over `Enter` (nothing new during a trackpad's pan).
     pub fn refresh_hover(&mut self) -> Vec<Action> {
         let mut actions = Vec::new();
-        let Some(position) = self.mouse else { return actions };
         let mut requests = Requests::default();
-        let now = if self.panning {
-            let hovered = self.hovered.clone();
-            self.still_under(&hovered, position)
-        } else {
-            self.hit_test(position)
-        };
-        self.update_hover(now, PointerEvent::moved(position, false), &mut actions, &mut requests);
+        if let Some(position) = self.mouse {
+            let now = if self.panning {
+                let hovered = self.hovered.clone();
+                self.still_under(&hovered, position)
+            } else {
+                self.hit_test(position)
+            };
+            let event = PointerEvent::moved(position, false);
+            self.update_hover(now, event, false, &mut actions, &mut requests);
+        }
+        // A hovering stylus too (D1677).
+        if let Some(event) = self.stylus {
+            let now = self.hit_test(event.position);
+            self.update_hover(now, event, true, &mut actions, &mut requests);
+        }
+        self.apply_requests(requests, &mut actions);
+        actions
+    }
+
+    /// The hovering stylus went out of range (or out of the window): what it was over hears
+    /// `Exit` (D1677).
+    pub fn stylus_left(&mut self) -> Vec<Action> {
+        let mut actions = Vec::new();
+        let Some(mut event) = self.stylus.take() else { return actions };
+        let mut requests = Requests::default();
+        event.kind = PointerEventType::Exit;
+        self.update_hover(Vec::new(), event, true, &mut actions, &mut requests);
         self.apply_requests(requests, &mut actions);
         actions
     }
@@ -915,7 +995,7 @@ impl UiTree {
         self.pointer_states.retain(|it| it.1.pressed);
         let mut event = PointerEvent::moved(Offset::new(-1.0, -1.0), false);
         event.kind = PointerEventType::Exit;
-        self.update_hover(Vec::new(), event, &mut actions, &mut requests);
+        self.update_hover(Vec::new(), event, false, &mut actions, &mut requests);
         self.apply_requests(requests, &mut actions);
         actions
     }
@@ -954,6 +1034,7 @@ impl UiTree {
             self.invalidate_draw_of(node);
         }
         self.input_method_reset |= requests.reset_input_method;
+        self.has_hover_icons |= requests.hover_icons;
         if let Some(show) = requests.software_keyboard {
             self.focus_requests.software_keyboard.set(Some(show));
             self.focus_requests.wake();

@@ -49,7 +49,7 @@ These are on local branches, so they're not lost, but each still has to finish i
 - Many existing components are `partial`: they exist, with tests or details left.
 
 ### 6. Input and platform
-- **Indirect pointer input** is in (D1675): the events to the focus's path, the cancels, the navigation gesture; left the Android host's touch-navigation events and about 20 tests (delegates, deeper trees). **Pointer icons** (about 60), scroll capture (about 45), clipboard API (about 30), content capture, drag and drop, rotary input, media queries.
+- **Indirect pointer input** is in (D1675): the events to the focus's path, the cancels, the navigation gesture; left the Android host's touch-navigation events and about 20 tests (delegates, deeper trees). **Pointer icons** are in (D1676, D1677): `PointerIcon` with Android's types and bitmaps, `pointer_hover_icon_with(icon, override_descendants)`, a stylus's hover and `stylus_hover_icon`, the desktop's cursor and the Android view's (D1678, not yet run on a device); left `stylusHoverIcon`'s touch bounds expansion. Scroll capture (about 45), clipboard API (about 30), content capture, drag and drop, rotary input, media queries.
 - **Locale and device data:** the date and time pickers use small tables for a few languages. Real data needs `icu4x`, a decision for the user.
 
 ### 7. The test framework

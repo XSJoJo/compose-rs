@@ -29,6 +29,7 @@ mod bridge;
 mod frame_time;
 mod logging;
 mod performance_hint;
+mod pointer_icon;
 mod services;
 
 pub use jni;

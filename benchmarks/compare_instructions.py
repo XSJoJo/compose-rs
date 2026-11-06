@@ -64,6 +64,7 @@ SCENARIOS = {
     "service_click": 100,
     "service_cells": 30,
     "field_keystroke_direct": 3000,
+    "hover_move": 3000,
 }
 DUMPS = ["feed", "big", "feed_animated", "stress", "stress_animation", "grid", "cells"]
 

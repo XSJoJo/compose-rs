@@ -355,6 +355,43 @@ fn SelectedListItem() {
     });
 }
 
+/// 40 rows of 20 dp, clickables with a text field every fourth: what a mouse hovers.
+#[composable]
+fn HoverRows() {
+    Column!({
+        for row in 0..40 {
+            if row % 4 == 3 {
+                BasicTextField!(
+                    String::new(),
+                    |_| {},
+                    modifier = Modifier.fill_max_width().height(20.dp())
+                );
+            } else {
+                Box!(modifier = Modifier.fill_max_width().height(20.dp()).clickable(|| {}));
+            }
+        }
+    });
+}
+
+/// `n` mouse moves over `content`, a row of 20 dp at a time down and back, each followed by a
+/// frame, the pointer's icon read after the move and the frame as the desktop host reads it.
+fn hover_moves(content: fn(), n: usize) {
+    platform::set_manual_clock(platform::now_nanos());
+    let mut host = phone(content);
+    host.settle(10);
+    let row = 20.0 * 2.625;
+    for step in 0..n {
+        platform::advance_clock(Duration::from_millis(16));
+        let index = step % 80;
+        let index = if index < 40 { index } else { 79 - index };
+        let at = Offset::new(540.0, row * (index as f32 + 0.5));
+        host.send_pointer(PointerEvent::moved(at, false));
+        std::hint::black_box(host.pointer_icon());
+        host.frame();
+        std::hint::black_box(host.pointer_icon());
+    }
+}
+
 /// Two text fields with labels, the first with what's typed in it.
 #[composable]
 fn Fields() {
@@ -558,6 +595,7 @@ fn main() {
         "stress_animation" => frames(compose_rs_feed::stress::StressAnimation, n),
         "cells_animated" => frames(AnimatedCells, n),
         "sheet_drag" => sheet_drag(n),
+        "hover_move" => hover_moves(HoverRows, n),
         "cells_animated_positioned" => {
             POSITIONED.set(true);
             frames(AnimatedCells, n);

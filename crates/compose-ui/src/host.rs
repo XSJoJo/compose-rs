@@ -931,8 +931,9 @@ impl UiHost {
         self.wake_if_dirty();
     }
 
-    /// The mouse pointer's look where it is, as `pointerHoverIcon` set it.
-    pub fn pointer_icon(&self) -> crate::input::PointerIcon {
+    /// The mouse pointer's look where it is, as `pointerHoverIcon` set it (D1676): read after
+    /// input and frames, free until a node with an icon was hovered.
+    pub fn pointer_icon(&self) -> crate::pointer_icon::PointerIcon {
         self.with_tree(|tree| tree.pointer_icon())
     }
 
@@ -940,6 +941,21 @@ impl UiHost {
     pub fn send_pointer_left(&mut self) {
         let _turn = compose_runtime::platform::Turn::begin();
         let actions = self.with_tree(|tree| tree.pointer_left());
+        Self::run(actions);
+        self.wake_if_dirty();
+    }
+
+    /// A hovering stylus's look where it is, as `stylusHoverIcon` set it (D1677): `None` over no
+    /// such icon, the platform's own.
+    pub fn stylus_hover_icon(&self) -> Option<crate::pointer_icon::PointerIcon> {
+        self.with_tree(|tree| tree.stylus_hover_icon())
+    }
+
+    /// The hovering stylus went out of range: what it was over hears `Exit`, as Android's
+    /// `ACTION_HOVER_EXIT` of a stylus (D1677). Its hover is its unpressed moves'.
+    pub fn send_stylus_left(&mut self) {
+        let _turn = compose_runtime::platform::Turn::begin();
+        let actions = self.with_tree(|tree| tree.stylus_left());
         Self::run(actions);
         self.wake_if_dirty();
     }
