@@ -9,6 +9,9 @@ Timing on a loaded machine swings up to 4x; retired instructions move by a fract
     benchmarks/compare_instructions.py main grid_step:500       # scenario:iterations
     benchmarks/compare_instructions.py main --dumps             # the same display lists?
 
+The dumps print each paragraph by its text, not its handle, an allocation number another composing
+order renumbers (lazy items composed per item, C8).
+
 The base is built with this checkout's example, so both have the same scenarios; each base has its
 own target directory under --scratch, which can be reused.
 """
