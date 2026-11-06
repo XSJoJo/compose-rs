@@ -23,6 +23,7 @@ pub mod lazy;
 mod mutator;
 mod output_transformation;
 mod overscroll;
+pub mod relocation;
 mod scroll;
 mod scroll_indicator;
 pub mod scrollbar;
@@ -96,6 +97,10 @@ pub use overscroll::{
     LOCAL_OVERSCROLL_FACTORY, OverscrollEffect, OverscrollFactory, OverscrollModifier,
     OverscrollNode, PerformFling, remember_overscroll_effect, without_event_handling,
     without_visual_effect,
+};
+pub use relocation::{
+    BringIntoViewModifiers, BringIntoViewRequester, BringIntoViewResponder, BringIntoViewSpec,
+    DefaultBringIntoViewSpec, LOCAL_BRING_INTO_VIEW_SPEC,
 };
 pub use scroll::{ScrollModifiers, ScrollState, remember_scroll_state};
 pub use scroll_indicator::ScrollIndicatorState;

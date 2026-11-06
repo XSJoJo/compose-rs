@@ -1398,6 +1398,17 @@ pub trait ModifierNode: Any {
     ) -> Option<crate::unit::Rect> {
         None
     }
+    /// The same, with where its layout node reads composition locals (a node reading its
+    /// `BringIntoViewSpec` there, when asked), as `CompositionLocalConsumerModifierNode` reads them
+    /// where it's used. By default, `bring_into_view`.
+    fn bring_into_view_in(
+        &mut self,
+        rect: crate::unit::Rect,
+        viewport: crate::unit::IntSize,
+        _locals: compose_runtime::CompositionLocalAnchor,
+    ) -> Option<crate::unit::Rect> {
+        self.bring_into_view(rect, viewport)
+    }
     /// Whether it lays out content beyond its bounds for a focus search from inside it, as
     /// Compose's `BeyondBoundsLayout` (a lazy list's).
     fn is_beyond_bounds_layout(&self) -> bool {

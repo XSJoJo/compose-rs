@@ -350,8 +350,9 @@ impl ChainEntry {
         &mut self,
         rect: crate::unit::Rect,
         viewport: crate::unit::IntSize,
+        locals: compose_runtime::CompositionLocalAnchor,
     ) -> Option<crate::unit::Rect> {
-        crate::delegation::bring_into_view_of(&mut *self.node, rect, viewport)
+        crate::delegation::bring_into_view_of(&mut *self.node, rect, viewport, locals)
     }
 
     /// What hit testing is clipped by here. A graphics layer's is what its last block drew: a press
