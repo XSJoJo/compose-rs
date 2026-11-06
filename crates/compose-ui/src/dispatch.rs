@@ -954,6 +954,10 @@ impl UiTree {
     /// hears `Exit`, what it's now over `Enter` (nothing new during a trackpad's pan).
     pub fn refresh_hover(&mut self) -> Vec<Action> {
         let mut actions = Vec::new();
+        // Nothing hovers: nothing to do, as most frames on a phone.
+        if self.mouse.is_none() && self.stylus.is_none() {
+            return actions;
+        }
         let mut requests = Requests::default();
         if let Some(position) = self.mouse {
             let now = if self.panning {
