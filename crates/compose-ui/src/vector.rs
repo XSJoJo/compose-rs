@@ -707,7 +707,7 @@ impl RenderGroup {
             RenderNode::Group(group) => group.solid_fills(into),
             RenderNode::Path(RenderPath { path, fill, stroke: None }) => match fill {
                 Some((Brush::Solid(color), alpha)) => {
-                    let alpha = color.alpha() as f32 / 255.0 * alpha.clamp(0.0, 1.0);
+                    let alpha = color.alpha() * alpha.clamp(0.0, 1.0);
                     into.push((Arc::clone(path), color.with_alpha(alpha)));
                     true
                 }

@@ -157,7 +157,7 @@ fn shadows_darken_beneath_an_elevated_shape() {
     // Under the shape's bottom edge (the light is above), darker than the background; far
     // away, untouched.
     let below = renderer.pixel(100, 153);
-    assert!(below.red() < 250, "the shadow under the shape: {below:?}");
+    assert!(((below.to_argb() >> 16) as u8) < 250, "the shadow under the shape: {below:?}");
     assert_eq!(renderer.pixel(100, 100), Color::WHITE, "the shape itself");
     assert_eq!(renderer.pixel(2, 2), Color::WHITE, "far from it");
 }
@@ -298,13 +298,20 @@ fn compositing_strategies_fade_as_compose_desktops() {
         overlapping_pixels(CompositingStrategy::ModulateAlpha, Optimizations::NONE);
     let near = |a: u8, b: u8| a.abs_diff(b) <= 2;
     // Blue at half alpha over white.
-    assert!(near(auto.red(), 0x7F) && near(auto.blue(), 0xFF), "{auto:?}");
+    assert!(
+        near((auto.to_argb() >> 16) as u8, 0x7F) && near(auto.to_argb() as u8, 0xFF),
+        "{auto:?}"
+    );
     assert_eq!(offscreen, auto);
     // Blue at half alpha over red at half alpha over white: the red took its green away.
-    assert!(modulated.green() + 30 < auto.green(), "{modulated:?} against {auto:?}");
+    assert!(
+        ((modulated.to_argb() >> 8) as u8) + 30 < ((auto.to_argb() >> 8) as u8),
+        "{modulated:?} against {auto:?}"
+    );
     // One drawing fades the same either way (but for rounding).
     assert!(
-        near(modulated_red.green(), auto_red.green()) && near(modulated_red.red(), auto_red.red()),
+        near((modulated_red.to_argb() >> 8) as u8, (auto_red.to_argb() >> 8) as u8)
+            && near((modulated_red.to_argb() >> 16) as u8, (auto_red.to_argb() >> 16) as u8),
         "{modulated_red:?} against {auto_red:?}"
     );
 }
@@ -435,7 +442,9 @@ fn the_single_drawing_fade_keeps_a_moved_or_turned_layers_edges() {
         assert!(offscreen.iter().any(|pixel| *pixel != Color::WHITE));
         for (index, (a, b)) in offscreen.iter().zip(&faded).enumerate() {
             assert!(
-                near(a.red(), b.red()) && near(a.green(), b.green()) && near(a.blue(), b.blue()),
+                near((a.to_argb() >> 16) as u8, (b.to_argb() >> 16) as u8)
+                    && near((a.to_argb() >> 8) as u8, (b.to_argb() >> 8) as u8)
+                    && near(a.to_argb() as u8, b.to_argb() as u8),
                 "{layer:?}: pixel {index}: {b:?} against {a:?}"
             );
         }
@@ -513,7 +522,9 @@ fn review_a_modulated_alpha_fades_a_nested_offscreen_layer_as_one() {
     let overlap = renderer.pixel(25, 10);
     let near = |a: u8, b: u8| a.abs_diff(b) <= 2;
     assert!(
-        near(overlap.red(), 0x7F) && near(overlap.green(), 0x7F) && near(overlap.blue(), 0xFF),
+        near((overlap.to_argb() >> 16) as u8, 0x7F)
+            && near((overlap.to_argb() >> 8) as u8, 0x7F)
+            && near(overlap.to_argb() as u8, 0xFF),
         "{overlap:?}: the red shows through the offscreen layer"
     );
 }
@@ -575,7 +586,9 @@ fn the_single_drawing_fade_matches_offscreen() {
         assert!(offscreen.iter().any(|pixel| *pixel != Color::WHITE), "{name}");
         for (index, (a, b)) in offscreen.iter().zip(&faded).enumerate() {
             assert!(
-                near(a.red(), b.red()) && near(a.green(), b.green()) && near(a.blue(), b.blue()),
+                near((a.to_argb() >> 16) as u8, (b.to_argb() >> 16) as u8)
+                    && near((a.to_argb() >> 8) as u8, (b.to_argb() >> 8) as u8)
+                    && near(a.to_argb() as u8, b.to_argb() as u8),
                 "{name}: pixel {index}: {b:?} against {a:?}"
             );
         }

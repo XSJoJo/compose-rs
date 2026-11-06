@@ -56,11 +56,11 @@ fn shapes() -> Vec<(&'static str, Shape)> {
 }
 
 fn reddish(color: Color) -> bool {
-    color.red() > 200 && color.blue() < 60
+    ((color.to_argb() >> 16) as u8) > 200 && (color.to_argb() as u8) < 60
 }
 
 fn bluish(color: Color) -> bool {
-    color.blue() > 200 && color.red() < 60
+    (color.to_argb() as u8) > 200 && ((color.to_argb() >> 16) as u8) < 60
 }
 
 /// A 10 px border inside each shape: red at the edge's middle, blue in the middle.
@@ -99,8 +99,14 @@ fn a_gradient_border_paints_its_gradient() {
     for (name, shape) in shapes() {
         let mut renderer = boxed(Modifier.border_with(10.dp(), brush.clone(), shape));
         let (left, right) = (renderer.pixel(3, 20), renderer.pixel(36, 20));
-        assert!(left.red() > left.green(), "{name}: left {left:?}");
-        assert!(right.green() > right.red(), "{name}: right {right:?}");
+        assert!(
+            ((left.to_argb() >> 16) as u8) > ((left.to_argb() >> 8) as u8),
+            "{name}: left {left:?}"
+        );
+        assert!(
+            ((right.to_argb() >> 8) as u8) > ((right.to_argb() >> 16) as u8),
+            "{name}: right {right:?}"
+        );
         assert!(bluish(renderer.pixel(20, 20)), "{name}");
     }
 }

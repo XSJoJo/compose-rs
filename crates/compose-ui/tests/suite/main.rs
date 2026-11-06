@@ -7,6 +7,8 @@ mod alignment_lines;
 mod annotated_string;
 mod annotated_string_builder;
 mod color_filters;
+mod color_spaces;
+mod colors;
 mod coordinates_in_passes;
 mod delegating_nodes;
 mod dp_offset;

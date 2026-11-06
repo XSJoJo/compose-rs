@@ -44,7 +44,7 @@ fn dropped_on(background: Color, shape: Shape, shadow: Shadow) -> CapturedImage 
 
 /// How dark a pixel is: 0 white, 255 black.
 fn darkness(color: Color) -> u8 {
-    255 - color.green()
+    255 - ((color.to_argb() >> 8) as u8)
 }
 
 // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/draw/DropShadowTest.kt, dropShadowDrawn
@@ -86,8 +86,8 @@ fn a_drop_shadow_is_painted_by_its_brush() {
     let image =
         dropped(Shape::Rectangle, Shadow { spread: Dp(4.0), ..Shadow::brushed(Dp(6.0), brush) });
     let (left, right) = (image.pixel(27, 50), image.pixel(73, 50));
-    assert!(left.red() > left.blue(), "{left:?}");
-    assert!(right.blue() > right.red(), "{right:?}");
+    assert!(((left.to_argb() >> 16) as u8) > (left.to_argb() as u8), "{left:?}");
+    assert!((right.to_argb() as u8) > ((right.to_argb() >> 16) as u8), "{right:?}");
 }
 
 /// A 60 px white box with `shadow` inside its rectangle.
@@ -154,7 +154,11 @@ fn a_new_shadow_draws_again() {
     color.set(Color::BLUE);
     ui.wait_for_idle();
     let after = ui.on_node_with_tag(TAG).capture_to_image().pixel(28, 50);
-    assert!(after.blue() > after.red() && before.blue() == before.red(), "{before:?} {after:?}");
+    assert!(
+        (after.to_argb() as u8) > ((after.to_argb() >> 16) as u8)
+            && (before.to_argb() as u8) == ((before.to_argb() >> 16) as u8),
+        "{before:?} {after:?}"
+    );
 }
 
 // Compose: compose/ui/ui-graphics/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/shadow/DropShadowPainterTest.kt, testDropShadowPainterAlpha, testDropShadowPainterColorFilter
@@ -184,7 +188,7 @@ fn the_shadow_painters_take_their_alpha_and_filter() {
     assert!(darkness(faded) < darkness(opaque), "{faded:?} {opaque:?}");
     let tinted = painted(inset(Shadow::new(Dp(6.0))), 1.0, Some(ColorFilter::tint(Color::BLUE)));
     let edge = tinted.pixel(1, 30);
-    assert!(edge.blue() > edge.red() + 50, "{edge:?}");
+    assert!((edge.to_argb() as u8) > ((edge.to_argb() >> 16) as u8) + 50, "{edge:?}");
     let dropped = Painter::new(DropShadowPainter::new(CIRCLE_SHAPE, Shadow::new(Dp(4.0))));
     painted(dropped, 1.0, None).assert_pixel_color(Color::BLACK, 30, 30);
 }
@@ -267,7 +271,7 @@ fn a_drop_shadows_brush_spans_the_shadow() {
     // The box spans 30 to 70; the shadow's bitmap 20 to 80.
     for x in [24, 27, 73, 76] {
         let pixel = image.pixel(x, 50);
-        let (red, blue) = (pixel.red() as f32, pixel.blue() as f32);
+        let (red, blue) = (((pixel.to_argb() >> 16) as u8) as f32, (pixel.to_argb() as u8) as f32);
         let share = blue / (red + blue);
         let expected = (x as f32 + 0.5 - 20.0) / 60.0;
         assert!((share - expected).abs() < 0.04, "at {x}: {share} against {expected}");

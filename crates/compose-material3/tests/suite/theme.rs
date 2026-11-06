@@ -129,7 +129,9 @@ fn luminance(color: Color) -> f32 {
         let value = channel as f32 / 255.0;
         if value <= 0.04045 { value / 12.92 } else { ((value + 0.055) / 1.055).powf(2.4) }
     };
-    0.2126 * linear(color.red()) + 0.7152 * linear(color.green()) + 0.0722 * linear(color.blue())
+    0.2126 * linear((color.to_argb() >> 16) as u8)
+        + 0.7152 * linear((color.to_argb() >> 8) as u8)
+        + 0.0722 * linear(color.to_argb() as u8)
 }
 
 /// As the tests' `calculateContrastRatio`.

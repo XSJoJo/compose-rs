@@ -9,8 +9,11 @@ use compose_ui::{IntSize, Offset, PointerEvent, UnitExt, platform::DrawOp};
 
 fn layer_alpha(ui: &mut ComposeTestRule) -> Option<u8> {
     ui.host().display_list().ops.iter().find_map(|op| match op {
-        DrawOp::DrawRect(_, paint) if paint.color.red() == 255 && paint.color.alpha() < 255 => {
-            Some(paint.color.alpha())
+        DrawOp::DrawRect(_, paint)
+            if ((paint.color.to_argb() >> 16) as u8) == 255
+                && ((paint.color.to_argb() >> 24) as u8) < 255 =>
+        {
+            Some((paint.color.to_argb() >> 24) as u8)
         }
         _ => None,
     })

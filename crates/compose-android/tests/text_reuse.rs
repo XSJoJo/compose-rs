@@ -477,11 +477,11 @@ fn a_new_paint_keeps_the_layout_and_later_layouts_are_in_it() {
     assert_ne!(restyled, paragraph, "a new handle draws the new paint");
     assert_eq!(snapshot(&measurer, restyled), before, "the same layout");
     assert_eq!(model.measures.get(), measured, "nothing measured");
-    assert_eq!(model.paint(restyled), (compose_ui::Color::BLUE.argb(), 1));
+    assert_eq!(model.paint(restyled), (compose_ui::Color::BLUE.to_argb(), 1));
     assert_eq!(model.live(), 1, "the old handle released");
     // Laid out again for other constraints: in the new paint.
     let relaid = measurer.relayout(restyled, Constraints::new(0, 30, 0, 300)).unwrap();
-    assert_eq!(model.paint(relaid), (compose_ui::Color::BLUE.argb(), 1));
+    assert_eq!(model.paint(relaid), (compose_ui::Color::BLUE.to_argb(), 1));
     measurer.release(relaid);
     assert_eq!(measurer.restyle(relaid, &red), None, "released");
 }
@@ -515,7 +515,7 @@ fn a_new_color_draws_the_kept_layout_without_laying_it_out() {
             _ => None,
         })
         .unwrap();
-    assert_eq!(model.paint(drawn).0, compose_ui::Color::BLUE.argb());
+    assert_eq!(model.paint(drawn).0, compose_ui::Color::BLUE.to_argb());
 }
 
 // ---- Intrinsic probes ---------------------------------------------------------------------------

@@ -174,8 +174,8 @@ impl ColorMatrix {
 
     /// The color this matrix makes of `color`, as a renderer computes it (clamped to 0 to 255).
     pub fn transform(&self, color: Color) -> Color {
-        let input =
-            [color.red(), color.green(), color.blue(), color.alpha()].map(|channel| channel as f32);
+        let argb = color.to_argb();
+        let input = [16, 8, 0, 24].map(|shift| f32::from((argb >> shift) as u8));
         let channel = |row: usize| {
             let value = (0..4).map(|column| self.get(row, column) * input[column]).sum::<f32>()
                 + self.get(row, 4);
@@ -256,7 +256,7 @@ impl compose_runtime::ComposeArg for ColorFilter {
 /// A color filter of the display list a paint, image or layer names it in
 /// (`DisplayList::color_filters`), by index: a paint stays small and `Copy`.
 /// Kept as the index plus one (`NonZeroU32`), so an `Option` of it is 4 bytes and a `Paint`
-/// naming a shader and a filter stays 28.
+/// naming a shader and a filter stays 32 (28 with a 32-bit color).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ColorFilterIndex(std::num::NonZeroU32);
 

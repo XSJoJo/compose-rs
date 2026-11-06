@@ -17,7 +17,7 @@ use compose_ui::{Color, UnitExt};
 
 /// A color's channels as fractions, as Compose's `Color.red` and the like.
 fn channels(color: Color) -> [f32; 4] {
-    [color.red(), color.green(), color.blue(), color.alpha()].map(|channel| channel as f32 / 255.0)
+    [color.red(), color.green(), color.blue(), color.alpha()]
 }
 
 fn assert_color(expected: [f32; 4], actual: Color, at: &str) {

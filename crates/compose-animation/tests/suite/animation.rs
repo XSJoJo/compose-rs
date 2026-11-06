@@ -141,7 +141,10 @@ fn colors_go_through_oklab_and_back() {
     let start = Color::RED.to_vector();
     let end = Color::GREEN.to_vector();
     let middle = Color::from_vector(start.map(|index, a| (a + end[index]) / 2.0));
-    assert!(middle.red() > 150 && middle.green() > 150, "{middle:?}");
+    assert!(
+        ((middle.to_argb() >> 16) as u8) > 150 && ((middle.to_argb() >> 8) as u8) > 150,
+        "{middle:?}"
+    );
 }
 
 #[test]

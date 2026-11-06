@@ -51,7 +51,11 @@ fn lighting_and_matrices_transform_each_channel() {
     let mut gray = ColorMatrix::new();
     gray.set_to_saturation(0.0);
     let grayed = filtered_square(Color::RED, ColorFilter::color_matrix(gray));
-    assert!(grayed.red() == grayed.green() && grayed.green() == grayed.blue(), "{grayed:?}");
+    assert!(
+        ((grayed.to_argb() >> 16) as u8) == ((grayed.to_argb() >> 8) as u8)
+            && ((grayed.to_argb() >> 8) as u8) == (grayed.to_argb() as u8),
+        "{grayed:?}"
+    );
 }
 
 /// A paint's blend mode combines it with what's under it: `Clear` erases, even with a
@@ -67,7 +71,7 @@ fn a_paints_blend_mode_combines_it_with_the_destination() {
     let mut renderer = RasterRenderer::new(10, 10);
     renderer.render(&list, Color::TRANSPARENT, 1.0, &FixedTextMeasurer::default());
     assert_eq!(renderer.pixel(2, 5), Color::from_rgb(0, 255, 0));
-    assert_eq!(renderer.pixel(7, 5).alpha(), 0);
+    assert_eq!(((renderer.pixel(7, 5).to_argb() >> 24) as u8), 0);
 }
 
 /// A layer with a filter recolors everything drawn in it, at its alpha; an image through a

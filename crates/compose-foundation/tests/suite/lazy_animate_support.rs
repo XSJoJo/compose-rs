@@ -81,11 +81,11 @@ pub struct Composite {
 
 impl Composite {
     fn over(&mut self, color: Color, alpha: f32) {
-        let source = color.alpha() as f32 / 255.0 * alpha;
+        let source = ((color.to_argb() >> 24) as u8) as f32 / 255.0 * alpha;
         let channel = |under: f32, top: u8| top as f32 / 255.0 * source + under * (1.0 - source);
-        self.red = channel(self.red, color.red());
-        self.green = channel(self.green, color.green());
-        self.blue = channel(self.blue, color.blue());
+        self.red = channel(self.red, (color.to_argb() >> 16) as u8);
+        self.green = channel(self.green, (color.to_argb() >> 8) as u8);
+        self.blue = channel(self.blue, color.to_argb() as u8);
         self.alpha = source + self.alpha * (1.0 - source);
     }
 
@@ -94,10 +94,10 @@ impl Composite {
     pub fn is(&self, color: Color, alpha: f32) -> bool {
         let close = |one: f32, other: f32| (one - other).abs() < 0.02;
         let channel = |channel: u8| channel as f32 / 255.0 * alpha;
-        close(self.alpha, color.alpha() as f32 / 255.0 * alpha)
-            && close(self.red, channel(color.red()))
-            && close(self.green, channel(color.green()))
-            && close(self.blue, channel(color.blue()))
+        close(self.alpha, ((color.to_argb() >> 24) as u8) as f32 / 255.0 * alpha)
+            && close(self.red, channel((color.to_argb() >> 16) as u8))
+            && close(self.green, channel((color.to_argb() >> 8) as u8))
+            && close(self.blue, channel(color.to_argb() as u8))
     }
 
     pub fn is_transparent(&self) -> bool {

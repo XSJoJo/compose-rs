@@ -18,9 +18,11 @@ mod annotated;
 mod back;
 mod border;
 mod brush;
+pub mod canvas;
 mod clickable;
 mod clipboard;
 mod color_filter;
+pub mod colorspace;
 mod configuration;
 mod constraints;
 mod content_scale;
@@ -129,6 +131,7 @@ mod word_boundary;
 /// (D260).
 pub mod platform {
     pub use crate::brush::{Gradient, Shader, ShaderIndex};
+    pub use crate::canvas::{BitmapRasterizer, set_bitmap_rasterizer};
     pub use crate::clipboard::MemoryClipboard;
     pub use crate::color_filter::ColorFilterIndex;
     pub use crate::configuration::{
@@ -250,7 +253,9 @@ pub use graphics_layer::{
 };
 pub use graphics_layer_object::{GraphicsLayer, remember_graphics_layer};
 pub use host::LOCAL_DENSITY;
-pub use image::{ImageBitmap, decode_image_bytes, remember_image_resource};
+pub use image::{
+    ImageBitmap, ImageBitmapConfig, PixelMap, decode_image_bytes, remember_image_resource,
+};
 pub use indication::{Indication, IndicationNodeFactory, LOCAL_INDICATION};
 pub use indirect_pointer::{
     IndirectPointerEvent, IndirectPointerEventPrimaryDirectionalMotionAxis,

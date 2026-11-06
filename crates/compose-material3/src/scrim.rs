@@ -43,7 +43,7 @@ pub fn Scrim(
     };
     compose_foundation::layout::Canvas(modifier, move |scope| {
         let alpha = alpha().clamp(0.0, 1.0);
-        let color = color.with_alpha(color.alpha() as f32 / 255.0 * alpha);
+        let color = color.with_alpha(color.alpha() * alpha);
         scope.draw_rect(scope.bounds(), Paint::fill(color));
     });
 }

@@ -246,7 +246,8 @@ fn hierarchy_text(rule: &mut ComposeTestRule) -> String {
 fn ppm(image: &CapturedImage) -> Vec<u8> {
     let mut bytes = format!("P6\n{} {}\n255\n", image.width(), image.height()).into_bytes();
     for color in image.pixels() {
-        bytes.extend([color.red(), color.green(), color.blue()]);
+        let argb = color.to_argb();
+        bytes.extend([(argb >> 16) as u8, (argb >> 8) as u8, argb as u8]);
     }
     bytes
 }

@@ -4,102 +4,472 @@ use std::fmt;
 
 use compose_runtime::ComposeArg;
 
+use crate::colorspace::half::{float_to_half, half_to_float};
+use crate::colorspace::{ColorModel, ColorSpace, ColorSpaces, MIN_ID, Rgb, coerce_in};
 use crate::unit::{Density, Dp, Rect, Size};
 
-/// A color, as packed 8-bit ARGB; `Color::UNSPECIFIED` means "use the default".
+/// A color, as Compose's `Color`: 64 bits holding its components and its color space
+/// (docs/parity/design/color-spaces.md). An sRGB color is its ARGB in the high 32 bits (its
+/// space's id, the low 6 bits, being 0); a color of another space is red, green and blue as
+/// half floats, alpha in 10 bits and the space's id. `Color::UNSPECIFIED` means "use the
+/// default".
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Color(u32);
+pub struct Color(u64);
 
 impl Color {
-    pub const BLACK: Color = Color(0xFF00_0000);
-    pub const WHITE: Color = Color(0xFFFF_FFFF);
-    pub const RED: Color = Color(0xFFFF_0000);
-    pub const GREEN: Color = Color(0xFF00_FF00);
-    pub const BLUE: Color = Color(0xFF00_00FF);
-    pub const GRAY: Color = Color(0xFF88_8888);
-    pub const LIGHT_GRAY: Color = Color(0xFFCC_CCCC);
-    pub const DARK_GRAY: Color = Color(0xFF44_4444);
-    pub const YELLOW: Color = Color(0xFFFF_FF00);
-    pub const CYAN: Color = Color(0xFF00_FFFF);
-    pub const MAGENTA: Color = Color(0xFFFF_00FF);
-    pub const TRANSPARENT: Color = Color(0x0000_0000);
-    /// No color: as `Color.Unspecified`. Not a valid ARGB value to draw with.
-    pub const UNSPECIFIED: Color = Color(0x0000_0001);
+    pub const BLACK: Color = Color::from_argb(0xFF00_0000);
+    pub const WHITE: Color = Color::from_argb(0xFFFF_FFFF);
+    pub const RED: Color = Color::from_argb(0xFFFF_0000);
+    pub const GREEN: Color = Color::from_argb(0xFF00_FF00);
+    pub const BLUE: Color = Color::from_argb(0xFF00_00FF);
+    pub const GRAY: Color = Color::from_argb(0xFF88_8888);
+    pub const LIGHT_GRAY: Color = Color::from_argb(0xFFCC_CCCC);
+    pub const DARK_GRAY: Color = Color::from_argb(0xFF44_4444);
+    pub const YELLOW: Color = Color::from_argb(0xFFFF_FF00);
+    pub const CYAN: Color = Color::from_argb(0xFF00_FFFF);
+    pub const MAGENTA: Color = Color::from_argb(0xFFFF_00FF);
+    pub const TRANSPARENT: Color = Color::from_argb(0x0000_0000);
+    /// No color: as `Color.Unspecified`, transparent black in the unspecified color space
+    /// (Compose's `0x10`).
+    pub const UNSPECIFIED: Color = Color(0x10);
 
-    /// From packed ARGB, as `Color(0xFF6200EE)`.
+    /// From packed sRGB ARGB, as `Color(0xFF6200EE)`.
     pub const fn from_argb(argb: u32) -> Color {
-        Color(argb)
+        Color((argb as u64) << 32)
     }
 
+    /// Opaque, from sRGB bytes.
     pub const fn from_rgb(red: u8, green: u8, blue: u8) -> Color {
-        Color(0xFF00_0000 | (red as u32) << 16 | (green as u32) << 8 | blue as u32)
+        Color::from_rgba(red, green, blue, 0xFF)
     }
 
-    pub const fn argb(self) -> u32 {
+    /// From sRGB bytes, as `Color(red: Int, green: Int, blue: Int, alpha: Int)`.
+    pub const fn from_rgba(red: u8, green: u8, blue: u8, alpha: u8) -> Color {
+        Color::from_argb(
+            (alpha as u32) << 24 | (red as u32) << 16 | (green as u32) << 8 | blue as u32,
+        )
+    }
+
+    /// From its packed value, as `Color(value: ULong)`.
+    pub const fn from_value(value: u64) -> Color {
+        Color(value)
+    }
+
+    /// Its packed value, as `Color.value`.
+    pub const fn value(self) -> u64 {
         self.0
     }
 
-    pub const fn alpha(self) -> u8 {
-        (self.0 >> 24) as u8
+    /// An sRGB color from components in 0 to 1 (kept in it), as
+    /// `Color(red, green, blue, alpha)`.
+    pub fn new(red: f32, green: f32, blue: f32, alpha: f32) -> Color {
+        Color::pack_srgb(
+            coerce_in(red, 0.0, 1.0),
+            coerce_in(green, 0.0, 1.0),
+            coerce_in(blue, 0.0, 1.0),
+            coerce_in(alpha, 0.0, 1.0),
+        )
     }
 
-    pub const fn red(self) -> u8 {
-        (self.0 >> 16) as u8
+    /// A color of `color_space` (one of [`ColorSpaces`]), its components kept in the space's
+    /// range and alpha in 0 to 1, as `Color(red, green, blue, alpha, colorSpace)`.
+    ///
+    /// # Panics
+    ///
+    /// If the space doesn't have three components, or isn't a named one, as Compose throws.
+    pub fn new_with(
+        red: f32,
+        green: f32,
+        blue: f32,
+        alpha: f32,
+        color_space: &ColorSpace,
+    ) -> Color {
+        if color_space.is_srgb() {
+            return Color::new(red, green, blue, alpha);
+        }
+        assert!(
+            color_space.component_count() == 3,
+            "compose-ui: Color only works with ColorSpaces with 3 components"
+        );
+        assert!(
+            color_space.id() != MIN_ID,
+            "compose-ui: unknown color space, please use a color space in ColorSpaces"
+        );
+        let component = |value: f32, index: usize| {
+            float_to_half(coerce_in(
+                value,
+                color_space.min_value(index),
+                color_space.max_value(index),
+            ))
+        };
+        Color::pack_wide(
+            component(red, 0),
+            component(green, 1),
+            component(blue, 2),
+            coerce_in(alpha, 0.0, 1.0),
+            color_space.id(),
+        )
     }
 
-    pub const fn green(self) -> u8 {
-        (self.0 >> 8) as u8
+    /// A color of `color_space` from components not kept in a range, as Compose's internal
+    /// `UncheckedColor`.
+    pub(crate) fn unchecked(
+        red: f32,
+        green: f32,
+        blue: f32,
+        alpha: f32,
+        color_space: &ColorSpace,
+    ) -> Color {
+        if color_space.is_srgb() {
+            return Color::pack_srgb(red, green, blue, alpha);
+        }
+        let alpha = if alpha.is_nan() { alpha } else { alpha.clamp(0.0, 1.0) };
+        Color::pack_wide(
+            float_to_half(red),
+            float_to_half(green),
+            float_to_half(blue),
+            alpha,
+            color_space.id(),
+        )
     }
 
-    pub const fn blue(self) -> u8 {
-        self.0 as u8
+    /// sRGB components packed as Compose packs them (each rounded half up, not kept in a
+    /// range: callers keep them).
+    fn pack_srgb(red: f32, green: f32, blue: f32, alpha: f32) -> Color {
+        let byte = |value: f32| (value * 255.0 + 0.5) as i32;
+        let argb = byte(alpha) << 24 | byte(red) << 16 | byte(green) << 8 | byte(blue);
+        Color((argb as u32 as u64) << 32)
+    }
+
+    fn pack_wide(red: u16, green: u16, blue: u16, alpha: f32, id: i32) -> Color {
+        let alpha = (alpha * 1023.0 + 0.5) as i32;
+        Color(
+            u64::from(red) << 48
+                | u64::from(green) << 32
+                | u64::from(blue) << 16
+                | (alpha as u64 & 0x3ff) << 6
+                | (id as u64 & 0x3f),
+        )
+    }
+
+    /// Whether it's packed as sRGB (its space's id 0): the fast path.
+    #[inline]
+    const fn is_packed_srgb(self) -> bool {
+        self.0 & 0x3f == 0
+    }
+
+    /// Its red component, in its color space's range, as `red`.
+    pub fn red(self) -> f32 {
+        if self.is_packed_srgb() {
+            ((self.0 >> 48) & 0xff) as f32 / 255.0
+        } else {
+            half_to_float((self.0 >> 48) as u16)
+        }
+    }
+
+    /// Its green component, as `green`.
+    pub fn green(self) -> f32 {
+        if self.is_packed_srgb() {
+            ((self.0 >> 40) & 0xff) as f32 / 255.0
+        } else {
+            half_to_float((self.0 >> 32) as u16)
+        }
+    }
+
+    /// Its blue component, as `blue`.
+    pub fn blue(self) -> f32 {
+        if self.is_packed_srgb() {
+            ((self.0 >> 32) & 0xff) as f32 / 255.0
+        } else {
+            half_to_float((self.0 >> 16) as u16)
+        }
+    }
+
+    /// Its alpha, 0 to 1, as `alpha`.
+    pub fn alpha(self) -> f32 {
+        if self.is_packed_srgb() {
+            ((self.0 >> 56) & 0xff) as f32 / 255.0
+        } else {
+            ((self.0 >> 6) & 0x3ff) as f32 / 1023.0
+        }
+    }
+
+    /// Whether its alpha is 0, read from its bits: for the checks of every drawing.
+    #[inline]
+    pub(crate) const fn alpha_is_zero(self) -> bool {
+        if self.is_packed_srgb() { self.0 >> 56 == 0 } else { (self.0 >> 6) & 0x3ff == 0 }
+    }
+
+    /// Its color space, as `colorSpace`.
+    pub fn color_space(self) -> &'static ColorSpace {
+        let id = (self.0 & 0x3f) as usize;
+        ColorSpaces::get(id)
+            .unwrap_or_else(|| panic!("compose-ui: a color of an unknown color space ({id})"))
+    }
+
+    /// Red, green, blue, alpha and its color space, as Kotlin's destructuring
+    /// (`val (red, green, blue, alpha, colorSpace) = color`).
+    pub fn components(self) -> (f32, f32, f32, f32, &'static ColorSpace) {
+        (self.red(), self.green(), self.blue(), self.alpha(), self.color_space())
+    }
+
+    /// The same color in `color_space`, as `convert`.
+    pub fn convert(self, color_space: &ColorSpace) -> Color {
+        if self.is_packed_srgb() && color_space.id() == 0 {
+            return self;
+        }
+        let source = self.color_space();
+        crate::colorspace::connect(source, color_space, Default::default()).transform_to_color(self)
+    }
+
+    /// The same color with other components (in its space), as `copy(alpha, red, green, blue)`.
+    pub fn copy(self, alpha: f32, red: f32, green: f32, blue: f32) -> Color {
+        Color::new_with(red, green, blue, alpha, self.color_space())
+    }
+
+    /// Its sRGB ARGB, converted if it's of another space, as `toArgb`.
+    #[inline]
+    pub fn to_argb(self) -> u32 {
+        if self.is_packed_srgb() { (self.0 >> 32) as u32 } else { self.to_argb_converted() }
+    }
+
+    #[cold]
+    fn to_argb_converted(self) -> u32 {
+        (self.convert(&ColorSpaces::SRGB).0 >> 32) as u32
+    }
+
+    /// Its relative luminance, 0 to 1, as `luminance()`.
+    ///
+    /// # Panics
+    ///
+    /// If its space isn't RGB, as Compose throws.
+    pub fn luminance(self) -> f32 {
+        let color_space = self.color_space();
+        let rgb = color_space.rgb_data().filter(|_| color_space.model() == ColorModel::Rgb);
+        let Some(rgb) = rgb else {
+            panic!(
+                "compose-ui: the specified color must be encoded in an RGB color space. The \
+                 supplied color space is {}",
+                color_space.model()
+            )
+        };
+        let r = rgb.eotf(f64::from(self.red()));
+        let g = rgb.eotf(f64::from(self.green()));
+        let b = rgb.eotf(f64::from(self.blue()));
+        coerce_in((0.2126 * r + 0.7152 * g + 0.0722 * b) as f32, 0.0, 1.0)
+    }
+
+    /// An opaque sRGB color from hue (0 to 360), saturation and value (0 to 1), as
+    /// `Color.hsv(hue, saturation, value)`.
+    pub fn hsv(hue: f32, saturation: f32, value: f32) -> Color {
+        Color::hsv_with(hue, saturation, value, 1.0, &ColorSpaces::SRGB)
+    }
+
+    /// As `Color.hsv(hue, saturation, value, alpha, colorSpace)`.
+    ///
+    /// # Panics
+    ///
+    /// If hue, saturation or value is out of its range, as Compose throws.
+    pub fn hsv_with(hue: f32, saturation: f32, value: f32, alpha: f32, color_space: &Rgb) -> Color {
+        assert!(
+            (0.0..=360.0).contains(&hue)
+                && (0.0..=1.0).contains(&saturation)
+                && (0.0..=1.0).contains(&value),
+            "compose-ui: HSV ({hue}, {saturation}, {value}) must be in range (0..360, 0..1, 0..1)"
+        );
+        let component = |n: f32| {
+            let k = (n + hue / 60.0) % 6.0;
+            value - value * saturation * 0f32.max(k.min(4.0 - k).min(1.0))
+        };
+        Color::new_with(component(5.0), component(3.0), component(1.0), alpha, color_space)
+    }
+
+    /// An opaque sRGB color from hue (0 to 360), saturation and lightness (0 to 1), as
+    /// `Color.hsl(hue, saturation, lightness)`.
+    pub fn hsl(hue: f32, saturation: f32, lightness: f32) -> Color {
+        Color::hsl_with(hue, saturation, lightness, 1.0, &ColorSpaces::SRGB)
+    }
+
+    /// As `Color.hsl(hue, saturation, lightness, alpha, colorSpace)`.
+    ///
+    /// # Panics
+    ///
+    /// If hue, saturation or lightness is out of its range, as Compose throws.
+    pub fn hsl_with(
+        hue: f32,
+        saturation: f32,
+        lightness: f32,
+        alpha: f32,
+        color_space: &Rgb,
+    ) -> Color {
+        assert!(
+            (0.0..=360.0).contains(&hue)
+                && (0.0..=1.0).contains(&saturation)
+                && (0.0..=1.0).contains(&lightness),
+            "compose-ui: HSL ({hue}, {saturation}, {lightness}) must be in range (0..360, 0..1, \
+             0..1)"
+        );
+        let component = |n: f32| {
+            let k = (n + hue / 30.0) % 12.0;
+            let a = saturation * lightness.min(1.0 - lightness);
+            lightness - a * (-1f32).max((k - 3.0).min(9.0 - k).min(1.0))
+        };
+        Color::new_with(component(0.0), component(8.0), component(4.0), alpha, color_space)
     }
 
     pub fn is_specified(self) -> bool {
         self != Color::UNSPECIFIED
     }
 
-    /// The same color with `alpha` (0 to 1) of opacity, as `copy(alpha = …)`.
-    pub fn with_alpha(self, alpha: f32) -> Color {
-        let alpha = (alpha.clamp(0.0, 1.0) * 255.0).round() as u32;
-        Color(alpha << 24 | (self.0 & 0x00FF_FFFF))
+    pub fn is_unspecified(self) -> bool {
+        self == Color::UNSPECIFIED
     }
 
-    /// This color drawn over `background`, as `compositeOver`: an opaque color for an opaque
-    /// background.
-    pub fn composite_over(self, background: Color) -> Color {
-        let front = self.alpha() as f32 / 255.0;
-        let back = background.alpha() as f32 / 255.0;
-        let alpha = front + back * (1.0 - front);
-        if alpha <= 0.0 {
-            return Color(0);
+    /// The same color with `alpha` (0 to 1) of opacity, as `copy(alpha = …)`.
+    pub fn with_alpha(self, alpha: f32) -> Color {
+        if self.is_packed_srgb() {
+            let alpha = (coerce_in(alpha, 0.0, 1.0) * 255.0 + 0.5) as u32;
+            Color(u64::from(alpha) << 56 | (self.0 & 0x00FF_FFFF_0000_0000))
+        } else {
+            self.copy(alpha, self.red(), self.green(), self.blue())
         }
-        let channel = |front_value: u8, back_value: u8| {
-            let value =
-                (front_value as f32 * front + back_value as f32 * back * (1.0 - front)) / alpha;
-            value.round().clamp(0.0, 255.0) as u32
+    }
+
+    /// This color drawn over `background`, in the background's space, as `compositeOver`.
+    pub fn composite_over(self, background: Color) -> Color {
+        // Two sRGB colors: no conversion and no space to look up (the same numbers).
+        let srgb = self.is_packed_srgb() && background.is_packed_srgb();
+        let foreground = if srgb { self } else { self.convert(background.color_space()) };
+        let background_alpha = background.alpha();
+        let foreground_alpha = foreground.alpha();
+        let alpha = foreground_alpha + background_alpha * (1.0 - foreground_alpha);
+        let component = |front: f32, back: f32| {
+            if alpha == 0.0 {
+                0.0
+            } else {
+                (front * foreground_alpha + back * background_alpha * (1.0 - foreground_alpha))
+                    / alpha
+            }
         };
-        Color(
-            ((alpha * 255.0).round() as u32) << 24
-                | channel(self.red(), background.red()) << 16
-                | channel(self.green(), background.green()) << 8
-                | channel(self.blue(), background.blue()),
-        )
+        let (red, green, blue) = (
+            component(foreground.red(), background.red()),
+            component(foreground.green(), background.green()),
+            component(foreground.blue(), background.blue()),
+        );
+        if srgb {
+            Color::pack_srgb(red, green, blue, alpha)
+        } else {
+            Color::unchecked(red, green, blue, alpha, background.color_space())
+        }
     }
 
     /// `self` if specified, else `other`, as `takeOrElse`.
     pub fn or(self, other: Color) -> Color {
         if self.is_specified() { self } else { other }
     }
+
+    /// `self` if specified, else what `block` gives, as `takeOrElse`.
+    pub fn take_or_else(self, block: impl FnOnce() -> Color) -> Color {
+        if self.is_specified() { self } else { block() }
+    }
+
+    /// Between `start` and `stop`, interpolated in the Oklab color space and given in `stop`'s,
+    /// as Compose's `lerp(Color, Color, Float)`; `fraction` is kept in 0 to 1. The interpolated
+    /// Oklab color is packed (as half floats) before it's converted, as Compose's.
+    pub fn lerp(start: Color, stop: Color, fraction: f32) -> Color {
+        if start.is_packed_srgb() && stop.is_packed_srgb() {
+            return Color::lerp_srgb(start, stop, fraction);
+        }
+        // What the connectors give for two unspecified colors (a text style's background).
+        if start.is_unspecified() && stop.is_unspecified() {
+            return Color::UNSPECIFIED;
+        }
+        let oklab = &*ColorSpaces::OKLAB;
+        let start_color = start.convert(oklab);
+        let end_color = stop.convert(oklab);
+        let t = coerce_in(fraction, 0.0, 1.0);
+        let mix = |start: f32, stop: f32| crate::unit::lerp_f32(start, stop, t);
+        let interpolated = Color::unchecked(
+            mix(start_color.red(), end_color.red()),
+            mix(start_color.green(), end_color.green()),
+            mix(start_color.blue(), end_color.blue()),
+            mix(start_color.alpha(), end_color.alpha()),
+            oklab,
+        );
+        interpolated.convert(stop.color_space())
+    }
+
+    /// [`Color::lerp`] of two sRGB colors (animations' usual case): the steps the connectors
+    /// take, without looking them or the spaces up. Each color to Oklab through sRGB adapted
+    /// to D50, packed as an Oklab color (kept in Oklab's range, half floats); the mix packed
+    /// unchecked; back to sRGB.
+    fn lerp_srgb(start: Color, stop: Color, fraction: f32) -> Color {
+        let srgb = crate::colorspace::srgb_d50();
+        let oklab_id = ColorSpaces::OKLAB_ID;
+        let decoded = crate::colorspace::srgb_d50_decoded();
+        let to_oklab = |color: Color| {
+            // The EOTF of a byte, from a table of the same values `to_xyz_values` computes.
+            let argb = color.to_argb();
+            let [r, g, b] = [16, 8, 0].map(|shift| decoded[((argb >> shift) & 0xFF) as usize]);
+            let mut values = crate::colorspace::mul3x3_float3(&srgb.transform, r, g, b);
+            crate::colorspace::xyz_to_oklab(&mut values);
+            Color::pack_wide(
+                float_to_half(coerce_in(values[0], 0.0, 1.0)),
+                float_to_half(coerce_in(values[1], -0.5, 0.5)),
+                float_to_half(coerce_in(values[2], -0.5, 0.5)),
+                coerce_in(color.alpha(), 0.0, 1.0),
+                oklab_id,
+            )
+        };
+        let (start, stop) = (to_oklab(start), to_oklab(stop));
+        let t = coerce_in(fraction, 0.0, 1.0);
+        let mix = |start: f32, stop: f32| crate::unit::lerp_f32(start, stop, t);
+        let alpha = mix(start.alpha(), stop.alpha());
+        let interpolated = Color::pack_wide(
+            float_to_half(mix(start.red(), stop.red())),
+            float_to_half(mix(start.green(), stop.green())),
+            float_to_half(mix(start.blue(), stop.blue())),
+            if alpha.is_nan() { alpha } else { alpha.clamp(0.0, 1.0) },
+            oklab_id,
+        );
+        let mut values = [interpolated.red(), interpolated.green(), interpolated.blue()];
+        crate::colorspace::oklab_to_xyz(&mut values);
+        let [red, green, blue] = srgb.xyz_to_values(values[0], values[1], values[2]);
+        Color::new(red, green, blue, interpolated.alpha())
+    }
+
+    /// This color with its alpha multiplied by `alpha` (when not NaN and below 1), as
+    /// Compose's internal `Color.modulate` for text.
+    pub(crate) fn modulate(self, alpha: f32) -> Color {
+        if alpha.is_nan() || alpha >= 1.0 { self } else { self.with_alpha(self.alpha() * alpha) }
+    }
 }
 
 impl fmt::Debug for Color {
+    /// `#AARRGGBB` for an sRGB color (what display-list dumps show), else as `Display`.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if *self == Color::UNSPECIFIED {
             formatter.write_str("Color::UNSPECIFIED")
+        } else if self.is_packed_srgb() {
+            write!(formatter, "#{:08X}", self.to_argb())
         } else {
-            write!(formatter, "#{:08X}", self.0)
+            fmt::Display::fmt(self, formatter)
         }
+    }
+}
+
+impl fmt::Display for Color {
+    /// As Compose's `toString`: `Color(red, green, blue, alpha, space's name)`.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "Color({:?}, {:?}, {:?}, {:?}, {})",
+            self.red(),
+            self.green(),
+            self.blue(),
+            self.alpha(),
+            self.color_space().name()
+        )
     }
 }
 
@@ -580,72 +950,8 @@ impl Paint {
     }
 
     pub fn with_alpha(self, alpha: f32) -> Paint {
-        let opacity = self.color.alpha() as f32 / 255.0 * alpha.clamp(0.0, 1.0);
+        let opacity = self.color.alpha() * alpha.clamp(0.0, 1.0);
         Paint { color: self.color.with_alpha(opacity), ..self }
-    }
-}
-
-/// sRGB's transfer function, to linear light.
-fn srgb_to_linear(channel: f32) -> f32 {
-    if channel <= 0.04045 { channel / 12.92 } else { ((channel + 0.055) / 1.055).powf(2.4) }
-}
-
-/// sRGB's transfer function, from linear light.
-fn linear_to_srgb(channel: f32) -> f32 {
-    if channel <= 0.003_130_8 { channel * 12.92 } else { 1.055 * channel.powf(1.0 / 2.4) - 0.055 }
-}
-
-/// A color's Oklab lightness and opponents, and its alpha.
-fn to_oklab(color: Color) -> [f32; 4] {
-    let channel = |value: u8| srgb_to_linear(value as f32 / 255.0);
-    let (r, g, b) = (channel(color.red()), channel(color.green()), channel(color.blue()));
-    let l = (0.412_221_47 * r + 0.536_332_55 * g + 0.051_445_995 * b).cbrt();
-    let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
-    let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).cbrt();
-    [
-        0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s,
-        1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s,
-        0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s,
-        color.alpha() as f32 / 255.0,
-    ]
-}
-
-fn from_oklab([lightness, a, b, alpha]: [f32; 4]) -> Color {
-    let l = (lightness + 0.396_337_78 * a + 0.215_803_76 * b).powi(3);
-    let m = (lightness - 0.105_561_346 * a - 0.063_854_17 * b).powi(3);
-    let s = (lightness - 0.089_484_18 * a - 1.291_485_5 * b).powi(3);
-    let red = 4.076_741_7 * l - 3.307_711_6 * m + 0.230_969_94 * s;
-    let green = -1.268_438 * l + 2.609_757_4 * m - 0.341_319_38 * s;
-    let blue = -0.004_196_086_3 * l - 0.703_418_6 * m + 1.707_614_7 * s;
-    let channel = |value: f32| (linear_to_srgb(value).clamp(0.0, 1.0) * 255.0).round() as u32;
-    let alpha = (alpha.clamp(0.0, 1.0) * 255.0).round() as u32;
-    Color::from_argb(alpha << 24 | channel(red) << 16 | channel(green) << 8 | channel(blue))
-}
-
-impl Color {
-    /// Between `start` and `stop`, interpolated in the Oklab color space, as Compose's
-    /// `lerp(Color, Color, Float)`; `fraction` is kept in 0 to 1. An unspecified end counts as
-    /// transparent black, and two unspecified ends give unspecified, as Compose's (whose
-    /// unspecified color is transparent black in an unspecified color space).
-    pub fn lerp(start: Color, stop: Color, fraction: f32) -> Color {
-        if !start.is_specified() && !stop.is_specified() {
-            return Color::UNSPECIFIED;
-        }
-        let lab = |color: Color| to_oklab(if color.is_specified() { color } else { Color(0) });
-        let (start, stop) = (lab(start), lab(stop));
-        let t = fraction.clamp(0.0, 1.0);
-        let mix = |index: usize| crate::unit::lerp_f32(start[index], stop[index], t);
-        from_oklab([mix(0), mix(1), mix(2), mix(3)])
-    }
-
-    /// This color with its alpha multiplied by `alpha` (when not NaN and below 1), as
-    /// Compose's internal `Color.modulate` for text.
-    pub(crate) fn modulate(self, alpha: f32) -> Color {
-        if alpha.is_nan() || alpha >= 1.0 {
-            self
-        } else {
-            self.with_alpha(self.alpha() as f32 / 255.0 * alpha)
-        }
     }
 }
 
@@ -766,13 +1072,21 @@ mod tests {
     #[test]
     fn colors_pack_argb() {
         let color = Color::from_rgb(0x62, 0x00, 0xEE);
-        assert_eq!(color.argb(), 0xFF62_00EE);
+        assert_eq!(color.to_argb(), 0xFF62_00EE);
+        assert_eq!(color.value(), 0xFF62_00EE_0000_0000);
         assert_eq!(
             (color.red(), color.green(), color.blue(), color.alpha()),
-            (0x62, 0, 0xEE, 0xFF)
+            (0x62 as f32 / 255.0, 0.0, 0xEE as f32 / 255.0, 1.0)
         );
-        assert_eq!(color.with_alpha(0.5).alpha(), 128);
+        assert_eq!(color.with_alpha(0.5).to_argb() >> 24, 128);
         assert_eq!(Color::UNSPECIFIED.or(Color::RED), Color::RED);
+    }
+
+    /// A paint is 32 bytes with its 64-bit color: the indices' niches keep it from growing.
+    #[test]
+    fn a_paint_stays_small() {
+        assert_eq!(std::mem::size_of::<Color>(), 8);
+        assert_eq!(std::mem::size_of::<Paint>(), 32);
     }
 
     /// Corners larger than the box scale down to fit, as Compose's `CornerBasedShape`.

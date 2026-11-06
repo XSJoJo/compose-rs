@@ -815,7 +815,7 @@ fn encode_request(
 fn paint_of(style: &TextStyle) -> (u32, u8) {
     let color = compose_ui::platform::resolve_text_color(style);
     let decoration = style.text_decoration.unwrap_or_default();
-    (color.argb(), u8::from(decoration.underline) | (u8::from(decoration.line_through) << 1))
+    (color.to_argb(), u8::from(decoration.underline) | (u8::from(decoration.line_through) << 1))
 }
 
 /// What `style`'s paint has beyond a color and decoration, as a style's decoration byte has it:
@@ -870,7 +870,7 @@ fn encode_paint_extras(out: &mut Writer, style: &TextStyle, flags: u8) {
         out.f32(if alpha.is_nan() { 1.0 } else { alpha.clamp(0.0, 1.0) });
         out.u32(gradient.colors.len() as u32);
         for color in gradient.colors.iter() {
-            out.u32(color.argb());
+            out.u32(color.to_argb());
         }
         let stops = gradient.stops.as_deref().unwrap_or_default();
         out.u32(stops.len() as u32);
@@ -884,7 +884,7 @@ fn encode_paint_extras(out: &mut Writer, style: &TextStyle, flags: u8) {
     if flags & 8 != 0
         && let Some(shadow) = style.shadow
     {
-        out.u32(shadow.color.argb());
+        out.u32(shadow.color.to_argb());
         out.f32(shadow.offset.x);
         out.f32(shadow.offset.y);
         out.f32(shadow.blur_radius);
@@ -960,7 +960,7 @@ fn encode_style(
     out.f32(line_height_style.alignment.top_ratio);
     let trim = line_height_style.trim;
     out.u8(u8::from(trim.trims_first_line_top()) | (u8::from(trim.trims_last_line_bottom()) << 1));
-    out.u32(if background.is_specified() { background.argb() } else { 0 });
+    out.u32(if background.is_specified() { background.to_argb() } else { 0 });
     if extras != 0 {
         encode_paint_extras(out, style, extras);
     }
@@ -1166,7 +1166,7 @@ mod tests {
         let solid = TextStyle::DEFAULT.with_brush(Some(Brush::solid(Color::RED)), f32::NAN);
         let request = request_of(&solid);
         assert_eq!(request.len(), PLAIN_REQUEST);
-        assert_eq!(u32_at(&request, 16), Color::RED.argb());
+        assert_eq!(u32_at(&request, 16), Color::RED.to_argb());
         // A filled draw style is the default's.
         let filled = TextStyle { draw_style: Some(DrawStyle::Fill), ..TextStyle::DEFAULT };
         assert_eq!(request_of(&filled).len(), PLAIN_REQUEST);
@@ -1182,8 +1182,8 @@ mod tests {
         assert_eq!(&extras[..2], &[0, 0]);
         assert_eq!(f32_at(extras, 2), 0.5);
         assert_eq!(u32_at(extras, 6), 2);
-        assert_eq!(u32_at(extras, 10), Color::RED.argb());
-        assert_eq!(u32_at(extras, 14), Color::BLUE.argb());
+        assert_eq!(u32_at(extras, 10), Color::RED.to_argb());
+        assert_eq!(u32_at(extras, 14), Color::BLUE.to_argb());
         // No stops.
         assert_eq!(u32_at(extras, 18), 0);
         // The drawing's width, as Kotlin will know it, is what's infinite.
@@ -1212,7 +1212,7 @@ mod tests {
         let request = request_of(&style);
         assert_eq!(request[DECORATION_AT], 8 | 16);
         let extras = &request[PLAIN_REQUEST - 8..];
-        assert_eq!(u32_at(extras, 0), Color::GREEN.argb());
+        assert_eq!(u32_at(extras, 0), Color::GREEN.to_argb());
         assert_eq!((f32_at(extras, 4), f32_at(extras, 8), f32_at(extras, 12)), (1.0, 2.0, 3.0));
         assert_eq!((f32_at(extras, 16), f32_at(extras, 20)), (5.0, 4.0));
         assert_eq!(&extras[24..26], &[1, 2]);
@@ -1440,7 +1440,7 @@ mod tests {
         measurer.layout_annotated(&text, &style, options, constraints, &Density::new(1.0));
         let request = &measurer.backend.requests[0];
         // 16 bytes of options, then the 32-byte base style (its color first: the paint's).
-        assert_eq!(u32::from_le_bytes(request[16..20].try_into().unwrap()), Color::BLUE.argb());
+        assert_eq!(u32::from_le_bytes(request[16..20].try_into().unwrap()), Color::BLUE.to_argb());
         let u32_at = |at: usize| u32::from_le_bytes(request[at..at + 4].try_into().unwrap());
         assert_eq!(u32_at(48), 2, "two runs");
         // Each run: its range, what it takes from the paint, its style (32 bytes).
@@ -1450,7 +1450,7 @@ mod tests {
             "the paint's color and decoration"
         );
         assert_eq!((u32_at(93), u32_at(97), request[101]), (3, 6, 0b10), "its own color");
-        assert_eq!(u32_at(102), Color::RED.argb());
+        assert_eq!(u32_at(102), Color::RED.to_argb());
     }
 
     /// A style's line height style follows its line height (D571): the alignment's top ratio and

@@ -2040,7 +2040,7 @@ fn DecorationContainer(parts: ContainerParts, container: Option<Callback>) {
                     let at = notch(scope.size(), scope.density(), scope.layout_direction());
                     // Usually transparent: no clip for nothing.
                     let fill = color.get();
-                    if fill.alpha() > 0 {
+                    if fill.alpha() > 0.0 {
                         in_cut(scope, &cut_path, at, |scope| scope.draw_shape(&shape, fill));
                     }
                     draw_notched_outline(

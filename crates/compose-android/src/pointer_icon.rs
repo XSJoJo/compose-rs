@@ -91,7 +91,7 @@ pub(crate) fn code(icon: Option<&PointerIcon>) -> i32 {
 
 /// A bitmap icon's pixels (premultiplied RGBA, as `Bitmap.copyPixelsFromBuffer` reads an
 /// `ARGB_8888` bitmap's) and its width, height and hot spot, for `PointerIcon.create`.
-pub(crate) fn bitmap(icon: Option<&PointerIcon>) -> Option<(&[u8], [f32; 4])> {
+pub(crate) fn bitmap(icon: Option<&PointerIcon>) -> Option<(std::sync::Arc<[u8]>, [f32; 4])> {
     let (bitmap, hot_spot) = icon?.bitmap()?;
     let shape = [bitmap.width() as f32, bitmap.height() as f32, hot_spot.x, hot_spot.y];
     Some((bitmap.pixels(), shape))
@@ -113,7 +113,7 @@ mod tests {
         let icon = PointerIcon::from_bitmap(image, Offset::new(1.0, 0.5));
         assert_eq!(code(Some(&icon)), BITMAP);
         let (pixels, shape) = bitmap(Some(&icon)).unwrap();
-        assert_eq!(pixels, [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(*pixels, [1, 2, 3, 4, 5, 6, 7, 8]);
         assert_eq!(shape, [2.0, 1.0, 1.0, 0.5]);
         assert!(bitmap(Some(&PointerIcon::HAND)).is_none());
     }

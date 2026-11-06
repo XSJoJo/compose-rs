@@ -675,7 +675,7 @@ fn fade_grid(
                 let item_scope = scope.item_scope();
                 scope.items_list_keyed(
                     colors.clone(),
-                    |color: &Color| color.argb(),
+                    |color: &Color| color.to_argb(),
                     move |color: &Color| {
                         let modifier = Modifier.animate_item_with(
                             &item_scope,

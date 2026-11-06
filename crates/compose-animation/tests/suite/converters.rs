@@ -44,8 +44,11 @@ fn colors_go_to_oklab_and_back() {
 #[test]
 fn a_color_vector_is_clamped_to_oklab_first() {
     // Alpha over 1 or under 0: clamped.
-    assert_eq!(Color::from_vector(AnimationVector::from([1.1, 1.0, 0.0, 0.0])).alpha(), 255);
-    assert_eq!(Color::from_vector(AnimationVector::from([-0.1, 1.0, 0.0, 0.0])).alpha(), 0);
+    assert_eq!(
+        Color::from_vector(AnimationVector::from([1.1, 1.0, 0.0, 0.0])).to_argb() >> 24,
+        255
+    );
+    assert_eq!(Color::from_vector(AnimationVector::from([-0.1, 1.0, 0.0, 0.0])).to_argb() >> 24, 0);
     // L, a and b clamped to Oklab's range (0..1, ±0.5) before converting: 3, 3, 3 is the
     // color of 1, 0.5, 0.5, and -3, -3, -3 that of 0, -0.5, -0.5.
     let most = Color::from_vector(AnimationVector::from([1.0, 1.0, 0.5, 0.5]));

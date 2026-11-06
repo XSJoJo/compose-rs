@@ -323,7 +323,9 @@ fn a_pressed_navigation_item_shows_its_ripple_on_the_pill_only() {
         .ops
         .iter()
         .filter_map(|op| match op {
-            DrawOp::DrawRect(rect, paint) if paint.color.alpha() < 255 => Some(*rect),
+            DrawOp::DrawRect(rect, paint) if ((paint.color.to_argb() >> 24) as u8) < 255 => {
+                Some(*rect)
+            }
             _ => None,
         })
         .collect();

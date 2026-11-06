@@ -484,14 +484,14 @@ fn a_drags_state_layer_fades_in_and_out_linearly() {
     source.try_emit(DragInteraction::Start(start));
     ui.advance_time_by_frame();
     ui.advance_time_by(Duration::from_millis(32));
-    let partial = one_circle(&mut ui).color.alpha() as f32 / 255.0;
+    let partial = one_circle(&mut ui).color.alpha();
     assert!(partial > 0.0 && partial < 0.16, "{partial}");
     settle(&mut ui);
     assert_eq!(one_circle(&mut ui).color, Color::BLACK.with_alpha(0.16));
     source.try_emit(DragInteraction::Stop(start));
     ui.advance_time_by_frame();
     ui.advance_time_by(Duration::from_millis(64));
-    let fading = one_circle(&mut ui).color.alpha() as f32 / 255.0;
+    let fading = one_circle(&mut ui).color.alpha();
     assert!(fading > 0.0 && fading < 0.16, "{fading}");
     settle(&mut ui);
     assert!(circles(&mut ui).is_empty());
@@ -509,7 +509,7 @@ fn a_ripple_grows_from_the_press_to_the_center_and_fades_on_release() {
     let early = one_circle(&mut ui);
     assert!(early.center.0 < 12.0, "{early:?}");
     assert!(early.radius < 16.0 && early.radius >= 12.0, "{early:?}");
-    assert!(early.color.alpha() < 26, "{early:?}");
+    assert!(((early.color.to_argb() >> 24) as u8) < 26, "{early:?}");
     settle(&mut ui);
     let held = one_circle(&mut ui);
     assert_near(held.radius, BOUNDED_RADIUS);
@@ -519,7 +519,10 @@ fn a_ripple_grows_from_the_press_to_the_center_and_fades_on_release() {
     ui.advance_time_by_frame();
     ui.advance_time_by(Duration::from_millis(80));
     let fading = one_circle(&mut ui);
-    assert!(fading.color.alpha() > 0 && fading.color.alpha() < 26, "{fading:?}");
+    assert!(
+        ((fading.color.to_argb() >> 24) as u8) > 0 && ((fading.color.to_argb() >> 24) as u8) < 26,
+        "{fading:?}"
+    );
     ui.advance_time_by(Duration::from_millis(200));
     assert!(circles(&mut ui).is_empty());
     assert!(!ui.host().needs_frame());

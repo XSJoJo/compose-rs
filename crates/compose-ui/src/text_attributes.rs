@@ -528,7 +528,7 @@ impl TextForegroundStyle {
     pub fn alpha(&self) -> f32 {
         match self {
             TextForegroundStyle::Unspecified => f32::NAN,
-            TextForegroundStyle::Color(color) => color.alpha() as f32 / 255.0,
+            TextForegroundStyle::Color(color) => color.alpha(),
             TextForegroundStyle::Brush { alpha, .. } => *alpha,
         }
     }

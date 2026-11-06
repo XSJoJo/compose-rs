@@ -884,7 +884,7 @@ pub fn ModalBottomSheet(
                         Modifier
                             .fill_max_size()
                             .draw_behind(move |scope| {
-                                let alpha = scrim_color.alpha() as f32 / 255.0 * scrim_alpha.get();
+                                let alpha = scrim_color.alpha() * scrim_alpha.get();
                                 scope.draw_rect(
                                     scope.bounds(),
                                     compose_ui::Paint::fill(scrim_color.with_alpha(alpha)),

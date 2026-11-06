@@ -90,7 +90,7 @@ impl EdgeEffectFactory for JniEdgeEffects {
                         &[
                             JValue::Int(owner as i32).as_jni(),
                             JValue::Int(side as i32).as_jni(),
-                            JValue::Int(glow_color.argb() as i32).as_jni(),
+                            JValue::Int(glow_color.to_argb() as i32).as_jni(),
                         ],
                     )
                 }?
