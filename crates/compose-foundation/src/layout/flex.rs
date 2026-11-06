@@ -534,6 +534,11 @@ impl ParentDataModifierNode for FlexNode {
     fn modify_parent_data(&self, _: Density, _: Option<Rc<dyn Any>>) -> Option<Rc<dyn Any>> {
         Some(self.0.clone())
     }
+
+    // As `FlexBoxChildDataNode`, a `FillModifierParentData`.
+    fn holds_fill_fractions(&self) -> bool {
+        true
+    }
 }
 
 /// Children along a main axis, as Compose's `FlexBox`: `config` (a `FlexBoxConfig`, or a block
