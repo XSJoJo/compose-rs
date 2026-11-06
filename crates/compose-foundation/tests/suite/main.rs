@@ -162,6 +162,7 @@ mod text_field_output_input_method;
 mod text_field_scroll_state;
 mod text_field_semantics;
 mod text_field_state;
+mod text_field_state_semantics;
 mod text_field_text_layout;
 mod text_field_transformation;
 mod text_field_undo;
