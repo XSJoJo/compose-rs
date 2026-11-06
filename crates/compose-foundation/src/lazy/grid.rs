@@ -1873,6 +1873,7 @@ impl MeasurePolicy for LazyGridLayout {
                     lane_count: 1,
                     layout_min: 0,
                     layout_max: 0,
+                    looking_ahead: false,
                 };
                 animator.on_measured(state, &pass, &[], &mut |_, _| None);
                 let min = animator.min_size_to_fit_disappearing();
@@ -2469,6 +2470,7 @@ impl MeasurePolicy for LazyGridLayout {
                     lane_count: slots.count(),
                     layout_min,
                     layout_max,
+                    looking_ahead: false,
                 };
                 let moved = animator.on_measured(state, &pass, &positioned, &mut |item, moved| {
                     m.measure(item, moved.lane, moved.span).map(|(placeable, _)| {

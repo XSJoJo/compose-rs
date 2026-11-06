@@ -2313,6 +2313,7 @@ impl MeasurePolicy for StaggeredLayout {
                     lane_count: lanes.max(1),
                     layout_min: 0,
                     layout_max: 0,
+                    looking_ahead: false,
                 };
                 animator.on_measured(state, &pass, &[], &mut |_, _| None);
                 let min = animator.min_size_to_fit_disappearing();
@@ -2826,6 +2827,7 @@ impl MeasurePolicy for StaggeredLayout {
                 lane_count: lanes,
                 layout_min: done.first_offsets.iter().copied().min().unwrap_or(0),
                 layout_max: max_current + content_padding,
+                looking_ahead: false,
             };
             let moved = animator.on_measured(state, &pass, &in_view, &mut |item, moved| {
                 c.try_measure(item as i32, (moved.lane, moved.span))

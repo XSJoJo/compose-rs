@@ -633,6 +633,16 @@ pub(super) struct MovedAway {
     pub to_start: bool,
 }
 
+/// Where the pass ahead placed an animated item, as Compose's `lookaheadOffset`: its key, index,
+/// offset along from the content's start (padding in, not mirrored) and across in its cells.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct LookaheadPlace {
+    pub key: u64,
+    pub index: usize,
+    pub main: i32,
+    pub cross: i32,
+}
+
 /// One settled measurement, as `onMeasured`'s arguments.
 pub(super) struct Pass<'a> {
     pub items: &'a Rc<Items>,
@@ -644,6 +654,9 @@ pub(super) struct Pass<'a> {
     pub lane_count: usize,
     pub layout_min: i32,
     pub layout_max: i32,
+    /// The pass ahead, in a `LookaheadScope`: an item moving away to the start goes before the
+    /// first one positioned, as Compose's `isLookingAhead` branch, not at `layout_min`.
+    pub looking_ahead: bool,
 }
 
 /// The items' keys around where the list was, kept while they're current: an item's key function
@@ -1238,7 +1251,11 @@ impl ItemAnimator {
                 let info = &info_map[&waiting.key];
                 let accumulated =
                     add_sized_to_lanes(&mut lanes, info.lane, info.span, waiting.size);
-                info.layout_min - accumulated
+                let min = match positioned.first() {
+                    Some(first) if pass.looking_ahead => first.main,
+                    _ => info.layout_min,
+                };
+                min - accumulated
             };
             result.push(self.moved_away(waiting, main, true, size_offset, vertical));
         }
