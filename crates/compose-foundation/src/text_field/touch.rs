@@ -195,6 +195,13 @@ impl TextFieldNode {
         context.invalidate_measurement();
     }
 
+    /// A finger's later press of a multi-tap, at `at` in the text: resolved as a long press at
+    /// the next measurement, as Compose's `touchSelectionSubsequentPress` starts the long press's
+    /// drag observer (D2018).
+    pub(super) fn touch_subsequent_press(&mut self, at: Offset) {
+        self.touch.pending = Some(Pending::LongPress(at));
+    }
+
     /// The finger moved to `at` (in the text) after a long press.
     pub(super) fn long_press_dragged(&mut self, at: Offset) {
         self.touch.pending = Some(Pending::DragTo(at));

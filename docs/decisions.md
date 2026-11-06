@@ -1025,3 +1025,4 @@ The log is split by area into the files below, one table each, rows in number or
 | D2015 | [text](decisions/text.md#d2015) | current |
 | D2016 | [text](decisions/text.md#d2016) | current |
 | D2017 | [text](decisions/text.md#d2017) | current |
+| D2018 | [text](decisions/text.md#d2018) | current |

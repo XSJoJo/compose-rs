@@ -938,6 +938,21 @@ enum Unit {
     Line,
 }
 
+/// Whether a later press of a multi-tap at `at` passed the touch slop: once it has, the slop
+/// along where it passed is what its drag leaves out (D2018).
+#[inline(never)]
+fn past_slop(press: &mut Press, at: Offset, context: &mut EventContext<'_>) -> bool {
+    let moved = at - press.at;
+    let distance = moved.x.hypot(moved.y);
+    let slop = context.view_configuration().touch_slop;
+    if distance <= slop {
+        return false;
+    }
+    press.slop_pending = false;
+    press.slop = moved * (slop / distance);
+    true
+}
+
 /// A press on the field, while held.
 #[derive(Clone)]
 struct Press {
@@ -952,6 +967,12 @@ struct Press {
     long_possible: bool,
     /// The long press came: the moves drag the selection by words until it's lifted.
     long: bool,
+    /// A finger's later press of a multi-tap, not moved past the touch slop yet: its drag starts
+    /// past it (Compose's `touchSelectionSubsequentPress`, D2018).
+    slop_pending: bool,
+    /// What the drag leaves out of the finger's movement: the touch slop, along where it first
+    /// passed it (Compose's over-slop).
+    slop: Offset,
 }
 
 pub(crate) struct TextFieldNode {
@@ -1093,6 +1114,24 @@ impl TextFieldNode {
         };
         let size = IntSize::new(width, height);
         Some(compose_ui::TextLayoutResult::new(input, measurer.paragraph(paragraph), size))
+    }
+
+    /// A finger's later press of a multi-tap at `at`: a long press's start (D2018).
+    #[inline(never)]
+    fn subsequent_press(&mut self, at: Offset, context: &mut EventContext<'_>) {
+        self.cancel_long_press();
+        self.press = Some(Press {
+            at,
+            dragging: false,
+            unit: Unit::Word,
+            initial: 0..0,
+            long_possible: false,
+            long: true,
+            slop_pending: true,
+            slop: Offset::ZERO,
+        });
+        self.touch_subsequent_press(at);
+        context.invalidate_measure();
     }
 
     /// The fewest lines' height, as last measured (`line_bounds`).
@@ -2915,6 +2954,13 @@ impl TextFieldNode {
                     _ => 1,
                 };
                 self.last_tap = Some((now, event.position, clicks));
+                // A finger's later press of a multi-tap selects the word under it and drags by
+                // words, as a long press (Compose's `touchSelectionSubsequentPress` gives the
+                // press to the long press's drag observer): no handle while it drags (D2018).
+                if event.pointer_type != compose_ui::PointerType::Mouse && clicks == 2 {
+                    self.subsequent_press(at, context);
+                    return;
+                }
                 let unit = match clicks {
                     2 => Unit::Word,
                     3 => Unit::Line,
@@ -2931,8 +2977,16 @@ impl TextFieldNode {
                 }
                 let long_possible =
                     event.pointer_type != compose_ui::PointerType::Mouse && unit == Unit::Character;
-                self.press =
-                    Some(Press { at, dragging: false, unit, initial, long_possible, long: false });
+                self.press = Some(Press {
+                    at,
+                    dragging: false,
+                    unit,
+                    initial,
+                    long_possible,
+                    long: false,
+                    slop_pending: false,
+                    slop: Offset::ZERO,
+                });
                 if long_possible {
                     self.start_long_press(context);
                 }
@@ -2943,7 +2997,12 @@ impl TextFieldNode {
                 // After a long press, the finger drags the selection by words (D2010).
                 if press.long {
                     event.consume();
-                    self.long_press_dragged(at);
+                    // A later press of a multi-tap drags once past the slop, without it.
+                    if press.slop_pending && !past_slop(press, at, context) {
+                        return;
+                    }
+                    let to = at - press.slop;
+                    self.long_press_dragged(to);
                     context.invalidate_measure();
                     return;
                 }
@@ -3005,6 +3064,11 @@ impl TextFieldNode {
                     // Compose's `onDragStop` (D2010).
                     event.consume();
                     self.long_press_lifted();
+                    // A double tap on the focused field asks for the keyboard as its taps do
+                    // (Compose's tap detector beside its selection gestures, D2018).
+                    if press.unit == Unit::Word && self.focused && !self.read_only {
+                        context.show_software_keyboard();
+                    }
                     context.request_focus();
                     context.invalidate_measure();
                     return;

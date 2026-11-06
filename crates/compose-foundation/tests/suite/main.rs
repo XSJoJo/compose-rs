@@ -176,6 +176,7 @@ mod text_field_common_key_event;
 mod text_field_cursor_handle;
 mod text_field_decorator;
 mod text_field_default_width;
+mod text_field_double_tap;
 mod text_field_focus;
 mod text_field_height;
 mod text_field_key_event;
