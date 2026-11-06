@@ -1631,6 +1631,28 @@ impl TextFieldNode {
         self.constraints = None;
     }
 
+    /// Whether a font the field's text asked for arrived since `paragraph` was laid out, as
+    /// `BasicText`'s (Compose's `hasStaleResolvedFonts`, D2007): the read of a state, so what
+    /// measures is told when one does. Asked only of a style with fonts of its own: the field
+    /// lays its text out in its style alone.
+    fn is_stale(
+        &self,
+        measurer: &dyn compose_ui::platform::TextMeasurer,
+        paragraph: ParagraphHandle,
+    ) -> bool {
+        matches!(self.style.font_family, Some(compose_ui::FontFamily::FontList(_)))
+            && measurer.has_stale_resolved_fonts(paragraph)
+    }
+
+    /// Forgets what was measured in the fonts that were: the lines of "H" its least and most
+    /// lines are, and the ten "H" a state-based field is at least as wide as.
+    fn forget_font_measures(&mut self) {
+        self.line_bounds = None;
+        if let Some(link) = self.state.as_mut() {
+            link.default_width = None;
+        }
+    }
+
     /// Records the state before an edit for undo: typing on from the last typed text joins its
     /// step.
     fn record_undo(&mut self, typing: bool) {
@@ -2373,6 +2395,13 @@ impl LayoutModifierNode for TextFieldNode {
         if self.state.is_some() {
             self.adopt_state_to_measure(scope);
         }
+        // A font arrived: laid out anew (D2007).
+        if let Some(paragraph) = self.paragraph
+            && self.is_stale(&*scope.text_measurer(), paragraph)
+        {
+            self.invalidate_paragraph();
+            self.forget_font_measures();
+        }
         // At least ten "H" wide, as Compose's `textFieldMinSize`.
         let constraints = match self.state.is_some().then(|| self.default_width(scope)).flatten() {
             Some(width) => Constraints {
@@ -2628,8 +2657,16 @@ impl TextFieldNode {
             None => self.text.clone(),
         };
         let mut measurer = scope.text_measurer();
+        // A font arrived: laid out anew, and what was measured in the old font forgotten
+        // (D2007).
+        let stale =
+            self.intrinsics.as_ref().is_some_and(|kept| self.is_stale(&*measurer, kept.paragraph));
+        if stale {
+            self.forget_font_measures();
+        }
         let kept = self.intrinsics.as_ref().filter(|kept| {
-            kept.text == text
+            !stale
+                && kept.text == text
                 && kept.style == self.style
                 && kept.options == options
                 && kept.density == density
