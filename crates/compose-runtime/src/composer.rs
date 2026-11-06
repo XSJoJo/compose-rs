@@ -431,6 +431,7 @@ impl Runtime {
                 // then the scope may still skip, and its reads from the last run stay current.
                 frame.saved_epoch = scope.epoch;
                 frame.scope = group.scope;
+                scopes.log(composition, group.scope, crate::tooling::ScopeEventKind::Enter);
                 if conditional {
                     scopes.clear_conditions(group.scope);
                 }
@@ -493,6 +494,9 @@ impl Runtime {
             self.providers_invalid = 0;
         }
         frames.pop();
+        if restart.is_some() {
+            scopes.log(composition, frame.scope, crate::tooling::ScopeEventKind::Exit);
+        }
 
         let mut op = NodeOp::None;
         if !frame.skipped {

@@ -11,6 +11,7 @@ mod composition_api;
 mod composition_context;
 mod composition_fuzz;
 mod composition_local;
+mod composition_observer;
 mod composition_reusing;
 mod composition_snapshot;
 mod composition_tree_fuzz;

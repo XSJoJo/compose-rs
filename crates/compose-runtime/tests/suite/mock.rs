@@ -894,6 +894,20 @@ impl CompositionTest {
         self.composition = Some(composition);
     }
 
+    /// Composes `content` with `observer` set first, as `compose(observer) { … }`.
+    pub fn compose_observed(
+        &mut self,
+        observer: impl compose_runtime::tooling::CompositionObserver,
+        content: impl Fn() + 'static,
+    ) -> compose_runtime::tooling::CompositionObserverHandle {
+        assert!(self.composition.is_none(), "compose should only be called once");
+        let composition = Composition::new(ViewApplier::new());
+        let handle = composition.set_observer(observer);
+        composition.set_content(content);
+        self.composition = Some(composition);
+        handle
+    }
+
     pub fn composition(&self) -> &Composition {
         self.composition.as_ref().expect("compose wasn't called")
     }

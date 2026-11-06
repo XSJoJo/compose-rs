@@ -1156,10 +1156,11 @@ pub(crate) struct PassSnapshot {
     /// Tools observe snapshots, as of its begin and then of its leaving: it goes through `apply`,
     /// as the shortcut dispatches nothing.
     observed: bool,
-    /// What the tools gave it is a frame on the stack, till `leave`.
-    framed: bool,
-    /// That frame, to drop outside the runtime's borrow: closures have drops of their own.
-    _left: Option<Box<ObserverFrame>>,
+    /// How many frames of its observers are on the stack, till `leave`: what the tools gave it,
+    /// and a composition observer's.
+    framed: u8,
+    /// Those frames, to drop outside the runtime's borrow: closures have drops of their own.
+    _left: Vec<ObserverFrame>,
 }
 
 /// [`PassSnapshot::commit`] when there may be something to decide, as any snapshot's apply.
@@ -1241,8 +1242,8 @@ impl PassSnapshot {
             outer: Some(outer),
             alone: false,
             observed,
-            framed: false,
-            _left: None,
+            framed: 0,
+            _left: Vec::new(),
         }
     }
 
@@ -1260,7 +1261,7 @@ impl PassSnapshot {
             .map(|outer| Snapshot::handle_of(outer.clone()));
         let (read, write, creating) = tooling::pre_create(parent.as_ref(), false, None, None);
         if read.is_some() || write.is_some() {
-            self.framed = true;
+            self.framed += 1;
             with_runtime(|runtime| {
                 runtime.snapshots.push_frame(ObserverFrame {
                     read,
@@ -1274,11 +1275,23 @@ impl PassSnapshot {
         tooling::created(&handle, parent.as_ref(), creating);
     }
 
+    /// `read` hears the pass's reads till it leaves: a composition observer's (`tooling`).
+    pub(crate) fn push_read_frame(&mut self, read: StateObserverFn) {
+        self.framed += 1;
+        with_runtime(|runtime| {
+            runtime.snapshots.push_frame(ObserverFrame {
+                read: Some(read),
+                write: None,
+                barrier: false,
+                entered: None,
+            })
+        });
+    }
+
     /// What it replaced is current again; composing is over.
     pub(crate) fn leave(&mut self, snapshots: &mut Snapshots) {
-        if self.framed {
-            self.framed = false;
-            self._left = snapshots.pop_frame().map(|(frame, _)| Box::new(frame));
+        for _ in 0..std::mem::take(&mut self.framed) {
+            self._left.extend(snapshots.pop_frame().map(|(frame, _)| frame));
         }
         self.alone = snapshots.pass_alone();
         self.observed = snapshots.has_snapshot_observers();
