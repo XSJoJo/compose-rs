@@ -95,7 +95,11 @@ internal inline fun ByteBuffer.floatAt(index: Int): Float = Float.fromBits(getIn
  * node at alpha 0, which the render thread skips: the frame placing one again finds its version
  * recorded, and records nothing.
  */
-internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEdgeEffects) {
+internal class Replayer(
+    var text: TextMeasurer,
+    /** The view's edge effects: none for a bitmap's canvas, whose drawings have none. */
+    private val effects: ComposeRsEdgeEffects?,
+) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     /**
      * Gradients by their bytes (kind to stops) and local transform (x, y, scale x, scale y
@@ -198,7 +202,7 @@ internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEd
     private fun ByteBuffer.readPaint(x: Float = 0f, y: Float = 0f, scaleX: Float = 1f, scaleY: Float = 1f): Paint {
         var color = getInt()
         val flags = get().toInt()
-        val stroke = flags and 1 != 0
+        val stroke = flags and PAINT_STROKE != 0
         val width = float()
         val cap = get().toInt()
         val kind = get().toInt()
@@ -207,11 +211,11 @@ internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEd
             // The shader paints; the paint's alpha is the gradient's, as compose-skia's.
             color = (float().coerceIn(0f, 1f) * 255f + 0.5f).toInt() shl 24
         }
-        val blendMode = if (flags and 2 != 0) get().toInt() else BLEND_SRC_OVER
-        val filter = if (flags and 4 != 0) readColorFilter() else null
-        val blur = if (flags and 8 != 0) float() else 0f
-        val colorLong = if (flags and 16 != 0) getLong() else 0L
-        val wide = flags and 16 != 0 && shader == null &&
+        val blendMode = if (flags and PAINT_BLEND_MODE != 0) get().toInt() else BLEND_SRC_OVER
+        val filter = if (flags and PAINT_COLOR_FILTER != 0) readColorFilter() else null
+        val blur = if (flags and PAINT_BLUR != 0) float() else 0f
+        val colorLong = if (flags and PAINT_COLOR_LONG != 0) getLong() else 0L
+        val wide = flags and PAINT_COLOR_LONG != 0 && shader == null &&
             (Build.VERSION.SDK_INT >= 34 || (colorLong and 0x3fL).toInt() !in 16..17)
         if (blur != paintBlur) {
             paintBlur = blur
@@ -732,8 +736,9 @@ internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEd
         val end = buffer.position() + length
         val width = (right - left + 0.5f).toInt()
         val height = (bottom - top + 0.5f).toInt()
-        val kept = effects.owner(owner)
-        if (kept == null || recordingAhead || width <= 0 || height <= 0) {
+        val effects = effects
+        val kept = effects?.owner(owner)
+        if (effects == null || kept == null || recordingAhead || width <= 0 || height <= 0) {
             replay(canvas, buffer, end)
             return
         }
@@ -1712,7 +1717,7 @@ internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEd
     }
 
     fun clear() {
-        effects.discardNodes()
+        effects?.discardNodes()
         keptNode.discardDisplayList()
         flushNode.discardDisplayList()
         flushLayers = false
@@ -1794,6 +1799,13 @@ internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEd
         const val DROP_IMAGE = 23
         const val SAVE_LAYER = 24
         const val BEGIN_EDGE_EFFECTS = 25
+
+        // A paint's style flags: what follows its color and stroke width.
+        const val PAINT_STROKE = 1
+        const val PAINT_BLEND_MODE = 2
+        const val PAINT_COLOR_FILTER = 4
+        const val PAINT_BLUR = 8
+        const val PAINT_COLOR_LONG = 16
 
         const val FILTER_NONE = 0
         const val FILTER_BLEND_MODE = 1

@@ -124,6 +124,22 @@ pub mod color_filter {
     pub const COLOR_MATRIX: u8 = 3;
 }
 
+/// A paint's style flags, as `Replayer.kt` reads them: each says what follows the paint's color,
+/// stroke width and shader (a stroke has none: its width is the stroke's).
+pub mod paint_flag {
+    pub const STROKE: u8 = 1;
+    /// Its blend mode's index follows.
+    pub const BLEND_MODE: u8 = 2;
+    /// Its color filter follows.
+    pub const COLOR_FILTER: u8 = 4;
+    /// Its blur radius follows.
+    pub const BLUR: u8 = 8;
+    /// Android's `@ColorLong` of its color follows ([`color_long`](super::color_long)).
+    pub const COLOR_LONG: u8 = 16;
+}
+
+pub use paint_flag::COLOR_LONG;
+
 /// A recording's shaders and color filters, which its paints, images and layers name by index.
 type Tables<'a> = (&'a [Shader], &'a [ColorFilter]);
 
@@ -201,8 +217,10 @@ impl Writer {
             let filter = paint.color_filter().and_then(|index| filters.get(index.index()));
             let blended = paint.blend_mode != BlendMode::SrcOver;
             let blurred = paint.blur_radius() > 0.0;
-            let flags =
-                u8::from(blended) << 1 | u8::from(filter.is_some()) << 2 | u8::from(blurred) << 3;
+            let flag = |set: bool, flag: u8| if set { flag } else { 0 };
+            let flags = flag(blended, paint_flag::BLEND_MODE)
+                | flag(filter.is_some(), paint_flag::COLOR_FILTER)
+                | flag(blurred, paint_flag::BLUR);
             (filter, blended, blurred, flags)
         };
         // An sRGB color is its ARGB: one test of its space's bits.
@@ -220,7 +238,7 @@ impl Writer {
                 self.f32(0.0);
             }
             PaintStyle::Stroke(width) => {
-                self.u8(flags | 1);
+                self.u8(flags | paint_flag::STROKE);
                 self.f32(width);
             }
         }
@@ -606,21 +624,24 @@ impl Resources {
         if image.width() == 0 || image.height() == 0 {
             return 0;
         }
-        let key = image.id();
+        // Read once: a bitmap drawn into on another thread may have new pixels at a second read.
+        let pixels = image.pixels();
+        let key = pixels.as_ptr() as usize;
         if let Some((weak, id)) = self.images.get(&key)
             && weak.strong_count() > 0
         {
             return *id;
         }
         let id = self.next();
-        if let Some((_, old)) = self.images.insert(key, (image.downgrade(), id)) {
+        let weak = std::sync::Arc::downgrade(&pixels);
+        if let Some((_, old)) = self.images.insert(key, (weak.clone(), id)) {
             self.drop_image(old);
         }
         self.pending.push(Pending::Image {
             id,
             width: image.width(),
             height: image.height(),
-            pixels: image.downgrade(),
+            pixels: weak,
         });
         id
     }
@@ -740,13 +761,13 @@ fn paint_bytes(bytes: &[u8], at: usize) -> usize {
         let stops_at = colors_at + 4 + 4 * count_at(colors_at);
         end = stops_at + 4 + 4 * count_at(stops_at) + 4;
     }
-    if flags & 2 != 0 {
+    if flags & paint_flag::BLEND_MODE != 0 {
         end += 1;
     }
-    if flags & 4 != 0 {
+    if flags & paint_flag::COLOR_FILTER != 0 {
         end += color_filter_bytes(bytes, end);
     }
-    if flags & 8 != 0 {
+    if flags & paint_flag::BLUR != 0 {
         end += 4;
     }
     if flags & COLOR_LONG != 0 {
@@ -863,9 +884,6 @@ fn foldable_layer(ops: &[DrawOp], start: usize, bounds: Rect) -> Option<usize> {
     let end = single_drawing(layer).map(|end| start + 1 + end).filter(|end| *end < ops.len())?;
     single_drawing_extent(layer).is_some_and(|extent| fits_in(extent, bounds)).then_some(end)
 }
-
-/// A paint's style flag: Android's `@ColorLong` of its color follows ([`color_long`]).
-pub const COLOR_LONG: u8 = 16;
 
 /// The `@ColorLong` an Android paint takes for `color`, as Compose's `toSupportedColorLong`
 /// (docs/parity/design/color-spaces.md): `None` for an sRGB color, which its ARGB says, and for
@@ -1951,6 +1969,13 @@ mod tests {
         assert_eq!(constant("FILTER_LIGHTING"), color_filter::LIGHTING);
         assert_eq!(constant("FILTER_COLOR_MATRIX"), color_filter::COLOR_MATRIX);
         assert_eq!(constant("BLEND_SRC_OVER"), BlendMode::SrcOver as u8);
+        assert_eq!(constant("PAINT_STROKE"), paint_flag::STROKE);
+        assert_eq!(constant("PAINT_BLEND_MODE"), paint_flag::BLEND_MODE);
+        assert_eq!(constant("PAINT_COLOR_FILTER"), paint_flag::COLOR_FILTER);
+        assert_eq!(constant("PAINT_BLUR"), paint_flag::BLUR);
+        assert_eq!(constant("PAINT_COLOR_LONG"), COLOR_LONG);
+        // The flags are read through these names only, never as bare numbers.
+        assert!(!kotlin.contains("flags and 1 ") && !kotlin.contains("flags and 16 "));
         let table = kotlin.split("BLEND_MODES = arrayOf(").nth(1).expect("the modes").split(')');
         let android: Vec<String> = table
             .into_iter()

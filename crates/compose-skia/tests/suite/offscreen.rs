@@ -300,3 +300,85 @@ fn a_bitmap_drawn_into_again_is_drawn_anew() {
     renderer.render(&list, Color::WHITE, 1.0, &FixedTextMeasurer::default());
     assert_eq!(renderer.pixel(1, 1), Color::BLUE);
 }
+
+// Compose: compose/ui/ui-graphics/src/androidMain/kotlin/androidx/compose/ui/graphics/AndroidImageBitmap.android.kt, readPixels (Android's Bitmap.getPixels unpremultiplies, rounding; no Compose test)
+/// Read pixels are unpremultiplied to the nearest value, not down.
+#[test]
+fn read_pixels_round_to_the_nearest_value() {
+    // Premultiplied: red 1 at alpha 2 is 127.5 unpremultiplied; green 50 at alpha 200, 63.75.
+    let image = ImageBitmap::from_rgba_premultiplied(2, 1, vec![1, 0, 0, 2, 0, 50, 0, 200]);
+    let mut pixels = [0u32; 2];
+    image.read_pixels(&mut pixels, 0, 0, 2, 1, 0, 2);
+    assert_eq!(pixels, [0x0280_0000, 0xC800_4000]);
+}
+
+// Compose: compose/ui/ui-graphics/src/commonMain/kotlin/androidx/compose/ui/graphics/Canvas.kt, a canvas over a bitmap (no Compose test)
+/// A thousand drawings into a large bitmap are drawn in one pass when it's read, each kept.
+#[test]
+fn a_thousand_drawings_into_a_large_bitmap_are_drawn_at_once() {
+    install();
+    let image = ImageBitmap::new(1000, 1000);
+    let mut canvas = Canvas::new(&image);
+    let start = std::time::Instant::now();
+    for index in 0..1000 {
+        let (x, y) = ((index % 40) as f32 * 25.0, (index / 40) as f32 * 25.0);
+        let color = if index % 2 == 0 { Color::RED } else { Color::BLUE };
+        canvas.draw_rect(Rect::new(x, y, x + 25.0, y + 25.0), Paint::fill(color));
+    }
+    let map = image.to_pixel_map();
+    eprintln!("1,000 drawings into 1000 × 1000 and a read: {:?}", start.elapsed());
+    assert_eq!(map.get(12, 12), Color::RED);
+    assert_eq!(map.get(37, 12), Color::BLUE);
+    // The last: index 999 at column 39, row 24.
+    assert_eq!(map.get(39 * 25 + 12, 24 * 25 + 12), Color::BLUE);
+    assert_eq!(map.get(500, 900), Color::TRANSPARENT);
+}
+
+// Compose: compose/ui/ui-graphics/src/commonMain/kotlin/androidx/compose/ui/graphics/Canvas.kt, a canvas over a bitmap (no Compose test)
+/// Two threads drawing into one bitmap lose nothing: each drawing is kept.
+#[test]
+fn two_threads_drawing_into_one_bitmap_keep_every_drawing() {
+    install();
+    let image = ImageBitmap::new(200, 2);
+    std::thread::scope(|scope| {
+        for row in 0..2 {
+            let image = image.clone();
+            scope.spawn(move || {
+                let mut canvas = Canvas::new(&image);
+                canvas.translate(0.0, row as f32);
+                for x in 0..200 {
+                    let rect = Rect::new(x as f32, 0.0, x as f32 + 1.0, 1.0);
+                    canvas.draw_rect(rect, Paint::fill(Color::RED));
+                    if x % 50 == 0 {
+                        // A read in between draws what waits.
+                        let _ = image.pixels();
+                    }
+                }
+            });
+        }
+    });
+    let map = image.to_pixel_map();
+    for x in 0..200 {
+        assert_eq!((map.get(x, 0), map.get(x, 1)), (Color::RED, Color::RED), "at {x}");
+    }
+}
+
+// Compose: compose/ui/ui-graphics/src/commonMain/kotlin/androidx/compose/ui/graphics/Canvas.kt, drawImage (no Compose test)
+/// A bitmap drawn into itself draws its pixels as they were when it was drawn; two canvases'
+/// transforms stay their own.
+#[test]
+fn a_bitmap_drawn_into_itself_reads_its_pixels_then() {
+    install();
+    let image = ImageBitmap::new(4, 2);
+    let mut canvas = Canvas::new(&image);
+    let mut moved = Canvas::new(&image);
+    moved.translate(2.0, 0.0);
+    canvas.draw_rect(Rect::new(0.0, 0.0, 2.0, 2.0), Paint::fill(Color::RED));
+    // Copies the red half to the right, through the moved canvas.
+    moved.draw_image(&image, compose::ui::Offset::ZERO, Paint::fill(Color::BLACK));
+    // Then the left half turns blue, after the copy.
+    canvas.draw_rect(Rect::new(0.0, 0.0, 2.0, 2.0), Paint::fill(Color::BLUE));
+    let map = image.to_pixel_map();
+    let colors = (map.get(1, 1), map.get(2, 1), map.get(3, 0));
+    assert_eq!(colors, (Color::BLUE, Color::RED, Color::RED));
+}

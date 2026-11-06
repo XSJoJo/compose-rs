@@ -870,9 +870,12 @@ fn forget_dropped_images() {
 
 /// Skia's image for `image`, made once per bitmap (while it lives).
 fn skia_image(image: &compose_ui::ImageBitmap) -> Option<skia_safe::Image> {
+    // Read first, the cache not borrowed: a bitmap drawn into is drawn when read, by Skia.
+    let pixels = image.pixels();
+    let id = pixels.as_ptr() as usize;
     IMAGES.with(|images| {
         let mut images = images.borrow_mut();
-        if let Some((alive, skia)) = images.get(&image.id())
+        if let Some((alive, skia)) = images.get(&id)
             && alive.strong_count() > 0
         {
             return Some(skia.clone());
@@ -883,9 +886,9 @@ fn skia_image(image: &compose_ui::ImageBitmap) -> Option<skia_safe::Image> {
             skia_safe::AlphaType::Premul,
             None,
         );
-        let data = skia_safe::Data::new_copy(&image.pixels());
+        let data = skia_safe::Data::new_copy(&pixels);
         let skia = skia_safe::images::raster_from_data(&info, data, image.width() as usize * 4)?;
-        images.insert(image.id(), (image.downgrade(), skia.clone()));
+        images.insert(id, (std::sync::Arc::downgrade(&pixels), skia.clone()));
         Some(skia)
     })
 }
