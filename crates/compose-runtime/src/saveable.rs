@@ -640,41 +640,138 @@ pub fn current_composite_key_hash_code() -> u64 {
     })
 }
 
-/// Where `current_composite_key_hash_code` would be read: cheap to keep at each node, its hash
-/// computed only if it's asked for (`composite_key_hash_of`).
+/// Where `current_composite_key_hash_code` would be read: cheap to keep at each node (12 bytes),
+/// its hash computed only if it's asked for (`composite_key_hash_of`).
+///
+/// It names its group by its place and by the group's identity, as Compose's `Anchor` names a
+/// group wherever it moves: a node group's is its node's, folded with its key and its
+/// composition's generation (nothing kept for it); another group's is a number the first token
+/// made of it gave it, kept in its table's named groups while it lives. A group moving to another
+/// composition's table takes its identity with it (a node group's as it was folded where it was),
+/// and a group going takes its own: a token finds its group where it is, or nothing once it's
+/// gone (D1511).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompositeKeyToken {
+    /// Its composition's index.
     composition: u32,
     group: u32,
+    /// Its group's identity: another group at its index since, or another composition at its
+    /// composition's, isn't taken for it.
+    check: u32,
 }
 
 impl CompositeKeyToken {
     /// No place: its hash is 0.
-    pub const NONE: CompositeKeyToken = CompositeKeyToken { composition: NONE, group: NONE };
+    pub const NONE: CompositeKeyToken =
+        CompositeKeyToken { composition: NONE, group: NONE, check: 0 };
 }
 
-/// The place composing now, for `composite_key_hash_of` later.
+/// The bit set in the identities given, clear in node groups' folded ones: the two never meet.
+const GIVEN: u32 = 1 << 31;
+
+/// A node group's identity where it is: its node (unique in its tree while it lives), its key, its
+/// composition's generation and its tree (`CompositionData::tree`: every tree's node handles start
+/// alike, so another tree's node at the same handle isn't taken for it), mixed and folded to 31
+/// bits. Another node passes for it only if its bits fold alike, once in 2^31: what 12 bytes rather
+/// than 24 cost.
+#[inline]
+pub(crate) fn node_identity(node: u64, key: u64, generation: u32, tree: u32) -> u32 {
+    const MIX: u64 = 0x9e37_79b9_7f4a_7c15;
+    const PLACE: u64 = 0xc2b2_ae3d_27d4_eb4f;
+    let place = (u64::from(tree) << 32 | u64::from(generation)).wrapping_mul(PLACE);
+    let mixed = (node.wrapping_mul(MIX) ^ key ^ place).wrapping_mul(MIX);
+    (mixed >> 33) as u32
+}
+
+/// The identity of `group`, a live group of `data`, a composition of `generation`: its named one,
+/// or its node's. `None` for another group that's never been named.
+#[inline]
+fn identity_of(data: &crate::runtime::CompositionData, group: u32, generation: u32) -> Option<u32> {
+    let table = &data.table;
+    let entry = &table[group];
+    if entry.flags & crate::slot_table::NAMED != 0 {
+        table.movable.identity_of(group)
+    } else if entry.kind == GroupKind::Node {
+        Some(node_identity(entry.node.bits(), entry.key, generation, data.tree))
+    } else {
+        None
+    }
+}
+
+/// The place composing now, for `composite_key_hash_of` later: what a layout node's emission takes,
+/// in its node group (at the cost of folding its node), and what an app keeps, anywhere (a group
+/// that isn't a node's is given an identity the first time, kept while it lives).
 ///
 /// # Panics
 ///
 /// Outside composition.
 pub fn current_composite_key_token() -> CompositeKeyToken {
-    with_runtime(|runtime| CompositeKeyToken {
-        composition: runtime.check_composing(),
-        group: runtime.frames.last().map_or(NONE, |frame| frame.group),
-    })
+    with_runtime(token_here)
+}
+
+/// [`current_composite_key_token`], as a layout node's emission takes it in its node group.
+#[doc(hidden)]
+pub fn current_node_composite_key_token() -> CompositeKeyToken {
+    with_runtime(token_here)
+}
+
+fn token_here(runtime: &mut crate::runtime::Runtime) -> CompositeKeyToken {
+    let composition = runtime.check_composing();
+    let group = runtime.frames.last().map_or(NONE, |frame| frame.group);
+    if group == NONE {
+        return CompositeKeyToken { composition, group, check: 0 };
+    }
+    let generation = runtime.active.expect("composing").composition.generation;
+    let crate::runtime::Runtime { compositions, key_token_serial, .. } = runtime;
+    let data = compositions.data_mut(composition);
+    let check = identity_of(data, group, generation).unwrap_or_else(|| {
+        let table = &mut data.table;
+        *key_token_serial = key_token_serial.wrapping_add(1);
+        let identity = *key_token_serial | GIVEN;
+        table.movable.name(group, identity);
+        table[group].flags |= crate::slot_table::NAMED;
+        identity
+    });
+    CompositeKeyToken { composition, group, check }
 }
 
 /// `current_composite_key_hash_code` at a place kept by `current_composite_key_token`, while what's
 /// composed there lives, its groups walked now, as `LayoutNode.compositeKeyHash`: a lazy list's
-/// items differ by their providers' keys, and their registries are their own.
-pub fn composite_key_hash_of(token: CompositeKeyToken) -> u64 {
+/// items differ by their providers' keys, and their registries are their own. Content that moved to
+/// another composition is found there, by its group's identity. 0 for [`CompositeKeyToken::NONE`];
+/// `None` once its group is gone, which is no place's hash (D1511).
+pub fn composite_key_hash_of(token: CompositeKeyToken) -> Option<u64> {
     if token == CompositeKeyToken::NONE {
-        return 0;
+        return Some(0);
     }
     with_runtime(|runtime| {
-        let data = runtime.compositions.data(token.composition);
-        composite_key_hash_at(&runtime.compositions, data, token.group)
+        let compositions = &runtime.compositions;
+        if let Some(id) = compositions.live_id_at(token.composition)
+            && let Some(data) = compositions.get(id)
+            && data.table.groups.get(token.group as usize).is_some_and(|entry| {
+                entry.kind != GroupKind::Free
+                    && identity_of(data, token.group, id.generation) == Some(token.check)
+            })
+        {
+            return Some(composite_key_hash_at(compositions, data, token.group));
+        }
+        // Moved across compositions: where a group of its identity is named now.
+        if token.group == NONE {
+            return None;
+        }
+        compositions.all_data().find_map(|data| {
+            let group = data.table.movable.named_group(token.check)?;
+            Some(composite_key_hash_at(compositions, data, group))
+        })
+    })
+}
+
+/// How many groups have an identity kept, in every composition: what key tokens' following moved
+/// content keeps, one per named group alive (D1511).
+#[doc(hidden)]
+pub fn named_group_count() -> usize {
+    with_runtime(|runtime| {
+        runtime.compositions.all_data().map(|data| data.table.movable.named_count()).sum()
     })
 }
 

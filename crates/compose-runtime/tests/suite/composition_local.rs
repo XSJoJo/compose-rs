@@ -1,7 +1,7 @@
 //! Compose's `CompositionLocalTests`, adapted: dynamic and static locals, several values per
 //! provider, `provides_default`, computed defaults and `provides_computed`,
 //! `CompositionLocalContext`, `with_composition_local(s)`. The subcomposition tests are in
-//! composition_context.rs; the host-default ones wait for host defaults.
+//! composition_context.rs.
 
 #![allow(non_snake_case)]
 
@@ -939,4 +939,105 @@ fn an_anchors_frame_end_callback_waits_for_its_own_trees_frame() {
     assert!(ran.get(), "its own");
     own.dispose();
     other.dispose();
+}
+
+// ---- Host defaults -----------------------------------------------------------------------------
+
+/// A host's values by key, as the Kotlin file's `TestHostDefaultProvider`.
+struct TestHost(Vec<(&'static str, Rc<dyn std::any::Any>)>);
+
+impl HostDefaultProvider for TestHost {
+    fn get_host_default(&self, key: &'static str) -> Option<Rc<dyn std::any::Any>> {
+        self.0.iter().find(|(name, _)| *name == key).map(|(_, value)| value.clone())
+    }
+}
+
+fn host(values: Vec<(&'static str, Rc<dyn std::any::Any>)>) -> Rc<dyn HostDefaultProvider> {
+    Rc::new(TestHost(values))
+}
+
+static HOST_TEXT_KEY: HostDefaultKey<String> = HostDefaultKey::new("test.host.text");
+static LOCAL_HOST_TEXT: CompositionLocal<String> =
+    CompositionLocal::with_host_default("LocalHostText", HOST_TEXT_KEY);
+static LOCAL_OPTIONAL_HOST_TEXT: CompositionLocal<Option<String>> =
+    CompositionLocal::with_optional_host_default("LocalOptionalHostText", HOST_TEXT_KEY);
+
+/// What the host gives under `provider`, read by `read`.
+fn read_under<T: 'static>(provider: Rc<dyn HostDefaultProvider>, read: fn() -> T) -> T {
+    let seen = Rc::new(RefCell::new(None));
+    let s = seen.clone();
+    let mut test = composition_test();
+    test.compose(move || {
+        let s = s.clone();
+        CompositionLocalProvider(
+            LOCAL_HOST_DEFAULT_PROVIDER.provides(provider.clone()),
+            move || {
+                *s.borrow_mut() = Some(read());
+            },
+        );
+    });
+    seen.borrow_mut().take().expect("read")
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/CompositionLocalTests.kt, hostDefault_resolvesValueFromProvider
+#[test]
+fn a_host_default_comes_from_the_host() {
+    let provider = host(vec![(HOST_TEXT_KEY.name(), Rc::new(String::from("HostValue")))]);
+    assert_eq!(read_under(provider, || LOCAL_HOST_TEXT.current()), "HostValue");
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/CompositionLocalTests.kt, hostDefault_explicitValueOverridesHost
+#[test]
+fn a_value_provided_overrides_the_hosts() {
+    let provider = host(vec![(HOST_TEXT_KEY.name(), Rc::new(String::from("HostValue")))]);
+    let seen = read_under(provider, || {
+        let seen = Rc::new(RefCell::new(String::new()));
+        let s = seen.clone();
+        CompositionLocalProvider(LOCAL_HOST_TEXT.provides("Explicit".into()), move || {
+            *s.borrow_mut() = LOCAL_HOST_TEXT.current();
+        });
+        seen.take()
+    });
+    assert_eq!(seen, "Explicit");
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/CompositionLocalTests.kt, hostDefault_returnsNullForMissingNullableKey
+#[test]
+fn an_optional_host_default_the_host_lacks_is_none() {
+    assert_eq!(read_under(host(vec![]), || LOCAL_OPTIONAL_HOST_TEXT.current()), None);
+    let provider = host(vec![(HOST_TEXT_KEY.name(), Rc::new(String::from("HostValue")))]);
+    assert_eq!(
+        read_under(provider, || LOCAL_OPTIONAL_HOST_TEXT.current()),
+        Some("HostValue".into())
+    );
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/CompositionLocalTests.kt, hostDefault_throwsForMissingNonNullableKey
+#[test]
+fn a_host_default_the_host_lacks_panics() {
+    let panicked =
+        std::panic::catch_unwind(|| read_under(host(vec![]), || LOCAL_HOST_TEXT.current()))
+            .expect_err("it panics");
+    let message = panicked.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(message.contains("test.host.text"), "{message}");
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/CompositionLocalTests.kt, hostDefault_dynamicUpdatesFromProvider
+#[test]
+fn a_host_default_follows_a_new_host() {
+    let first = host(vec![(HOST_TEXT_KEY.name(), Rc::new(String::from("ValueA")))]);
+    let second = host(vec![(HOST_TEXT_KEY.name(), Rc::new(String::from("ValueB")))]);
+    let use_first = mutable_state_of(true);
+    let u = use_first.handle();
+    let mut test = composition_test();
+    test.compose(move || {
+        let current = if u.get() { first.clone() } else { second.clone() };
+        CompositionLocalProvider(LOCAL_HOST_DEFAULT_PROVIDER.provides(current), || {
+            Text(&LOCAL_HOST_TEXT.current());
+        });
+    });
+    test.validate(|v| v.text("ValueA"));
+    use_first.set(false);
+    test.expect_changes();
+    test.validate(|v| v.text("ValueB"));
 }

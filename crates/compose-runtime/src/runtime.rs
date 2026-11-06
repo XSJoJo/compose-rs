@@ -99,6 +99,10 @@ pub(crate) struct Runtime {
     pub stack_trace: Option<Box<crate::stack_trace::PendingTrace>>,
     /// Traces begun on this thread (`compose_stack_trace_sequence`).
     pub stack_trace_sequence: u64,
+    /// The last identity given a group a key token named (`saveable::token_here`, D1511).
+    pub key_token_serial: u32,
+    /// The last number given a composition's new tree (`CompositionData::tree`).
+    pub trees: u32,
     /// A group guard was dropped by an unwinding panic in this pass, leaving its group open.
     pub abandoned_groups: bool,
     /// The depth (`frames.len()`) of the reusable group whose content is being reused, or 0:
@@ -169,6 +173,8 @@ impl Runtime {
             stack_trace_mode: crate::stack_trace::ComposeStackTraceMode::Auto,
             stack_trace: None,
             stack_trace_sequence: 0,
+            key_token_serial: 0,
+            trees: 0,
             abandoned_groups: false,
             reusing: 0,
             providers_invalid: 0,
@@ -274,6 +280,11 @@ pub(crate) fn release_if_empty() {
         fresh.compositions.base = runtime.compositions.next_base();
         fresh.compositions.contexts.set_base(runtime.compositions.contexts.next_base());
         fresh.snapshots.continue_from(&runtime.snapshots);
+        // Numbers handles check (a provider's version, a token's identity, a tree's) go on too:
+        // an anchor or a token kept from before names nothing made since (D1511).
+        fresh.provider_versions = runtime.provider_versions;
+        fresh.key_token_serial = runtime.key_token_serial;
+        fresh.trees = runtime.trees;
         Some(std::mem::replace(runtime, fresh))
     })
     .flatten();
@@ -617,6 +628,10 @@ impl Deferred {
 pub(crate) struct CompositionData {
     pub table: SlotTable,
     pub applier: Rc<RefCell<dyn ErasedApplier>>,
+    /// Its nodes' tree, by a number no other tree on this thread had (`Runtime::trees`): shared by
+    /// the compositions of one applier, as their node handles are. A node group's identity folds it
+    /// (`saveable::node_identity`), every tree's handles starting alike (D1511, third review).
+    pub tree: u32,
     pub root_node: NodeRef,
     /// A frame was requested and not yet served.
     pub pending: bool,
@@ -668,10 +683,15 @@ pub(crate) struct CompositionData {
 }
 
 impl CompositionData {
-    pub fn new(applier: Rc<RefCell<dyn ErasedApplier>>, root_node: NodeRef) -> CompositionData {
+    pub fn new(
+        applier: Rc<RefCell<dyn ErasedApplier>>,
+        tree: u32,
+        root_node: NodeRef,
+    ) -> CompositionData {
         CompositionData {
             table: SlotTable::new(),
             applier,
+            tree,
             root_node,
             pending: false,
             poisoned: false,
@@ -704,7 +724,7 @@ impl CompositionData {
 
     /// What a composition keeps once closed: its applier and root, with an empty slot table.
     pub fn closed(data: &CompositionData) -> CompositionData {
-        let mut closed = CompositionData::new(data.applier.clone(), data.root_node);
+        let mut closed = CompositionData::new(data.applier.clone(), data.tree, data.root_node);
         closed.closed = true;
         closed.child_count = data.child_count;
         // What was read of the table it had is stale.
@@ -758,7 +778,7 @@ pub(crate) struct Compositions {
 }
 
 impl Compositions {
-    const fn new() -> Compositions {
+    pub(crate) const fn new() -> Compositions {
         Compositions {
             entries: Vec::new(),
             free: Vec::new(),
@@ -845,9 +865,21 @@ impl Compositions {
         (&mut a.data.as_mut().expect("live").table, &mut b.data.as_mut().expect("live").table)
     }
 
+    /// The composition at `index`, if one's there.
+    pub fn live_id_at(&self, index: u32) -> Option<CompositionId> {
+        let entry = self.entries.get(index as usize)?;
+        entry.data.as_ref()?;
+        Some(CompositionId { index, generation: entry.generation })
+    }
+
     /// The live composition at `index`.
     pub fn id_at(&self, index: u32) -> CompositionId {
         CompositionId { index, generation: self.entries[index as usize].generation }
+    }
+
+    /// Every live composition's data.
+    pub fn all_data(&self) -> impl Iterator<Item = &CompositionData> {
+        self.entries.iter().filter_map(|entry| entry.data.as_ref())
     }
 
     pub fn data(&self, index: u32) -> &CompositionData {

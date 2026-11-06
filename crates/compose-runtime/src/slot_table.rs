@@ -129,6 +129,11 @@ pub(crate) const MOVABLE: u8 = 4;
 pub(crate) const MOVABLE_PENDING: u8 = 8;
 /// `Group::flags`: a group that holds, or held, movable content: a removal looks in it.
 pub(crate) const CONTAINS_MOVABLE: u8 = 16;
+/// `Group::flags`: the group has an identity in its table's named groups (`MovableState::named`),
+/// what key tokens made of it check it by: one a token gave a group other than a node's, or the
+/// one a node group took with it from another composition's table (D1511). Other node groups'
+/// identities are their node's, folded with their key, as a token is made: they need none kept.
+pub(crate) const NAMED: u8 = 32;
 
 impl Group {
     pub fn is_provider(&self) -> bool {
@@ -249,6 +254,11 @@ impl SlotTable {
         group.kind = GroupKind::Free;
         group.restart = None;
         group.dirty = false;
+        // Its identity goes with it: no token finds it, or what's at its index next, by that.
+        if group.flags & NAMED != 0 {
+            group.flags &= !NAMED;
+            self.movable.unname(index);
+        }
         self.free.push(index);
     }
 

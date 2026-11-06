@@ -1979,7 +1979,11 @@ impl UiTree {
         }
         for child in self.focus_children(place) {
             if self.focus_state_of(child).has_focus() {
-                let hash = self.composite_key_hash_of(child.node);
+                // Its place gone, it's no place to come back to: nothing's saved (D1511).
+                let Some(hash) = self.composite_key_hash_of(child.node) else {
+                    self.focus.saved_children.remove(&place);
+                    return false;
+                };
                 self.focus.saved_children.insert(place, hash);
                 if let Some(target) = place {
                     self.save_focused_child_in_registry(target, hash);
@@ -2000,7 +2004,7 @@ impl UiTree {
         let Some(saved) = saved else { return false };
         self.focus.saved_children.insert(place, saved);
         for child in self.focus_children(place) {
-            if self.composite_key_hash_of(child.node) == saved {
+            if self.composite_key_hash_of(child.node) == Some(saved) {
                 return self.restore_focused_child_of(Some(child))
                     // When a request fails it tries a child: not when restoring failed, which
                     // has its own fallback.
@@ -2012,13 +2016,14 @@ impl UiTree {
     }
 
     /// The saveable registry's key for `target`'s saved child, as Compose's
-    /// `PrevFocusedChild + compositeKeyHash`.
-    fn focused_child_registry_key(&self, target: FocusTargetRef) -> u64 {
-        self.composite_key_hash_of(target.node).rotate_left(13) ^ 0x7066_6300
+    /// `PrevFocusedChild + compositeKeyHash`: none if its place is gone.
+    fn focused_child_registry_key(&self, target: FocusTargetRef) -> Option<u64> {
+        Some(self.composite_key_hash_of(target.node)?.rotate_left(13) ^ 0x7066_6300)
     }
 
-    /// The hash of where `node` is composed, as `LayoutNode.compositeKeyHash`.
-    fn composite_key_hash_of(&self, node: NodeId) -> u64 {
+    /// The hash of where `node` is composed, as `LayoutNode.compositeKeyHash`: none once that
+    /// place is gone, which matches nothing saved.
+    fn composite_key_hash_of(&self, node: NodeId) -> Option<u64> {
         compose_runtime::composite_key_hash_of(self.node(node).composite_key)
     }
 
@@ -2035,7 +2040,7 @@ impl UiTree {
 
     fn save_focused_child_in_registry(&mut self, target: FocusTargetRef, hash: u64) {
         let Some(registry) = self.saveable_registry_of(target) else { return };
-        let key = self.focused_child_registry_key(target);
+        let Some(key) = self.focused_child_registry_key(target) else { return };
         let entry = registry
             .register_provider(key, move || Some(compose_runtime::SavedValue::Int(hash as i64)));
         if let Some(previous) = self.focus.registrations.insert(target, entry) {
@@ -2045,7 +2050,7 @@ impl UiTree {
 
     fn consume_restored_focused_child(&mut self, target: FocusTargetRef) -> Option<u64> {
         let registry = self.saveable_registry_of(target)?;
-        let key = self.focused_child_registry_key(target);
+        let key = self.focused_child_registry_key(target)?;
         match registry.consume_restored(key)? {
             compose_runtime::SavedValue::Int(hash) => Some(hash as u64),
             _ => None,

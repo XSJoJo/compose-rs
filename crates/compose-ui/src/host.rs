@@ -579,6 +579,7 @@ impl UiHost {
                 window_info: crate::focus_manager::WindowInfo::main(
                     self.with_tree(|tree| Rc::downgrade(&tree.focus_requests)),
                 ),
+                host_defaults: Rc::new(HostDefaults),
             };
             let configuration = self.configuration.handle();
             let content: compose_runtime::Callback = compose_runtime::callback(content);
@@ -1407,6 +1408,18 @@ struct HostLocals {
     events: crate::configuration::HostEvents,
     insets: crate::configuration::WindowInsetsSource,
     window_info: crate::focus_manager::WindowInfo,
+    host_defaults: Rc<dyn compose_runtime::HostDefaultProvider>,
+}
+
+/// What a host gives the locals with host defaults, as Compose's `owner.hostDefaultProvider`:
+/// nothing yet, so one with an optional default reads `None` and one with a required default
+/// panics naming its key, rather than for want of a provider (D1512).
+struct HostDefaults;
+
+impl compose_runtime::HostDefaultProvider for HostDefaults {
+    fn get_host_default(&self, _key: &'static str) -> Option<Rc<dyn std::any::Any>> {
+        None
+    }
 }
 
 impl HostLocals {
@@ -1428,6 +1441,8 @@ impl HostLocals {
                     crate::font::LOCAL_FONT_FAMILY_RESOLVER
                         .provides(self.font_family_resolver.clone()),
                     crate::font::LOCAL_TREE_TEXT_MEASURER.provides(self.tree_text_measurer.clone()),
+                    compose_runtime::LOCAL_HOST_DEFAULT_PROVIDER
+                        .provides(self.host_defaults.clone()),
                 ),
                 compose_runtime::LOCAL_SAVEABLE_STATE_REGISTRY
                     .provides(Some(self.saveable_registry.clone())),

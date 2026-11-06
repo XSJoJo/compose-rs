@@ -723,3 +723,55 @@ fn a_state_flow_collected_as_state_clones_its_value_once() {
     test.expect_changes();
     assert_eq!(clones.get(), at_first, "a recomposition looks at nothing");
 }
+
+/// A person with a car that changes, as the Kotlin test's classes; compared by name.
+#[derive(Clone)]
+struct Person {
+    name: &'static str,
+    car: MutableStateFlow<&'static str>,
+}
+
+impl PartialEq for Person {
+    fn eq(&self, other: &Person) -> bool {
+        self.name == other.name
+    }
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/CompositionTests.kt, slotsAreUsedCorrectly_forEach
+#[test]
+fn flows_collected_in_a_loop_keep_their_slots_when_one_empties() {
+    let people = vec![
+        MutableStateFlow::new(Some(Person { name: "Ford", car: MutableStateFlow::new("Model T") })),
+        MutableStateFlow::new(Some(Person { name: "Musk", car: MutableStateFlow::new("Model 3") })),
+    ];
+    fn expected(people: &[MutableStateFlow<Option<Person>>], v: &mut Expected) {
+        for person in people {
+            match person.value() {
+                Some(person) => {
+                    v.text(person.name);
+                    v.text(&format!("    {}", person.car.value()));
+                }
+                None => v.text("No person"),
+            }
+        }
+    }
+    let mut test = composition_test();
+    let collected: Vec<_> = people.iter().map(MutableStateFlow::as_state_flow).collect();
+    test.compose(move || {
+        for flow in &collected {
+            let person = flow.collect_as_state().get();
+            Text(person.as_ref().map_or("No person", |person| person.name));
+            if let Some(person) = person {
+                let car = person.car.as_state_flow().collect_as_state().get();
+                Text(&format!("    {car}"));
+            }
+        }
+    });
+    let shown = people.clone();
+    test.validate(move |v| expected(&shown, v));
+    test.advance_time_by(std::time::Duration::from_secs(16));
+    people[0].set_value(None);
+    test.advance_time_by(std::time::Duration::from_secs(16));
+    test.expect_changes();
+    test.revalidate();
+}

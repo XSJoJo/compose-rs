@@ -546,12 +546,13 @@ pub fn pausable_subcomposition(parent: CompositionContext, root: NodeRef) -> Pau
 }
 
 /// The applier a composition's parent composes with, for [`subcomposition`].
-pub(crate) fn parent_applier(parent: CompositionContext) -> Rc<RefCell<dyn ErasedApplier>> {
+pub(crate) fn parent_applier(parent: CompositionContext) -> (Rc<RefCell<dyn ErasedApplier>>, u32) {
     let applier = parent.place.and_then(|place| {
         with_runtime(|runtime| {
             let compositions = &runtime.compositions;
             let entry = compositions.contexts.get(place)?;
-            Some(compositions.get(entry.composition)?.applier.clone())
+            let data = compositions.get(entry.composition)?;
+            Some((data.applier.clone(), data.tree))
         })
     });
     applier.unwrap_or_else(|| misuse(ComposeError::NoParentApplier))

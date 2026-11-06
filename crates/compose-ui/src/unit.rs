@@ -1065,6 +1065,13 @@ impl Lerp for DpSize {
     }
 }
 
+impl ComposeArg for DpSize {
+    /// Equal sizes, an unspecified one equal to itself (`Dp`'s equality).
+    fn same(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
 /// A rectangle in `Dp`, as Compose's `DpRect`: what a test's bounds assertions read
 /// (`getUnclippedBoundsInRoot`).
 #[derive(Clone, Copy, PartialEq, Debug, Default)]

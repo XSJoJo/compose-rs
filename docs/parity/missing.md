@@ -72,4 +72,6 @@ Written and tested on the host, but not yet confirmed on a phone:
 
 - A focus change in a text field costs about 10 % more than before the decoration box work, and a keystroke about 5 %.
 - Building a semantics tree with a decorated text field walks its decoration once more for the field's semantics on the decorated node (D2003): about 1.7 % of a keystroke in a test that finds the field through the tree, nothing on a phone's key path.
-- Movable content moved across compositions re-runs its body, and doesn't move between different trees, such as into a `Dialog` (D1308).
+- Movable content moved to another applier (another host's tree) is new, its state not moved (D1511). Across compositions sharing a tree it moves as Compose's, composing again only under other locals; `Dialog` and `Popup` are in their caller's composition here, so moving into them keeps state.
+- Movable content moved between two providers of an equal static value composes again, in a composition or across: what's provided is compared holder by holder, by identity, where Compose's `StaticValueHolder` is a data class compared by value (D1511, on review).
+- A composite key token (what a layout node keeps for its hash, computed when focus asks, where Compose's `LayoutNode` keeps the hash) of content that moved to another composition is found by a look through the live compositions' named groups, not at once; and a token of a group `ReusableContent` reuses under another key reads the reused content's hash, where a hash Compose read before stays the old one (D1511, third review).

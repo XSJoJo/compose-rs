@@ -1171,11 +1171,13 @@ impl Runtime {
     /// Marks the group just started as a composition local provider's, before its content runs:
     /// the groups allocated inside it record it as their nearest provider
     /// (`Group::enclosing_provider`), where reading a local starts.
-    pub(crate) fn mark_provider(&mut self) {
+    /// Marks the group starting now a provider's, and returns where it is.
+    pub(crate) fn mark_provider(&mut self) -> (crate::runtime::CompositionId, u32) {
         let composition = self.check_composing();
         let frame = self.body_frame();
-        let group = frame.group;
-        let group = &mut self.compositions.data_mut(composition).table[group];
+        let index = frame.group;
+        let id = self.active.expect("composing").composition;
+        let group = &mut self.compositions.data_mut(composition).table[index];
         // Its children were allocated under it as a provider, or it has none yet.
         debug_assert!(group.is_provider() || group.first_child == NONE);
         group.set_flag(crate::slot_table::PROVIDER, true);
@@ -1184,6 +1186,7 @@ impl Runtime {
             self.provider_versions += 1;
             group.set_provider_version(self.provider_versions);
         }
+        (id, index)
     }
 
     pub(crate) fn record_side_effect(&mut self, effect: DeferredEffect) {

@@ -926,3 +926,36 @@ fn resuming_what_s_complete_panics() {
     resume_till_complete(&paused, || false);
     paused.resume(|| false);
 }
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/CompositionTests.kt, setContentDeactivated
+#[test]
+fn content_set_after_a_deactivation_shows_what_it_reads_now() {
+    let text = Rc::new(RefCell::new(String::from("test")));
+    let composition = Composition::reusable(ViewApplier::new(), default_context());
+    let t = text.clone();
+    let content = move || Text(&t.borrow());
+    composition.set_content(content.clone());
+    composition.deactivate();
+    *text.borrow_mut() = "test2".into();
+    composition.set_content(content);
+    let views = composition.with_applier(|applier: &mut ViewApplier| top_text(applier));
+    assert_eq!(views, ["test2"]);
+}
+
+// Compose: compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/CompositionTests.kt, testRememberedObserver_Controlled_Dispose
+#[test]
+fn an_observer_composed_and_never_applied_is_abandoned_at_disposal() {
+    // Compose composes a `ControlledComposition` without applying; here a pausable composition's
+    // paused content is that: composed, its work held until `apply`.
+    let calls = Rc::new(Calls::default());
+    let composition = Composition::pausable(ViewApplier::new(), default_context());
+    let c = calls.clone();
+    let paused = composition.set_pausable_content(move || {
+        let held = c.clone();
+        remember_observer(move || Observed(held));
+    });
+    resume_till_complete(&paused, || false);
+    assert_eq!(counts(&calls), (0, 0, 0), "nothing told before it applies");
+    composition.dispose();
+    assert_eq!(counts(&calls), (0, 0, 1), "abandoned, never remembered nor forgotten");
+}

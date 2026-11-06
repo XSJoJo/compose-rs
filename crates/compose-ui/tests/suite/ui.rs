@@ -1334,3 +1334,28 @@ fn ShownHandler(show: MutableState<bool>) {
         BackHandler!(on_back = || {});
     }
 }
+
+// ---- Host defaults (D1512) ----------------------------------------------------------------------
+
+static OPTIONAL_HOST_VALUE: CompositionLocal<Option<i32>> =
+    CompositionLocal::with_optional_host_default(
+        "ui.hostValue",
+        HostDefaultKey::new("ui.hostValue"),
+    );
+
+/// A host provides its host defaults, as Compose's provide `LocalHostDefaultProvider`: a key it has
+/// no value for reads `None` through a local with an optional host default, rather than panicking
+/// for want of a provider.
+#[test]
+fn a_host_provides_its_defaults_which_have_none_for_an_unknown_key() {
+    let read = Rc::new(Cell::new(Some(-1)));
+    let (seen, asked) = (read.clone(), Rc::new(Cell::new(None)));
+    let found = asked.clone();
+    let _host = host(move || {
+        seen.set(OPTIONAL_HOST_VALUE.current());
+        found.set(Some(
+            LOCAL_HOST_DEFAULT_PROVIDER.current().get_host_default("ui.hostValue").is_none(),
+        ));
+    });
+    assert_eq!((read.get(), asked.get()), (None, Some(true)));
+}

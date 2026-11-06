@@ -908,6 +908,16 @@ impl UiTree {
         if slot.generation == node.generation { slot.node.as_ref() } else { None }
     }
 
+    /// Gives `node` another place it's composed at: for tests of a place gone.
+    #[doc(hidden)]
+    pub fn set_composite_key_token(
+        &mut self,
+        node: NodeId,
+        token: compose_runtime::CompositeKeyToken,
+    ) {
+        self.node_mut(node).composite_key = token;
+    }
+
     pub(crate) fn get_mut(&mut self, node: NodeId) -> Option<&mut LayoutNode> {
         let slot = self.slots.get_mut(node.index as usize)?;
         if slot.generation == node.generation { slot.node.as_mut() } else { None }

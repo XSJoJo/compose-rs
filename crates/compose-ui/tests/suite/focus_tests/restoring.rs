@@ -56,6 +56,38 @@ fn restoring_gives_the_focus_back_to_the_child_saved_not_deeper() {
     assert_eq!(scene.states(["first", "second"]), [Inactive, Inactive]);
 }
 
+/// Children whose places are gone, as a node's whose composition went while it stayed: the hash
+/// of no place, saved for none and matching none, rather than one shared by all of them.
+#[test]
+fn a_child_whose_place_is_gone_is_neither_saved_nor_restored() {
+    // A place, then its composition gone.
+    let mut host = UiHost::headless(10, 10);
+    let lost = std::rc::Rc::new(std::cell::Cell::new(compose_runtime::CompositeKeyToken::NONE));
+    let made = lost.clone();
+    host.set_content(move || made.set(compose_runtime::current_composite_key_token()));
+    host.settle(10);
+    let lost = lost.get();
+    assert_ne!(lost, compose_runtime::CompositeKeyToken::NONE);
+    drop(host);
+    assert_eq!(compose_runtime::composite_key_hash_of(lost), None);
+
+    let scene = scene(|scene| parent_of_two(scene, Modifier.focus_target()));
+    scene.with_host(|host| {
+        host.with_tree(|tree| {
+            let mut nodes = vec![tree.root_id()];
+            while let Some(node) = nodes.pop() {
+                nodes.extend(tree.children_of(node));
+                tree.set_composite_key_token(node, lost);
+            }
+        })
+    });
+    assert!(scene.request("second"));
+    assert!(!scene.requester("parent").save_focused_child());
+    scene.clear(false);
+    assert!(!scene.requester("parent").restore_focused_child());
+    assert_eq!(scene.states(["first", "second"]), [Inactive, Inactive]);
+}
+
 fn restorer(fallback: FocusRequester) -> Modifier {
     Modifier.focus_restorer(fallback).focus_group()
 }

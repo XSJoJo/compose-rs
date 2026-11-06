@@ -895,7 +895,7 @@ pub fn emit_layout_node(
         }
     });
     // Where it's composed, which says its hash if a focus target asks (D1277).
-    let composite_key = compose_runtime::current_composite_key_token();
+    let composite_key = compose_runtime::current_node_composite_key_token();
     // Where it's composed, once a scope's been composed at all.
     let lookahead = crate::lookahead::any_scope_composed()
         .then(|| anchor.get(&crate::lookahead::LOCAL_LOOKAHEAD_SCOPE));
