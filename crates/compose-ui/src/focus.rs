@@ -1872,12 +1872,16 @@ impl UiTree {
     /// What `EventContext::bring_into_view` asked of `node` (a focused node in a scrolling
     /// container is scrolled into view, as Compose's `FocusableNode`; one not placed yet, a lazy
     /// item composed ahead, once the next layout places it).
-    pub(crate) fn bring_focused_into_view(&mut self, node: NodeId) {
+    /// `rect`, a rect in a chain entry's layer, is what of it to show.
+    pub(crate) fn bring_focused_into_view(&mut self, node: NodeId, rect: Option<(usize, Rect)>) {
         if self.focus.moved_by_tree {
             return;
         }
         if self.is_laid_out(node) {
-            self.bring_into_view(node);
+            match rect {
+                Some((entry, rect)) => self.bring_into_view_from(node, Some(entry), Some(rect)),
+                None => self.bring_into_view(node),
+            }
         } else {
             self.bring_into_view_after_layout = Some(node);
         }

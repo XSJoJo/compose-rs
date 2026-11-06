@@ -164,6 +164,7 @@ pub fn BasicTextFieldOfState(
     #[default(crate::inner_text_field_only)] decorator: impl Fn(Callback) + 'static,
     #[default(None)] on_text_layout: Option<impl Fn(compose_ui::TextLayoutResult) + 'static>,
     #[default(None)] scroll_state: Option<crate::ScrollState>,
+    #[default(None)] password: Option<bool>,
 ) {
     line_limits.validate();
     // What the field's options don't say, its transformation's say, as Compose's
@@ -171,6 +172,7 @@ pub fn BasicTextFieldOfState(
     let transformation_options = input_transformation.as_ref().and_then(|it| it.keyboard_options());
     let keyboard_options =
         keyboard_options.fill_unspecified_values_with(transformation_options.as_ref());
+    let text_style = phone_direction(text_style, keyboard_options);
     let interaction_source_for_press = if enabled { interaction_source.clone() } else { None };
     let element: Rc<dyn AnyModifierNodeElement> = Rc::new(StateTextFieldElement {
         state,
@@ -186,6 +188,7 @@ pub fn BasicTextFieldOfState(
         output_transformation,
         on_text_layout: on_text_layout.map(compose_runtime::callback),
         scroll_state,
+        password,
         // What its default action uses, read where it's composed, as Compose's node's
         // `currentValueOf`: only for a handler, which calls it outside the event.
         default_action: on_keyboard_action.as_ref().map(|_| {
@@ -234,6 +237,31 @@ pub fn BasicTextFieldOfState(
     );
 }
 
+/// A phone number's direction is its digits', whatever the language's, as Compose's
+/// `resolveTextDirectionForKeyboardTypePhone`: left to right, but for the locales whose digits are
+/// written right to left (Adlam's, N'Ko's), unless the style says (D1141). The locale is the
+/// style's first, else the composition's.
+fn phone_direction(style: TextStyle, options: KeyboardOptions) -> TextStyle {
+    if options.keyboard_type != crate::KeyboardType::Phone || style.text_direction.is_some() {
+        return style;
+    }
+    let locale = match style.locale_list.as_ref().and_then(|list| list.get(0)) {
+        Some(locale) => locale.clone(),
+        None => match compose_ui::LOCAL_LOCALE_LIST.current().get(0) {
+            Some(locale) => locale.clone(),
+            None => return style,
+        },
+    };
+    let right_to_left_digits =
+        matches!(locale.script().as_str(), "Adlm" | "Nkoo") || locale.language() == "nqo";
+    let direction = if right_to_left_digits {
+        compose_ui::TextDirection::Rtl
+    } else {
+        compose_ui::TextDirection::Ltr
+    };
+    TextStyle { text_direction: Some(direction), ..style }
+}
+
 /// The state-based field's element: the value-based field's node, tied to `state` (D1130).
 pub(crate) struct StateTextFieldElement {
     pub state: TextFieldState,
@@ -251,6 +279,8 @@ pub(crate) struct StateTextFieldElement {
     pub scroll_state: Option<crate::ScrollState>,
     pub on_keyboard_action: Option<KeyboardActionHandler>,
     pub default_action: Option<DefaultActionTargets>,
+    /// A password's (`BasicSecureTextField`): whether it's shown obfuscated (D1142).
+    pub password: Option<bool>,
 }
 
 /// What a keyboard action handler's default action moves the focus with and hides the keyboard
@@ -308,6 +338,7 @@ impl ModifierNodeElement for StateTextFieldElement {
         link.shown_transformation = self.shown_transformation();
         link.on_text_layout = self.on_text_layout.clone();
         link.scroll_state = self.scroll_state;
+        link.password = self.password;
         node.state = Some(Box::new(link));
         // What the state holds, read without observing it: composition isn't to recompose on it.
         RuntimeSnapshot::without_read_observation(|| node.adopt_state());
@@ -324,16 +355,19 @@ impl ModifierNodeElement for StateTextFieldElement {
             link.state = self.state;
             link.listener = StateLink::listen(self.state, &link.restart);
             link.seen = None;
+            // The input method reads the new state from the start, as Compose's session
+            // restarts for a new state (D1141).
+            node.restart_input = true;
         }
         link.cursor_brush = cursor_brush;
         link.input_transformation = self.input_transformation.clone();
         link.on_keyboard_action = self.on_keyboard_action.clone();
         link.default_action = self.default_action.clone();
         link.on_text_layout = self.on_text_layout.clone();
-        if link.scroll_state != self.scroll_state {
-            link.scroll_state = self.scroll_state;
-            link.revealed_cursor = None;
-        }
+        // A new scroll state keeps its value: what's followed is the field's, as Compose's
+        // node keeps its `previousSelection` (D1140).
+        link.scroll_state = self.scroll_state;
+        link.password = self.password;
         let shown_transformation = self.shown_transformation();
         if link.shown_transformation != shown_transformation {
             link.shown_transformation = shown_transformation;
@@ -342,13 +376,21 @@ impl ModifierNodeElement for StateTextFieldElement {
             // Compose's session restarts for a new output transformation (D1135).
             node.restart_input = true;
         }
-        if node.style != self.style || node.single_line != single_line {
-            if node.style != self.style {
+        let same_layout = node.style.has_same_layout_affecting_attributes(&self.style);
+        if !same_layout || node.single_line != single_line {
+            if !same_layout {
                 node.line_bounds = None;
             }
             node.style = self.style.clone();
             node.single_line = single_line;
             node.invalidate_paragraph();
+        } else if node.style != self.style {
+            // Only its paint changed (a color, a decoration): the layout is kept and drawn again
+            // in the new paint, as Compose's `hasSameDrawAffectingAttributes` (D1141).
+            node.style = self.style.clone();
+            if let Some(link) = node.state.as_mut() {
+                link.restyle = true;
+            }
         }
         if node.max_lines != max_lines || node.min_lines != min_lines {
             node.max_lines = max_lines;
@@ -366,7 +408,12 @@ impl ModifierNodeElement for StateTextFieldElement {
         }
         node.cursor_color = cursor_color;
         node.selection_color = self.selection_color;
-        node.keyboard_options = self.keyboard_options;
+        // New options (a new transformation's among them) are told the input method from the
+        // start, as Compose's session restarts for them (D1141).
+        if node.keyboard_options != self.keyboard_options {
+            node.keyboard_options = self.keyboard_options;
+            node.restart_input = true;
+        }
         if node.interaction_source != self.interaction_source {
             node.tell_focus(false);
             node.interaction_source = self.interaction_source.clone();
@@ -387,6 +434,7 @@ impl ModifierNodeElement for StateTextFieldElement {
             && other.output_transformation == self.output_transformation
             && same_layout_callback(&other.on_text_layout, &self.on_text_layout)
             && other.scroll_state == self.scroll_state
+            && other.password == self.password
             && match (&other.on_keyboard_action, &self.on_keyboard_action) {
                 (Some(a), Some(b)) => a.same(b),
                 (None, None) => true,
@@ -468,6 +516,19 @@ enum EditSource {
     Other,
 }
 
+/// What a state-based field's scroll last followed, as Compose's `TextFieldCoreModifierNode`'s
+/// `previousSelection`, `previousCursorRect`, `previousContainerSize` and
+/// `previousTextLayoutSize`: nothing followed yet at first, so a first focus follows.
+#[derive(Default)]
+struct Followed {
+    /// The selection shown, anchor then cursor.
+    selection: Option<(usize, usize)>,
+    /// The followed offset's cursor, in the scroller's coordinates.
+    cursor: Option<Rect>,
+    container: i32,
+    content: i32,
+}
+
 /// What ties a state-based field's node to its [`TextFieldState`] (D1130): the node edits a copy
 /// of the state's value, as the value-based field does, takes in the state's value when it
 /// changed elsewhere (`adopt_state`) and writes its own edits back after each event
@@ -499,8 +560,18 @@ pub(crate) struct StateLink {
     default_width: Option<(compose_ui::Density, TextStyle, i32)>,
     /// The application's scroll of the field (D1138).
     scroll_state: Option<crate::ScrollState>,
-    /// The cursor the last measurement saw: it's brought into view only once it moved.
-    revealed_cursor: Option<Rect>,
+    /// What the scroll last followed, as Compose's `updateScrollState`: it follows again when the
+    /// selection, the cursor, the viewport or the content changes (D1140).
+    followed: Followed,
+    /// The node, to bring its cursor into view after a layout; taken at its first focus.
+    handle: Option<compose_ui::NodeHandle>,
+    /// Only the style's paint changed: the paragraph is given it at the next measurement.
+    restyle: bool,
+    /// A password's: whether it's shown obfuscated (D1142).
+    password: Option<bool>,
+    /// The cursor last brought into view, in the text, and the text's size then: shown again
+    /// in the containers around once either changes while the cursor shows (D1141).
+    revealed: Option<(Rect, IntSize)>,
     /// The edit being made is one of its own in the state's history (a cut, a paste, a selection
     /// deleted), as Compose's `NeverMerge`.
     never_merge: bool,
@@ -539,7 +610,11 @@ impl StateLink {
             heard_layout: None,
             default_width: None,
             scroll_state: None,
-            revealed_cursor: None,
+            followed: Followed::default(),
+            handle: None,
+            restyle: false,
+            password: None,
+            revealed: None,
             never_merge: false,
             restart,
             listener,
@@ -969,19 +1044,23 @@ impl TextFieldNode {
         self.state.is_some() && self.adopt_state_now()
     }
 
-    /// The scroll from the application's `scroll_state`, as Compose's text field's
-    /// (`TextFieldCoreModifier`): its largest value and viewport set from this layout, its value
-    /// read (observed: a scroll measures the field again) and coerced, and moved to bring the
-    /// cursor into view only when the focused cursor moved, so a scroll the user or the
-    /// application made stays (D1138).
+    /// A state-based field's scroll with a `scroll_state` (D1138): the state's value, its bounds
+    /// set from the layout, following the selection as Compose's `updateScrollState` (D1140):
+    /// only while the cursor shows (focused and written to), when the selection's end, its start,
+    /// or the viewport's or content's size changed since it last followed, to the offset that
+    /// changed (the selection's least for a size). A right-to-left single line scrolls from its
+    /// right, as Compose's `placeRelative`.
+    #[inline(never)]
     fn scroll_by_state(
         &mut self,
+        scope: &mut MeasureScope<'_>,
         scroll_state: crate::ScrollState,
-        cursor: Rect,
+        paragraph: ParagraphHandle,
         text: IntSize,
         size: IntSize,
         cursor_width: i32,
     ) {
+        let mirrored = self.single_line && self.direction == compose_ui::LayoutDirection::Rtl;
         let (visible, length) = if self.single_line {
             ((size.width - cursor_width).max(0), text.width)
         } else {
@@ -992,31 +1071,99 @@ impl TextFieldNode {
             scroll_state.set_layout(max, visible, length);
         });
         let mut value = scroll_state.value().clamp(0, max) as f32;
-        let moved = self.state.as_ref().is_some_and(|link| link.revealed_cursor != Some(cursor));
-        if self.focused && moved {
-            let (start, end) = if self.single_line {
-                (cursor.left, cursor.left)
-            } else {
-                (cursor.top, cursor.bottom)
-            };
-            let revealed = scroll_into_view(value, start, end, visible as f32, max as f32);
-            if revealed != value {
-                scroll_state.set_value(revealed.round() as i32);
-                value = revealed;
+        let selection = (self.shown(self.anchor), self.shown(self.cursor));
+        let show_cursor = self.focused && self.enabled && !self.read_only;
+        let followed = &self.state.as_ref().expect("a state-based field").followed;
+        let resized = length != followed.content || visible != followed.container;
+        let to_follow = match followed.selection {
+            Some((anchor, cursor)) if cursor == selection.1 => {
+                if anchor == selection.0 {
+                    resized.then_some(selection.0.min(selection.1))
+                } else {
+                    Some(selection.0)
+                }
+            }
+            _ => Some(selection.1),
+        };
+        if let Some(offset) = to_follow.filter(|_| show_cursor) {
+            let raw = scope.text_measurer().cursor_rect(paragraph, offset);
+            // From the scroller's start: a right-to-left line's right.
+            let left = if mirrored { length as f32 - raw.left } else { raw.left };
+            let cursor = Rect::new(left, raw.top, left, raw.bottom);
+            let moved = followed
+                .cursor
+                .is_none_or(|previous| previous.left != cursor.left || previous.top != cursor.top)
+                || length != followed.content;
+            if moved || visible != followed.container {
+                let (start, end) = if self.single_line {
+                    (cursor.left, cursor.right)
+                } else {
+                    (cursor.top, cursor.bottom)
+                };
+                let difference = offset_to_follow(value, start, end, visible as f32);
+                let to = (value + round_to_next(difference)).clamp(0.0, max as f32);
+                if to != value {
+                    scroll_state.set_value(to as i32);
+                    value = to;
+                }
+                if let Some(link) = self.state.as_mut() {
+                    link.followed = Followed {
+                        selection: Some(selection),
+                        cursor: Some(cursor),
+                        container: visible,
+                        content: length,
+                    };
+                }
             }
         }
-        // Seen, focused or not: the cursor is brought into view when it moves, not when the
-        // field gains the focus or the scroll moves.
-        if let Some(link) = self.state.as_mut() {
-            link.revealed_cursor = Some(cursor);
+        self.scroll = match (self.single_line, mirrored) {
+            (true, true) => Offset::new(max as f32 - value, 0.0),
+            (true, false) => Offset::new(value, 0.0),
+            (false, _) => Offset::new(0.0, value),
+        };
+    }
+
+    /// Its text is a password's: never copied nor cut.
+    fn is_password(&self) -> bool {
+        self.visual_transformation.is_password()
+            || self.state.as_ref().is_some_and(|link| link.password.is_some())
+    }
+
+    /// A state-based field's cursor, shown by the containers around it once the layout is over
+    /// when it moved or the text's size changed while it shows (focused and written to), as
+    /// Compose's `updateScrollState` brings it into view (D1141): typing a new line at the bottom of
+    /// a field in a scrolling column scrolls the column.
+    #[inline(never)]
+    fn reveal_cursor(&mut self, scope: &mut MeasureScope<'_>, text: IntSize) {
+        let Some(cursor) = self.cursor_rect else { return };
+        if !(self.focused && self.enabled && !self.read_only) {
+            return;
         }
-        self.scroll =
-            if self.single_line { Offset::new(value, 0.0) } else { Offset::new(0.0, value) };
+        let scroll = self.scroll;
+        let Some(link) = self.state.as_mut() else { return };
+        let moved = link.revealed.is_none_or(|(previous, size)| {
+            previous.left != cursor.left || previous.top != cursor.top || size != text
+        });
+        if !moved {
+            return;
+        }
+        link.revealed = Some((cursor, text));
+        let Some(handle) = link.handle else { return };
+        let rect = Rect::new(
+            cursor.left - scroll.x,
+            cursor.top - scroll.y,
+            cursor.right - scroll.x,
+            cursor.bottom - scroll.y,
+        );
+        scope.run_after_layout(move || {
+            handle.bring_into_view(Some(rect));
+        });
     }
 
     /// A state-based field's least width: ten "H" of its style, as Compose's `textFieldMinSize`
     /// (`DefaultWidthCharCount`); kept while the style and density are the same. `None` for a
     /// value-based field, as wide as its text (D1137).
+    #[inline(never)]
     fn default_width(&mut self, scope: &mut IntrinsicMeasureScope<'_>) -> Option<i32> {
         let link = self.state.as_ref()?;
         let density = scope.density();
@@ -1047,6 +1194,35 @@ impl TextFieldNode {
             link.default_width = Some((density, self.style.clone(), width));
         }
         Some(width)
+    }
+
+    /// `adopt_state` at a measurement, and a new paint given to the paragraph (D1141).
+    #[inline(never)]
+    fn adopt_state_to_measure(&mut self, scope: &mut MeasureScope<'_>) {
+        self.adopt_state_now();
+        // What's shown may read states of its own (a secure field's revealed character, its
+        // mask): read here, observed, so a change measures it again, and shown anew (D1142).
+        if self.paragraph.is_some()
+            && self.state.as_ref().is_some_and(|link| link.shown_transformation.is_some())
+        {
+            let shown = self.transform_shown(&self.text).map(|(shown, _)| shown);
+            if shown != self.shown_text {
+                self.invalidate_paragraph();
+            }
+        }
+        let Some(link) = self.state.as_mut() else { return };
+        if !std::mem::take(&mut link.restyle) {
+            return;
+        }
+        let Some(old) = self.paragraph else { return };
+        let mut measurer = scope.text_measurer();
+        self.paragraph = measurer.restyle(old, &self.style);
+        if self.paragraph.is_none() {
+            measurer.release(old);
+            self.constraints = None;
+        }
+        // Heard again, as Compose's `onTextLayout` hears a new result of the same layout.
+        link.heard_layout = None;
     }
 
     /// `adopt_state`, out of the value-based field's way.
@@ -2060,6 +2236,24 @@ fn default_keyboard_action(
     }
 }
 
+/// How far a scroll at `value` moves to show `[start, end]` in `visible`, as Compose's
+/// `updateScrollState`: the end first, then the start if the whole fits.
+fn offset_to_follow(value: f32, start: f32, end: f32, visible: f32) -> f32 {
+    let end_visible = value + visible;
+    if end > end_visible || (start < value && end - start > visible) {
+        end - end_visible
+    } else if start < value {
+        start - value
+    } else {
+        0.0
+    }
+}
+
+/// Away from zero to a whole number, as Compose's `roundToNext`.
+fn round_to_next(value: f32) -> f32 {
+    if value > 0.0 { value.ceil() } else { value.floor() }
+}
+
 /// Moves `scroll` (along one axis) so `[start, end)` is inside `[0, visible)`, within
 /// `[0, max]`.
 fn scroll_into_view(scroll: f32, start: f32, end: f32, visible: f32, max: f32) -> f32 {
@@ -2082,9 +2276,11 @@ impl LayoutModifierNode for TextFieldNode {
     ) -> MeasureResult {
         // A state-based field takes in its state's value, the read observed: an edit of the state
         // measures it again.
-        self.adopt_state();
+        if self.state.is_some() {
+            self.adopt_state_to_measure(scope);
+        }
         // At least ten "H" wide, as Compose's `textFieldMinSize`.
-        let constraints = match self.default_width(scope) {
+        let constraints = match self.state.is_some().then(|| self.default_width(scope)).flatten() {
             Some(width) => Constraints {
                 min_width: constraints.min_width.max(width.min(constraints.max_width)),
                 ..constraints
@@ -2192,7 +2388,7 @@ impl LayoutModifierNode for TextFieldNode {
         // down in a multi-line field.
         let rect = self.cursor_rect.unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
         if let Some(scroll_state) = self.state.as_ref().and_then(|link| link.scroll_state) {
-            self.scroll_by_state(scroll_state, rect, metrics.size, size, cursor_width);
+            self.scroll_by_state(scope, scroll_state, paragraph, metrics.size, size, cursor_width);
         } else if self.single_line {
             let visible = (size.width - cursor_width).max(0) as f32;
             let max = metrics.size.width as f32 - visible;
@@ -2207,6 +2403,9 @@ impl LayoutModifierNode for TextFieldNode {
                 0.0,
                 scroll_into_view(self.scroll.y, rect.top, rect.bottom, visible, max),
             );
+        }
+        if self.state.is_some() {
+            self.reveal_cursor(scope, metrics.size);
         }
         self.tell_text_layout(scope, paragraph);
         let placeable = scope.measure(content, Constraints::fixed(size.width, size.height));
@@ -2253,7 +2452,7 @@ impl LayoutModifierNode for TextFieldNode {
                 None => measurer.metrics(paragraph).size.width,
             }
         });
-        (text + cursor_width).max(self.default_width(scope).unwrap_or(0))
+        text + cursor_width
     }
 
     /// As `min_intrinsic_height`.
@@ -2351,9 +2550,8 @@ impl TextFieldNode {
             measurer.metrics(paragraph).size
         });
         let (min_height, max_height) = self.line_bounds(scope);
-        let default_width = self.default_width(scope).unwrap_or(0);
         constraints.constrain(IntSize::new(
-            (text.width + cursor_width).max(default_width),
+            text.width + cursor_width,
             text.height.max(min_height).min(max_height),
         ))
     }
@@ -2624,11 +2822,32 @@ impl FocusTargetModifierNode for TextFieldNode {
         self.focused = focused;
         self.tell_focus(focused);
         if focused {
-            context.bring_into_view();
+            // Its cursor, as Compose's `bringSelectionEndIntoView`: a field taller than what
+            // scrolls it shows where it's typed in (all of it before it's laid out).
+            match self.cursor_rect {
+                Some(rect) => {
+                    let scroll = self.scroll;
+                    context.bring_rect_into_view(Rect::new(
+                        rect.left - scroll.x,
+                        rect.top - scroll.y,
+                        rect.right - scroll.x,
+                        rect.bottom - scroll.y,
+                    ));
+                }
+                None => context.bring_into_view(),
+            }
             // As Compose's `StartInput`, which always asks for the keyboard: going from one field
             // to another with it hidden (`Done`, back) shows it at the first tap.
             if self.enabled && !self.read_only {
                 context.show_software_keyboard();
+            }
+            // The cursor shows: a state-based field's scroll follows it from now (D1140), and
+            // the containers around show it (D1141).
+            if let Some(link) = self.state.as_mut() {
+                if link.handle.is_none() {
+                    link.handle = Some(context.handle());
+                }
+                context.invalidate_measure();
             }
         }
         // A new field's text is for the input method to read anew, as Compose's `startInput`.
@@ -2741,8 +2960,8 @@ impl TextFieldNode {
                     context.invalidate_measure();
                 }
                 // A password can't be copied nor cut, as Compose's.
-                'c' if self.visual_transformation.is_password() => {}
-                'x' if self.visual_transformation.is_password() => {}
+                'c' if self.is_password() => {}
+                'x' if self.is_password() => {}
                 'c' if !selected.is_empty() => context.clipboard().set_text(&selected),
                 'x' if !selected.is_empty() && editable => {
                     context.clipboard().set_text(&selected);
@@ -3181,10 +3400,15 @@ impl SemanticsModifierNode for TextFieldNode {
         // transformation's own mapping, as Compose's; a composition is in the text.
         let text = &self.text;
         if self.state.is_some() {
-            // A state-based field's: what it measured, the selection mapped as a range.
-            let shown: compose_ui::SharedString =
-                self.shown_text.clone().unwrap_or_else(|| text.clone()).into();
-            let range = self.shown_range(self.selection());
+            // A state-based field's: what it measured, the selection mapped as a range; a
+            // password's own text, as Compose's announces it (D1143).
+            let password = self.state.as_ref().is_some_and(|link| link.password.is_some());
+            let shown: compose_ui::SharedString = match &self.shown_text {
+                Some(shown) if !password => shown.clone().into(),
+                _ => text.clone().into(),
+            };
+            let range =
+                if password { self.selection() } else { self.shown_range(self.selection()) };
             let range = if self.anchor > self.cursor { range.end..range.start } else { range };
             config.set_text_selection_range(compose_ui::TextRange::new(
                 floor_char_boundary(shown.as_str(), range.start),
@@ -3215,6 +3439,10 @@ impl SemanticsModifierNode for TextFieldNode {
         if self.visual_transformation.is_password() {
             config.password();
         }
+        // A secure field's, obfuscated or shown, as Compose's `BasicSecureTextField`.
+        if let Some(obfuscated) = self.state.as_ref().and_then(|link| link.password) {
+            config.password_obfuscated(obfuscated);
+        }
         // As Compose's `CoreTextField`: editable, and its text set by accessibility, when
         // enabled and not read-only.
         let editable = self.enabled && !self.read_only;
@@ -3236,7 +3464,7 @@ impl SemanticsModifierNode for TextFieldNode {
         config.on_ime_action_of_node(
             self.keyboard_options.to_ime_options(self.single_line).ime_action,
         );
-        if self.anchor != self.cursor && !self.visual_transformation.is_password() {
+        if self.anchor != self.cursor && !self.is_password() {
             config.copy_text_of_node();
             if editable {
                 config.cut_text_of_node();
@@ -3367,7 +3595,7 @@ impl TextFieldNode {
             }
             Action::CopyText | Action::CutText => {
                 let selected = self.selection();
-                if selected.is_empty() || self.visual_transformation.is_password() {
+                if selected.is_empty() || self.is_password() {
                     return false;
                 }
                 let is_cut = action == Action::CutText;

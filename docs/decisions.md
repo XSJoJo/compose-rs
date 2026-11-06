@@ -697,9 +697,14 @@ The log is split by area into the files below, one table each, rows in number or
 | D1134 | [text](decisions/text.md#d1134) | revised by [D1135](decisions/text.md#d1135) |
 | D1135 | [text](decisions/text.md#d1135) | current |
 | D1136 | [text](decisions/text.md#d1136) | current |
-| D1137 | [text](decisions/text.md#d1137) | current |
-| D1138 | [text](decisions/text.md#d1138) | current |
+| D1137 | [text](decisions/text.md#d1137) | revised by [D1140](decisions/text.md#d1140) |
+| D1138 | [text](decisions/text.md#d1138) | revised by [D1140](decisions/text.md#d1140) |
 | D1139 | [text](decisions/text.md#d1139) | current |
+| D1140 | [text](decisions/text.md#d1140) | current |
+| D1141 | [text](decisions/text.md#d1141) | current |
+| D1142 | [text](decisions/text.md#d1142) | current |
+| D1143 | [text](decisions/text.md#d1143) | current |
+| D1144 | [text](decisions/text.md#d1144) | current |
 | D1150 | [ui-and-layout](decisions/ui-and-layout.md#d1150) | current |
 | D1151 | [ui-and-layout](decisions/ui-and-layout.md#d1151) | current |
 | D1152 | [ui-and-layout](decisions/ui-and-layout.md#d1152) | current |
