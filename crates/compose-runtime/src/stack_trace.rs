@@ -4,8 +4,10 @@
 //! When a panic unwinds through a pass, the pass's open groups say where it was: the trace is made
 //! then, from them, innermost first, and a pass nested in another adds the outer pass's when the
 //! panic reaches it. A Rust panic's payload can't carry it (Compose attaches a suppressed
-//! exception): [`take_compose_stack_trace`] gives the last one made on the thread. A pass that
-//! doesn't panic does nothing for it.
+//! exception): [`take_compose_stack_trace`] gives the last one made on the thread, which belongs
+//! to the last panic that unwound a pass, not necessarily to the panic a caller just caught (one
+//! outside any pass makes none); [`compose_stack_trace_sequence`], read before, tells them apart. A
+//! pass that doesn't panic does nothing for it.
 //!
 //! Frames name the composables `#[composable]` made, by their function's path, or give their
 //! groups' keys ([`ComposeStackTraceMode::GroupKeys`]). Compose's frames carry a file and line from
@@ -16,7 +18,7 @@ use std::fmt;
 
 use crate::composer::Identity;
 use crate::runtime::{CompositionId, Runtime, with_runtime};
-use crate::slot_table::{GroupKind, SENTINEL};
+use crate::slot_table::SENTINEL;
 
 /// What a diagnostic stack trace says, as Compose's `ComposeStackTraceMode`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -37,10 +39,23 @@ pub fn set_diagnostic_stack_trace_mode(mode: ComposeStackTraceMode) {
     with_runtime(|runtime| runtime.stack_trace_mode = mode);
 }
 
-/// The last trace made on this thread, taken: the composables the last panic through a pass
-/// unwound through.
+/// The last trace made on this thread, taken: the composables that the last panic to unwind a pass
+/// went through, if it was traced.
+///
+/// It belongs to the last panic that unwound a pass, which needn't be the one just caught: a panic
+/// outside any pass makes no trace and leaves the last one there. A caller reads
+/// [`compose_stack_trace_sequence`] before the code it runs and keeps a trace whose
+/// [`sequence`](ComposeStackTrace::sequence) is above it. With the mode `None`, a panic through a
+/// pass clears it.
 pub fn take_compose_stack_trace() -> Option<ComposeStackTrace> {
     with_runtime(|runtime| runtime.stack_trace.take()).map(|pending| pending.trace)
+}
+
+/// How many traces were begun on this thread: the last one's
+/// [`sequence`](ComposeStackTrace::sequence). A trace made by a panic in code run after reading it
+/// has a sequence above it (as has one made by a panic that code caught itself).
+pub fn compose_stack_trace_sequence() -> u64 {
+    with_runtime(|runtime| runtime.stack_trace_sequence)
 }
 
 /// The composables a panic unwound through, innermost first, as Compose's
@@ -48,6 +63,9 @@ pub fn take_compose_stack_trace() -> Option<ComposeStackTrace> {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct ComposeStackTrace {
     pub frames: Vec<ComposeStackFrame>,
+    /// Its number on this thread, from 1: what [`compose_stack_trace_sequence`] gave once it was
+    /// begun.
+    pub sequence: u64,
 }
 
 /// A group on the path.
@@ -98,7 +116,8 @@ fn path_of(full: &'static str) -> &'static str {
     path
 }
 
-/// `group` of `table` on the trace, if `mode` lists it.
+/// `group` of `table` on the trace, if `mode` lists it. It's live: a pass's open group, or one at
+/// or above a place still holding its context, never a freed one.
 fn push_frame(
     frames: &mut Vec<ComposeStackFrame>,
     mode: ComposeStackTraceMode,
@@ -115,7 +134,7 @@ fn push_frame(
     };
     // A group of a composable; with keys, any group.
     let listed = named.is_some() || (mode == ComposeStackTraceMode::GroupKeys);
-    if !listed || group.kind == GroupKind::Free {
+    if !listed {
         return;
     }
     let path = if mode == ComposeStackTraceMode::GroupKeys { None } else { named };
@@ -129,6 +148,8 @@ fn push_frame(
 pub(crate) fn record(runtime: &mut Runtime, id: CompositionId, outer: Option<CompositionId>) {
     let mode = runtime.stack_trace_mode;
     if mode == ComposeStackTraceMode::None {
+        // Nothing left from an earlier panic stands for this one.
+        runtime.stack_trace = None;
         return;
     }
     let Some(data) = runtime.compositions.get(id) else { return };
@@ -136,13 +157,14 @@ pub(crate) fn record(runtime: &mut Runtime, id: CompositionId, outer: Option<Com
     for frame in runtime.frames.iter().rev() {
         push_frame(&mut frames, mode, &data.table, frame.group);
     }
-    // A pass of its own, not in its parent's: where it is in its parent, from the parent's table.
+    // A pass of its own, not in its parent's: where it is in its parent, from the parent's table,
+    // while its place is there. A place removed leaves a freed group, or one another composable
+    // has since, with a stale parent link: the walk stops there.
     if outer.is_none() {
         let mut parent = data.parent;
-        while let Some((composition, group)) =
-            parent.and_then(|context| runtime.compositions.contexts.place_of(context))
+        while let Some((_, data, group)) =
+            parent.and_then(|context| runtime.compositions.context_at(context))
         {
-            let Some(data) = runtime.compositions.get(composition) else { break };
             let mut group = group;
             while group != SENTINEL && group != crate::slot_table::NONE {
                 push_frame(&mut frames, mode, &data.table, group);
@@ -157,8 +179,10 @@ pub(crate) fn record(runtime: &mut Runtime, id: CompositionId, outer: Option<Com
             pending.extended_by = outer;
         }
         slot => {
+            runtime.stack_trace_sequence += 1;
+            let sequence = runtime.stack_trace_sequence;
             *slot = Some(Box::new(PendingTrace {
-                trace: ComposeStackTrace { frames },
+                trace: ComposeStackTrace { frames, sequence },
                 extended_by: outer,
             }))
         }

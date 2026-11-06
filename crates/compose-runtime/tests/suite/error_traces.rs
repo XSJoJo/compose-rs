@@ -48,7 +48,7 @@ fn exception_test(names: &[&str], keys: usize, scenario: impl Fn()) {
     assert!(keyed.frames.iter().all(|frame| frame.name.is_none() && frame.path.is_none()));
     assert_eq!(keyed.frames.len(), keys, "{keyed}");
     // Auto is source information here.
-    assert_eq!(trace(ComposeStackTraceMode::Auto), source);
+    assert_eq!(trace(ComposeStackTraceMode::Auto).frames, source.frames);
 }
 
 /// Composes `content` in a test, recomposing after setting `state` when it's given.
@@ -381,4 +381,116 @@ fn no_trace_in_none_mode() {
     set_diagnostic_stack_trace_mode(ComposeStackTraceMode::Auto);
     assert!(panicked.is_err());
     assert!(take_compose_stack_trace().is_none());
+}
+
+/// A trace is the last panic's that unwound a pass: one left untaken isn't what a later panic,
+/// with traces off, gives.
+#[test]
+fn a_trace_left_untaken_is_not_a_later_panics() {
+    set_diagnostic_stack_trace_mode(ComposeStackTraceMode::Auto);
+    let _ = take_compose_stack_trace();
+    let traced = catch_unwind(AssertUnwindSafe(|| {
+        composition_test().compose(|| Linear!(|| throw_test_panic()))
+    }));
+    assert!(traced.is_err());
+    set_diagnostic_stack_trace_mode(ComposeStackTraceMode::None);
+    let untraced = catch_unwind(AssertUnwindSafe(|| {
+        composition_test().compose(|| Wrapper!(|| throw_test_panic()))
+    }));
+    set_diagnostic_stack_trace_mode(ComposeStackTraceMode::Auto);
+    assert!(untraced.is_err());
+    assert!(take_compose_stack_trace().is_none());
+}
+
+/// A panic that unwinds no pass makes no trace: the sequence number read before it tells the
+/// caller the trace left there is an earlier panic's.
+#[test]
+fn a_trace_tells_which_panic_made_it() {
+    set_diagnostic_stack_trace_mode(ComposeStackTraceMode::Auto);
+    let _ = take_compose_stack_trace();
+    let before = compose_stack_trace_sequence();
+    let traced = catch_unwind(AssertUnwindSafe(|| {
+        composition_test().compose(|| Linear!(|| throw_test_panic()))
+    }));
+    assert!(traced.is_err());
+    assert_eq!(compose_stack_trace_sequence(), before + 1, "a trace was made");
+    // Not taken; a panic outside any pass.
+    let mark = compose_stack_trace_sequence();
+    let outside = catch_unwind(|| throw_test_panic());
+    assert!(outside.is_err());
+    assert_eq!(compose_stack_trace_sequence(), mark, "no trace for it");
+    let trace = take_compose_stack_trace().expect("the earlier trace");
+    assert_eq!(trace.sequence, mark, "made before the mark: not this panic's");
+    // A pass's panic after the mark: its trace is after it.
+    let traced = catch_unwind(AssertUnwindSafe(|| {
+        composition_test().compose(|| Wrapper!(|| throw_test_panic()))
+    }));
+    assert!(traced.is_err());
+    let trace = take_compose_stack_trace().expect("a trace");
+    assert!(trace.sequence > mark);
+    assert_eq!(trace.names(), ["Wrapper"]);
+}
+
+/// What `Leaky` composes keeps its composition in `kept`, beyond its place.
+type Kept = Rc<std::cell::RefCell<Option<Rc<Composition>>>>;
+
+#[composable]
+fn Leaky(kept: Kept) {
+    let context = remember_composition_context();
+    let child = remember(move || Rc::new(Composition::with_parent(ViewApplier::new(), context)));
+    *kept.borrow_mut() = Some(child.clone());
+    child.set_content(|| {});
+}
+
+#[composable]
+fn Holder(show: MutableState<bool>, reuse: bool, kept: Kept) {
+    if show.get() {
+        Leaky(kept.clone());
+    } else if reuse {
+        Wrapper!(|| Wrapper!(|| Wrapper!(|| Linear!(|| {}))));
+    }
+}
+
+/// The trace of a panic in the pass alone of the composition `Leaky` made, kept, after its place
+/// was removed if `remove`, its groups then given to other composables if `reuse`.
+fn kept_composition_trace(remove: bool, reuse: bool) -> Vec<&'static str> {
+    set_diagnostic_stack_trace_mode(ComposeStackTraceMode::SourceInformation);
+    let _ = take_compose_stack_trace();
+    let kept: Kept = Default::default();
+    let mut test = composition_test();
+    let show = mutable_state_of(true);
+    let (s, k) = (show.handle(), kept.clone());
+    test.compose(move || Holder(s, reuse, k.clone()));
+    let child = kept.borrow_mut().take().expect("composed");
+    if remove {
+        show.set(false);
+        test.advance();
+    }
+    let panicked = catch_unwind(AssertUnwindSafe(|| child.set_content(|| throw_test_panic())));
+    set_diagnostic_stack_trace_mode(ComposeStackTraceMode::Auto);
+    assert!(panicked.expect_err("it panics").is::<TestPanic>());
+    child.dispose();
+    take_compose_stack_trace().expect("a trace").names()
+}
+
+/// A composition's pass alone goes on through its place in its parent while it's there.
+#[test]
+fn a_kept_composition_traces_through_its_place() {
+    assert_eq!(
+        kept_composition_trace(false, false),
+        ["rememberCompositionContext", "Leaky", "Holder"]
+    );
+}
+
+/// Its place removed, what was above it isn't on the trace: the place's group is freed, its
+/// parent link stale.
+#[test]
+fn a_removed_place_is_not_traced() {
+    assert_eq!(kept_composition_trace(true, false), Vec::<&str>::new());
+}
+
+/// Its place removed and its groups given to other composables: they aren't on the trace either.
+#[test]
+fn a_removed_place_reused_by_another_composable_is_not_traced() {
+    assert_eq!(kept_composition_trace(true, true), Vec::<&str>::new());
 }

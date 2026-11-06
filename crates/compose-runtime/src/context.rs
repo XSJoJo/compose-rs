@@ -162,11 +162,6 @@ impl Contexts {
         }
     }
 
-    /// The composition it's in, and its group there.
-    pub(crate) fn place_of(&self, id: ContextId) -> Option<(CompositionId, u32)> {
-        self.get(id).map(|entry| (entry.composition, entry.group))
-    }
-
     /// The composition it's in.
     pub(crate) fn parent_of(&self, id: ContextId) -> Option<CompositionId> {
         self.get(id).map(|entry| entry.composition)
