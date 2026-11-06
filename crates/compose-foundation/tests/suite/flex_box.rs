@@ -410,3 +410,96 @@ fn text_in_a_column_wraps_as_in_a_column() {
     assert_eq!(flex.2.get(), column.1.get());
     assert_eq!(flex.2.get(), flex.0.get() as f32);
 }
+
+/// A child of `row`: what it emits given the box's scope and the modifier recording it.
+type Emit = Rc<dyn Fn(FlexBoxScope, Modifier)>;
+
+/// `children` in a row 100 wide configured by `block`: where each is and how wide.
+fn in_a_row(
+    block: impl Fn(&mut FlexBoxConfigScope) + 'static,
+    children: Vec<Emit>,
+) -> Vec<(Offset, i32)> {
+    let laid = Rc::new(RefCell::new(vec![(Offset::new(-1.0, -1.0), -1); children.len()]));
+    let into = laid.clone();
+    let config = row_config(block);
+    let _ui = ComposeTestRule::sized(IntSize::new(400, 400), move || {
+        let (into, children) = (into.clone(), children.clone());
+        FlexBox!(
+            modifier = Modifier.width(100.dp()),
+            config = config.clone(),
+            |scope: FlexBoxScope| {
+                for (index, child) in children.iter().enumerate() {
+                    let into = into.clone();
+                    let record = Modifier.on_globally_positioned(move |at: LayoutCoordinates| {
+                        into.borrow_mut()[index] = (at.position_in_parent(), at.size().width);
+                    });
+                    child(scope, record);
+                }
+            }
+        );
+    });
+    laid.take()
+}
+
+// The review's: the first child is frozen at its minimum, the second takes the rest.
+#[test]
+fn a_shrinking_child_stops_at_its_minimum_and_the_rest_shrink_more() {
+    let child = |width: f32| -> Emit {
+        Rc::new(move |scope, record| {
+            let flex = Modifier.flex(scope, |c: &mut FlexConfigScope| c.basis(80.dp()));
+            Box!(modifier = flex.size((width.dp(), 10.dp())).then(record));
+        })
+    };
+    let laid = in_a_row(|_| {}, vec![child(60.0), child(10.0)]);
+    let (xs, widths): (Vec<f32>, Vec<i32>) = laid.iter().map(|(at, width)| (at.x, *width)).unzip();
+    assert_eq!((xs, widths), (vec![0.0, 60.0], vec![60, 40]));
+}
+
+// The review's: a line's height by a line is its tallest above and below, in the order shown.
+#[test]
+fn a_line_aligned_by_a_line_is_its_children_above_and_below_in_order() {
+    let child = |width: i32, height: i32, baseline: i32, order: i32| -> Emit {
+        Rc::new(move |scope, record| {
+            let flex = Modifier.flex(scope, move |c: &mut FlexConfigScope| c.order(order));
+            baseline_layout(width, height, baseline, horizontal_line(), flex.then(record));
+        })
+    };
+    let laid = in_a_row(
+        |c| {
+            c.wrap(FlexWrap::Wrap);
+            c.align_items_by(horizontal_line());
+        },
+        vec![child(60, 40, 10, 2), child(60, 20, 15, 1), child(30, 20, 5, 0)],
+    );
+    let at: Vec<(f32, f32)> = laid.iter().map(|(at, _)| (at.x, at.y)).collect();
+    assert_eq!(at, [(0.0, 30.0), (30.0, 0.0), (0.0, 10.0)]);
+}
+
+// Compose's `FillNode.modifyParentData` keeps its fraction only in no parent data or a fill's
+// (its own or `flex`'s), so another kind of parent data on either side of it drops the fraction.
+#[test]
+fn a_fill_grows_a_child_unless_other_parent_data_replaces_it() {
+    fn flex(scope: FlexBoxScope) -> Modifier {
+        Modifier.flex(scope, |_: &mut FlexConfigScope| {})
+    }
+    let width = |modifier: fn(FlexBoxScope) -> Modifier| {
+        let first: Emit = Rc::new(|_, record| Box!(modifier = Modifier.size(10.dp()).then(record)));
+        let second: Emit = Rc::new(move |scope, record| {
+            Box!(modifier = modifier(scope).height(10.dp()).then(record))
+        });
+        in_a_row(|_| {}, vec![first, second])[1].1
+    };
+    assert_eq!(width(|_| Modifier.fill_max_width_with(0.5)), 45);
+    assert_eq!(width(|_| Modifier.fill_max_width_with(0.5).layout_id("x")), 0);
+    assert_eq!(width(|_| Modifier.layout_id("x").fill_max_width_with(0.5)), 0);
+    assert_eq!(width(|scope| Modifier.fill_max_width_with(0.5).then(flex(scope))), 45);
+    assert_eq!(width(|scope| flex(scope).fill_max_width_with(0.5)), 45);
+    assert_eq!(
+        width(|scope| Modifier.fill_max_width_with(0.5).layout_id("x").then(flex(scope))),
+        0
+    );
+    assert_eq!(
+        width(|scope| Modifier.fill_max_width_with(0.5).then(flex(scope)).layout_id("x")),
+        45
+    );
+}

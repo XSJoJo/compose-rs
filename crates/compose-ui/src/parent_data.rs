@@ -26,6 +26,14 @@ pub trait ParentDataModifierNode {
         density: Density,
         parent_data: Option<Rc<dyn Any>>,
     ) -> Option<Rc<dyn Any>>;
+
+    /// Whether its data takes the fill fractions of the `fill_max_width` and `fill_max_height`
+    /// after it in the chain, and those before it fill it, as a Compose parent data implementing
+    /// `FillModifierParentData` (`FlexBox`'s `flex`). Other parent data replaces the fractions
+    /// (`IntrinsicMeasureScope::fill_fractions`).
+    fn holds_fill_fractions(&self) -> bool {
+        false
+    }
 }
 
 /// The parent data of `Modifier.layout_id`, as Compose's `LayoutIdParentData`: what
