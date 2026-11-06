@@ -979,12 +979,16 @@ impl ItemAnimator {
         let mut size = IntSize::ZERO;
         for animation in self.disappearing.borrow().iter() {
             let target = animation.target_offset.get();
+            // One disappearing before its target is known (a reorder in a lookahead scope,
+            // `reorderingInLookahead`) counts for nothing, nor one with nothing to draw (Compose's
+            // `layer == null`).
+            if target == NOT_INITIALIZED || animation.capture.borrow().is_none() {
+                continue;
+            }
             let own = animation.size.get();
-            // Wrapping as Kotlin's `Int`: one disappearing before its target is known (a reorder
-            // in a lookahead scope, `reorderingInLookahead`) counts for nothing.
             size = IntSize::new(
-                size.width.max(target.x.wrapping_add(own.width)),
-                size.height.max(target.y.wrapping_add(own.height)),
+                size.width.max(target.x + own.width),
+                size.height.max(target.y + own.height),
             );
         }
         size

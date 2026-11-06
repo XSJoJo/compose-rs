@@ -716,6 +716,57 @@ fn a_childs_own_enter_and_exit_play_with_the_content() {
     ui.on_node_unmerged(has_test_tag("child")).assert_does_not_exist();
 }
 
+// Compose: compose/animation/animation/src/commonMain/kotlin/androidx/compose/animation/EnterExitTransition.kt, EnterExitTransitionModifierNode.measure (`lookaheadSize` as the target)
+/// In a `LookaheadScope`, an expansion goes to the size its content has ahead, not the smaller
+/// one it's measured at now: constrained to 60 now and 200 wide ahead, half-way through it's 100
+/// wide, so as wide as it may be now, where going to its size now it would be 30.
+#[test]
+fn in_a_scope_an_expansion_goes_to_the_size_ahead() {
+    let widths: Rc<std::cell::RefCell<Vec<i32>>> = Rc::default();
+    let visible = mutable_state_of(false);
+    let (w, v) = (widths.clone(), visible.handle());
+    let mut ui = ComposeTestRule::with_manual_clock(move || {
+        let w = w.clone();
+        compose_ui::LookaheadScope(callback(move |_| {
+            let w = w.clone();
+            let narrower_now = Modifier.layout(move |scope, measurable, constraints| {
+                let most = if scope.is_looking_ahead() { 200 } else { 60 };
+                let placeable = scope.measure(
+                    measurable,
+                    compose_ui::Constraints::new(0, most, 0, constraints.max_height),
+                );
+                if !scope.is_looking_ahead() {
+                    w.borrow_mut().push(placeable.width);
+                }
+                scope.layout_with(placeable.width, placeable.height, move |placement| {
+                    placement.place(&placeable, 0, 0);
+                })
+            });
+            Box!(modifier = narrower_now, move |_| {
+                AnimatedVisibility!(
+                    v.get(),
+                    enter = expand_in_with(
+                        tween(160).easing(LINEAR_EASING),
+                        Alignment::TOP_START,
+                        true,
+                        |_| IntSize::ZERO
+                    ),
+                    exit = ExitTransition::NONE,
+                    move |_| {
+                        Box!(modifier = Modifier.size((200.dp(), 100.dp())));
+                    }
+                );
+            });
+        }));
+    });
+    visible.set(true);
+    ui.advance_time_by_frame();
+    ui.advance_time_by_frame();
+    ui.advance_time_by(Duration::from_millis(80));
+    let last = widths.borrow().last().copied();
+    assert_eq!(last, Some(60), "{:?}", widths.borrow());
+}
+
 // Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/AnimatedVisibilityTest.kt, testAnimatedVisibilityInLookaheadScope
 /// In a `LookaheadScope`, what's around an `AnimatedVisibility` is measured ahead at the size its
 /// content ends at: the content's while showing, none once leaving.

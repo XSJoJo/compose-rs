@@ -1,8 +1,6 @@
 //! Grids at large, as Compose's `LazyGridTest`, in both orientations. Density 1, so its dps are
-//! pixels. Left: the lookahead tests (no lookahead), `customOverscroll` (feature:overscroll),
-//! `onlyOneInitialMeasurePass` (composing for
-//! a measurement takes rounds here, D125), `passingNegativeItemsCountIsNotAllowed` (a count is a
-//! `usize`) and `recomposingWithNewComposedModifierObjectIsNotCausingRemeasure`: a grid recomposed
+//! pixels. The lookahead tests are in `lazy_grid_in_lookahead.rs`. Left: `customOverscroll`
+//! (feature:overscroll), `passingNegativeItemsCountIsNotAllowed` (a count is a `usize`) and `recomposingWithNewComposedModifierObjectIsNotCausingRemeasure`: a grid recomposed
 //! at its call site has new items (a closure can't be compared as Compose compares its content
 //! lambda), so it measures again.
 
@@ -1997,4 +1995,33 @@ fn reading_layout_info_where_the_grid_is_called_goes_idle() {
     });
     ui.wait_for_idle();
     assert!(reads.get() < 8, "{} compositions", reads.get());
+}
+
+// Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/grid/LazyGridTest.kt, onlyOneInitialMeasurePass
+/// A grid's first layout measures it once: its measurement composes the items it reaches (C8,
+/// D1312), with no round after. Compose reads the state's `numMeasurePasses`; here a layout
+/// around the grid counts its measurements.
+#[test]
+fn the_first_layout_measures_a_grid_once() {
+    for lazy in [Lazy::column(), Lazy::row()] {
+        let measures = Rc::new(Cell::new(0));
+        let counted = measures.clone();
+        let mut ui = ComposeTestRule::sized(IntSize::new(300, 300), move || {
+            let counted = counted.clone();
+            let counting = Modifier.layout(move |scope, measurable, constraints| {
+                counted.set(counted.get() + 1);
+                let placeable = scope.measure(measurable, constraints);
+                scope.layout_with(placeable.width, placeable.height, move |placement| {
+                    placement.place(&placeable, 0, 0);
+                })
+            });
+            Grid(Args::new(lazy, fixed(1), counting.required_size(100.dp())), |scope| {
+                scope.items_list((1..=20).collect::<Vec<i32>>(), |item: &i32| {
+                    Spacer!(modifier = Modifier.required_size(20.dp()).test_tag(item.to_string()));
+                });
+            });
+        });
+        ui.wait_for_idle();
+        assert_eq!(measures.get(), 1, "{lazy:?}");
+    }
 }

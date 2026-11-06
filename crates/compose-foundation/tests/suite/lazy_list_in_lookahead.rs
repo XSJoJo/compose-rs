@@ -2,7 +2,7 @@
 //! per item as either pass reaches them (D1312, D1316), what it tells the pass ahead's (D1226).
 //! Density 1, both orientations.
 
-use compose_animation::tween;
+use compose_animation::{AnimatedVisibility, AnimationModifiers, LINEAR_EASING, tween};
 use compose_foundation::layout::*;
 use compose_foundation::*;
 use compose_runtime::*;
@@ -105,6 +105,66 @@ fn the_items_the_pass_that_is_now_needs_are_composed() {
         }
         for item in 10..12 {
             ui.on_node_with_tag(&item.to_string()).assert_does_not_exist();
+        }
+    }
+}
+
+// Compose: LazyListTest.postLookaheadItemsComposedBasedOnScrollDelta
+/// Item 2 grows to 300 ahead only and the list scrolls by 60: ahead it fills the list, and the
+/// pass that's now, from where the pass ahead is, places it and the nine after it at 30 each;
+/// grown to 300 now too, it's the only one placed.
+#[test]
+fn the_pass_that_is_now_places_from_where_the_pass_ahead_scrolled() {
+    for lazy in [Lazy::column(), Lazy::row()] {
+        let (ahead, now) = (mutable_state_of(30), mutable_state_of(30));
+        let (a, n) = (ahead.handle(), now.handle());
+        let owner = LazyListState::new(0, 0);
+        let state = *owner;
+        let mut ui = in_a_scope(move || {
+            let _ = &owner;
+            LazyColumnOrRow(lazy, lazy.sized(px(300), px(300)), state, no_padding(), move |list| {
+                list.items_keyed(
+                    12,
+                    |it| it,
+                    move |index| {
+                        let sized = if index == 2 {
+                            Modifier.layout(move |scope, measurable, constraints| {
+                                let placeable = scope.measure(measurable, constraints);
+                                let size = if scope.is_looking_ahead() { a.get() } else { n.get() };
+                                scope.layout_with(size, size, move |placement| {
+                                    placement.place(&placeable, 0, 0);
+                                })
+                            })
+                        } else {
+                            Modifier.size(px(30))
+                        };
+                        Box!(modifier = Modifier.test_tag(index.to_string()).then(sized));
+                    },
+                );
+            });
+        });
+        for item in 0..12 {
+            let tag = item.to_string();
+            if item < 10 {
+                assert!(is_placed(&mut ui, &tag), "{lazy:?}, item {item} at first");
+            } else {
+                ui.on_node_with_tag(&tag).assert_does_not_exist();
+            }
+        }
+        ahead.set(300);
+        run(&mut ui, async move {
+            let _ = state.scroll_by(60.0).await;
+        });
+        ui.wait_for_idle();
+        for item in 0..12 {
+            let placed = is_placed(&mut ui, &item.to_string());
+            assert_eq!(placed, item >= 2, "{lazy:?}, item {item} after the scroll");
+        }
+        now.set(300);
+        ui.wait_for_idle();
+        for item in 0..12 {
+            let placed = is_placed(&mut ui, &item.to_string());
+            assert_eq!(placed, item == 2, "{lazy:?}, item {item} grown now too");
         }
     }
 }
@@ -389,6 +449,158 @@ fn items_shuffled_in_a_scope_frame_after_frame_lay_out() {
                 next.swap(at, (seed >> 33) as usize % (at + 1));
             }
             items.set(next);
+            ui.advance_time_by_frame();
+        }
+    }
+}
+
+// Compose: LazyListTest.animContentSizeWithPlacementAnimator
+/// Four items growing to twice their size: ahead they're where they go at once, now they move
+/// there in 160 ms; shrinking back with `animate_content_size`, ahead they're where they go at
+/// once too, its animation not counted.
+#[test]
+fn items_growing_are_where_they_go_ahead_and_move_there_now() {
+    const ITEM: i32 = 100;
+    for lazy in [Lazy::column(), Lazy::row()] {
+        let large = mutable_state_of(false);
+        let animate_size = mutable_state_of(false);
+        let positions = Positions::default();
+        let (lg, an, p) = (large.handle(), animate_size.handle(), positions.clone());
+        let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+            let p = p.clone();
+            compose_ui::LookaheadScope(callback(move |scope| {
+                let state = remember_lazy_list_state(0, 0);
+                let p = p.clone();
+                LazyColumnOrRow(lazy, Modifier, state, no_padding(), move |list: LazyListScope| {
+                    let item_scope = list.item_scope();
+                    let p = p.clone();
+                    list.items_keyed(
+                        4,
+                        |it| it,
+                        move |item| {
+                            let placement = tween(160).easing(LINEAR_EASING).into();
+                            let mut modifier = Modifier
+                                .animate_item_with(&item_scope, None, Some(placement), None)
+                                .then(track(&p, scope, item as i32));
+                            if an.get() {
+                                modifier = modifier.animate_content_size_with(
+                                    tween(160),
+                                    compose_ui::Alignment::TOP_START,
+                                    None::<fn(IntSize, IntSize)>,
+                                );
+                            }
+                            let side = if lg.get() { ITEM * 2 } else { ITEM };
+                            Box!(modifier = modifier.required_size(Dp(side as f32)));
+                        },
+                    );
+                });
+            }));
+        });
+        ui.wait_for_idle();
+        for item in 0..4 {
+            let what = format!("{lazy:?} item {item}");
+            assert_eq!(main_axis(lazy, positions.ahead(item)), Some(item * ITEM), "{what}");
+            assert_eq!(main_axis(lazy, positions.now(item)), Some(item * ITEM), "{what}");
+        }
+        ui.set_auto_advance(false);
+        large.set(true);
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        ui.advance_time_by_frame();
+        for frame in 0..20 {
+            let fraction = (frame as f32 * 16.0 / 160.0).min(1.0);
+            for item in 0..4 {
+                let what = format!("{lazy:?} item {item} at frame {frame}");
+                let ahead = main_axis(lazy, positions.ahead(item));
+                assert_eq!(ahead, Some(item * ITEM * 2), "{what}");
+                let now = (item as f32 * ITEM as f32 * (1.0 + fraction)).round() as i32;
+                assert_eq!(main_axis(lazy, positions.now(item)), Some(now), "{what}");
+            }
+            ui.advance_time_by_frame();
+        }
+        animate_size.set(true);
+        large.set(false);
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        ui.advance_time_by_frame();
+        for frame in 0..20 {
+            let fraction = (frame as f32 * 16.0 / 160.0).min(1.0);
+            for item in 0..4 {
+                let what = format!("{lazy:?} item {item} shrinking at frame {frame}");
+                let ahead = main_axis(lazy, positions.ahead(item));
+                assert_eq!(ahead, Some(item * ITEM), "{what}");
+                let now = (item as f32 * (2.0 - fraction) * ITEM as f32).round() as i32;
+                assert_eq!(main_axis(lazy, positions.now(item)), Some(now), "{what}");
+            }
+            ui.advance_time_by_frame();
+        }
+    }
+}
+
+// Compose: LazyListTest.animVisibilityWithPlacementAnimator
+/// Four items, each showing a second box with `AnimatedVisibility`: ahead they're where they go
+/// at once, now they move there in 160 ms.
+#[test]
+fn items_growing_with_animated_visibility_move_where_they_are_ahead() {
+    const ITEM: i32 = 100;
+    for lazy in [Lazy::column(), Lazy::row()] {
+        let visible = mutable_state_of(false);
+        let positions = Positions::default();
+        let (v, p) = (visible.handle(), positions.clone());
+        let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+            let p = p.clone();
+            compose_ui::LookaheadScope(callback(move |scope| {
+                let state = remember_lazy_list_state(0, 0);
+                let p = p.clone();
+                LazyColumnOrRow(lazy, Modifier, state, no_padding(), move |list: LazyListScope| {
+                    let item_scope = list.item_scope();
+                    let p = p.clone();
+                    list.items_keyed(
+                        4,
+                        |it| it,
+                        move |item| {
+                            let placement = tween(160).easing(LINEAR_EASING).into();
+                            let modifier = Modifier
+                                .animate_item_with(&item_scope, None, Some(placement), None)
+                                .then(track(&p, scope, item as i32));
+                            let square =
+                                || Box!(modifier = Modifier.required_size(Dp(ITEM as f32)));
+                            if lazy.vertical {
+                                Column!(modifier = modifier, move |column| {
+                                    square();
+                                    AnimatedVisibility!((column, v.get()), move |_| square());
+                                });
+                            } else {
+                                Row!(modifier = modifier, move |row| {
+                                    square();
+                                    AnimatedVisibility!((row, v.get()), move |_| square());
+                                });
+                            }
+                        },
+                    );
+                });
+            }));
+        });
+        ui.wait_for_idle();
+        for item in 0..4 {
+            let what = format!("{lazy:?} item {item}");
+            assert_eq!(main_axis(lazy, positions.ahead(item)), Some(item * ITEM), "{what}");
+            assert_eq!(main_axis(lazy, positions.now(item)), Some(item * ITEM), "{what}");
+        }
+        ui.set_auto_advance(false);
+        visible.set(true);
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        ui.advance_time_by_frame();
+        for frame in 0..20 {
+            let fraction = (frame as f32 * 16.0 / 160.0).min(1.0);
+            for item in 0..4 {
+                let what = format!("{lazy:?} item {item} at frame {frame}");
+                let ahead = main_axis(lazy, positions.ahead(item));
+                assert_eq!(ahead, Some(item * ITEM * 2), "{what}");
+                let now = (item as f32 * ITEM as f32 * (1.0 + fraction)).round() as i32;
+                assert_eq!(main_axis(lazy, positions.now(item)), Some(now), "{what}");
+            }
             ui.advance_time_by_frame();
         }
     }

@@ -1530,6 +1530,9 @@ struct EnterExitNode {
     transform_state: Option<Rc<SharedMutableTransformState>>,
     /// The side that stays, latched at the start of a change, as `currentAlignment`.
     current_alignment: Option<Alignment>,
+    /// The content's size ahead, in a `LookaheadScope`: what the size and slide go to and from
+    /// now, as Compose's `lookaheadSize` (none until measured ahead, and again once attached).
+    lookahead_size: Option<IntSize>,
 }
 
 impl ModifierNodeElement for EnterExitElement {
@@ -1541,6 +1544,7 @@ impl ModifierNodeElement for EnterExitElement {
             animations: self.animations.clone(),
             transform_state: self.transform_state.clone(),
             current_alignment: None,
+            lookahead_size: None,
         }
     }
 
@@ -1568,6 +1572,10 @@ impl ModifierNode for EnterExitNode {
         Some(self)
     }
 
+    fn on_attach(&mut self, _context: &mut compose_ui::NodeContext<'_>) {
+        self.lookahead_size = None;
+    }
+
     fn on_release(&mut self, _context: &mut ReleaseContext<'_>) {}
 }
 
@@ -1592,21 +1600,25 @@ impl LayoutModifierNode for EnterExitNode {
         content: Measurable,
         constraints: Constraints,
     ) -> MeasureResult {
-        // Ahead, in a `LookaheadScope`, the content at its own size, where it ends, as Compose's
-        // `EnterExitTransitionModifierNode.measure`'s `isLookingAhead` branch.
-        if scope.is_looking_ahead() {
-            let placeable = scope.measure(content, constraints);
-            return scope.layout_with(placeable.width, placeable.height, move |placement| {
-                placement.place(&placeable, 0, 0);
-            });
-        }
         if self.transition.current_state() == self.transition.target_state() {
             self.current_alignment = None;
         } else if self.current_alignment.is_none() {
             self.current_alignment = Some(self.alignment().unwrap_or(Alignment::TOP_START));
         }
+        // Ahead, in a `LookaheadScope`, the content at its own size, where it ends, kept as what
+        // the size goes to now, as Compose's `EnterExitTransitionModifierNode.measure`'s
+        // `isLookingAhead` branch.
+        if scope.is_looking_ahead() {
+            let placeable = scope.measure(content, constraints);
+            self.lookahead_size = Some(placeable.size());
+            return scope.layout_with(placeable.width, placeable.height, move |placement| {
+                placement.place(&placeable, 0, 0);
+            });
+        }
         let placeable = scope.measure(content, constraints);
-        let target = placeable.size();
+        let measured = placeable.size();
+        // What the size expands to and shrinks from: the size ahead, if there's one.
+        let target = self.lookahead_size.unwrap_or(measured);
         let size = match &self.animations.size {
             Some(size) => {
                 let (enter, exit) = (
@@ -1685,7 +1697,7 @@ impl LayoutModifierNode for EnterExitNode {
             None => IntOffset::ZERO,
         };
         let slide = match &self.transform_state {
-            Some(state) => state.combined_slide(slide, target),
+            Some(state) => state.combined_slide(slide, measured),
             None => slide,
         };
         // The content at its full size, the side that stays at its edge, slid, as Compose's
