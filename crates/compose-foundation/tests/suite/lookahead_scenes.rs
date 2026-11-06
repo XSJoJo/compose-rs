@@ -275,3 +275,107 @@ fn what_s_placed_changes_in_one_pass_and_not_the_other() {
     last_now.set(true);
     ui.wait_for_idle();
 }
+
+type Count = Rc<Cell<u32>>;
+
+/// The tests' `defaultMeasurePolicy`: each child measured and placed at the origin, its size the
+/// largest of them.
+fn placing_all() -> Rc<dyn compose_ui::MeasurePolicy> {
+    compose_ui::measure_policy(|scope, measurables, constraints| {
+        let placeables: Vec<_> =
+            measurables.iter().map(|it| scope.measure(*it, constraints)).collect();
+        let width = placeables.iter().map(|it| it.width).max().unwrap_or(0);
+        let height = placeables.iter().map(|it| it.height).max().unwrap_or(0);
+        scope.layout_with(width, height, move |placement| {
+            for placeable in &placeables {
+                placement.place(placeable, 0, 0);
+            }
+        })
+    })
+}
+
+fn counting(measures: &Count, places: &Count) -> Modifier {
+    let (measures, places) = (measures.clone(), places.clone());
+    Modifier.layout(move |scope, measurable, constraints| {
+        let placeable = scope.measure(measurable, constraints);
+        measures.set(measures.get() + 1);
+        let places = places.clone();
+        scope.layout_with(placeable.width, placeable.height, move |placement| {
+            placement.place(&placeable, 0, 0);
+            places.set(places.get() + 1);
+        })
+    })
+}
+
+fn counting_approach(measures: &Count, places: &Count) -> Modifier {
+    let (measures, places) = (measures.clone(), places.clone());
+    Modifier.approach_layout(
+        |_| true,
+        |_, _| false,
+        move |scope, content, constraints| {
+            let placeable = scope.measure(content, constraints);
+            measures.set(measures.get() + 1);
+            let places = places.clone();
+            scope.layout_with(placeable.width, placeable.height, move |placement| {
+                placement.place(&placeable, 0, 0);
+                places.set(places.get() + 1);
+            })
+        },
+    )
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/LookaheadScopeTest.kt, noExtraLookaheadTest
+#[test]
+fn a_scope_looks_ahead_no_more_than_a_tree_without_one_measures() {
+    let (small, control) = (mutable_state_of(true), mutable_state_of(true));
+    let counts: Vec<Count> = (0..10).map(|_| Rc::default()).collect();
+    let (s, c, k) = (small.handle(), control.handle(), counts.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(400, 400), move || {
+        let k = k.clone();
+        let side = if s.get() { 100 } else { 200 };
+        if c.get() {
+            let k2 = k.clone();
+            Box!(modifier = counting(&k[0], &k[1]), {
+                let k = k2.clone();
+                compose_ui::Layout(
+                    Modifier,
+                    placing_all(),
+                    callback(move || {
+                        Box!(modifier = Modifier.size(dp(side)).then(counting(&k[2], &k[3])), {});
+                    }),
+                );
+            });
+        } else {
+            let k2 = k.clone();
+            Box!(modifier = counting(&k[4], &k[5]), {
+                let k = k2.clone();
+                in_a_scope(move |_| {
+                    let after = counting(&k[6], &k[7]).then(counting_approach(&k[8], &k[9]));
+                    AnimatingSize(Modifier.size(dp(side)), after);
+                });
+            });
+        }
+    });
+    ui.wait_for_idle();
+    let get = |at: usize| counts[at].get();
+    assert_eq!((get(0), get(1), get(2), get(3)), (1, 1, 1, 1));
+    small.set(false);
+    ui.wait_for_idle();
+    assert_eq!((get(4), get(5), get(6), get(7), get(8), get(9)), (0, 0, 0, 0, 0, 0));
+    control.set(false);
+    ui.wait_for_idle();
+    // The scope's: one measurement and one placing ahead, the rest now.
+    assert_eq!((get(4), get(5)), (1, 1));
+    assert_eq!((get(6) - get(8), get(7) - get(9)), (1, 1));
+    ui.set_auto_advance(false);
+    small.set(true);
+    for _ in 0..10 {
+        ui.advance_time_by_frame();
+    }
+    ui.set_auto_advance(true);
+    ui.wait_for_idle();
+    let (lookahead_measures, lookahead_places) = (get(6) - get(8), get(7) - get(9));
+    assert_eq!((get(4), get(5)), (get(0), get(1)));
+    assert_eq!((lookahead_measures, lookahead_places), (get(2), get(3)));
+    assert!(lookahead_measures < get(8) && lookahead_places < get(9));
+}
