@@ -194,7 +194,12 @@ fn a_long_click_vibrates_unless_haptics_are_off() {
 }
 
 fn key(ui: &mut ComposeTestRule, key: Key, kind: KeyEventType) {
-    ui.host().send_key(KeyEvent { key, kind, modifiers: Default::default() });
+    ui.host().send_key(KeyEvent {
+        key,
+        kind,
+        modifiers: Default::default(),
+        from_soft_keyboard: false,
+    });
     ui.wait_for_idle();
 }
 

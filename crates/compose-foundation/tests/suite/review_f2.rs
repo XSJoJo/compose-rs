@@ -29,8 +29,18 @@ fn editor(initial: &'static str, single_line: bool) -> ComposeTestRule {
 
 /// A key down and up with `modifiers` held.
 fn chord(ui: &mut ComposeTestRule, key: Key, modifiers: KeyModifiers) {
-    ui.host().send_key(KeyEvent { key, kind: KeyEventType::KeyDown, modifiers });
-    ui.host().send_key(KeyEvent { key, kind: KeyEventType::KeyUp, modifiers });
+    ui.host().send_key(KeyEvent {
+        key,
+        kind: KeyEventType::KeyDown,
+        modifiers,
+        from_soft_keyboard: false,
+    });
+    ui.host().send_key(KeyEvent {
+        key,
+        kind: KeyEventType::KeyUp,
+        modifiers,
+        from_soft_keyboard: false,
+    });
     ui.wait_for_idle();
 }
 

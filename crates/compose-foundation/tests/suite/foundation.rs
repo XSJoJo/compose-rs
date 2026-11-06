@@ -238,11 +238,13 @@ fn shortcut(ui: &mut ComposeTestRule, key: Key, shift: bool, command: bool) {
         key,
         kind: compose_ui::KeyEventType::KeyDown,
         modifiers,
+        from_soft_keyboard: false,
     });
     ui.host().send_key(compose_ui::KeyEvent {
         key,
         kind: compose_ui::KeyEventType::KeyUp,
         modifiers,
+        from_soft_keyboard: false,
     });
     ui.wait_for_idle();
 }

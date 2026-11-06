@@ -1134,6 +1134,8 @@ class ComposeRsView @JvmOverloads constructor(
             event.getUnicodeChar(event.metaState and shortcutMask.inv()),
             down,
             event.metaState,
+            // An on-screen keyboard's (Compose's `isFromSoftKeyboard`).
+            event.flags and KeyEvent.FLAG_SOFT_KEYBOARD != 0,
         )
         ComposeRsRuntime.schedule(ComposeRsNative.nextTimer())
         return consumed

@@ -1063,6 +1063,7 @@ fn without_a_source_the_local_indication_is_made_at_a_key_from_a_child() {
         key: Key::Enter,
         kind: compose_ui::KeyEventType::KeyDown,
         modifiers: Default::default(),
+        from_soft_keyboard: false,
     });
     ui.wait_for_idle();
     assert_eq!(seen.created(), 1);

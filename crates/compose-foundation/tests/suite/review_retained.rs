@@ -142,8 +142,18 @@ fn shortcut(ui: &mut ComposeTestRule, c: char) {
         KeyModifiers { ctrl: true, ..Default::default() }
     };
     let key = Key::Character(c);
-    ui.host().send_key(KeyEvent { key, kind: KeyEventType::KeyDown, modifiers });
-    ui.host().send_key(KeyEvent { key, kind: KeyEventType::KeyUp, modifiers });
+    ui.host().send_key(KeyEvent {
+        key,
+        kind: KeyEventType::KeyDown,
+        modifiers,
+        from_soft_keyboard: false,
+    });
+    ui.host().send_key(KeyEvent {
+        key,
+        kind: KeyEventType::KeyUp,
+        modifiers,
+        from_soft_keyboard: false,
+    });
     ui.wait_for_idle();
 }
 
@@ -210,6 +220,7 @@ fn a_text_field_in_a_boundary_draws_its_cursor_and_selection() {
         key: Key::DirectionLeft,
         kind: KeyEventType::KeyDown,
         modifiers: shift,
+        from_soft_keyboard: false,
     });
     ui.host().frame();
     assert!(selection(&mut ui), "{}", ui.dump_display_list());
@@ -217,6 +228,7 @@ fn a_text_field_in_a_boundary_draws_its_cursor_and_selection() {
         key: Key::DirectionLeft,
         kind: KeyEventType::KeyUp,
         modifiers: shift,
+        from_soft_keyboard: false,
     });
     ui.on_node_with_tag("other").request_focus();
     assert!(!selection(&mut ui), "{}", ui.dump_display_list());

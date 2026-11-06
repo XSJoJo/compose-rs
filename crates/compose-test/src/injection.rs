@@ -280,7 +280,7 @@ impl<'r> InjectionScope<'r> {
 
     fn send_key(&mut self, key: Key, kind: KeyEventType) {
         let modifiers = self.modifiers();
-        self.rule.host.send_key(KeyEvent { key, kind, modifiers });
+        self.rule.host.send_key(KeyEvent { key, kind, modifiers, from_soft_keyboard: false });
         self.rule.run_current();
     }
 

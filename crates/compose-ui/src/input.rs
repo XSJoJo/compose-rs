@@ -293,6 +293,9 @@ pub struct KeyEvent {
     pub key: Key,
     pub kind: KeyEventType,
     pub modifiers: KeyModifiers,
+    /// An on-screen keyboard sent it (Android's `FLAG_SOFT_KEYBOARD`, as Compose's
+    /// `isFromSoftKeyboard`): a text field's edit by it doesn't restart the input method.
+    pub from_soft_keyboard: bool,
 }
 
 impl KeyEvent {
@@ -316,11 +319,21 @@ impl KeyEvent {
     }
 
     pub fn down(key: Key) -> KeyEvent {
-        KeyEvent { key, kind: KeyEventType::KeyDown, modifiers: KeyModifiers::default() }
+        KeyEvent {
+            key,
+            kind: KeyEventType::KeyDown,
+            modifiers: KeyModifiers::default(),
+            from_soft_keyboard: false,
+        }
     }
 
     pub fn up(key: Key) -> KeyEvent {
-        KeyEvent { key, kind: KeyEventType::KeyUp, modifiers: KeyModifiers::default() }
+        KeyEvent {
+            key,
+            kind: KeyEventType::KeyUp,
+            modifiers: KeyModifiers::default(),
+            from_soft_keyboard: false,
+        }
     }
 }
 

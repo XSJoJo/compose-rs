@@ -135,7 +135,14 @@ internal object ComposeRsNative {
     @JvmStatic external fun hoverExit(host: Long)
 
     @JvmStatic
-    external fun key(host: Long, key: Int, character: Int, down: Boolean, meta: Int): Boolean
+    external fun key(
+        host: Long,
+        key: Int,
+        character: Int,
+        down: Boolean,
+        meta: Int,
+        soft: Boolean,
+    ): Boolean
 
     /** A wheel's scroll at ([x], [y]), by ([dx], [dy]) pixels. */
     @JvmStatic external fun scroll(host: Long, x: Float, y: Float, dx: Float, dy: Float, meta: Int)
