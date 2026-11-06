@@ -277,14 +277,24 @@ fn a_selector_that_cannot_select_fails_rather_than_saying_not_displayed() {
 /// `assert_is_deactivated` does; a shown item isn't deactivated, nor one never composed.
 #[test]
 fn items_kept_for_reuse_are_deactivated() {
-    let count = mutable_state_of(3usize);
-    let handle = count.handle();
+    let state = LazyListState::new(0, 0);
+    let given = *state;
     let mut ui = compose_test(move || {
-        LazyColumn!(modifier = Modifier.size((100.dp(), 300.dp())), |scope: LazyListScope| {
-            scope.items(handle.get(), |i| {
-                Box!(modifier = Modifier.size(20.dp()).test_tag(format!("item{i}")));
-            });
-        });
+        LazyColumn!(
+            modifier = Modifier.size((100.dp(), 300.dp())),
+            state = given,
+            |scope: LazyListScope| {
+                // The first three of a content type of their own: scrolled away, no other item
+                // reuses them.
+                scope.items_with(
+                    50,
+                    |i| i >= 3,
+                    |i| {
+                        Box!(modifier = Modifier.size(20.dp()).test_tag(format!("item{i}")));
+                    },
+                );
+            }
+        );
     });
     let message = expect_error(|| {
         ui.on_node_with_tag("item0").assert_is_deactivated();
@@ -299,12 +309,12 @@ fn items_kept_for_reuse_are_deactivated() {
         ui.on_node_with_tag("item0").assert_is_deactivated_with(Some("item0 should be kept"));
     });
     assert!(message.contains("item0 should be kept\nSemantics of the node:"), "{message}");
-    count.set(0);
+    state.request_scroll_to_item(30, 0);
     ui.wait_for_idle();
     ui.on_node_with_tag("item0").assert_does_not_exist();
     ui.on_node_with_tag("item0").assert_is_deactivated();
     let message = expect_error(|| {
-        ui.on_node_with_tag("item9").assert_is_deactivated();
+        ui.on_node_with_tag("item49").assert_is_deactivated();
     });
     assert!(message.contains("Expected exactly '1' node but found '0' nodes"), "{message}");
     // The finders leave deactivated content out again after.
