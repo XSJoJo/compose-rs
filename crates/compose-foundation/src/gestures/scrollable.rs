@@ -750,7 +750,7 @@ pub(crate) struct ScrollableNode {
     overscroll: Option<Rc<dyn OverscrollEffect>>,
     drag: crate::scroll::DragScroller,
     bring_into_view_spec: Option<Rc<dyn BringIntoViewSpec>>,
-    /// Its bring-into-view requests and their animation, from the first request on (D1372).
+    /// Its bring-into-view requests and their animation, from the first request on (D1376).
     content_in_view: Option<Rc<ContentInView>>,
 }
 

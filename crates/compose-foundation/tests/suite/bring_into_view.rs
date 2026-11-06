@@ -1,7 +1,7 @@
 //! `BringIntoViewRequester`, `bring_into_view_responder` and `BringIntoViewSpec`: Compose's
 //! `BringIntoViewScrollableInteractionTest` (each in both orientations) and
 //! `BringIntoViewResponderTest`, rewritten, and the animation of the scrolling containers
-//! (`ContentInViewNode`, D1372). Density 1.
+//! (`ContentInViewNode`, D1376). Density 1.
 
 #![allow(non_snake_case)]
 

@@ -582,7 +582,7 @@ pub(crate) struct ScrollNode {
     laid_out: Rc<Cell<i32>>,
     /// Horizontal in a right-to-left layout: its content starts at the right.
     rtl: bool,
-    /// Its bring-into-view requests and their animation, from the first request on (D1372).
+    /// Its bring-into-view requests and their animation, from the first request on (D1376).
     content_in_view: Option<Rc<ContentInView>>,
 }
 

@@ -6,7 +6,7 @@
 //! rest are resumed when the animation ends, and cancelled if it's interrupted (a drag, a scroll
 //! of a higher priority) or the container is detached.
 //!
-//! Nothing is kept until a request comes: a container nobody asks has no queue (D1372).
+//! Nothing is kept until a request comes: a container nobody asks has no queue (D1376).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

@@ -1,6 +1,6 @@
 # The animated `ContentInViewNode`
 
-Design note for D1372 and D1373, from Compose's `ContentInViewNode.kt`, `BringIntoViewRequestPriorityQueue.kt`, `UpdatableAnimationState.kt`, `BringIntoViewSpec.kt` and `BringIntoViewResponder.kt`, and kept to what was built.
+Design note for D1376 and D1377, from Compose's `ContentInViewNode.kt`, `BringIntoViewRequestPriorityQueue.kt`, `UpdatableAnimationState.kt`, `BringIntoViewSpec.kt` and `BringIntoViewResponder.kt`, and kept to what was built.
 
 ## What Compose does
 

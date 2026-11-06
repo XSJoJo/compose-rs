@@ -98,8 +98,8 @@ Paths are relative to `frameworks/support`. A status cites the compose-rs tests 
 | File (relative to `frameworks/support`) | @Test | Covers | Status |
 |---|---:|---|---|
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewRequesterViewIntegrationTest.kt` | 4 | `bringIntoView` reaches `View.requestRectangleOnScreen`, and back | feature:bring-into-view-requester — plus the Android host bridge |
-| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewResponderTest.kt` | 20 | `BringIntoViewRequester` through responders: rects, child sizes, propagation, interruption of overlapping requests | ported: counted in the foundation-layout-lazy ledger (`bring_into_view.rs`, D1371, D1372) |
-| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewScrollableInteractionTest.kt` | 24 | a requester inside scrollables scrolls the least needed (leading, trailing, centred, bigger than the viewport) | ported: counted in the foundation-layout-lazy ledger (`bring_into_view.rs`, D1371, D1372) |
+| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewResponderTest.kt` | 20 | `BringIntoViewRequester` through responders: rects, child sizes, propagation, interruption of overlapping requests | ported: counted in the foundation-layout-lazy ledger (`bring_into_view.rs`, D1371, D1376) |
+| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/relocation/BringIntoViewScrollableInteractionTest.kt` | 24 | a requester inside scrollables scrolls the least needed (leading, trailing, centred, bigger than the viewport) | ported: counted in the foundation-layout-lazy ledger (`bring_into_view.rs`, D1371, D1376) |
 
 ### selection: 2 files, 88 tests
 
@@ -471,7 +471,7 @@ From `api/current.txt`, every public, non-deprecated API in this area that compo
 
 ### `androidx.compose.foundation.relocation`
 
-`BringIntoViewRequester()`, `BringIntoViewRequester.bringIntoView(rect)`, `Modifier.bringIntoViewRequester`: done (D1371; the containers animate, D1372). Left: the Android host's `requestRectangleOnScreen` past the root (`bring-into-view-requester`).
+`BringIntoViewRequester()`, `BringIntoViewRequester.bringIntoView(rect)`, `Modifier.bringIntoViewRequester`: done (D1371; the containers animate, D1376). Left: the Android host's `requestRectangleOnScreen` past the root (`bring-into-view-requester`).
 
 ### `androidx.compose.foundation.selection`
 
@@ -657,7 +657,7 @@ Sizes: S under a day, M a few days, L a week or two, XL multi-week. "Other area"
 - **Compose API:** `BringIntoViewRequester`, `bringIntoView(rect)`, `Modifier.bringIntoViewRequester`.
 - **What:** application code asks the scrollable ancestors to show a node or a rect of it, each scrolling the least needed, newer requests interrupting older ones they don't contain; on Android it continues to `View.requestRectangleOnScreen` past the root.
 - **Tests:** `relocation/*`.
-- **Status:** done but for the Android host bridge (D1371, D1372).
+- **Status:** done but for the Android host bridge (D1371, D1376).
 - **Depends on:** the Android host bridge.
 - **Size:** S (what's left). **Experimental:** no.
 

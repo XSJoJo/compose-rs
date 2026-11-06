@@ -2,7 +2,7 @@
 //! `BringIntoViewRequester` and `Modifier::bring_into_view_requester` ask the scrolling
 //! containers around a node to show it (or a part of it); `Modifier::bring_into_view_responder`
 //! takes part as one of them; `BringIntoViewSpec` says how far a container scrolls to show
-//! something, and along what animation (D1371, D1372).
+//! something, and along what animation (D1371, D1376).
 
 use std::cell::RefCell;
 use std::rc::Rc;
