@@ -2517,3 +2517,64 @@ fn the_layout_info_has_the_final_positions_in_a_lookahead_scope() {
         assert_eq!(offsets, [(0, 0), (1, ITEM)]);
     });
 }
+
+/// Two items swapped in a `LazyColumn` 200 long ahead and 50 now, `reverse`d or not, arranged by
+/// `arrangement`: where the pass that's now has them, from (`first`, `second`) to the other's.
+fn swapped_ahead_and_now(reverse: bool, arrangement: VerticalArrangement, first: i32, second: i32) {
+    let list = mutable_state_of(vec![0, 1]);
+    let handle = list.handle();
+    let params = Params { vertical: true, reverse };
+    let mut ui = paused(IntSize::new(100, 1000), move || {
+        let items = handle.get();
+        let arrangement = arrangement.clone();
+        compose_ui::LookaheadScope(callback(move |_| {
+            let items = items.clone();
+            let arrangement = arrangement.clone();
+            let by_pass = Modifier.layout(|scope, measurable, constraints| {
+                let tall = if scope.is_looking_ahead() { 200 } else { 50 };
+                let placeable = scope.measure(
+                    measurable,
+                    compose_ui::Constraints::new(0, constraints.max_width, tall, tall),
+                );
+                scope.layout_with(placeable.width, placeable.height, move |placement| {
+                    placement.place(&placeable, 0, 0);
+                })
+            });
+            LazyColumn!(
+                modifier = by_pass.test_tag(LIST_TAG),
+                reverse_layout = reverse,
+                vertical_arrangement = arrangement,
+                content = move |scope| plain_items(&scope, items.clone(), params)
+            );
+        }));
+    });
+    ui.wait_for_idle();
+    assert_eq!((position_of(&mut ui, "0").1, position_of(&mut ui, "1").1), (first, second));
+    let set = list.handle();
+    ui.run_on_ui_thread(move |_| set.set(vec![1, 0]));
+    on_animation_frame(&mut ui, |ui, fraction| {
+        let along = ((second - first) as f32 * fraction).round() as i32;
+        assert_eq!(
+            (position_of(ui, "0").1, position_of(ui, "1").1),
+            (first + along, second - along),
+            "at {fraction}"
+        );
+    });
+}
+
+/// Centered, 200 long ahead and 50 now: the pass that's now places an animated item where it is
+/// ahead, and animates it toward there, as Compose's `lookaheadOffset` (D1226). Ahead, the two
+/// items are centered at 60 and 100; now, the list is too short to center them, but they're
+/// placed at 60 and 100 all the same, and swapped, each moves to the other's.
+#[test]
+fn an_item_in_a_lookahead_scope_animates_toward_where_it_is_ahead() {
+    swapped_ahead_and_now(false, Arrangement::CENTER.into(), 60, 100);
+}
+
+/// Reversed and from the top: ahead, the first item is 120 from the end of 200 (at 40), the second
+/// 160; now, 120 and 160 from the end of 50, so above it, and swapped they go to the other's, as
+/// Compose's (its `lookaheadOffset` is from the end, mirrored in the size now).
+#[test]
+fn a_reversed_item_in_a_lookahead_scope_animates_toward_its_offset_ahead_from_the_end() {
+    swapped_ahead_and_now(true, Arrangement::TOP, -110, -150);
+}

@@ -116,6 +116,9 @@ struct LazyListInner {
     /// It's been measured ahead, in a `LookaheadScope`: what it says of where it is is what's
     /// ahead's, as Compose's `hasLookaheadOccurred` (D1226).
     measured_ahead: Cell<bool>,
+    /// Where the pass ahead placed each animated item (its key, index and offset from the
+    /// content's start): the pass that's now places it there, as Compose's `lookaheadOffset`.
+    lookahead_mains: RefCell<Vec<(u64, usize, i32)>>,
     /// What runs `animate_item`, shared with its items' nodes.
     item_animator: Rc<ItemAnimator>,
     /// What `scroll_indicator_state` gives, one object as Compose's.
@@ -393,6 +396,7 @@ impl LazyListInner {
             core: crate::gestures::ScrollCore::new(),
             laid_out: layout_info::LaidOut::new(),
             measured_ahead: Cell::new(false),
+            lookahead_mains: RefCell::default(),
             density: Cell::new(1.0),
             laid_items: RefCell::new(None),
             scroll_outer: RefCell::new(None),
@@ -3426,7 +3430,7 @@ impl MeasurePolicy for LazyListLayout {
             state.sticking_size.set(sticking.map_or(0, |(_, placeable, _)| main_of(&placeable)));
         }
         // Where the items are for `animate_item`, before a sticking header leaves them.
-        let animated_items = (!animator.idle() && !looking_ahead).then(|| {
+        let mut animated_items = (!animator.idle()).then(|| {
             let at = |base: usize| {
                 move |(position, (placeable, main)): (usize, &(Placeable, i32))| {
                     (base + position, *placeable, *main)
@@ -3528,7 +3532,7 @@ impl MeasurePolicy for LazyListLayout {
             }
         };
         let mut moved_away = Vec::new();
-        if let Some(items) = &animated_items {
+        if let Some(items) = &mut animated_items {
             if let Some((from_index, from_offset, asked)) = scrolled_from {
                 let moved =
                     sizes.distance((from_index, from_offset), (index, offset.round()), spacing);
@@ -3541,7 +3545,32 @@ impl MeasurePolicy for LazyListLayout {
                 && wanted_before == 0
                 && !lacked_unready.get()
                 && (headers.is_none() || sticking.is_some());
-            if settled {
+            if !tells {
+                // Now, after the pass ahead: each animated item where it is ahead, animating
+                // toward there, as Compose's `place` with a `lookaheadOffset`; those moving away
+                // too, where the pass ahead put them.
+                for (key, item, main) in state.lookahead_mains.borrow().iter().copied() {
+                    let Some(placeable) = measure(item, &mut sizes) else { continue };
+                    let entry = ahead.iter_mut().chain(&mut placed).chain(&mut beyond);
+                    match entry.into_iter().find(|(other, _)| *other == placeable) {
+                        Some(entry) => entry.1 = main,
+                        None => {
+                            beyond.push((placeable, main));
+                            moved_away.push((key, placeable, main));
+                        }
+                    }
+                    if let Some(it) = items.iter_mut().find(|(_, other, _)| *other == placeable) {
+                        it.2 = main;
+                    }
+                }
+                let min = animator.min_size_to_fit_disappearing();
+                if min != IntSize::ZERO {
+                    let (main_min, cross_min) =
+                        if vertical { (min.height, min.width) } else { (min.width, min.height) };
+                    main_total = constrain_main(main_total.max(main_min));
+                    cross_total = constrain_cross(cross_total.max(cross_min));
+                }
+            } else if settled {
                 let positioned: Vec<item_animator::Positioned> = items
                     .iter()
                     .map(|&(item, placeable, main)| item_animator::Positioned {
@@ -3574,6 +3603,12 @@ impl MeasurePolicy for LazyListLayout {
                     layout_min: layout_bounds.map_or(0, |bounds| bounds.0),
                     layout_max: layout_bounds.map_or(0, |bounds| bounds.1),
                 };
+                if looking_ahead {
+                    let mut mains = state.lookahead_mains.borrow_mut();
+                    mains.clear();
+                    let animated = positioned.iter().filter(|it| animator.animates(it.key));
+                    mains.extend(animated.map(|it| (it.key, it.index, it.main + before)));
+                }
                 let moved = animator.on_measured(state, &pass, &positioned, &mut |item, _| {
                     measure(item, &mut sizes).map(|it| (main_of(&it) + spacing).max(0))
                 });
@@ -3590,6 +3625,13 @@ impl MeasurePolicy for LazyListLayout {
                             beyond.push(entry);
                         }
                         moved_away.push((away.key, placeable, away.main + before));
+                        if looking_ahead {
+                            state.lookahead_mains.borrow_mut().push((
+                                away.key,
+                                away.index,
+                                away.main + before,
+                            ));
+                        }
                     }
                 }
                 let min = animator.min_size_to_fit_disappearing();
@@ -3600,7 +3642,7 @@ impl MeasurePolicy for LazyListLayout {
                     cross_total = constrain_cross(cross_total.max(cross_min));
                 }
             }
-        } else if !missing && wanted_before == 0 && !looking_ahead {
+        } else if !missing && wanted_before == 0 && tells {
             animator.note_items(&info.items, index);
         }
         // Sizes far from view are forgotten, so the estimates follow the data.
@@ -3640,7 +3682,7 @@ impl MeasurePolicy for LazyListLayout {
             layout(scope, placeable, *main);
         }
         scope.set_motion_frame_of_reference_placement(false);
-        if let Some(items) = &animated_items {
+        if let Some(items) = animated_items.as_ref().filter(|_| !looking_ahead) {
             let bounds = (-before, main_total + after, vertical);
             let note_placed = |key: u64, placeable: &Placeable, main: i32| {
                 let (x, y) = position_of(placeable, main);
