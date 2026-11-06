@@ -1325,3 +1325,162 @@ fn a_lazy_list_says_what_s_ahead() {
     assert!(placed.borrow().contains(&0));
     assert!(!placed.borrow().contains(&2));
 }
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/LookaheadScopeTest.kt, lookaheadMinWidthIntrinsicsTest
+#[test]
+fn a_column_of_min_intrinsic_width_is_the_same_in_a_scope() {
+    same_with_and_without_a_scope(|modifier| {
+        let m = modifier.clone();
+        let modifier = modifier.clone();
+        Column!(
+            modifier = m.width(compose_ui::IntrinsicSize::Min).wrap_content_height(),
+            move |_| {
+                for width in [20, 30, 10] {
+                    Box!(modifier = modifier.clone().fill_max_width().size((dp(width), dp(10))), {
+                    });
+                }
+            }
+        );
+    });
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/LookaheadScopeTest.kt, lookaheadMaxWidthIntrinsicsTest
+#[test]
+fn a_column_of_max_intrinsic_width_is_the_same_in_a_scope() {
+    same_with_and_without_a_scope(|modifier| {
+        let modifier = modifier.clone();
+        Box!({
+            let m = modifier.clone();
+            let modifier = modifier.clone();
+            Column!(
+                modifier = m.width(compose_ui::IntrinsicSize::Max).wrap_content_height(),
+                move |_| {
+                    for text in [
+                        "Short text",
+                        "Extremely long text giving the width of its siblings",
+                        "Medium length text",
+                    ] {
+                        Box!(modifier = modifier.clone().fill_max_width(), {
+                            BasicText!(text);
+                        });
+                    }
+                }
+            );
+        });
+    });
+}
+
+/// An approach of `fraction` tenths of the size ahead along one axis.
+fn approaching_tenths(tenths: compose_runtime::MutableState<i32>, horizontal: bool) -> Modifier {
+    Modifier.approach_layout(
+        |_| true,
+        |_, _| false,
+        move |measure, content, constraints| {
+            let placeable = measure.measure(content, constraints);
+            let ahead = measure.lookahead_size();
+            let part = |of: i32| (of as f32 * tenths.get() as f32 / 10.0).round() as i32;
+            let (w, h) = if horizontal {
+                (part(ahead.width), ahead.height)
+            } else {
+                (ahead.width, part(ahead.height))
+            };
+            measure.layout_with(w, h, move |placement| placement.place(&placeable, 0, 0))
+        },
+    )
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/LookaheadScopeTest.kt, intermediateLayoutMinHeightIntrinsicsTest
+#[test]
+fn an_approach_in_a_min_intrinsic_row_counts_as_it_is_now() {
+    let tenths = mutable_state_of(0);
+    let height = Rc::new(Cell::new(-1));
+    let (t, h) = (tenths.handle(), height.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(600, 800), move || {
+        let h = h.clone();
+        in_a_scope(move |_| {
+            let h = h.clone();
+            let row = Modifier
+                .height(compose_ui::IntrinsicSize::Min)
+                .on_globally_positioned(move |it: LayoutCoordinates| h.set(it.size().height))
+                .fill_max_width();
+            Row!(modifier = row, move |scope| {
+                Box!(
+                    modifier = approaching_tenths(t, false).width(dp(5)).required_height(dp(300)),
+                    {}
+                );
+                Box!(modifier = Modifier.required_height(dp(20)).weight(scope, 1.0), {});
+            });
+        });
+    });
+    for at in 0..11 {
+        tenths.set(at);
+        ui.wait_for_idle();
+        assert_eq!(height.get(), (300 * at / 10).max(20), "{at}");
+    }
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/LookaheadScopeTest.kt, intermediateLayoutMinWidthIntrinsicsTest
+#[test]
+fn an_approach_in_a_min_intrinsic_column_counts_as_it_is_now() {
+    let tenths = mutable_state_of(0);
+    let width = Rc::new(Cell::new(-1));
+    let (t, w) = (tenths.handle(), width.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(600, 800), move || {
+        let w = w.clone();
+        in_a_scope(move |_| {
+            let w = w.clone();
+            let column = Modifier
+                .width(compose_ui::IntrinsicSize::Min)
+                .on_globally_positioned(move |it: LayoutCoordinates| w.set(it.size().width))
+                .height(dp(50));
+            Column!(modifier = column, move |_| {
+                Box!(modifier = approaching_tenths(t, true).required_width(dp(300)), {});
+                Box!(modifier = Modifier.required_width(dp(120)).height(dp(10)), {});
+                BasicText!(
+                    "Lorem ipsum dolor sit amet, a text long enough to wrap in its column.",
+                    modifier = Modifier.fill_max_width()
+                );
+            });
+        });
+    });
+    for at in 0..11 {
+        tenths.set(at);
+        ui.wait_for_idle();
+        assert_eq!(width.get(), (300 * at / 10).max(120), "{at}");
+    }
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/LookaheadScopeTest.kt, intermediateLayoutMaxWidthIntrinsicsTest
+#[test]
+fn an_approach_in_a_max_intrinsic_box_counts_as_it_is_now() {
+    let tenths = mutable_state_of(0);
+    let (outer, inner) = (Rc::new(Cell::new(IntSize::ZERO)), Rc::new(Cell::new(IntSize::ZERO)));
+    let (t, o, i) = (tenths.handle(), outer.clone(), inner.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(600, 800), move || {
+        let (o, i) = (o.clone(), i.clone());
+        in_a_scope(move |_| {
+            let (o, i) = (o.clone(), i.clone());
+            let boxed = Modifier
+                .height(dp(50))
+                .width(compose_ui::IntrinsicSize::Max)
+                .on_globally_positioned(move |it: LayoutCoordinates| o.set(it.size()));
+            Box!(modifier = boxed, {
+                Box!(modifier = approaching_tenths(t, true).required_width(dp(100)), {});
+                let i = i.clone();
+                Box!(
+                    modifier = Modifier
+                        .fill_max_width()
+                        .height(dp(10))
+                        .on_globally_positioned(move |it: LayoutCoordinates| i.set(it.size())),
+                    {}
+                );
+            });
+        });
+    });
+    for at in 0..11 {
+        tenths.set(at);
+        ui.wait_for_idle();
+        assert_eq!(outer.get(), IntSize::new(100 * at / 10, 50), "{at}");
+        assert_eq!(inner.get(), IntSize::new(100 * at / 10, 10), "{at}");
+    }
+}
