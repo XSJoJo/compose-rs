@@ -562,7 +562,7 @@ Each entry gives the Compose API, what it does, the test files that need it (by 
 32. **lazy-layout-public.**
     - API: `LazyLayout` and its provider, measure scope and prefetch-state API, `MutableIntervalList`.
     - Tests: LazyLayoutTest, MutableIntervalListTest.
-    - Depends on: compose-rs composes lazy items in rounds outside measurement (docs/06), where `LazyLayoutMeasureScope.compose(index)` composes inside it. A public `LazyLayout` needs either subcomposition during measure or an API shaped around rounds: a design decision first.
+    - Depends on: a public `LazyLayout` on the lazy layouts' subcomposition (D1312, C8's stage 4).
     - Size: XL. Experimental: partly (`NestedPrefetchScope`, the `onNestedPrefetch` constructor).
 33. **system-gesture-exclusion.**
     - API: `Modifier.systemGestureExclusion`.
@@ -651,7 +651,7 @@ Each entry gives the Compose API, what it does, the test files that need it (by 
 - **`BoxWithConstraints`** composes while it's measured, once per constraints, as Compose's, on `SubcomposeLayout` (D1309). A measurement with the constraints it last composed for composes nothing, where Compose's lambda is new each measurement.
 - **Lazy lists and grids have no intrinsics** and panic when asked, with Compose's `SubcomposeLayout` message (D1204), though compose-rs doesn't subcompose them: the same behaviour, for another reason.
 - **Window insets aren't consumed** (fixed, D1355): nested paddings of the same insets added up. `WindowInsetsPaddingTest.consumedInsets`, `consumedPadding` and `withConsumedWindowInsets` are ported.
-- **Lazy items are composed in rounds** within a frame, not during measurement. Tests that count recompositions of items or callers (`LazyColumnTest.recompositionOrder`, `LazyListTest` composition-count tests) can see different orders. The count of items composed per frame should match (D487, D492). Compare against `review_lazy.rs::scrolling_one_row_composes_only_the_rows_coming_into_range`.
+- **Lazy items compose during measurement**, one subcomposition per item, as Compose's (D1312): `LazyColumnTest.recompositionOrder` holds. What differs: a request ended keeps its slot precomposed while it's in the window (Compose's lets it go), and a measurement that composed many items only to step over them measures again at once.
 - **Lazy lists compose no `beyondBoundsItemCount` items** (Compose's is internal and 0 by default, the same). With compose-rs's recommended optimizations, items are kept behind and two are prefetched ahead. Lazy tests about what's composed must set `Optimizations::NONE` to match Compose.
 - **Grids compose `BEYOND` (2) lines beyond each side** only with the `GRID_LINES_BEYOND` optimization. Compose places none, so set `NONE` for `LazyGridTest`/`LazyGridPrefetcherTest` ports.
 - **Prefetch at tip** is compose-rs's parity mode (D892): `LazyListPrefetcherTest`'s ports (`prefetch_parity.rs`) run at the default window, and that file pins the deprecated strategy in Compose.

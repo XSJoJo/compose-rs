@@ -21,7 +21,7 @@ These are on local branches, so they're not lost, but each still has to finish i
 
 ### 2. Layout and composition foundations
 - **The rest of lookahead:** lazy items' lookahead positions, the `SubcomposeLayout` cases, and most of `LookaheadScopeTest`. The scope, the pass and `approach_layout` are in.
-- **Lazy layouts on subcomposition (C8):** `SubcomposeLayout`, its reuse and paused precomposition are in, and lazy layouts move onto it next, so items compose during measure as in Compose. Today they compose in rounds, the root of several differences.
+- **Lazy layouts on subcomposition (C8):** lists, grids and staggered grids compose each item in a subcomposition during measurement, as Compose's, prefetch precomposing in pauses (stage 1, D1312). Left: the window's kept items as precomposed handles, `precompose` in a policy and a never-measured precomposed slot, slot lookups, and the public `LazyLayout` (about 40 tests).
 - **Place-with-layer** in compose-ui (`placeWithLayer`, what `offset_with` wants too). Until it lands, `animate_item` has a visible bug: modifiers before it in the chain neither move nor fade (D1472), and lookahead scopes aren't told apart; its grid and staggered tests are partly ported.
 - **Shared elements and `animateBounds`** (about 95), which wait on lookahead.
 - **`Modifier.onLayoutRectChanged` and its callbacks** (about 160).
