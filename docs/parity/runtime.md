@@ -16,13 +16,13 @@ What compose-rs's runtime (`crates/compose-runtime`, `crates/compose-macros`) ha
 | Status | Files | Tests |
 |---|---|---|
 | `covered` | 5 | 27 |
-| `ported` | 45 | 694 |
+| `ported` | 46 | 704 |
 | `port` | 0 | 0 |
-| `partial` | 10 | 330 |
+| `partial` | 9 | 320 |
 | `feature:…` | 0 | 0 |
 | `n/a` | 91 | 968 |
 
-852 tests are ported so far (each cites its Compose test in a `// Compose:` comment), in `ported` and `partial` files.
+861 tests are ported so far (each cites its Compose test in a `// Compose:` comment), in `ported` and `partial` files.
 
 No file waits on a feature. `partial` rows name further features they need for some of their tests (composition-context, composition-api, recomposer, movable-content, snapshot-isolation).
 
@@ -135,7 +135,7 @@ The core suite alone (`nonEmulatorCommonTest`, 1,099 tests) splits: 17 in `cover
 | `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/GroupSizeTests.kt` | 6 | Group sizes of real UI composables (Spacer, Checkbox, Text, Box, Button, Column). | n/a: pins the Kotlin compiler's output. |
 | `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/LiveEditApiTests.kt` | 16 | Hot-reload API: forced recomposition, errors and recovery. | n/a: no hot reload (D24). |
 | `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/LiveEditRegressionTests.kt` | 3 | Hot-reload errors in `AnimatedVisibility` and `BoxWithConstraints`. | n/a: no hot reload (D24). |
-| `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/PausableCompositionInstrumentedTests.kt` | 10 | Paused precomposition in `SubcomposeLayout`: key changes, extra recompositions, effects applied once, movable content. | partial: compose-rs pauses lazy items' content (`PausableContent`), covered by crates/compose-foundation/tests/suite/prefetch_pausable.rs and crates/compose-runtime/tests/suite/pausable.rs; `movableContentDisposed` in crates/compose-runtime/tests/suite/movable_content.rs; `movableContent_virtual_node` and `SubcomposeLayout` itself wait for C4 (ui area). |
+| `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/PausableCompositionInstrumentedTests.kt` | 10 | Paused precomposition in `SubcomposeLayout`: key changes, extra recompositions, effects applied once, movable content. | ported: 9 in crates/compose-foundation/tests/suite/subcompose_layout.rs on `SubcomposeLayoutState::create_paused_precomposition` (C4, D1311), `movableContentDisposed` in crates/compose-runtime/tests/suite/movable_content.rs; lazy items' paused content is also covered by crates/compose-foundation/tests/suite/prefetch_pausable.rs and crates/compose-runtime/tests/suite/pausable.rs. |
 | `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/ProduceStateTests.kt` | 1 | `produceState` producing values over time. | covered: crates/compose-foundation/tests/suite/effects.rs `produce_state_gives_what_its_coroutine_sets`. |
 | `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/RecomposerTests.kt` | 4 | Native views with attributes, a key change recreating, frame transitions, `Recomposer.runningRecomposers`. | ported: `testSlotKeyChangeCausesRecreate` ported in crates/compose-runtime/tests/suite/recomposer.rs (mock views); `testFrameTransition` checks snapshot ids (n/a, D702); `testNativeViewWithAttributes` Android views n/a; `runningRecomposerFlow` in recomposer_api.rs. |
 | `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/SideEffectTests.kt` | 13 | `SideEffect` order and keys, `DisposableEffect` order and key changes, `LaunchedEffect`, frames from effects, `rememberUpdatedState` in a long-lived effect. | ported: 12 in crates/compose-runtime/tests/suite/side_effects.rs (`testAwaitFrameFromLaunchedEffect` checks the driver's frame time, not the Choreographer's); `testCoroutineScopesHaveCorrectFrameClock` is n/a (no coroutine context). |

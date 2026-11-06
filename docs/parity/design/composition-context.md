@@ -459,7 +459,7 @@ Its loop wakes by `Compositions::recomposer_wake`, set while a loop runs, pushed
 
 **F7, a whole pass through a paused region.** A region's removals don't park: `parking` is off for the removal when the frame's in a region (both removal sites in `composer.rs`), as paused content takes no part in moves (D1305). Three scenes on the mock couldn't get a whole pass to park in a region, the region's own scopes being its resumes' (`pausable.rs`); the guard's there for what those miss, and no mutation of it fails a test. `content_in_a_paused_region_a_whole_pass_removes_doesnt_move` holds the scene: made anew, the node once.
 
-**Not done.** `movableContent_virtual_node` and the four `AndroidInstrumentedMovableContentTests` need more of `SubcomposeLayout`, with dialogs and popups after that. `placeholders_under` and its counting across a transplant are defensive since late walks run only what moved.
+**Since done.** `movableContent_virtual_node` and the rest of `PausableCompositionInstrumentedTests` on C4's paused precomposition, and the four `AndroidInstrumentedMovableContentTests` (D1511). `placeholders_under` and its counting across a transplant are defensive since late walks run only what moved.
 
 ### C4 (D1309)
 

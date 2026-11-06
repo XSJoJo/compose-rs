@@ -2704,3 +2704,296 @@ fn content_moves_out_of_a_slot_beside_a_thousand_boxes() {
     }
     assert_eq!(counts.made.get(), 1, "its state stayed");
 }
+
+// ---- PausableCompositionInstrumentedTests ------------------------------------------------------
+
+/// A layout of `state` composing `content` in a slot `"slot"` while `add_slot`, 10 by 10.
+fn layout_adding(
+    state: &Rc<SubcomposeLayoutState>,
+    add_slot: MutableState<bool>,
+    content: Callback,
+) -> ComposeTestRule {
+    let st = state.clone();
+    let policy = subcompose_policy(move |scope, _| {
+        if add_slot.get() {
+            scope.subcompose("slot", content.clone());
+        }
+        scope.layout(10, 10)
+    });
+    let mut ui = compose_test(move || {
+        SubcomposeLayoutWithState!(st.clone(), measure_policy = policy.clone())
+    });
+    ui.wait_for_idle();
+    ui
+}
+
+/// A slot kept for reuse: composed in a measurement, then out of it.
+fn with_a_slot_for_reuse(content: Callback) -> (Rc<SubcomposeLayoutState>, ComposeTestRule) {
+    let state = SubcomposeLayoutState::with_policy(subcompose_slot_reuse_policy(1));
+    let add_slot = mutable_state_of(true);
+    let mut ui = layout_adding(&state, add_slot.handle(), content);
+    add_slot.set(false);
+    ui.wait_for_idle();
+    (state, ui)
+}
+
+// Compose: compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/PausableCompositionInstrumentedTests.kt, changeTheKeyUsedInPrecomposition
+#[test]
+fn a_precomposition_whose_saveable_key_changes_applies() {
+    let state = SubcomposeLayoutState::new();
+    let (key, add_slot) = (mutable_state_of("1"), mutable_state_of(false));
+    let holder: Rc<Cell<Option<SaveableStateHolder>>> = Rc::default();
+    let (h, add, st) = (holder.clone(), add_slot.handle(), state.clone());
+    let in_measure = Callback::new({
+        let h = h.clone();
+        move || h.get().expect("composed").SaveableStateProvider("1", || {})
+    });
+    let policy = subcompose_policy(move |scope, _| {
+        if add.get() {
+            scope.subcompose("measurepass", in_measure.clone());
+        }
+        scope.layout(10, 10)
+    });
+    let mut ui = compose_test(move || {
+        h.set(Some(remember_saveable_state_holder()));
+        SubcomposeLayoutWithState!(st.clone(), measure_policy = policy.clone())
+    });
+    ui.wait_for_idle();
+    let (k, h) = (key.handle(), holder.clone());
+    let precomposition = state.create_paused_precomposition(
+        "precomposition",
+        Callback::new(move || h.get().expect("composed").SaveableStateProvider(k.get(), || {})),
+    );
+    resume_until_completed(&precomposition);
+    key.set("2");
+    add_slot.set(true);
+    ui.wait_for_idle();
+    resume_until_completed(&precomposition);
+    precomposition.apply();
+    ui.wait_for_idle();
+}
+
+// Compose: compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/PausableCompositionInstrumentedTests.kt, pausedPrecompositionIsNotRecomposedOnItsOwn
+#[test]
+fn a_paused_precomposition_isnt_recomposed_on_its_own() {
+    let state = SubcomposeLayoutState::new();
+    let mut ui = empty_layout(&state);
+    let key = mutable_state_of("1");
+    let composed: Rc<RefCell<Vec<&str>>> = Rc::default();
+    let (k, c) = (key.handle(), composed.clone());
+    let precomposition =
+        state.create_paused_precomposition((), Callback::new(move || c.borrow_mut().push(k.get())));
+    resume_until_completed(&precomposition);
+    assert_eq!(composed.take(), ["1"]);
+    key.set("2");
+    ui.wait_for_idle();
+    assert!(composed.borrow().is_empty(), "not composed again while it isn't applied");
+    resume_until_completed(&precomposition);
+    precomposition.apply();
+    assert_eq!(composed.take(), ["2"]);
+}
+
+// Compose: compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/PausableCompositionInstrumentedTests.kt, test_for_404058957
+#[test]
+fn a_precomposition_deactivated_and_reactivated_while_paused_applies() {
+    let state = SubcomposeLayoutState::with_policy(subcompose_slot_reuse_policy(1));
+    let mut ui = empty_layout(&state);
+    let active = mutable_state_of(true);
+    let drawn = mutable_state_of(false);
+    let (a, d) = (active.handle(), drawn.handle());
+    let precomposition = state.create_paused_precomposition(
+        (),
+        Callback::new(move || {
+            ReusableContentHost(a.get(), move || {
+                let modifier = if d.get() { Modifier.draw_behind(|_| {}) } else { Modifier };
+                Layout!(
+                    modifier = modifier,
+                    measure_policy = measure_policy(|scope, _, _| scope.layout(10, 10)),
+                    || {}
+                );
+            });
+        }),
+    );
+    precomposition.resume(|| false);
+    active.set(false);
+    ui.wait_for_idle();
+    precomposition.resume(|| false);
+    active.set(true);
+    ui.wait_for_idle();
+    resume_until_completed(&precomposition);
+    precomposition.apply();
+    // The modifier of what was just applied, updated.
+    drawn.set(true);
+    ui.wait_for_idle();
+}
+
+// Compose: compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/PausableCompositionInstrumentedTests.kt, movableContent_virtual_node
+#[test]
+fn movable_content_moving_while_its_precomposition_is_paused_applies() {
+    let state = SubcomposeLayoutState::new();
+    let mut ui = empty_layout(&state);
+    let emit = mutable_state_of(true);
+    let movable = movable_content_of_with(|flag: bool| {
+        let modifier = if flag { Modifier.background(Color::RED) } else { Modifier };
+        Box!(modifier = modifier);
+    });
+    let e = emit.handle();
+    let precomposition = state.create_paused_precomposition(
+        (),
+        Callback::new(move || {
+            Box!({});
+            let movable = movable.clone();
+            if e.get() {
+                Box!({});
+                movable(true);
+            } else {
+                Row!(|_| {
+                    Box!({});
+                    movable(false);
+                });
+            }
+        }),
+    );
+    precomposition.resume(|| false);
+    emit.set(false);
+    ui.wait_for_idle();
+    resume_until_completed(&precomposition);
+    precomposition.apply();
+    ui.wait_for_idle();
+}
+
+/// Composes `content`, pausing as soon as `outer` says its body ran, then on to the end.
+fn pause_after_the_outer(
+    state: &SubcomposeLayoutState,
+    outer: Rc<Cell<bool>>,
+    content: Callback,
+) -> PausedPrecomposition {
+    let o = outer.clone();
+    let precomposition = state.create_paused_precomposition(
+        (),
+        Callback::new(move || {
+            o.set(true);
+            content();
+        }),
+    );
+    let o = outer.clone();
+    precomposition.resume(move || o.get());
+    precomposition.resume(|| false);
+    precomposition
+}
+
+/// `DisposableEffectWrapper`: runs `on_composed`, then an effect calling `on_applied`.
+#[composable]
+fn EffectWrapper(on_composed: Rc<dyn Fn()>, on_applied: Rc<dyn Fn()>) {
+    on_composed();
+    DisposableEffect((), move |scope| {
+        on_applied();
+        scope.on_dispose(|| {})
+    });
+}
+
+// Compose: compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/PausableCompositionInstrumentedTests.kt, precomposingWithPauseAndExtraRecomposition_effectAppliedOnlyOnce
+#[test]
+fn an_effect_recomposed_while_paused_is_applied_once() {
+    let (state, mut ui) = with_a_slot_for_reuse(Callback::new(|| {}));
+    let trigger = mutable_state_of_with((), never_equal_policy());
+    let applied = Rc::new(Cell::new(0));
+    let (t, a) = (trigger.handle(), applied.clone());
+    let content = Callback::new(move || {
+        let a = a.clone();
+        EffectWrapper(Rc::new(move || t.get()), Rc::new(move || a.set(a.get() + 1)));
+    });
+    let precomposition = pause_after_the_outer(&state, Rc::default(), content);
+    trigger.set(());
+    ui.wait_for_idle();
+    resume_until_completed(&precomposition);
+    precomposition.apply();
+    assert_eq!(applied.get(), 1);
+}
+
+// Compose: compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/PausableCompositionInstrumentedTests.kt, precomposingWithPauseAndExtraRecomposition_effectAppliedOnlyOnce2
+#[test]
+fn an_effect_in_reusable_content_whose_key_changes_while_paused_is_applied_once() {
+    let state = SubcomposeLayoutState::new();
+    let mut ui = empty_layout(&state);
+    let key = mutable_state_of("A");
+    let applied = Rc::new(Cell::new(0));
+    let (k, a) = (key.handle(), applied.clone());
+    let content = Callback::new(move || {
+        let a = a.clone();
+        ReusableContent(k.get(), move || {
+            let a = a.clone();
+            EffectWrapper(Rc::new(|| {}), Rc::new(move || a.set(a.get() + 1)));
+        });
+    });
+    let precomposition = pause_after_the_outer(&state, Rc::default(), content);
+    key.set("B");
+    ui.wait_for_idle();
+    resume_until_completed(&precomposition);
+    precomposition.apply();
+    assert_eq!(applied.get(), 1);
+}
+
+// Compose: compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/PausableCompositionInstrumentedTests.kt, precomposingWithPauseAndExtraRecomposition_rememberedValueNotRecreated
+#[test]
+fn a_value_remembered_before_a_recomposition_while_paused_is_kept() {
+    let (state, mut ui) = with_a_slot_for_reuse(Callback::new(|| {}));
+    let trigger = mutable_state_of_with((), never_equal_policy());
+    let remembered = Rc::new(Cell::new(0));
+    let (t, r) = (trigger.handle(), remembered.clone());
+    let content = Callback::new(move || {
+        t.get();
+        let r = r.clone();
+        remember(move || r.set(r.get() + 1));
+    });
+    let precomposition = pause_after_the_outer(&state, Rc::default(), content);
+    trigger.set(());
+    ui.wait_for_idle();
+    resume_until_completed(&precomposition);
+    assert_eq!(remembered.get(), 1);
+}
+
+// Compose: compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/PausableCompositionInstrumentedTests.kt, pausedPrecompositionIsNotCrashingWhenRecompositionIsTriggeredAndIgnoredMultipleTimes
+#[test]
+fn a_paused_precomposition_invalidated_twice_and_left_is_fine() {
+    let state = SubcomposeLayoutState::new();
+    let mut ui = empty_layout(&state);
+    let key = mutable_state_of("1");
+    let scope: Rc<Cell<Option<RecomposeScope>>> = Rc::default();
+    let (k, s) = (key.handle(), scope.clone());
+    let precomposition = state.create_paused_precomposition(
+        (),
+        Callback::new(move || {
+            k.get();
+            s.set(Some(current_recompose_scope()));
+        }),
+    );
+    resume_until_completed(&precomposition);
+    key.set("2");
+    ui.wait_for_idle();
+    scope.get().expect("composed").invalidate();
+    ui.wait_for_idle();
+}
+
+// Compose: compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/PausableCompositionInstrumentedTests.kt, precomposingWithPauseAndExtraRecomposition_updateModifierDuringRecompositionNotCrashing
+#[test]
+fn a_reused_slots_modifier_changed_while_paused_applies() {
+    let drawn = mutable_state_of(true);
+    let d = drawn.handle();
+    let content = Callback::new(move || {
+        let modifier = if d.get() { Modifier.draw_behind(|_| {}) } else { Modifier };
+        Layout!(
+            modifier = modifier,
+            measure_policy = measure_policy(|scope, _, _| scope.layout(10, 10)),
+            || {}
+        );
+    });
+    let (state, mut ui) = with_a_slot_for_reuse(content.clone());
+    let precomposition = state.create_paused_precomposition((), content);
+    precomposition.resume(|| true);
+    drawn.set(false);
+    ui.wait_for_idle();
+    resume_until_completed(&precomposition);
+    precomposition.apply();
+    ui.wait_for_idle();
+}
