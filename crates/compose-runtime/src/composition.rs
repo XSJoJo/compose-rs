@@ -196,10 +196,13 @@ impl Composition {
         with_runtime(|runtime| self.invalid_in_tree(runtime))
     }
 
-    /// [`has_invalidations`](Self::has_invalidations) as of the changes sent so far: what a
-    /// measurement asks per item, the turn's changes sent before the layout.
+    /// Whether a scope of this composition itself is invalid, as of the changes sent so far, as
+    /// Compose's `hasInvalidations`: what a measurement asks per item (the turn's changes were
+    /// sent before the layout; compositions under it are their own measurements' to compose).
     pub fn has_sent_invalidations(&self) -> bool {
-        with_runtime(|runtime| self.invalid_in_tree(runtime))
+        with_runtime(|runtime| {
+            runtime.compositions.get(self.id).is_some_and(|data| data.has_invalidations())
+        })
     }
 
     #[inline]

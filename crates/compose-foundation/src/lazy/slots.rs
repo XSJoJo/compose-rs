@@ -54,8 +54,9 @@ pub(super) struct ItemMap<V> {
     sparse: IndexMap<usize, V>,
 }
 
-/// How far past its first item the list of an `ItemMap` goes.
+/// How far past its first item the list of an `ItemMap` goes, and how far before.
 const DENSE_ITEMS: usize = 512;
+const DENSE_BEFORE: usize = 16;
 
 impl<V> Default for ItemMap<V> {
     fn default() -> Self {
@@ -87,7 +88,7 @@ impl<V> ItemMap<V> {
     pub(super) fn insert(&mut self, index: usize, value: V) {
         if self.base == usize::MAX {
             // Room before the first: a measurement may go back from where it starts.
-            self.base = index.saturating_sub(DENSE_ITEMS / 4);
+            self.base = index.saturating_sub(DENSE_BEFORE);
         }
         match self.slot(index) {
             Some(at) => {
