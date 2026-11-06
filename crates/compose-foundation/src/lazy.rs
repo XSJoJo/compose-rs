@@ -233,8 +233,9 @@ struct LazyListInner {
     scroll_outer: RefCell<Option<Outer>>,
     /// The layout's subcompositions, its items' slots: what a prefetch request precomposes in.
     layout_state: RefCell<Option<Rc<compose_ui::subcompose::SubcomposeLayoutState>>>,
-    /// What composes the items, as last composed.
+    /// What composes the items, as last composed, and their contents by key.
     factory: RefCell<Option<Rc<slots::ItemFactory>>>,
+    contents: slots::ItemContents,
 }
 
 /// The nested-scroll parents a delta came through, the list's axis, whether it runs against the
@@ -444,6 +445,7 @@ impl LazyListInner {
             scroll_outer: RefCell::new(None),
             layout_state: RefCell::new(None),
             factory: RefCell::new(None),
+            contents: slots::ItemContents::default(),
         }
     }
 }
@@ -1912,11 +1914,14 @@ fn LazyList(
 pub(super) fn LazyItem(
     index: usize,
     state: LazyListState,
-    items: ItemsRef,
     holder: SaveableStateHolder,
     stacking: ItemStacking,
 ) {
     let inner = state.inner_or_detached();
+    // The items as they are now, as Compose's item reads `itemProvider()`.
+    let Some(items) = inner.factory.borrow().as_ref().map(|factory| factory.items.clone()) else {
+        return;
+    };
     let policy = compose_runtime::remember_keyed(stacking, || {
         Rc::new_cyclic(|this| ItemLayout {
             this: this.clone(),
@@ -1955,6 +1960,31 @@ pub(super) fn LazyItem(
         modifier,
         policy as Rc<dyn MeasurePolicy>,
         compose_runtime::callback(move || {
+            // Run again when the list's content changes (`LazyItemsLayout`), with the items as
+            // they are then, as Compose's item reads `itemProvider()`: restarting for a state of its
+            // own after the list's content changed, it runs the new content, once.
+            let inner = state.inner_or_detached();
+            inner
+                .contents
+                .scopes
+                .borrow_mut()
+                .insert(item_key, compose_runtime::current_recompose_scope());
+            let current = inner.factory.borrow().as_ref().map(|it| it.items.clone());
+            drop(inner);
+            let (items, index) = match current {
+                Some(now) if !Rc::ptr_eq(&now.0, &items.0) => {
+                    let found = if index < now.0.count && now.0.key(index) == item_key {
+                        Some(index)
+                    } else {
+                        now.0.index_of(item_key, index)
+                    };
+                    match found {
+                        Some(found) => (now, found),
+                        None => (items.clone(), index),
+                    }
+                }
+                _ => (items.clone(), index),
+            };
             if let Some((interval, local)) = items.0.find(index) {
                 compose_runtime::CompositionLocalProvider(
                     compose_ui::LOCAL_PINNABLE_CONTAINER.provides(Some(container.clone())),

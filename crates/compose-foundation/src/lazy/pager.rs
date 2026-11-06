@@ -645,6 +645,13 @@ impl PagerState {
     /// Goes to `page` at the next layout, from a scroll: as `snapToItem`.
     fn snap_to_page(&self, page: usize, fraction: f32) {
         let Some(inner) = self.inner() else { return };
+        // Elsewhere, the window's requests are cancelled and the next scroll refills it, as
+        // `snapToItem`'s `resetStrategy`.
+        if peek(&inner.current_page) != page || peek(&inner.current_fraction) != fraction {
+            if let Some(list) = inner.list.inner() {
+                list.prefetch.reset_window();
+            }
+        }
         inner.requested.set(Some((page, fraction)));
         inner.current_page.set(page);
         inner.current_fraction.set(fraction);

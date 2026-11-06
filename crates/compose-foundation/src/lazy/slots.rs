@@ -70,16 +70,27 @@ impl SubcomposeSlotReusePolicy for LazyItemReusePolicy {
     }
 }
 
-/// What composes each item of one set of items, as Compose's `LazyLayoutItemContentFactory`: an
-/// item's content is the same `Callback` while its key stays at its index, so a measurement asking
-/// for it again composes nothing.
+/// What composes each item of one set of items, as Compose's `LazyLayoutItemContentFactory`.
 pub(super) struct ItemFactory {
     pub(super) state: LazyListState,
     pub(super) items: ItemsRef,
     holder: SaveableStateHolder,
     stacking: ItemStacking,
-    contents: RefCell<HashMap<u64, (usize, Callback)>>,
 }
+
+/// The items' contents, by key, as Compose's `CachedItemContent`s: an item's content is the same
+/// `Callback` while its key is there, so a measurement asking for it again composes nothing; it
+/// reads the items as they are when it composes (Compose's reads `itemProvider()`), so an item
+/// recomposing for a state of its own with the list's content changed sees the new items.
+#[derive(Default)]
+pub(super) struct ItemContents {
+    contents: RefCell<HashMap<u64, (Rc<std::cell::Cell<usize>>, Callback)>>,
+    /// Each item's content's scope, by key: run again when the list's content changes.
+    pub(super) scopes: RefCell<HashMap<u64, compose_runtime::RecomposeScope>>,
+}
+
+/// The contents kept at most; past it, those of keys no longer composed go.
+const MOST_CONTENTS: usize = 256;
 
 impl ItemFactory {
     /// The slot id of item `index`.
@@ -91,28 +102,38 @@ impl ItemFactory {
     /// Item `index`'s content.
     pub(super) fn content(&self, index: usize) -> Callback {
         let key = self.items.0.key(index);
-        let mut contents = self.contents.borrow_mut();
-        if let Some((at, content)) = contents.get(&key)
-            && *at == index
-        {
+        let inner = self.state.inner_or_detached();
+        let mut contents = inner.contents.contents.borrow_mut();
+        if let Some((near, content)) = contents.get(&key) {
+            near.set(index);
             return content.clone();
         }
-        let (state, items, holder, stacking) =
-            (self.state, self.items.clone(), self.holder, self.stacking);
-        // Its item found by its key if the items moved since, as Compose's `CachedItemContent`:
-        // its slot is its key's.
+        if contents.len() >= MOST_CONTENTS {
+            let composed: Vec<u64> =
+                inner.children.borrow().iter().map(|item| self.items.0.key(*item)).collect();
+            contents.retain(|key, _| composed.contains(key));
+        }
+        let state = self.state;
+        let near = Rc::new(std::cell::Cell::new(index));
+        let at = near.clone();
+        // Its item found by its key in the items as they are now: its slot is its key's.
         let content = Callback::new(move || {
-            let items_now = &items.0;
-            let found = if items_now.key(index) == key {
-                Some(index)
+            let inner = state.inner_or_detached();
+            let Some(factory) = inner.factory.borrow().clone() else { return };
+            drop(inner);
+            let items = &factory.items.0;
+            let guess = at.get();
+            let found = if guess < items.count && items.key(guess) == key {
+                Some(guess)
             } else {
-                items_now.index_of(key, index)
+                items.index_of(key, guess)
             };
             if let Some(found) = found {
-                LazyItem(found, state, items.clone(), holder, stacking);
+                at.set(found);
+                LazyItem(found, state, factory.holder, factory.stacking);
             }
         });
-        contents.insert(key, (index, content.clone()));
+        contents.insert(key, (near, content.clone()));
         content
     }
 
@@ -206,13 +227,11 @@ pub(super) fn LazyItemsLayout(
     *inner.layout_state.borrow_mut() = Some(layout.clone());
     *inner.prefetch.items.borrow_mut() = Rc::downgrade(&items.0);
     let factory = compose_runtime::remember_keyed((state, items.clone(), holder, stacking), || {
-        Rc::new(ItemFactory {
-            state,
-            items: items.clone(),
-            holder,
-            stacking,
-            contents: RefCell::default(),
-        })
+        // The items' contents run again with these items, in this frame after this composition.
+        for (_, scope) in inner.contents.scopes.borrow_mut().drain() {
+            scope.invalidate();
+        }
+        Rc::new(ItemFactory { state, items: items.clone(), holder, stacking })
     });
     *inner.factory.borrow_mut() = Some(factory.clone());
     // One per list, kept: the local stays the same, its readers aren't invalidated; its list is
