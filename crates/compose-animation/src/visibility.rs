@@ -771,9 +771,11 @@ pub fn AnimatedVisibility<V: AnimatedVisibilityState>(
     let exit: Option<ExitTransition> = exit;
     let exit = exit.unwrap_or_else(|| visible.default_exit());
     let transition = visible.transition(label);
+    let visible: Rc<dyn Fn(&bool) -> bool> = Rc::new(|visible: &bool| *visible);
+    let modifier = no_size_ahead_when_leaving(modifier, &transition, &visible);
     AnimatedEnterExit(
         transition,
-        Rc::new(|visible: &bool| *visible),
+        visible,
         modifier,
         enter,
         exit,
@@ -784,6 +786,23 @@ pub fn AnimatedVisibility<V: AnimatedVisibilityState>(
         false,
         compose_runtime::callback(content),
     );
+}
+
+/// `modifier` with the content of no size ahead, in a `LookaheadScope`, once `transition` goes
+/// where it isn't `visible`, as Compose's `AnimatedVisibilityImpl`'s layout: what's around it is
+/// laid out ahead as it ends.
+fn no_size_ahead_when_leaving<S: Clone + PartialEq + 'static>(
+    modifier: Modifier,
+    transition: &Transition<S>,
+    visible: &Rc<dyn Fn(&S) -> bool>,
+) -> Modifier {
+    let (transition, visible) = (transition.clone(), visible.clone());
+    modifier.layout(move |scope, measurable, constraints| {
+        let placeable = scope.measure(measurable, constraints);
+        let leaving = scope.is_looking_ahead() && !visible(&transition.target_state());
+        let (width, height) = if leaving { (0, 0) } else { (placeable.width, placeable.height) };
+        scope.layout_with(width, height, move |placement| placement.place(&placeable, 0, 0))
+    })
 }
 
 impl<S: Clone + PartialEq + 'static> Transition<S> {
@@ -803,9 +822,11 @@ impl<S: Clone + PartialEq + 'static> Transition<S> {
     ) {
         let enter = enter.into().unwrap_or_else(|| fade_in() + expand_in());
         let exit = exit.into().unwrap_or_else(|| shrink_out() + fade_out());
+        let visible: Rc<dyn Fn(&S) -> bool> = Rc::new(visible);
+        let modifier = no_size_ahead_when_leaving(modifier, self, &visible);
         AnimatedEnterExit(
             self.clone(),
-            Rc::new(visible),
+            visible,
             modifier,
             enter,
             exit,
@@ -1571,6 +1592,14 @@ impl LayoutModifierNode for EnterExitNode {
         content: Measurable,
         constraints: Constraints,
     ) -> MeasureResult {
+        // Ahead, in a `LookaheadScope`, the content at its own size, where it ends, as Compose's
+        // `EnterExitTransitionModifierNode.measure`'s `isLookingAhead` branch.
+        if scope.is_looking_ahead() {
+            let placeable = scope.measure(content, constraints);
+            return scope.layout_with(placeable.width, placeable.height, move |placement| {
+                placement.place(&placeable, 0, 0);
+            });
+        }
         if self.transition.current_state() == self.transition.target_state() {
             self.current_alignment = None;
         } else if self.current_alignment.is_none() {

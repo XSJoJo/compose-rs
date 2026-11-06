@@ -491,6 +491,11 @@ struct StaggeredInner {
     stops: Cell<u32>,
     /// As `prefetchingEnabled`: off, the window asks for nothing and keeps nothing.
     prefetching_enabled: Cell<bool>,
+    /// The items the pass that's now last showed, with their lanes, after a pass ahead, as
+    /// `approachLayoutInfo.visibleItemsInfo`: the pass ahead places those past its own.
+    approach_visible: RefCell<Vec<(i32, usize)>>,
+    /// The last item the pass ahead showed.
+    ahead_last_visible: Cell<i32>,
 }
 
 impl LazyStaggeredGridState {
@@ -524,6 +529,8 @@ impl LazyStaggeredGridState {
                 last_main: Cell::new(None),
                 stops: Cell::new(0),
                 prefetching_enabled: Cell::new(true),
+                approach_visible: RefCell::default(),
+                ahead_last_visible: Cell::new(-1),
             },
             |object| LazyStaggeredGridState { list: handle, object },
         )
@@ -2543,8 +2550,32 @@ impl ItemsMeasurePolicy for StaggeredLayout {
         positioned.reverse();
         let current_indices = &done.current_indices;
         let mut after_visible: Vec<(Placeable, i32, i32)> = Vec::new();
+        // Ahead, those the pass that's now showed past what's in view ahead, from the first past
+        // it to its last, placed after it in their lanes, as `itemsRetainedForLookahead`: so the
+        // pass ahead doesn't let go of what the pass that's now shows, and an item leaving moves
+        // along the axis only.
+        let mut retained: Vec<i32> = Vec::new();
+        if looking_ahead {
+            let approach = staggered.approach_visible.borrow();
+            let last_visible = visible.last().map_or(-1, |at| done.arena[*at].index);
+            let first_past = (0..approach.len()).rev().find(|&at| {
+                approach[at].0 > last_visible && (at == 0 || approach[at - 1].0 <= last_visible)
+            });
+            if let (Some(first_past), Some(&(last, _))) = (first_past, approach.last()) {
+                for item in approach[first_past].0..=last.min(count as i32 - 1) {
+                    let lane = approach.iter().find(|it| it.0 == item).map_or(0, |it| it.1);
+                    let span = c.span_range(item, lane);
+                    if let Some(measured) = c.try_measure(item, span) {
+                        let cross = slots.positions.get(lane).copied().unwrap_or(0);
+                        after_visible.push((measured.placeable, extra_offset, cross));
+                        extra_offset += measured.size_with_spacing;
+                        retained.push(item);
+                    }
+                }
+            }
+        }
         for &item in &extra {
-            if item >= count as i32 {
+            if item >= count as i32 || retained.contains(&item) {
                 continue;
             }
             let lane = c.lane_info.get_lane(item);
@@ -2566,6 +2597,22 @@ impl ItemsMeasurePolicy for StaggeredLayout {
             positioned.push((item.placeable, item.main, item.cross));
         }
         positioned.extend(after_visible);
+        let last_shown = visible.last().map_or(-1, |at| done.arena[*at].index);
+        if looking_ahead {
+            staggered.ahead_last_visible.set(last_shown);
+        } else if tells {
+            staggered.approach_visible.borrow_mut().clear();
+        } else {
+            let shown: Vec<(i32, usize)> =
+                visible.iter().map(|at| (done.arena[*at].index, done.arena[*at].lane)).collect();
+            let mut approach = staggered.approach_visible.borrow_mut();
+            // Showing others past what the pass ahead shows: it places them too, in this layout,
+            // as Compose's items composed now ask for a lookahead measurement.
+            if *approach != shown && last_shown > staggered.ahead_last_visible.get() {
+                state.request_remeasure();
+            }
+            *approach = shown;
+        }
         let placed = Placed { reverse, main_layout_size, cross_before };
         // All it measured scrolled past: nothing of it in view.
         if stopped && visible.is_empty() {

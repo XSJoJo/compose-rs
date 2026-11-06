@@ -2332,11 +2332,33 @@ impl ItemsMeasurePolicy for LazyGridLayout {
                 }
             }
         }
+        // The last item shown, and ahead the lines up to the last the pass that's now showed past
+        // it, placed after those in view, as Compose's `linesRetainedForLookahead` (D1318).
+        let last_shown = placed.last().map(|&(line, _)| m.lines.start(line + 1).saturating_sub(1));
+        let mut retained_end = 0;
+        if looking_ahead {
+            state.ahead_last.set(last_shown);
+            if let Some(last) = state.approach_last.get().filter(|&last| last < count)
+                && last_shown.is_none_or(|shown| last > shown)
+            {
+                retained_end = m.lines.line_of(last) + 1;
+                placed_end = placed_end.max(retained_end);
+            }
+        } else if tells {
+            state.approach_last.set(None);
+        } else {
+            // Showing others past what the pass ahead shows: it places them too, in this layout,
+            // as Compose's items composed now ask for a lookahead measurement.
+            let past = last_shown.is_some_and(|it| state.ahead_last.get().is_none_or(|a| it > a));
+            if state.approach_last.replace(last_shown) != last_shown && past {
+                state.request_remeasure();
+            }
+        }
         let mut beyond_lines: Vec<(usize, i32)> = Vec::new();
         let mut main =
             placed.last().map_or(before, |(line, main)| main + (m.size_of(*line) + spacing).max(0));
         for next in end_index..placed_end {
-            m.only_composed = next >= wanted_end;
+            m.only_composed = next >= wanted_end && next >= retained_end;
             if let Some(size) = m.line(next) {
                 beyond_lines.push((next, main));
                 main += (size + spacing).max(0);

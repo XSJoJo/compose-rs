@@ -287,6 +287,26 @@ impl UiTree {
         }
     }
 
+    /// `node` is measured ahead: it's measured now after, as Compose's lookahead measurement marks
+    /// the measurement that follows it pending (`LookaheadPassDelegate.performMeasure`), even if
+    /// nothing it read now changed (a lazy layout placing its items where they are ahead). In the
+    /// pass ahead, the fields now are the ones put aside.
+    #[cold]
+    pub(crate) fn measure_now_after_ahead(&mut self, node: NodeId) {
+        let Some(state) = self.node_mut(node).lookahead.as_mut() else { return };
+        state.needs_measure = true;
+        let mut current = self.node(node).parent;
+        while let Some(parent) = current {
+            let value = self.node_mut(parent);
+            let Some(state) = value.lookahead.as_mut() else { break };
+            if state.subtree_needs_measure || state.needs_measure {
+                break;
+            }
+            state.subtree_needs_measure = true;
+            current = value.parent;
+        }
+    }
+
     /// Before `node`'s blocks: if it's a scope's outermost and its lookahead has blocks waiting,
     /// they run, after what's around it, as Compose's root's placing them.
     #[cold]

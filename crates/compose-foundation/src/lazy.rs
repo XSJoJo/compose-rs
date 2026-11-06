@@ -1,11 +1,9 @@
 //! Lazy lists, as Compose's `LazyColumn` and `LazyRow`: only the items in view are placed and
 //! drawn; they, a few next to them and the focused one are composed and measured.
 //!
-//! Compose composes items while measuring (subcomposition). Here the list composes a range of
-//! items, and its measurement, which fills the viewport from the scroll position, writes the
-//! range it needs when the composed one falls short; the host then recomposes and measures again
-//! within the same frame (`UiHost::frame`), so scrolling shows no empty frame. The items are
-//! composed by a restartable composable of their own, each item one too: a scroll recomposes
+//! As Compose's, the list composes its items while measuring, each in a subcomposition of its own
+//! (`slots`, C8, D1312): its measurement, which fills the viewport from the scroll position,
+//! composes an item when it reaches it, so scrolling shows no empty frame and a scroll recomposes
 //! neither the list's caller nor the items that stay.
 //!
 //! After each scroll, the next items in the scroll direction are composed and measured between
@@ -116,6 +114,11 @@ struct LazyListInner {
     /// The items the pass that's now last wanted, after a pass ahead: the pass ahead keeps them
     /// composed too, so what either pass wants stays composed across frames (D1226).
     wanted_now: Cell<Option<(usize, usize)>>,
+    /// A grid's: the last item the pass that's now showed after a pass ahead (Compose's
+    /// `approachLayoutInfo`), and the last the pass ahead showed. The pass ahead places the lines
+    /// up to the first's past its own (`linesRetainedForLookahead`, D1318).
+    approach_last: Cell<Option<usize>>,
+    ahead_last: Cell<Option<usize>>,
     /// Where the pass ahead placed each animated item: the pass that's now places it there.
     lookahead_places: RefCell<Vec<item_animator::LookaheadPlace>>,
     /// What runs `animate_item`, shared with its items' nodes.
@@ -470,6 +473,8 @@ impl LazyListInner {
             laid_out: layout_info::LaidOut::new(),
             measured_ahead: Cell::new(false),
             wanted_now: Cell::new(None),
+            approach_last: Cell::new(None),
+            ahead_last: Cell::new(None),
             lookahead_places: RefCell::default(),
             density: Cell::new(1.0),
             laid_items: RefCell::new(None),
