@@ -320,6 +320,9 @@ pub(crate) struct StateLink {
     /// What sent the last key down: the text it types is that key's edit (Compose's
     /// `isFromSoftKeyboard`).
     typed_by: Option<EditSource>,
+    /// The commands being applied are the input method's: what they replace is kept as what they
+    /// changed, as Compose's `imeReplace` (D1132).
+    input_method_edit: bool,
     /// The edit being made is one of its own in the state's history (a cut, a paste, a selection
     /// deleted), as Compose's `NeverMerge`.
     never_merge: bool,
@@ -340,6 +343,7 @@ impl StateLink {
             edits: Vec::new(),
             command_edits: None,
             typed_by: None,
+            input_method_edit: false,
             never_merge: false,
             restart,
             listener,
@@ -708,6 +712,7 @@ impl TextFieldNode {
             return false;
         }
         link.edits.clear();
+        link.never_merge = false;
         let text_changed = *value.text != *self.text;
         let composition = value.composition.map(TextRange::range);
         let selection = value.selection;
@@ -761,6 +766,8 @@ impl TextFieldNode {
             .as_ref()
             .is_some_and(|seen| seen.selection == selection && seen.composition == composition);
         if link.edits.is_empty() && unchanged {
+            // A cut or paste that changed nothing leaves the next edit to merge.
+            link.never_merge = false;
             return;
         }
         let edits = std::mem::take(&mut link.edits);
@@ -878,8 +885,8 @@ impl TextFieldNode {
             selection,
             composition,
         ));
-        if self.state.is_some() {
-            processor.track_edits();
+        if let Some(link) = &self.state {
+            processor.track_edits(link.input_method_edit);
         }
         let value = processor.apply(commands);
         if let Some(link) = self.state.as_mut() {
@@ -919,6 +926,22 @@ impl TextFieldNode {
             return;
         }
         self.edit(value.text().to_string(), selection.end, selection.start, typing, context);
+    }
+
+    /// `apply_commands` of an input method's commands, typing: a state-based field keeps what
+    /// they replace as what they changed, as Compose's `imeReplace`.
+    fn apply_input_method_commands(
+        &mut self,
+        commands: &[&dyn EditCommand],
+        context: &mut EventContext<'_>,
+    ) {
+        if let Some(link) = self.state.as_mut() {
+            link.input_method_edit = true;
+        }
+        self.apply_commands(commands, true, context);
+        if let Some(link) = self.state.as_mut() {
+            link.input_method_edit = false;
+        }
     }
 
     /// The text changed other than by the input method's edits or typing: the composition is over
@@ -2193,9 +2216,9 @@ impl KeyInputModifierNode for TextFieldNode {
             Some((from, to)) => {
                 let select =
                     SetSelectionCommand::new((start + from) as isize, (start + to) as isize);
-                self.apply_commands(&[&composing, &select], true, context);
+                self.apply_input_method_commands(&[&composing, &select], context);
             }
-            None => self.apply_commands(&[&composing], true, context),
+            None => self.apply_input_method_commands(&[&composing], context),
         }
         self.preedit = self.composition.is_some();
         self.publish_state(EditSource::InputMethod);
@@ -2229,7 +2252,7 @@ impl KeyInputModifierNode for TextFieldNode {
         self.adopt_state_in(context);
         self.preferred_x = None;
         self.preedit = false;
-        self.apply_commands(commands, true, context);
+        self.apply_input_method_commands(commands, context);
         self.publish_state(EditSource::InputMethod);
         true
     }

@@ -183,6 +183,9 @@ pub struct EditingBuffer {
     /// What its edits replaced, in order, each in the text as it was then, when asked to keep
     /// them (`EditProcessor::track_edits`).
     edits: Option<Vec<(std::ops::Range<usize>, String)>>,
+    /// A replacement is kept as what it changed, its common prefix then suffix left out, as an
+    /// input method's are (Compose's `imeReplace`).
+    trim_edits: bool,
 }
 
 impl EditingBuffer {
@@ -199,6 +202,7 @@ impl EditingBuffer {
             selection_end: end,
             composition: None,
             edits: None,
+            trim_edits: false,
         }
     }
 
@@ -244,7 +248,14 @@ impl EditingBuffer {
     pub(crate) fn replace(&mut self, start: usize, end: usize, text: &str) {
         self.check_range(start, end);
         if let Some(edits) = &mut self.edits {
-            edits.push((start..end, text.to_string()));
+            let (range, text) = if self.trim_edits {
+                trim_replacement(&self.text, start..end, text)
+            } else {
+                (start..end, text)
+            };
+            if !range.is_empty() || !text.is_empty() {
+                edits.push((range, text.to_string()));
+            }
         }
         self.text.replace_range(start..end, text);
         // As Compose: the cursor goes after the new text (a platform setting the selection
@@ -830,6 +841,27 @@ impl fmt::Display for DeleteAllCommand {
     }
 }
 
+/// What replacing `range` of `text` with `with` changes, as Compose's `imeReplace`: the common
+/// prefix left out first (so "abc" to "aabc" is an "a" inserted at 1, Compose's b/351165334),
+/// then the common suffix of what's left. At character boundaries.
+fn trim_replacement<'a>(
+    text: &str,
+    range: std::ops::Range<usize>,
+    with: &'a str,
+) -> (std::ops::Range<usize>, &'a str) {
+    let old = &text[range.clone()];
+    let prefix: usize =
+        old.chars().zip(with.chars()).take_while(|(a, b)| a == b).map(|(c, _)| c.len_utf8()).sum();
+    let suffix: usize = old[prefix..]
+        .chars()
+        .rev()
+        .zip(with[prefix..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(c, _)| c.len_utf8())
+        .sum();
+    (range.start + prefix..range.end - suffix, &with[prefix..with.len() - suffix])
+}
+
 /// Applies [`EditCommand`]s to a text field's value, as Compose's `EditProcessor`: `reset`
 /// gives it the value the application holds, `apply` the edits, which it returns as the new
 /// value for the application to take (or not).
@@ -945,10 +977,13 @@ impl EditProcessor {
 
     /// Keeps what the commands applied from now on replace, for
     /// [`take_edits`](Self::take_edits): compose-rs's, for a field whose state records its
-    /// changes (Compose's state-based field edits its state's buffer directly).
+    /// changes (Compose's state-based field edits its state's buffer directly). An input
+    /// method's (`ime`) are kept as what they changed, their common prefix then suffix left out,
+    /// as Compose's `imeReplace`: composing "h" then "he" is "e" inserted.
     #[doc(hidden)]
-    pub fn track_edits(&mut self) {
+    pub fn track_edits(&mut self, ime: bool) {
         self.buffer.edits.get_or_insert_with(Vec::new);
+        self.buffer.trim_edits = ime;
     }
 
     /// What the commands applied since tracking began replaced, in order, each range in the text

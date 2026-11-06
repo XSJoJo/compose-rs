@@ -5,7 +5,10 @@
 
 use compose_foundation::*;
 use compose_test::*;
-use compose_ui::{Key, SemanticsActions as A, TextRange, UnitExt};
+use compose_ui::{
+    CommitTextCommand, FinishComposingTextCommand, Key, SemanticsActions as A,
+    SetComposingTextCommand, TextRange, UnitExt,
+};
 
 fn range(start: usize, end: usize) -> TextRange {
     TextRange::new(start, end)
@@ -127,7 +130,7 @@ fn undo_and_redo_bring_their_selections_back() {
     assert_eq!(held(&state), ("He abc llo".to_string(), TextRange::at(7)));
     state.undo_state().undo();
     ui.wait_for_idle();
-    assert_ne!(state.selection(), TextRange::at(7));
+    assert_eq!(held(&state), ("Hello".to_string(), TextRange::at(2)));
     state.undo_state().redo();
     ui.wait_for_idle();
     assert_eq!(held(&state), ("He abc llo".to_string(), TextRange::at(7)));
@@ -261,4 +264,40 @@ fn can_undo_is_read_as_state() {
     state.edit(|buffer| buffer.append("x"));
     ui.wait_for_idle();
     ui.on_node_with_text("undo").assert_exists();
+}
+
+/// An input method composing a word letter by letter is one step, as Compose's `imeReplace`
+/// keeps each step as the letter it added (the review of D1132's finding).
+#[test]
+fn a_composed_word_is_one_step() {
+    let (mut ui, state) = field("", TextRange::ZERO);
+    ui.on_node_with_tag("field").request_focus();
+    for text in ["h", "he", "hel"] {
+        assert!(ui.host().send_edit_commands(&[&SetComposingTextCommand::new(text, 1)]));
+    }
+    assert!(ui.host().send_edit_commands(&[&FinishComposingTextCommand]));
+    ui.wait_for_idle();
+    assert_eq!(state.text().as_str(), "hel");
+    assert_eq!(undo(&mut ui, &state).0, "");
+    assert!(!state.undo_state().can_undo());
+    let (mut ui, state) = field("", TextRange::ZERO);
+    ui.on_node_with_tag("field").request_focus();
+    assert!(ui.host().send_edit_commands(&[&SetComposingTextCommand::new("hel", 1)]));
+    assert!(ui.host().send_edit_commands(&[&CommitTextCommand::new("hello", 1)]));
+    ui.wait_for_idle();
+    assert_eq!(state.text().as_str(), "hello");
+    assert_eq!(undo(&mut ui, &state).0, "");
+    assert!(!state.undo_state().can_undo());
+}
+
+/// A cut or paste that changes nothing leaves the next typing to merge with the typing before.
+#[test]
+fn a_paste_of_nothing_leaves_typing_to_merge() {
+    let (mut ui, state) = field("", TextRange::ZERO);
+    ui.host().with_tree(|tree| tree.clipboard().set_text(""));
+    type_text(&mut ui, "ab");
+    ui.on_node_with_tag("field").perform_semantics_action(&A::PASTE_TEXT);
+    type_text(&mut ui, "c");
+    assert_eq!(state.text().as_str(), "abc");
+    assert_eq!(undo(&mut ui, &state).0, "");
 }

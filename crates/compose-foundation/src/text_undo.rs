@@ -710,6 +710,19 @@ mod tests {
         assert_eq!(texts_undone(&backwards, 2), ["ba", "a"]);
     }
 
+    /// Nothing can be redone while an operation is staged: it would be lost under the redo.
+    #[test]
+    fn nothing_is_redone_while_an_edit_is_staged() {
+        let state = TextFieldState::new("");
+        state.type_at_end("a");
+        state.undo_state().undo();
+        assert!(state.undo_state().can_redo());
+        state.type_at_end("b");
+        assert!(!state.undo_state().can_redo(), "an edit is staged");
+        state.undo_state().redo();
+        assert_eq!(state.text().as_str(), "b");
+    }
+
     // Compose: compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/input/internal/undo/TextUndoTest.kt, insertionFromMiddleCannotMerge
     #[test]
     fn an_insertion_in_the_middle_is_a_step_of_its_own() {
