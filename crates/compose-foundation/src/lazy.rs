@@ -356,6 +356,7 @@ impl LazyListInner {
         before: &[usize],
         range: (usize, usize),
         apart: &[usize],
+        shown: Option<(usize, usize)>,
     ) {
         let count = composer.items().count;
         for &item in before {
@@ -375,6 +376,22 @@ impl LazyListInner {
             }
         }
         self.prefetch.settle_precomposed(range, &|item| composer.has(item));
+        // Many items composed only to be stepped over (a jump, a search's scroll), neither shown
+        // nor kept: a measurement again lets them go now, where Compose's next one would. A
+        // scroll's few stay until the next frame's, as Compose's.
+        if let Some((low, high)) = shown {
+            let stepped = composer
+                .composed()
+                .filter(|item| {
+                    !(low..high).contains(item)
+                        && !(range.0..range.1).contains(item)
+                        && !apart.contains(item)
+                })
+                .count();
+            if stepped > (high - low).max(MOST_STEPPED_OVER) {
+                self.request_remeasure();
+            }
+        }
         #[cfg(debug_assertions)]
         composer.check_keys();
     }
@@ -1700,6 +1717,10 @@ impl Items {
         }
     }
 }
+
+/// The items a measurement may compose only to step over them (not shown, not kept) before it's
+/// measured again, beyond as many as it shows.
+const MOST_STEPPED_OVER: usize = 8;
 
 /// The items, compared by identity (a new set each time the list's caller recomposes).
 #[derive(Clone)]
@@ -3165,7 +3186,8 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
             sizes.retain(|item| item.abs_diff(index) <= MOST_MISSING);
         }
         drop(sizes);
-        state.keep_composed(scope, composer, &children, composed, &apart);
+        let shown = (placed_start.min(lead), placed_end.max(end_index));
+        state.keep_composed(scope, composer, &children, composed, &apart, Some(shown));
         let (width, height) =
             if vertical { (cross_total, main_total) } else { (main_total, cross_total) };
         let position_of = |placeable: &Placeable, main: i32| {

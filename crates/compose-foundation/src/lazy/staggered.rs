@@ -2877,7 +2877,7 @@ impl ItemsMeasurePolicy for StaggeredLayout {
             c.scope.run_after_layout(post_scroll);
         }
         let apart = state.items_apart(&info.items);
-        state.keep_composed(c.scope, c.composer, &children, composed, &apart);
+        state.keep_composed(c.scope, c.composer, &children, composed, &apart, None);
         c.scope.layout(width, height)
     }
 }

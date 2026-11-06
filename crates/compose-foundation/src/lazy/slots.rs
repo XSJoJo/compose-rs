@@ -179,6 +179,11 @@ impl ItemComposer {
         self.measurable(scope, index);
     }
 
+    /// The items this measurement composed, in order.
+    pub(super) fn composed(&self) -> impl Iterator<Item = usize> + '_ {
+        self.order.iter().copied()
+    }
+
     /// Whether this measurement composed item `index`.
     pub(super) fn has(&self, index: usize) -> bool {
         self.composed.contains_key(&index)

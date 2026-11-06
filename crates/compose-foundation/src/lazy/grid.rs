@@ -2605,7 +2605,8 @@ impl ItemsMeasurePolicy for LazyGridLayout {
         if let Some(post_scroll) = post_scroll {
             m.scope.run_after_layout(post_scroll);
         }
-        state.keep_composed(m.scope, m.composer, &children, composed, &apart);
+        let shown = (m.lines.start(placed_start.min(lead)), m.lines.start(placed_end.max(end_index)));
+        state.keep_composed(m.scope, m.composer, &children, composed, &apart, Some(shown));
         m.scope.layout(width, height)
     }
 }
