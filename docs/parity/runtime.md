@@ -16,15 +16,15 @@ What compose-rs's runtime (`crates/compose-runtime`, `crates/compose-macros`) ha
 | Status | Files | Tests |
 |---|---|---|
 | `covered` | 5 | 27 |
-| `ported` | 35 | 564 |
+| `ported` | 37 | 569 |
 | `port` | 0 | 0 |
 | `partial` | 18 | 455 |
-| `feature:…` | 2 | 5 |
+| `feature:…` | 0 | 0 |
 | `n/a` | 91 | 968 |
 
-836 tests are ported so far (each cites its Compose test in a `// Compose:` comment), in `ported` and `partial` files.
+841 tests are ported so far (each cites its Compose test in a `// Compose:` comment), in `ported` and `partial` files.
 
-The `feature:…` files by feature: movable-content 2 (5). `partial` rows name further features they need for some of their tests (composition-context, composition-api, recomposer, movable-content, host-defaults, snapshot-isolation).
+No file waits on a feature. `partial` rows name further features they need for some of their tests (composition-context, composition-api, recomposer, movable-content, host-defaults, snapshot-isolation).
 
 Of the 968 `n/a` tests, 142 are Android Lint checks, 122 benchmarks, 513 tests of internal data structures and internal APIs (two slot tables, change lists, collections, snapshot id sets, the opt-in tracing API), 49 hot reload (Live Edit), and 142 platform or language specifics (threads, JVM reflection, `Parcelable`, RxJava, LiveData, Kotlin delegates and autoboxing, the Kotlin compiler's ABI and group sizes, Android tracing).
 
@@ -124,8 +124,8 @@ The core suite alone (`nonEmulatorCommonTest`, 1,099 tests) splits: 17 in `cover
 
 | File (under `frameworks/support/`) | Tests | Covers | Status |
 |---|---|---|---|
-| `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/AndroidInstrumentedMovableContentTests.kt` | 4 | Movable content with `BoxWithConstraints`, dialogs, subcompositions. | feature:movable-content |
-| `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/AndroidMovableContentTests.kt` | 1 | A movable content parameter in `BoxWithConstraints`. | feature:movable-content |
+| `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/AndroidInstrumentedMovableContentTests.kt` | 4 | Movable content with `BoxWithConstraints`, dialogs, subcompositions. | ported: 4 in crates/compose-foundation/tests/suite/subcompose_layout.rs (D1511: state kept across a subcomposition's edge, the body run again there, D1308; compose-rs's `Dialog` is in its caller's composition) |
+| `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/AndroidMovableContentTests.kt` | 1 | A movable content parameter in `BoxWithConstraints`. | ported: 1 in crates/compose-foundation/tests/suite/subcompose_layout.rs |
 | `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/AndroidSnapshotTests.kt` | 1 | Committing state from a background thread. | n/a: state is thread-bound (D14). |
 | `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/ComposeIntoTests.kt` | 3 | `setContent` twice on a view, committing from another thread, collecting a composition with a pending invalidation. | partial: 2 ported in crates/compose-runtime/tests/suite/recomposer.rs (`set_content` twice keeps the effects; a composition is dropped while one of its scopes is held); the thread test is n/a (D14). |
 | `compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/CompositeHashTests.kt` | 1 | The composite key hash stays the same across `setContent` calls. | ported: 1 in crates/compose-animation/tests/suite/composite_hash.rs (a padding for `consumeWindowInsets`, which compose-rs lacks). |
@@ -385,10 +385,10 @@ Sizes: S under a day, M a few days, L one to two weeks, XL multi-week. None of t
 - **Tests:** `RecomposerFrameEndSchedulingTests` (3 of 4; 1 needs movable-content).
 - **Depends on:** the hosts' step (C4): on the default recomposer, nothing runs `perform_frame` until then.
 
-### movable-content (L; XL with moves across compositions): done, in a composition (D1305) and across those sharing a tree (D1308)
+### movable-content (L; XL with moves across compositions): done, in a composition (D1305) and across those sharing a tree (D1308); a move across compositions without running the body again is designed, not built (D1511, [design](design/movable-across-compositions.md))
 - **APIs:** `movableContentOf` with 0 to 4 parameters, `movableContentWithReceiverOf` with 0 to 3.
 - **Does:** a composable lambda whose groups, state and nodes move with it when it's called from another place (another parent, another branch, another composition) in the same frame, instead of being disposed and recreated.
-- **Tests:** `MovableContentTests` (49), `AndroidInstrumentedMovableContentTests` (4), `AndroidMovableContentTests` (1), and 1-2 tests each in `CompositionAndDerivedStateTests`, `CompositionReusingTests`, `PausableCompositionInstrumentedTests`, `ActivityRecreationTest`, `RecomposerFrameEndSchedulingTests`, `RetainTests`.
+- **Tests:** `MovableContentTests` (49), `AndroidInstrumentedMovableContentTests` (4, ported), `AndroidMovableContentTests` (1, ported), and 1-2 tests each in `CompositionAndDerivedStateTests`, `CompositionReusingTests`, `PausableCompositionInstrumentedTests`, `ActivityRecreationTest`, `RecomposerFrameEndSchedulingTests`, `RetainTests`.
 - **Depends on:** composition-context for moves between compositions and subcompositions; the slot table's group moves (exist within one parent today) must cross parents, with nodes detached and attached (`Applier::create`/`attach` exist for paused content). Apps use it for content that moves between layouts (adaptive one-pane and two-pane screens).
 
 ### composition-context (L): done; `SubcomposeLayout` on it is C4 of the design (D1303, D1304)

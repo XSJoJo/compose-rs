@@ -2478,3 +2478,225 @@ fn a_new_slot_leaves_the_layout_clean() {
     ui.wait_for_idle();
     assert_eq!(runs.get(), 2, "a sibling's size is nothing to it");
 }
+
+// ---- Movable content across a subcomposition's edge -------------------------------------------
+
+/// What moved content counts: its state made, and its body run.
+#[derive(Clone, Default)]
+struct Counts {
+    made: Rc<Cell<u32>>,
+    bodies: Rc<Cell<u32>>,
+}
+
+impl ComposeArg for Counts {
+    fn same(&self, other: &Counts) -> bool {
+        Rc::ptr_eq(&self.made, &other.made)
+    }
+}
+
+impl Counts {
+    /// Counts a body run, and the state made the first time.
+    fn body(&self) {
+        self.bodies.set(self.bodies.get() + 1);
+        let made = self.made.clone();
+        remember(move || made.set(made.get() + 1));
+    }
+}
+
+// Compose: compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/AndroidInstrumentedMovableContentTests.kt, boxWithConstraintsAndIndirectContent
+#[test]
+fn content_set_inside_a_box_with_constraints_moves_out_and_back() {
+    let extract = mutable_state_of(false);
+    let counts = Counts::default();
+    let (x, c) = (extract.handle(), counts.clone());
+    let mut ui = compose_test(move || {
+        // The content the movable content calls, set where it's first called.
+        let content: Rc<RefCell<Option<Rc<dyn Fn()>>>> = remember(Rc::default);
+        let into = content.clone();
+        let movable = remember(move || {
+            movable_content_of(move || {
+                let called = into.borrow().clone();
+                if let Some(called) = called {
+                    called();
+                }
+            })
+        });
+        let (inside, set, c) = (movable.clone(), content.clone(), c.clone());
+        BoxWithConstraints!(move |_| {
+            if !x.get() {
+                let c = c.clone();
+                *set.borrow_mut() = Some(Rc::new(move || {
+                    c.body();
+                    BasicText!("Movable text");
+                }));
+                inside();
+            }
+        });
+        if x.get() {
+            movable();
+        }
+    });
+    ui.wait_for_idle();
+    ui.on_node_with_text("Movable text").assert_exists();
+    for extracted in [true, false, true] {
+        extract.set(extracted);
+        ui.wait_for_idle();
+        ui.on_node_with_text("Movable text").assert_exists();
+    }
+    // Its state stayed through the moves across the subcomposition's edge; its body ran again at
+    // each (D1308: a move between compositions composes all of it).
+    assert_eq!(counts.made.get(), 1);
+    assert_eq!(counts.bodies.get(), 4);
+}
+
+/// `InvalidationLocation.entries`: contents, the same by identity.
+#[derive(Clone, Default)]
+struct Entries(Vec<Callback>);
+
+impl PartialEq for Entries {
+    fn eq(&self, other: &Entries) -> bool {
+        self.0.len() == other.0.len() && self.0.iter().zip(&other.0).all(|(a, b)| a.same(b))
+    }
+}
+
+/// `InvalidationLocation.Entry`: adds its content to `entries` while it's there.
+#[composable]
+fn Entry(entries: MutableState<Entries>, content: Callback) {
+    let added = content.clone();
+    DisposableEffect(content.clone(), move |scope| {
+        entries.update(|list| Entries(list.0.iter().cloned().chain([added.clone()]).collect()));
+        scope.on_dispose(move || {
+            entries.update(|list| {
+                Entries(list.0.iter().filter(|other| !other.same(&content)).cloned().collect())
+            })
+        })
+    });
+}
+
+// Compose: compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/AndroidInstrumentedMovableContentTests.kt, correctInvalidationLocation
+#[test]
+fn content_moved_with_an_entry_called_elsewhere_recomposes_in_place() {
+    let entries = mutable_state_of(Entries::default());
+    let e = entries.handle();
+    let wrapped = movable_content_of_with(move |number: i32| {
+        let shown = 1;
+        Entry(
+            e,
+            Callback::new(move || {
+                if shown == 0 {
+                    BasicText!("Some text");
+                }
+            }),
+        );
+        BasicText!("{number}");
+    });
+    let page = mutable_state_of(0);
+    let p = page.handle();
+    let mut ui = compose_test(move || {
+        let wrapped = wrapped.clone();
+        Column!(|_| {
+            match p.get() {
+                0 => wrapped(0),
+                _ => {
+                    let wrapped = wrapped.clone();
+                    Box!({ wrapped(1) });
+                }
+            }
+            Column!(|_| BasicText!("Page: {}", p.get()));
+        });
+        for entry in e.get().0 {
+            entry();
+        }
+    });
+    ui.wait_for_idle();
+    for round in 1..=3 {
+        page.set(round % 2);
+        ui.wait_for_idle();
+        ui.on_node_with_text(&format!("Page: {}", round % 2)).assert_exists();
+        ui.on_node_with_text(&(round % 2).to_string()).assert_exists();
+    }
+}
+
+/// `RememberObserverAfterReplaceGroupInElidedGroup`: a value remembered in a branch, then an
+/// observer.
+#[composable]
+fn ObserverAfterABranch(condition: bool, counts: Counts) {
+    if condition {
+        remember(|| 1);
+    }
+    counts.body();
+}
+
+// Compose: compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/AndroidInstrumentedMovableContentTests.kt, moveToDialog_elidedRememberObserver
+#[test]
+fn content_moves_out_of_a_dialog_with_its_observer() {
+    let in_dialog = mutable_state_of(true);
+    let counts = Counts::default();
+    let c = counts.clone();
+    let movable = movable_content_of(move || ObserverAfterABranch(true, c.clone()));
+    let d = in_dialog.handle();
+    let mut ui = compose_test(move || {
+        let movable = movable.clone();
+        if !d.get() {
+            movable();
+        } else {
+            use compose_ui::Dialog;
+            Dialog!(on_dismiss_request = || {}, { movable() });
+        }
+    });
+    ui.wait_for_idle();
+    in_dialog.set(false);
+    ui.wait_for_idle();
+    in_dialog.set(true);
+    ui.wait_for_idle();
+    // A dialog here is in its caller's composition: a move within it, under the dialog's locals.
+    assert_eq!(counts.made.get(), 1, "its state stayed");
+}
+
+// Compose: compose/runtime/runtime/integration-tests/src/androidTest/kotlin/androidx/compose/runtime/AndroidInstrumentedMovableContentTests.kt, moveOutOfSubcompositionWithLargeSlotTable
+#[test]
+fn content_moves_out_of_a_slot_beside_a_thousand_boxes() {
+    let moved = mutable_state_of(false);
+    let counts = Counts::default();
+    let (m, c) = (moved.handle(), counts.clone());
+    let movable = movable_content_of(move || {
+        c.body();
+        let color = if m.get() { Color::RED } else { Color::BLACK };
+        Box!(modifier = Modifier.size((32.dp(), 32.dp())).background(color).test_tag("moved"));
+    });
+    let mut ui = compose_test(move || {
+        let movable = movable.clone();
+        Box!(modifier = Modifier.fill_max_size(), {
+            if m.get() {
+                movable();
+            }
+            let slot = movable.clone();
+            SubcomposeLayout!(
+                measure_policy = stack_policy(move |scope| {
+                    let slot = slot.clone();
+                    vec![scope.subcompose(
+                        (),
+                        Callback::new(move || {
+                            let slot = slot.clone();
+                            Box!({
+                                if !m.get() {
+                                    slot();
+                                }
+                            });
+                        }),
+                    )]
+                })
+            );
+            for _ in 0..1000 {
+                Box!({});
+            }
+        });
+    });
+    ui.wait_for_idle();
+    for move_out in [true, false] {
+        moved.set(move_out);
+        ui.wait_for_idle();
+        ui.on_node_with_tag("moved").assert_exists();
+    }
+    assert_eq!(counts.made.get(), 1, "its state stayed");
+}
