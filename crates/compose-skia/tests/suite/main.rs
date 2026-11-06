@@ -24,6 +24,7 @@ mod sample_font;
 mod shadows;
 mod skia;
 mod text_brush;
+mod text_field_height;
 mod text_painter;
 mod text_reuse;
 mod vectors;

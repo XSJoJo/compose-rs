@@ -2469,11 +2469,17 @@ impl LayoutModifierNode for TextFieldNode {
         }
         let metrics = scope.text_measurer().metrics(paragraph);
         // A multi-line field between `min_lines` and `max_lines` lines high, as Compose's
-        // `heightInLines`; a value-based field of one line at most as high as its first line, as
-        // the legacy field's `heightForSingleLineField` for `maxLines == 1`: a tall script isn't
-        // cut.
-        let (min_height, max_height) = if self.max_lines == 1 && self.state.is_none() {
-            let line = scope.text_measurer().cursor_rect(paragraph, 0).bottom.ceil() as i32;
+        // `heightInLines`; a field of one line as high as its first line's bottom, as Compose's
+        // `heightForSingleLineField` (`getLineBottom(0)`, not the cursor's, D2004): a tall script
+        // isn't cut. The legacy field's for `maxLines == 1` (a single line's too), the state's
+        // for a single line.
+        let one_line = if self.state.is_none() {
+            self.max_lines == 1 || self.single_line
+        } else {
+            self.single_line
+        };
+        let (min_height, max_height) = if one_line {
+            let line = scope.text_measurer().line_bottom(paragraph, 0).ceil() as i32;
             (line, line)
         } else {
             self.line_bounds(scope)

@@ -1027,6 +1027,14 @@ impl TextMeasurer for FixedTextMeasurer {
         layout.get_cursor_rect(offset.min(layout.text.len()))
     }
 
+    fn line_bottom(&self, handle: ParagraphHandle, line: usize) -> f32 {
+        let layout = self.layout_of(handle);
+        match layout.lines.get(line) {
+            Some(line) => line.bottom,
+            None => layout.height,
+        }
+    }
+
     fn paragraph(&self, handle: ParagraphHandle) -> Rc<dyn Paragraph> {
         self.layout_of(handle).clone()
     }

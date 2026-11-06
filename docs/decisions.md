@@ -996,6 +996,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1950 | [runtime](decisions/runtime.md#d1950) | current |
 | D1951 | [runtime](decisions/runtime.md#d1951) | current |
 | D2000 | [text](decisions/text.md#d2000) | current |
-| D2001 | [text](decisions/text.md#d2001) | current |
+| D2001 | [text](decisions/text.md#d2001) | revised by [D2004](decisions/text.md#d2004) |
 | D2002 | [text](decisions/text.md#d2002) | current |
 | D2003 | [text](decisions/text.md#d2003) | current |
+| D2004 | [text](decisions/text.md#d2004) | current |

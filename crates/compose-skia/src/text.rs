@@ -267,6 +267,17 @@ struct Entry {
 /// The queries of `entry`'s paragraph (D1105): its lines from SkParagraph's line metrics, each
 /// character's box from its rectangles (and its bidi run's direction from theirs), read once
 /// into a `ParagraphLayout`, which answers as Android's `Layout` does.
+/// `line`'s bottom, as Compose's `getLineBottom`: its descent below its baseline, but no lower
+/// than the paragraph's bottom. SkParagraph's line metrics keep a line height's whole descent
+/// where its text height behavior trims the last line's (a line height trimmed at both ends,
+/// D571): the paragraph's height is where that line ends (D2004).
+fn line_bottom(
+    paragraph: &skia_safe::textlayout::Paragraph,
+    line: &skia_safe::textlayout::LineMetrics<'_>,
+) -> f32 {
+    ((line.baseline + line.descent) as f32).min(paragraph.height())
+}
+
 fn paragraph_layout(entry: &Entry) -> compose_ui::platform::ParagraphLayout {
     use compose_ui::platform::{GlyphBox, LaidOutLine, ParagraphLayout, ParagraphSize};
     let text = &entry.text;
@@ -334,7 +345,7 @@ fn paragraph_layout(entry: &Entry) -> compose_ui::platform::ParagraphLayout {
             end,
             visible_end,
             top: (line.baseline - line.ascent) as f32,
-            bottom: (line.baseline + line.descent) as f32,
+            bottom: line_bottom(paragraph, &line),
             baseline: line.baseline as f32,
             left: line.left as f32,
             right: (line.left + line.width) as f32,
@@ -621,6 +632,15 @@ impl TextMeasurer for SkiaTextMeasurer {
             0.0
         };
         Rect::new(x, top, x, top + height)
+    }
+
+    fn line_bottom(&self, paragraph: ParagraphHandle, line: usize) -> f32 {
+        let paragraph = &self.entry(paragraph).paragraph;
+        match paragraph.get_line_metrics_at(line) {
+            Some(metrics) => line_bottom(paragraph, &metrics),
+            // No line (an empty text's): the paragraph's height.
+            None => paragraph.height(),
+        }
     }
 
     fn selection_rects(

@@ -452,6 +452,20 @@ impl<B: TextBackend> TextMeasurer for AndroidTextMeasurer<B> {
         self.backend.cursor(paragraph.0 as u32, index)
     }
 
+    /// The first line's from its first cursor, which `Layout` puts between the line's top and
+    /// bottom (`TextMeasurer.kt`'s `cursor`): one call, not the whole layout's queries.
+    fn line_bottom(&self, paragraph: ParagraphHandle, line: usize) -> f32 {
+        if line == 0 {
+            return self.backend.cursor(paragraph.0 as u32, 0).bottom;
+        }
+        let queries = self.paragraph(paragraph);
+        if line < queries.line_count() {
+            queries.get_line_bottom(line)
+        } else {
+            self.entry(paragraph).laid_out.metrics.size.height as f32
+        }
+    }
+
     /// One rectangle per line the range covers: the first line from the start to its end,
     /// the lines between whole, the last from its start to the end (left to right).
     fn selection_rects(

@@ -185,6 +185,10 @@ impl<M: TextMeasurer> TextMeasurer for CountingTextMeasurer<M> {
         self.inner.cursor_rect(paragraph, offset)
     }
 
+    fn line_bottom(&self, paragraph: ParagraphHandle, line: usize) -> f32 {
+        self.inner.line_bottom(paragraph, line)
+    }
+
     fn selection_rects(
         &self,
         paragraph: ParagraphHandle,
