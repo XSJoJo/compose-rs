@@ -395,3 +395,30 @@ fn each_size_is_its_height_and_its_paddings_icon_and_content_wide() {
     }
     let _: Dp = ToggleButtonDefaults::MIN_HEIGHT;
 }
+
+/// With an icon and its default padding, a toggle button's icon is 16 dp in and its label 16 dp from
+/// the end, the padding `content_padding_for` gives with a start icon (without a precision pointer,
+/// the same as without one).
+#[test]
+fn a_toggle_buttons_default_padding_with_an_icon() {
+    let mut ui = compose_test(|| {
+        MaterialTheme!({
+            Box!({
+                ToggleButton!(
+                    false,
+                    |_| {},
+                    modifier = Modifier.test_tag(BUTTON),
+                    icon = || Box!(modifier = Modifier.test_tag(ICON)),
+                    |_: RowScope| Text!("Label", modifier = Modifier.test_tag(TEXT))
+                );
+            });
+        });
+    });
+    let (button, icon, text) =
+        (bounds(&mut ui, BUTTON), bounds(&mut ui, ICON), bounds(&mut ui, TEXT));
+    let padding =
+        ToggleButtonDefaults::content_padding_for(ToggleButtonDefaults::SIZE, true, false);
+    assert_eq!(icon.left - button.left, padding.start.0);
+    assert_eq!(button.right - text.right, padding.end.0);
+    assert_eq!((padding.start.0, padding.end.0), (16.0, 16.0));
+}

@@ -637,3 +637,144 @@ fn a_released_button_goes_back_to_its_width() {
     assert_eq!(bounds(&mut ui, "A").width(), 75.0);
     assert_eq!(bounds(&mut ui, "B").width(), 75.0);
 }
+
+/// A 300 dp group in `direction` of `count` 100 dp buttons tagged by their index (the first
+/// emitting nothing if `empty_first`), each growing as its source in `sources` is pressed, and a
+/// 40 dp box as its indicator.
+fn hundreds(
+    direction: LayoutDirection,
+    count: usize,
+    empty_first: bool,
+    sources: Vec<MutableInteractionSource>,
+) -> ComposeTestRule {
+    compose_test(move || {
+        let sources = sources.clone();
+        MaterialTheme!({
+            let sources = sources.clone();
+            CompositionLocalProvider(
+                compose_ui::LOCAL_LAYOUT_DIRECTION.provides(direction),
+                || {
+                    let sources = sources.clone();
+                    ButtonGroup!(
+                        |_| Box!(modifier = Modifier.size(40.dp()).test_tag(INDICATOR)),
+                        modifier = Modifier.width(300.dp()),
+                        content = move |scope: ButtonGroupScope| {
+                            if empty_first {
+                                scope.custom_item(|| {}, |_| {});
+                            }
+                            for (index, source) in sources.iter().take(count).enumerate() {
+                                let (inner, source) = (scope.clone(), source.clone());
+                                scope.custom_item(
+                                    move || {
+                                        Button!(
+                                            || {},
+                                            modifier = Modifier
+                                                .width(100.dp())
+                                                .animate_width(&inner, &source)
+                                                .test_tag(format!("{index}")),
+                                            interaction_source = Some(source.clone()),
+                                            |_: RowScope| Text!("{index}")
+                                        );
+                                    },
+                                    |_| {},
+                                );
+                            }
+                        }
+                    );
+                },
+            );
+        });
+    })
+}
+
+fn sources(count: usize) -> Vec<MutableInteractionSource> {
+    (0..count).map(|_| MutableInteractionSource::new()).collect()
+}
+
+/// Right to left, what fits starts at the right and the indicator follows it to the left: after
+/// two 100 dp items and their 12 dp spaces (224 dp), 40 dp wide, in 300 dp.
+#[test]
+fn the_indicator_follows_what_fits_right_to_left() {
+    let mut ui = hundreds(LayoutDirection::Rtl, 5, false, sources(5));
+    assert_eq!(bounds(&mut ui, INDICATOR).left, 36.0);
+    assert_eq!(bounds(&mut ui, "0").right, 300.0);
+    let mut ui = hundreds(LayoutDirection::Ltr, 5, false, sources(5));
+    assert_eq!(bounds(&mut ui, INDICATOR).left, 224.0);
+}
+
+/// An item emitting no node takes no place: each node is an item to the layout, as Compose's
+/// content measurables, and the indicator is still the last.
+#[test]
+fn an_item_emitting_nothing_takes_no_place() {
+    let mut ui = hundreds(LayoutDirection::Ltr, 5, true, sources(5));
+    ui.on_node_with_tag(INDICATOR).assert_is_displayed();
+    assert_eq!(bounds(&mut ui, INDICATOR).left, 224.0);
+    assert_eq!(bounds(&mut ui, "0").left, 0.0);
+    let mut ui = hundreds(LayoutDirection::Ltr, 2, true, sources(2));
+    ui.on_node_with_tag(INDICATOR).assert_is_not_displayed();
+    assert_eq!(bounds(&mut ui, "1").left, 112.0);
+}
+
+/// The last item that fits grows into the one before it alone: the items after it are in the menu.
+#[test]
+fn the_last_item_shown_grows_into_the_one_before() {
+    let sources = sources(5);
+    let mut ui = hundreds(LayoutDirection::Ltr, 5, false, sources.clone());
+    let press = compose_ui::Press::new(Offset::ZERO);
+    sources[1].try_emit(compose_ui::PressInteraction::Press(press));
+    ui.wait_for_idle();
+    // 15 % of 100 dp, within the first's 24 dp of padding.
+    assert_eq!(bounds(&mut ui, "1").width(), 115.0);
+    assert_eq!(bounds(&mut ui, "0").width(), 85.0);
+    assert_eq!(bounds(&mut ui, INDICATOR).left, 224.0);
+}
+
+/// Released early, it goes on growing to three quarters of the way before shrinking back.
+#[test]
+fn a_release_waits_for_three_quarters_of_the_growth() {
+    let sources = sources(2);
+    let mut ui = hundreds(LayoutDirection::Ltr, 2, false, sources.clone());
+    ui.set_auto_advance(false);
+    let press = compose_ui::Press::new(Offset::ZERO);
+    sources[0].try_emit(compose_ui::PressInteraction::Press(press));
+    ui.advance_time_by_frame();
+    ui.advance_time_by_frame();
+    let at_release = bounds(&mut ui, "0").width();
+    sources[0].try_emit(compose_ui::PressInteraction::Release(press));
+    let mut widest = at_release;
+    for _ in 0..60 {
+        ui.advance_time_by_frame();
+        widest = widest.max(bounds(&mut ui, "0").width());
+    }
+    // Three quarters of 15 dp at least.
+    assert!(at_release < 111.25 && widest >= 111.0, "{at_release} {widest}");
+    assert_eq!(bounds(&mut ui, "0").width(), 100.0);
+}
+
+/// A weighted item takes what the others and the spaces leave.
+#[test]
+fn a_weighted_item_takes_what_a_fixed_one_leaves() {
+    let mut ui = compose_test(|| {
+        MaterialTheme!({
+            ButtonGroup!(
+                |_| {},
+                modifier = Modifier.width(312.dp()),
+                content = |scope: ButtonGroupScope| {
+                    scope.custom_item(
+                        || {
+                            Button!(
+                                || {},
+                                modifier = Modifier.width(100.dp()),
+                                |_: RowScope| Text!("A")
+                            )
+                        },
+                        |_| {},
+                    );
+                    scope.clickable_item_with(|| {}, "B", None::<fn()>, Some(1.0), true);
+                }
+            );
+        });
+    });
+    assert_eq!(text_bounds(&mut ui, "B").width(), 200.0);
+    assert_eq!(text_bounds(&mut ui, "B").left - text_bounds(&mut ui, "A").right, 12.0);
+}

@@ -182,8 +182,8 @@ impl AnimatedShapeState {
     }
 }
 
-/// How far `shape`'s content moves toward its rounder side, in pixels at `size` (negative: toward
-/// the start), as `horizontalCenterOptically`: 11 % of how much rounder its start corners are than
+/// How far `shape`'s content moves away from its rounder side, in pixels at `size` (negative:
+/// toward the start), as `horizontalCenterOptically`: 11 % of how much rounder its start corners are than
 /// its end ones. A shape from `remember_animated_shape` reads its corners as they are now, each
 /// kept within half the height, as Compose's `ShapeWithHorizontalCenterOptically`; one without
 /// corners doesn't move it.

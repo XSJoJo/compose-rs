@@ -220,3 +220,23 @@ fn a_trailing_icon_without_a_leading_one_is_at_the_end() {
     let expected = item.right.0 - 12.0 - 4.0;
     assert!((trailing.right.0 - expected).abs() <= 2.0, "{item:?} {trailing:?}");
 }
+
+/// A menu's popup is a window of its own: asking the intrinsics of the layout it's in leaves it
+/// out (Compose's popup lays out a node of no size), where measuring it at the window's size
+/// panicked unbounded.
+#[test]
+fn an_open_menu_adds_nothing_to_its_anchors_intrinsics() {
+    let mut ui = compose_test(|| {
+        MaterialTheme!({
+            Box!(modifier = Modifier.width(compose_ui::IntrinsicSize::Max).test_tag("anchor"), {
+                Box!(modifier = Modifier.size((30.dp(), 20.dp())));
+                DropdownMenu!(true, || {}, {
+                    DropdownMenuItem!(|| Text!("Item"), || {});
+                });
+            });
+        });
+    });
+    let bounds = ui.on_node_unmerged(has_test_tag("anchor")).fetch_semantics_snapshot().bounds;
+    assert_eq!(bounds.width(), 30.0);
+    ui.on_node_with_text("Item").assert_is_displayed();
+}

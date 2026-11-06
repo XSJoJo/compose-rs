@@ -40,7 +40,7 @@ These are on local branches, so they're not lost, but each still has to finish i
 
 ### 5. Material 3
 - **Whole components missing:** carousel (about 100), floating toolbar (about 80), search bar (about 65), wide navigation rail (about 45), wavy progress (about 45), short navigation bar (about 35), loading indicator (about 20), FAB menu (about 15).
-- **Done lately:** toggle buttons (D1570), the button group with its overflow (D1571), the split button (D1572). A popup's node answers intrinsics by measuring the window (it panics unbounded; Compose's `Popup` has a node of no size): the button group keeps its menu out of what it asks (D1571), a fix for compose-ui.
+- **Done lately:** toggle buttons (D1570), the button group with its overflow (D1571), the split button (D1572).
 - **Dynamic color** (about 25), `TimeScroll` and time picker dialogs, Material transitions.
 - **Adaptive libraries,** window size classes and the navigation suite, planned last.
 - Many existing components are `partial`: they exist, with tests or details left.

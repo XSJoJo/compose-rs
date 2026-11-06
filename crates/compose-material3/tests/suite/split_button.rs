@@ -1,6 +1,6 @@
 //! Compose's `SplitButtonTest.kt` and `HorizontalCenterOpticallyTest.kt`: a split button's content
 //! and semantics, its checked trailing button, its paddings at each size, its trailing content
-//! moved toward the rounder end, and how its two buttons share their height.
+//! moved away from the rounder end, and how its two buttons share their height.
 //!
 //! `horizontalCenterOptically` is internal in Compose; its tests are here through the trailing
 //! button, which is where it's used.
@@ -163,7 +163,7 @@ fn both_buttons_disabled_are_disabled_buttons() {
 
 // Compose: compose/material3/material3/src/androidDeviceTest/kotlin/androidx/compose/material3/SplitButtonTest.kt, FilledSplitButton_contentPadding
 #[test]
-fn the_trailing_buttons_icon_moves_toward_its_round_end() {
+fn the_trailing_buttons_icon_moves_away_from_its_round_end() {
     let mut ui = compose_test(|| {
         MaterialTheme!({
             SplitButtonLayout!(
@@ -402,6 +402,11 @@ fn the_leading_button_matches_a_taller_trailing_one() {
 /// A trailing button shaped `shape` with 20 dp each side around a text, in `direction`: the text's
 /// start and end from the button's.
 fn optically_centered(shape: Shape, direction: LayoutDirection) -> (f32, f32) {
+    optically_centered_within(shape, direction, 20.0)
+}
+
+/// As `optically_centered`, `padding` dp each side.
+fn optically_centered_within(shape: Shape, direction: LayoutDirection, padding: f32) -> (f32, f32) {
     let mut ui = compose_test(move || {
         let shape = shape.clone();
         MaterialTheme!({
@@ -417,7 +422,7 @@ fn optically_centered(shape: Shape, direction: LayoutDirection) -> (f32, f32) {
                             pressed_shape: None,
                             checked_shape: None
                         },
-                        content_padding = PaddingValues::symmetric(20.dp(), 0.dp()),
+                        content_padding = PaddingValues::symmetric(padding.dp(), 0.dp()),
                         content = |_: RowScope| Text!("Test", modifier = Modifier.test_tag("text"))
                     );
                 },
@@ -452,4 +457,25 @@ fn content_in_a_symmetric_shape_stays_centered() {
 #[test]
 fn content_moves_toward_the_square_end_right_to_left() {
     assert_eq!(optically_centered(round_start(), LayoutDirection::Rtl), (18.0, 22.0));
+}
+
+/// A corner past half the height counts as half the height: 30 dp at the start of a 40 dp button
+/// moves it as 20 dp does.
+#[test]
+fn a_corner_past_half_the_height_counts_as_half() {
+    let (round, square) = (CornerSize::Dp(30.dp()), CornerSize::Dp(0.dp()));
+    let shape = Shape::Rounded([round, square, square, round]);
+    assert_eq!(optically_centered(shape, LayoutDirection::Ltr), (22.0, 18.0));
+}
+
+/// The content moves no further than its padding: 1 dp for a 2.2 dp correction, from where it
+/// stands in a square button (the button's 48 dp minimum centers it).
+#[test]
+fn the_content_moves_no_further_than_its_padding() {
+    let square = Shape::Rounded([CornerSize::Dp(0.dp()); 4]);
+    let (left, right) = optically_centered_within(square, LayoutDirection::Ltr, 1.0);
+    let moved = optically_centered_within(round_start(), LayoutDirection::Ltr, 1.0);
+    assert_eq!(moved, (left + 1.0, right - 1.0));
+    let moved = optically_centered_within(round_start(), LayoutDirection::Rtl, 1.0);
+    assert_eq!(moved, (left - 1.0, right + 1.0));
 }

@@ -306,7 +306,7 @@ struct SplitParts {
     border: Option<BorderStroke>,
     content_padding: PaddingValues,
     interaction_source: Option<MutableInteractionSource>,
-    /// The trailing button's, moving its content toward its rounder end.
+    /// The trailing button's, moving its content away from its rounder end.
     trailing: bool,
 }
 
@@ -384,7 +384,7 @@ fn split_button(
     );
 }
 
-/// Moves the content toward `shape`'s rounder end, no further than `padding` on either side, as
+/// Moves the content away from `shape`'s rounder end, toward its squarer one, no further than `padding` on either side, as
 /// `horizontalCenterOptically`.
 fn center_optically(modifier: Modifier, shape: Shape, padding: PaddingValues) -> Modifier {
     if shape.corners().is_none() && !matches!(shape, Shape::Custom(_)) {

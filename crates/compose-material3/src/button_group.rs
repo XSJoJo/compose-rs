@@ -338,6 +338,9 @@ struct EnlargeOnPressNode {
     pressed: Animatable<f32>,
     listener: Option<Rc<compose_ui::Listener>>,
     scope: Option<CoroutineScope>,
+    /// What the listener launched (the growth, the wait and shrink): cancelled with it, as the
+    /// children of Compose's `collectionJob`.
+    jobs: Rc<RefCell<Vec<Job>>>,
 }
 
 impl ModifierNodeElement for EnlargeOnPress {
@@ -350,6 +353,7 @@ impl ModifierNodeElement for EnlargeOnPress {
             pressed: Animatable::new(0.0),
             listener: None,
             scope: None,
+            jobs: Rc::default(),
         }
     }
     fn update(&self, node: &mut EnlargeOnPressNode) {
@@ -374,10 +378,13 @@ impl EnlargeOnPressNode {
     /// Follows the source's presses, as `launchCollectionJob`: pressed, it grows; released, once
     /// it's three quarters grown (or a second has gone), it shrinks back.
     fn listen(&mut self) {
+        for job in self.jobs.borrow_mut().drain(..) {
+            job.cancel();
+        }
         let Some(scope) = self.scope else {
             return;
         };
-        let (pressed, spec) = (self.pressed.clone(), self.spec.clone());
+        let (pressed, spec, jobs) = (self.pressed.clone(), self.spec.clone(), self.jobs.clone());
         let presses = RefCell::new(Vec::new());
         let waiting: Cell<Option<Job>> = Cell::new(None);
         self.listener = Some(self.source.listen(move |interaction| {
@@ -399,12 +406,14 @@ impl EnlargeOnPressNode {
                 job.cancel();
             }
             let (pressed, spec) = (pressed.clone(), spec.borrow().clone());
+            let mut jobs = jobs.borrow_mut();
+            jobs.retain(Job::is_active);
             if is_pressed {
-                scope.launch(async move {
+                jobs.push(scope.launch(async move {
                     pressed.animate_to(1.0, spec).await;
-                });
+                }));
             } else {
-                waiting.set(Some(scope.launch(async move {
+                let job = scope.launch(async move {
                     let start = compose_runtime::with_frame_millis(|time| time).await;
                     while pressed.value() <= 0.75 {
                         let now = compose_runtime::with_frame_millis(|time| time).await;
@@ -413,7 +422,9 @@ impl EnlargeOnPressNode {
                         }
                     }
                     pressed.animate_to(0.0, spec).await;
-                })));
+                });
+                jobs.push(job);
+                waiting.set(Some(job));
             }
         }));
     }
@@ -641,10 +652,9 @@ pub fn ButtonGroup(
     let overflow = compose_runtime::remember(|| Rc::new(OverflowState::default()));
     let horizontal_arrangement: HorizontalArrangement = horizontal_arrangement;
     let policy = compose_runtime::remember_keyed(
-        (horizontal_arrangement.clone(), vertical_alignment, expanded_ratio.to_bits(), items.len()),
+        (horizontal_arrangement.clone(), vertical_alignment, expanded_ratio.to_bits()),
         || {
             Rc::new(ButtonGroupMeasurePolicy {
-                item_count: items.len(),
                 overflow: overflow.clone(),
                 horizontal_arrangement: horizontal_arrangement.clone(),
                 vertical_alignment,
@@ -661,11 +671,9 @@ pub fn ButtonGroup(
             }
             let (items, overflow, overflow_indicator) =
                 (items.clone(), overflow.clone(), overflow_indicator.clone());
-            // The indicator, then its menu in a box of its own the size of the indicator's, where
-            // the indicator is: a popup's node in compose-rs answers intrinsics by measuring the
-            // window (D1571), and the group asks the indicator's.
-            Box!({ overflow_indicator(menu_state) });
+            // The indicator and its menu, the layout's last child.
             Box!({
+                overflow_indicator(menu_state);
                 let (items, overflow) = (items.clone(), overflow.clone());
                 DropdownMenu!(menu_state.is_showing(), move || menu_state.dismiss(), {
                     for item in &items[overflow.visible.get().min(items.len())..] {
@@ -690,10 +698,10 @@ impl Default for OverflowState {
     }
 }
 
-/// `ButtonGroup`'s measure policy, as `ButtonGroupMeasurePolicy`: its children are the items, then
-/// the overflow indicator's box.
+/// `ButtonGroup`'s measure policy, as `ButtonGroupMeasurePolicy`: its children are the nodes the
+/// items emit (each node an item to it, as Compose's content measurables), then the overflow
+/// indicator's box.
 struct ButtonGroupMeasurePolicy {
-    item_count: usize,
     overflow: Rc<OverflowState>,
     horizontal_arrangement: HorizontalArrangement,
     vertical_alignment: VerticalAlignment,
@@ -711,8 +719,7 @@ impl MeasurePolicy for ButtonGroupMeasurePolicy {
         measurables: &[Measurable],
         constraints: compose_ui::Constraints,
     ) -> MeasureResult {
-        let (items, rest) = measurables.split_at(self.item_count.min(measurables.len()));
-        let (overflow, menu) = rest.split_at(rest.len().min(1));
+        let (items, overflow) = measurables.split_at(measurables.len().saturating_sub(1));
         let density = scope.density();
         let spacing = density.round_to_px(self.horizontal_arrangement.spacing());
         let size = items.len();
@@ -886,12 +893,6 @@ impl MeasurePolicy for ButtonGroupMeasurePolicy {
         for placeable in &overflow_placeables {
             let y = self.vertical_alignment.align(placeable.height, height);
             scope.place_relative(placeable, shown_space as i32, y);
-            for &menu in menu {
-                let (width, menu_height) = (placeable.width, placeable.height);
-                let fixed = compose_ui::Constraints::fixed(width, menu_height);
-                let menu = scope.measure(menu, fixed);
-                scope.place_relative(&menu, shown_space as i32, y);
-            }
         }
         scope.layout(layout_width, height)
     }
@@ -899,7 +900,6 @@ impl MeasurePolicy for ButtonGroupMeasurePolicy {
     fn same(&self, other: &dyn Any) -> bool {
         other.downcast_ref::<Self>().is_some_and(|other| {
             Rc::ptr_eq(&self.overflow, &other.overflow)
-                && self.item_count == other.item_count
                 && self.horizontal_arrangement == other.horizontal_arrangement
                 && self.vertical_alignment == other.vertical_alignment
                 && self.expanded_ratio.to_bits() == other.expanded_ratio.to_bits()
