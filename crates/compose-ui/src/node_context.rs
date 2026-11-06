@@ -540,6 +540,12 @@ pub(crate) fn entry_handle(tree: &mut UiTree, node: NodeId, index: usize) -> Nod
 }
 
 impl NodeHandle {
+    /// A handle on chain entry `entry` of `node` in tree `tree`, not registered: it's attached
+    /// only once [`entry_handle`] registered it.
+    pub(crate) fn of_entry(tree: u32, node: NodeId, entry: EntryId) -> NodeHandle {
+        NodeHandle { tree, node, entry, owner: entry, _not_send: PhantomData }
+    }
+
     /// The layout node and the entry or delegate it names.
     pub(crate) fn place(&self) -> (NodeId, EntryId) {
         (self.node, self.entry)

@@ -31,7 +31,7 @@ use compose_ui::{
 use compose_ui::KeyInputModifierNode;
 
 use crate::gestures::content_in_view::{
-    ContentInView, ContentInViewConfig, destination, resolve_spec, shifted,
+    self, ContentInView, ContentInViewConfig, destination, resolve_spec, shifted,
 };
 use crate::gestures::{DRAG_GESTURES, GestureState, Orientation, aligned, parent_aligned};
 use crate::gestures::{
@@ -631,6 +631,13 @@ impl ScrollNode {
         self.reverse_scrolling ^ (!self.vertical && rtl)
     }
 
+    /// How far what's inside moves along the axis once the scrolling asked for (not laid out
+    /// yet) is.
+    fn pending_shift(&self) -> f32 {
+        let pending = (self.state.value() - self.laid_out.get()) as f32;
+        if self.mirrored(self.rtl) { pending } else { -pending }
+    }
+
     /// What its bring-into-view animation scrolls, as its scrollable's: the state, its pixels
     /// against the layout's unless mirrored (`ScrollableDefaults.reverseDirection`), and the scroll
     /// not laid out yet.
@@ -782,18 +789,21 @@ impl compose_ui::BringIntoViewResponderNode for ScrollNode {
         scope: &compose_ui::BringIntoViewScope,
     ) -> Rect {
         let spec = resolve_spec(&None, Some(scope.locals()));
-        // Where it is once the scrolling asked for (not yet laid out) is.
-        let pending = (self.state.value() - self.laid_out.get()) as f32;
-        let shift = if self.mirrored(self.rtl) { pending } else { -pending };
-        let rect = shifted(rect, shift, self.vertical);
+        let rect = shifted(rect, self.pending_shift(), self.vertical);
         destination(&*spec, rect, scope.viewport(), self.vertical)
     }
 
     fn bring_child_into_view(
         &mut self,
+        rect: Rect,
+        parent: Rect,
         bounds: compose_ui::BringIntoViewBounds,
         scope: &compose_ui::BringIntoViewScope,
     ) -> Option<compose_ui::LocalBoxFuture<'static, ()>> {
+        // What shows already needs no queue, no task and no state: none is made.
+        if content_in_view::shows(rect, parent, self.pending_shift(), self.vertical) {
+            return None;
+        }
         let config = self.content_in_view_config();
         let content_in_view = match &self.content_in_view {
             Some(content_in_view) => {

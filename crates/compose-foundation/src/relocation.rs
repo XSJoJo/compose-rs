@@ -235,6 +235,8 @@ impl BringIntoViewResponderNode for ResponderNode {
 
     fn bring_child_into_view(
         &mut self,
+        _rect: Rect,
+        _parent: Rect,
         bounds: BringIntoViewBounds,
         _scope: &BringIntoViewScope,
     ) -> Option<LocalBoxFuture<'static, ()>> {

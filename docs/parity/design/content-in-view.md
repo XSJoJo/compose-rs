@@ -13,7 +13,9 @@ A scrollable's responder is its `ContentInViewNode`. A request that already show
 **The walk.** compose-rs's tree passes a request on itself (D1371): `UiTree::bring_into_view_from` walks the entries before the requester in its chain, then each ancestor's, innermost first. That stays. A node that animates answers `ModifierNode::as_bring_into_view_responder` with a `BringIntoViewResponderNode` (compose-ui):
 
 - `calculate_rect_for_parent(rect, scope)`: where the rect will be once shown.
-- `bring_child_into_view(bounds, scope) -> Option<future>`: the future ends once it's shown or interrupted. Dropped, the request is withdrawn.
+- `bring_child_into_view(rect, parent, bounds, scope) -> Option<future>`: the future ends once it's shown or interrupted. Dropped, the request is withdrawn. `rect` is where it is as the walk asks, `parent` what `calculate_rect_for_parent` said of it, and `None` means nothing to wait for.
+
+A node's answer, responder or at once, is found in one pass over its delegates.
 
 The walk returns the futures, and the request waits for all of them (`join_all`), which stands for Compose's sibling coroutines. `NodeHandle::bring_into_view` returns that future. `UiTree::bring_into_view` (focus) launches it as a task of its own, since Compose's focusable launches its request too. Nodes that answer at once (`ModifierNode::bring_into_view`, the lazy layouts until C8) are still asked during the walk, with where the rect is then.
 
@@ -29,7 +31,7 @@ The walk returns the futures, and the request waits for all of them (`join_all`)
 
 **The pending scroll.** A `vertical_scroll` lays out its own content. A request read between a scroll and its layout is moved by what the scroll still owes (`value - laid_out`), as in D1371. `scrollable` has no such knowledge, as in Compose.
 
-**Cost.** A container keeps `Option<Rc<ContentInView>>`, `None` until its first request. The queue, the animation state and the config are made then. Asking a container and building its bounds costs only while a request is made.
+**Cost.** A container keeps `Option<Rc<ContentInView>>`, `None` until its first request. The queue, the animation state and the config are made then. A request for what shows already is answered in the walk, with the rect the walk has (`bring_child_into_view` is given it): no future, no task, no state, where Compose checks the same in the coroutine it launched. The visibility check reuses the rect for the parent (`bring_child_into_view` is given it too), so the spec, a walk up the composition's providers, is read once per container. A text field's own `scrollable` now answers a focus move's walk, as Compose's does: about 4,000 to 7,000 more instructions a focus move (`field_focus` +0.15 to +0.26 %, around its spread); nothing else moved.
 
 ## What's left out
 

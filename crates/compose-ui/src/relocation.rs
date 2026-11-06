@@ -33,11 +33,15 @@ pub trait BringIntoViewResponderNode {
     /// `calculateRectForParent`.
     fn calculate_rect_for_parent(&self, rect: Rect, scope: &BringIntoViewScope) -> Rect;
 
-    /// Shows what `bounds` gives (read it again as the request goes on: it moves), as
+    /// Shows what `bounds` gives (read it again as the request goes on: it moves; `rect` is
+    /// what it gives now, `parent` what `calculate_rect_for_parent` said of it), as
     /// `bringChildIntoView`: the future ends once it's shown, or the request was interrupted;
-    /// `None` when there's nothing to wait for. Dropped, the request is withdrawn.
+    /// `None` when there's nothing to wait for (it shows already). Dropped, the request is
+    /// withdrawn.
     fn bring_child_into_view(
         &mut self,
+        rect: Rect,
+        parent: Rect,
         bounds: BringIntoViewBounds,
         scope: &BringIntoViewScope,
     ) -> Option<LocalBoxFuture<'static, ()>>;
@@ -92,6 +96,16 @@ impl BringIntoViewBounds {
         });
         current
     }
+}
+
+/// What a chain entry does when asked to show a rect.
+pub(crate) enum Answer<'a> {
+    /// It responds over time.
+    Responder(&'a mut dyn BringIntoViewResponderNode),
+    /// It showed it at once; where it is for the ones outside.
+    Shown(Rect),
+    /// Not a node that shows things.
+    Nothing,
 }
 
 /// Where the requester's bounds start: a node's bounds (a focused node), or a rect in the layer
@@ -181,36 +195,34 @@ impl UiTree {
         let locals = self.node(id).locals;
         let entry = self.node(id).chain[index].id;
         let local = moved(*current, Offset::new(-origin.x, -origin.y));
-        let is_responder = self
-            .get_mut(id)
-            .is_some_and(|value| value.chain[index].as_bring_into_view_responder().is_some());
-        if is_responder {
-            let handle = crate::node_context::entry_handle(self, id, index);
-            let scope = BringIntoViewScope { viewport, locals, handle };
-            let bounds = BringIntoViewBounds(Rc::new(BoundsPath {
-                tree: self.key,
-                base: base.clone(),
-                via: via.clone(),
-                at: (id, entry),
-            }));
-            let Some(responder) = self.node_mut(id).chain[index].as_bring_into_view_responder()
-            else {
-                return;
-            };
-            let parent = responder.calculate_rect_for_parent(local, &scope);
-            if let Some(future) = responder.bring_child_into_view(bounds, &scope) {
-                futures.push(future);
+        let key = self.key;
+        // Its handle, registered below if it's given a request to keep.
+        let handle = crate::node_context::NodeHandle::of_entry(key, id, entry);
+        let Some(value) = self.get_mut(id) else { return };
+        match value.chain[index].bring_into_view_answer(local, viewport, locals) {
+            Answer::Responder(responder) => {
+                let scope = BringIntoViewScope { viewport, locals, handle };
+                let bounds = BringIntoViewBounds(Rc::new(BoundsPath {
+                    tree: key,
+                    base: base.clone(),
+                    via: via.clone(),
+                    at: (id, entry),
+                }));
+                let parent = responder.calculate_rect_for_parent(local, &scope);
+                if let Some(future) = responder.bring_child_into_view(local, parent, bounds, &scope)
+                {
+                    futures.push(future);
+                    crate::node_context::entry_handle(self, id, index);
+                }
+                via.push((id, entry));
+                *current = moved(parent, origin);
             }
-            via.push((id, entry));
-            *current = moved(parent, origin);
-            return;
-        }
-        if let Some(value) = self.get_mut(id)
-            && let Some(shown) = value.chain[index].bring_into_view(local, viewport, locals)
-        {
-            *current = moved(shown, origin);
-            *base = Base::Entry { node: id, entry, rect: Some(shown) };
-            via.clear();
+            Answer::Shown(shown) => {
+                *current = moved(shown, origin);
+                *base = Base::Entry { node: id, entry, rect: Some(shown) };
+                via.clear();
+            }
+            Answer::Nothing => {}
         }
     }
 
@@ -280,6 +292,33 @@ impl UiTree {
 }
 
 impl crate::node_chain::ChainEntry {
+    /// What its node or delegate does when asked to show `rect`.
+    pub(crate) fn bring_into_view_answer(
+        &mut self,
+        rect: Rect,
+        viewport: IntSize,
+        locals: CompositionLocalAnchor,
+    ) -> Answer<'_> {
+        if self.kinds.any(NodeKinds::DELEGATING) {
+            return crate::delegation::bring_into_view_answer_of(
+                &mut *self.node,
+                rect,
+                viewport,
+                locals,
+            );
+        }
+        if self.node.as_bring_into_view_responder().is_some() {
+            return self
+                .node
+                .as_bring_into_view_responder()
+                .map_or(Answer::Nothing, Answer::Responder);
+        }
+        match self.node.bring_into_view_in(rect, viewport, locals) {
+            Some(shown) => Answer::Shown(shown),
+            None => Answer::Nothing,
+        }
+    }
+
     /// Its node or delegate that responds to bringing into view, as a `BringIntoViewModifierNode`.
     pub(crate) fn as_bring_into_view_responder(
         &mut self,

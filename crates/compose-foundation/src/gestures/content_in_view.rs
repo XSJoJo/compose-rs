@@ -99,6 +99,15 @@ pub(crate) fn destination(
     shifted(rect, -relocation(spec, rect, viewport, vertical), vertical)
 }
 
+/// Whether `rect`, where the walk found it, is as visible as it can be in the container
+/// (`isMaxVisible`), once moved by `shift` (where the scroll asked for will put it), `parent`
+/// being its `destination`: a request for it is done at once. The spec isn't asked again.
+pub(crate) fn shows(rect: Rect, parent: Rect, shift: f32, vertical: bool) -> bool {
+    let rect = shifted(rect, shift, vertical);
+    let relocation = if vertical { rect.top - parent.top } else { rect.left - parent.left };
+    relocation.abs() <= MIN_SCROLL_THRESHOLD
+}
+
 /// A container's requests and its animation, made at its first request.
 pub(crate) struct ContentInView {
     config: RefCell<ContentInViewConfig>,
@@ -139,8 +148,8 @@ impl ContentInView {
         relocation(&*spec, rect, self.viewport.get(), self.vertical()).abs() <= MIN_SCROLL_THRESHOLD
     }
 
-    /// Asked by the tree to show what `bounds` gives, as `bringChildIntoView`: the future ends once
-    /// it's shown, or the request was interrupted.
+    /// Asked by the tree to show what `bounds` gives, which doesn't show yet (`shows`), as
+    /// `bringChildIntoView`: the future ends once it's shown, or the request was interrupted.
     pub(crate) fn bring_child_into_view(
         self: &Rc<Self>,
         bounds: BringIntoViewBounds,
@@ -152,11 +161,7 @@ impl ContentInView {
         let this = self.clone();
         let handle = scope.handle();
         Box::pin(async move {
-            // Nothing to animate for what shows already, or is gone.
-            match current() {
-                Some(rect) if !this.is_max_visible(rect) => {}
-                _ => return,
-            }
+            // What's gone by now is resumed at once.
             let request = Request::new(current);
             let wait = request.continuation.clone().wait();
             let enqueued = this.requests.borrow_mut().enqueue(request);

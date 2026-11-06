@@ -20,7 +20,7 @@ use compose_ui::{
 use crate::fling::Fling;
 use crate::gestures::Orientation;
 use crate::gestures::content_in_view::{
-    ContentInView, ContentInViewConfig, destination, resolve_spec,
+    self, ContentInView, ContentInViewConfig, destination, resolve_spec,
 };
 use crate::mutator::{MutatePriority, MutationInterrupted, MutatorMutex};
 use crate::overscroll::{OverscrollEffect, same_overscroll};
@@ -932,9 +932,15 @@ impl compose_ui::BringIntoViewResponderNode for ScrollableNode {
 
     fn bring_child_into_view(
         &mut self,
+        rect: compose_ui::Rect,
+        parent: compose_ui::Rect,
         bounds: compose_ui::BringIntoViewBounds,
         scope: &compose_ui::BringIntoViewScope,
     ) -> Option<LocalBoxFuture<'static, ()>> {
+        // What shows already needs no queue, no task and no state: none is made.
+        if content_in_view::shows(rect, parent, 0.0, self.vertical) {
+            return None;
+        }
         let config = self.content_in_view_config();
         let content_in_view = match &self.content_in_view {
             Some(content_in_view) => {
