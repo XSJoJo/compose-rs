@@ -27,6 +27,8 @@ pub(crate) struct Entry {
     pub(crate) rect: IntRect,
     last_invoke: Option<i64>,
     last_uninvoked_fire: Option<i64>,
+    /// The dispatch it was last called in.
+    invoked_in: Option<u64>,
 }
 
 /// An entry to call: what `ThrottledCallbacks` decided, for its owner to resolve.
@@ -46,6 +48,8 @@ pub(crate) struct ThrottledCallbacks {
     /// When the next debounced call is due, if any.
     pub(crate) min_debounce_deadline: Option<i64>,
     next_id: u64,
+    /// The dispatch under way (`begin_dispatch`).
+    dispatch: u64,
     fired: Vec<Fired>,
 }
 
@@ -70,6 +74,7 @@ impl ThrottledCallbacks {
             rect: IntRect::ZERO,
             last_invoke: None,
             last_uninvoked_fire: None,
+            invoked_in: None,
         }
     }
 
@@ -119,6 +124,11 @@ impl ThrottledCallbacks {
         self.rect_changed.iter().any(|entry| entry.node == node)
     }
 
+    /// Whether there are global entries.
+    pub(crate) fn has_global(&self) -> bool {
+        !self.global.is_empty()
+    }
+
     /// Whether there's no entry at all.
     pub(crate) fn is_empty(&self) -> bool {
         self.rect_changed.is_empty() && self.global.is_empty()
@@ -139,7 +149,7 @@ impl ThrottledCallbacks {
                 if past_throttle && can_invoke {
                     entry.last_uninvoked_fire = None;
                     entry.last_invoke = Some(now);
-                    Self::invoke(&mut self.fired, entry);
+                    Self::invoke(&mut self.fired, entry, self.dispatch);
                 } else if entry.debounce != 0 {
                     entry.last_uninvoked_fire = Some(now);
                 }
@@ -150,7 +160,7 @@ impl ThrottledCallbacks {
     /// The window moved or resized: every rect entry hears it, as `fireOnRectChangedEntries`.
     pub(crate) fn fire_on_rect_changed_entries(&mut self, now: i64) {
         for entry in &mut self.rect_changed {
-            Self::fire(&mut self.fired, entry, now);
+            Self::fire(&mut self.fired, entry, now, self.dispatch);
         }
     }
 
@@ -165,7 +175,7 @@ impl ThrottledCallbacks {
             if let Some(rect) = rect_of(entry.node) {
                 entry.rect = rect;
             }
-            Self::fire(&mut self.fired, entry, now);
+            Self::fire(&mut self.fired, entry, now, self.dispatch);
         }
     }
 
@@ -185,7 +195,7 @@ impl ThrottledCallbacks {
                 if now - fired_at >= entry.debounce {
                     entry.last_invoke = Some(now);
                     entry.last_uninvoked_fire = None;
-                    Self::invoke(&mut self.fired, entry);
+                    Self::invoke(&mut self.fired, entry, self.dispatch);
                 } else {
                     let deadline = fired_at + entry.debounce;
                     min_deadline =
@@ -196,26 +206,33 @@ impl ThrottledCallbacks {
         self.min_debounce_deadline = min_deadline;
     }
 
+    /// A dispatch starts: an entry called in it isn't called again in it.
+    pub(crate) fn begin_dispatch(&mut self) {
+        self.dispatch += 1;
+    }
+
     /// The entries to call since the last take, in the order they were decided.
     pub(crate) fn take_fired(&mut self) -> Vec<Fired> {
         std::mem::take(&mut self.fired)
     }
 
-    /// As Compose's private `fire`: called at once if past its throttle (strictly) and not
-    /// debounced, else left to its debounce.
-    fn fire(fired: &mut Vec<Fired>, entry: &mut Entry, now: i64) {
-        // Compose's is strict (`>`): a change in the millisecond of the last call would be lost
-        // with no debounce to deliver it; a test's clock doesn't move between them.
-        let throttle_okay = entry.last_invoke.is_none_or(|last| now - last >= entry.throttle);
+    /// As Compose's private `fire`: called at once if past its throttle and not debounced, else
+    /// left to its debounce. Never twice in one dispatch: a rect change and a window move in one
+    /// are one call, as Compose's strict `>` makes them. Unlike Compose's, a later dispatch in
+    /// the same millisecond calls it (D1373).
+    fn fire(fired: &mut Vec<Fired>, entry: &mut Entry, now: i64, dispatch: u64) {
+        let throttle_okay = entry.invoked_in != Some(dispatch)
+            && entry.last_invoke.is_none_or(|last| now - last >= entry.throttle);
         let debounce_okay = entry.debounce == 0;
         entry.last_uninvoked_fire = Some(now);
         if throttle_okay && debounce_okay {
             entry.last_invoke = Some(now);
-            Self::invoke(fired, entry);
+            Self::invoke(fired, entry, dispatch);
         }
     }
 
-    fn invoke(fired: &mut Vec<Fired>, entry: &Entry) {
+    fn invoke(fired: &mut Vec<Fired>, entry: &mut Entry, dispatch: u64) {
+        entry.invoked_in = Some(dispatch);
         fired.push(Fired {
             node: entry.node,
             owner: entry.owner,
@@ -501,6 +518,26 @@ mod tests {
             assert_eq!(called.get(), 2);
             f.advance_by(500);
             assert_eq!(called.get(), 3);
+        });
+    }
+
+    /// A rect change and a window move in one dispatch call a callback once, as Compose's
+    /// `dispatchCallbacks` (its `fire` strictly past the throttle); in the next, the move calls it.
+    // Compose: compose/ui/ui/src/commonMain/kotlin/androidx/compose/ui/spatial/RectManager.kt, dispatchCallbacks
+    #[test]
+    fn a_rect_change_and_a_window_move_in_one_dispatch_call_once() {
+        test(|f| {
+            let called = counter();
+            f.register(1, 0, 0, &called);
+            f.callbacks.begin_dispatch();
+            f.fire(1);
+            f.callbacks.fire_on_rect_changed_entries(f.now);
+            f.run_fired();
+            assert_eq!(called.get(), 1);
+            f.callbacks.begin_dispatch();
+            f.callbacks.fire_on_rect_changed_entries(f.now);
+            f.run_fired();
+            assert_eq!(called.get(), 2);
         });
     }
 

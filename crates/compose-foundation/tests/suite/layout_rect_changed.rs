@@ -981,6 +981,31 @@ fn the_window_moving_on_the_screen_is_told() {
     assert_eq!(window, IntRect::new(0, 0, 100, 200));
 }
 
+/// A move and the window's move in one frame are one call, as Compose's `dispatchCallbacks`
+/// (the window's entries called only strictly past the throttle).
+// Compose: compose/ui/ui/src/commonMain/kotlin/androidx/compose/ui/spatial/RectManager.kt, dispatchCallbacks
+#[test]
+fn a_move_and_a_window_move_in_one_frame_are_one_call() {
+    let told = Rc::new(RefCell::new(Vec::new()));
+    let offset = mutable_state_of(IntOffset::ZERO);
+    let (t, o) = (told.clone(), offset.handle());
+    let mut ui = rule(move || {
+        let t = t.clone();
+        Box!(
+            modifier = Modifier.offset_with(move |_| o.get()).size(10.dp()).on_layout_rect_changed(
+                0,
+                0,
+                move |bounds: RelativeLayoutBounds| t.borrow_mut().push(bounds.position_in_root())
+            )
+        );
+    });
+    told.borrow_mut().clear();
+    offset.set(IntOffset::new(0, 5));
+    ui.host().set_window_origin(compose_ui::Offset::new(0.0, 7.0));
+    ui.wait_for_idle();
+    assert_eq!(*told.borrow(), vec![IntOffset::new(0, 5)]);
+}
+
 // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/OnGlobalRectChangedTest.kt, globalCoordinatesAreInActivityCoordinates
 #[test]
 fn window_and_screen_bounds_are_from_the_host_s_window() {

@@ -431,6 +431,41 @@ fn a_global_listener_hears_its_parent_shrink_into_an_occlusion() {
     assert_eq!(heard.borrow().last().map(|it| it.1), Some(1));
 }
 
+/// A layout that moves and resizes nothing doesn't call a global listener: Compose calls them
+/// when a rect changed (`isDirty`) or the window moved.
+// Compose: compose/ui/ui/src/commonMain/kotlin/androidx/compose/ui/spatial/RectManager.kt, dispatchCallbacks
+#[test]
+fn a_layout_moving_nothing_doesn_t_call_a_global_listener() {
+    let heard = Heard::default();
+    let tick = mutable_state_of(0);
+    let size = mutable_state_of(100.0f32);
+    let (h, t, z) = (heard.clone(), tick.handle(), size.handle());
+    let mut ui = rule(move || {
+        let h = h.clone();
+        Column!(|_| {
+            Box!(modifier = Modifier.size(100.dp()).then(hearing(&h)));
+            // Measured again when `tick` changes, at the same size.
+            Layout!(
+                measure_policy = measure_policy(move |scope, _, _| {
+                    let _ = t.get();
+                    scope.layout(10, 10)
+                }),
+                {}
+            );
+            Box!(modifier = Modifier.size(z.get().dp()));
+        });
+    });
+    let calls = heard.borrow().len();
+    assert_eq!(calls, 1);
+    tick.set(1);
+    ui.wait_for_idle();
+    assert_eq!(heard.borrow().len(), calls);
+    // A node elsewhere resized: heard.
+    size.set(50.0);
+    ui.wait_for_idle();
+    assert_eq!(heard.borrow().len(), calls + 1);
+}
+
 // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/OnGlobalLayoutListenerTest.kt, globalLayoutListener_updatedOffset
 #[test]
 fn a_global_listener_hears_its_new_place_and_placed_size() {

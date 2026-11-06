@@ -45,8 +45,13 @@ struct Tracked {
 pub(crate) struct RectManager {
     callbacks: ThrottledCallbacks,
     tracked: Vec<Tracked>,
-    /// A registration came, or a debounce is due: the next dispatch looks at the rects.
+    /// A rect callback was registered: the next dispatch looks at the rects, and calls the
+    /// global listeners, as Compose's `invalidate()` there (a global listener's registration
+    /// invalidates nothing).
     dirty: bool,
+    /// The layout of the whole tree when the global listeners last heard of it: for them, a
+    /// change anywhere is a change, as Compose's rect list marked dirty by any node's move.
+    tree_signature: Option<u64>,
     /// The window's origin and size the entries last heard of.
     window: Option<(IntOffset, IntSize)>,
     /// The dispatch scheduled for a debounce: its deadline and its task.
@@ -137,12 +142,12 @@ impl NodeContext<'_> {
         let id = {
             let mut manager = rects.borrow_mut();
             let manager = &mut *manager;
-            manager.dirty = true;
             if global {
                 manager
                     .callbacks
                     .register_on_global_change(node, owner, throttle, debounce, callback)
             } else {
+                manager.dirty = true;
                 match manager.tracked.iter_mut().find(|tracked| tracked.node == node) {
                     Some(tracked) => tracked.updated = true,
                     None => {
@@ -176,9 +181,11 @@ impl UiTree {
                 (IntOffset::new(origin.x.round() as i32, origin.y.round() as i32), self.window);
             let window_moved = manager.window.is_some_and(|last| last != window);
             manager.window = Some(window);
-            let changed = changed || manager.dirty;
-            if changed {
-                manager.dirty = false;
+            manager.callbacks.begin_dispatch();
+            let registered = std::mem::take(&mut manager.dirty);
+            // Compose's `isDirty`: a rect changed or a callback came.
+            let mut dirty = registered;
+            if changed || registered {
                 manager
                     .tracked
                     .retain(|tracked| manager.callbacks.has_rect_callbacks(tracked.node));
@@ -195,6 +202,7 @@ impl UiTree {
                         || inner != last_inner
                         || self.get(node).is_some_and(|value| value.layer_moved);
                     if rect != last || (updated && rect.is_some()) {
+                        dirty = true;
                         manager.tracked[index].rect = rect;
                         manager.tracked[index].inner = inner;
                         manager.tracked[index].updated = false;
@@ -207,7 +215,16 @@ impl UiTree {
             if window_moved {
                 manager.callbacks.fire_on_rect_changed_entries(now);
             }
-            if changed || window_moved {
+            // Any node's move, which only a look at the whole tree tells (with global listeners
+            // only): its layers' places and sizes, and a graphics layer's move.
+            if changed && manager.callbacks.has_global() {
+                let signature = self.tree_signature();
+                if manager.tree_signature != Some(signature) || !self.layers_moved.is_empty() {
+                    manager.tree_signature = Some(signature);
+                    dirty = true;
+                }
+            }
+            if dirty || window_moved {
                 manager.callbacks.fire_global_change_entries(now, |node| {
                     self.rect_of_layout_node(node).map(|rect| {
                         // A global listener hears its node's size as placed (`LayoutNode.width`).
@@ -252,8 +269,9 @@ impl UiTree {
         let rects = Rc::downgrade(self.rects.as_ref().expect("a manager"));
         let job = compose_runtime::platform::launch(async move {
             compose_runtime::delay(Duration::from_millis((deadline - now) as u64)).await;
-            let Some(rects) = rects.upgrade() else { return };
-            rects.borrow_mut().dirty = true;
+            if rects.upgrade().is_none() {
+                return;
+            }
             let mut actions = Vec::new();
             let dispatched = crate::node_context::with_free_tree(key, &mut |tree| {
                 tree.dispatch_rects(false);
@@ -292,6 +310,27 @@ impl UiTree {
             );
         }
         count
+    }
+
+    /// Where every layout node of the tree is in its parent and at what size, whether it's
+    /// placed, hashed: what the global listeners hear a change of.
+    fn tree_signature(&self) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |part: u64| hash = (hash ^ part).wrapping_mul(0x100_0000_01b3);
+        let mut stack = vec![self.root_id()];
+        stack.extend(self.overlays.iter().copied());
+        while let Some(node) = stack.pop() {
+            let Some(value) = self.get(node) else { continue };
+            mix(node.to_bits());
+            mix(value.placed as u64);
+            for layer in &value.layers {
+                mix((layer.offset.x as u32 as u64) << 32 | layer.offset.y as u32 as u64);
+                mix((layer.measured.width as u32 as u64) << 32
+                    | layer.measured.height as u32 as u64);
+            }
+            stack.extend(value.children.iter().map(|child| child.node));
+        }
+        hash
     }
 
     /// How many ancestors `node` has (0 if it's gone).

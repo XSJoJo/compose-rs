@@ -22,9 +22,17 @@ fn rect_of(ui: &mut ComposeTestRule, tag: &str) -> Option<IntRect> {
     ui.host().with_tree(|tree| tree.layout_rect_for_test(node))
 }
 
-/// The rect of `tag` is `(left, top, right, bottom)`, within a pixel.
+/// The rect of `tag` is `(left, top, right, bottom)`, exactly: at density 1, a dp is a pixel.
 #[track_caller]
 fn assert_rect(ui: &mut ComposeTestRule, tag: &str, expected: (i32, i32, i32, i32)) {
+    let rect = rect_of(ui, tag).unwrap_or_else(|| panic!("{tag} has no rect"));
+    let (l, t, r, b) = expected;
+    assert_eq!(rect, IntRect::new(l, t, r, b), "{tag}");
+}
+
+/// Within a pixel, as Compose's `assertRectDp`: for rotations, whose rounded dp Compose gives.
+#[track_caller]
+fn assert_rect_near(ui: &mut ComposeTestRule, tag: &str, expected: (i32, i32, i32, i32)) {
     let rect = rect_of(ui, tag).unwrap_or_else(|| panic!("{tag} has no rect"));
     let (l, t, r, b) = expected;
     let close = |actual: i32, wanted: i32| (actual - wanted).abs() <= 1;
@@ -269,7 +277,7 @@ fn a_rotated_layer_bounds_its_child_s_rect_not_its_own() {
         );
     });
     assert_rect(&mut ui, "outer", (0, 0, 100, 100));
-    assert_rect(&mut ui, "inner", (79, -21, 220, 121));
+    assert_rect_near(&mut ui, "inner", (79, -21, 220, 121));
 }
 
 /// A column of a 100 tall box then the tagged 100 by 100 one, rotated by `rotation()`.
@@ -300,7 +308,7 @@ fn rotated_column(rotation: impl Fn() -> f32 + 'static, grandchild: bool) -> imp
 fn a_rotated_column_s_child_has_its_bounding_rect() {
     let mut ui = rule(rotated_column(|| 45.0, false));
     assert_rect(&mut ui, "outer", (0, 0, 100, 200));
-    assert_rect(&mut ui, "inner", (-56, 65, 85, 206));
+    assert_rect_near(&mut ui, "inner", (-56, 65, 85, 206));
 }
 
 // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/RectListIntegrationTest.kt, testRotatedChildBoxOffsetUpdated
@@ -313,7 +321,7 @@ fn rotating_a_column_moves_its_child_s_rect() {
     assert_rect(&mut ui, "inner", (0, 100, 100, 200));
     rotation.set(45.0);
     assert_rect(&mut ui, "outer", (0, 0, 100, 200));
-    assert_rect(&mut ui, "inner", (-56, 65, 85, 206));
+    assert_rect_near(&mut ui, "inner", (-56, 65, 85, 206));
 }
 
 // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/RectListIntegrationTest.kt, testRotatedGrandchildBoxOffset
@@ -321,7 +329,7 @@ fn rotating_a_column_moves_its_child_s_rect() {
 fn a_rotated_column_s_grandchild_has_its_bounding_rect() {
     let mut ui = rule(rotated_column(|| 45.0, true));
     assert_rect(&mut ui, "outer", (0, 0, 100, 200));
-    assert_rect(&mut ui, "inner", (-56, 65, 85, 206));
+    assert_rect_near(&mut ui, "inner", (-56, 65, 85, 206));
 }
 
 // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/RectListIntegrationTest.kt, testRotatedGrandchildBoxOffsetUpdated
@@ -333,7 +341,7 @@ fn rotating_a_column_moves_its_grandchild_s_rect() {
     assert_rect(&mut ui, "inner", (0, 100, 100, 200));
     rotation.set(45.0);
     assert_rect(&mut ui, "outer", (0, 0, 100, 200));
-    assert_rect(&mut ui, "inner", (-56, 65, 85, 206));
+    assert_rect_near(&mut ui, "inner", (-56, 65, 85, 206));
 }
 
 // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/RectListIntegrationTest.kt, testTranslatedAndRotatedBox
@@ -355,7 +363,7 @@ fn translating_and_rotating_a_layer_moves_its_child_s_rect() {
     assert_rect(&mut ui, "outer", (0, 0, 30, 30));
     assert_rect(&mut ui, "inner", (10, 10, 20, 20));
     toggle.set(false);
-    assert_rect(&mut ui, "inner", (108, 8, 122, 22));
+    assert_rect_near(&mut ui, "inner", (108, 8, 122, 22));
 }
 
 // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/RectListIntegrationTest.kt, testScaledBox
