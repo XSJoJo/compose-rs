@@ -1697,6 +1697,7 @@ mod tests {
             line.rsplit(' ').next().unwrap().parse().unwrap()
         };
         assert_eq!(constant("SAVE_LAYER"), tag::SAVE_LAYER);
+        assert_eq!(constant("BEGIN_EDGE_EFFECTS"), tag::BEGIN_EDGE_EFFECTS);
         assert_eq!(constant("DRAW_IMAGE"), tag::DRAW_IMAGE);
         assert_eq!(constant("FILTER_NONE"), color_filter::NONE);
         assert_eq!(constant("FILTER_BLEND_MODE"), color_filter::BLEND_MODE);
