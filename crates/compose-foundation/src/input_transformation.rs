@@ -384,6 +384,8 @@ mod tests {
             ("en-US", "", "hello", "HELLO"),
             ("en-US", "hello", " world", "hello WORLD"),
             ("tr", "", "i", "\u{130}"),
+            ("az", "", "i", "\u{130}"),
+            ("en", "", "i", "I"),
         ] {
             let mut buffer = edited(original, TextRange::ZERO, |buffer| buffer.append(appended));
             InputTransformation::all_caps(Locale::new(locale)).transform_input(&mut buffer);
