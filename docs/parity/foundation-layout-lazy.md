@@ -64,8 +64,8 @@ The table's suite references (`lazy_api.rs`, `fling.rs`, …) are files in `crat
 | compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/ContextualFlowRowColumnTest.kt | 77 | `ContextualFlowRow` / `ContextualFlowColumn` | n/a: the API is `@Deprecated` |
 | compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/FitInsideTest.kt | 2 | `Modifier.fitInside(RectRulers)` | feature:ruler-fit |
 | compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/FitOutsideTest.kt | 6 | `Modifier.fitOutside(RectRulers)` per side | feature:ruler-fit |
-| compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/FlexBoxDirectionTest.kt | 73 | FlexBox `justifyContent`, `alignItems`, gaps, wrap, reverse directions, grow/shrink/basis | feature:flexbox |
-| compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/FlexBoxTest.kt | 21 | FlexBox baselines, RTL, invalid grow/shrink, intrinsics, focus order | feature:flexbox (+ alignment-lines, intrinsics) |
+| compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/FlexBoxDirectionTest.kt | 73 | FlexBox `justifyContent`, `alignItems`, gaps, wrap, reverse directions, grow/shrink/basis | ported (`flex_box_direction.rs`: all 73, each in a row and a column, D1367) |
+| compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/FlexBoxTest.kt | 21 | FlexBox baselines, RTL, invalid grow/shrink, intrinsics, focus order | ported (`flex_box.rs`: all 21, D1367) |
 | compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/FlowRowColumnTest.kt | 128 | FlowRow/FlowColumn wrapping, maxItems, maxLines, weights, `fillMaxRowHeight`, arrangements, intrinsics (45), RTL | ported (`flow_layout.rs`, 94 grouped by scenario, D1350–D1353; the 6 `…MaxItemsIn…_MaxLines` intrinsic tests in their first, `Clip`, state only. Not ported: `testColumn_withCustomHorizontal_alignment`, `testColumn_withCustomHorizontalAlignModifier` and `testRow_withCustomVerticalAlignModifier`, custom `Alignment` objects, the ui ledger's alignment-api ([ui-core](ui-core.md)); 31 of the deprecated `overflow` (`…Visible`, `…SeeMore…`, `…Collapse…`, `…reuseMeasurePolicy`, `…measurePolicy_Identical`), n/a) |
 | compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/GridTest.kt | 79 | The `Grid` layout: track sizes (fixed/%/fr/auto/min-max), gaps, spans, auto placement, areas, RTL | feature:grid-layout |
 | compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/IntrinsicTest.kt | 27 | `width/height(IntrinsicSize.Min/Max)`, `requiredWidth/Height(IntrinsicSize)` | ported (`intrinsics.rs`, all 27, grouped by scenario) |
@@ -334,9 +334,9 @@ From `compose/foundation/foundation-layout/api/current.txt` and `compose/foundat
   - `PaddingValues.Absolute`, `PaddingValues.plus`/`minus`, `calculateStartPadding`/`calculateEndPadding` (check compose-rs's `PaddingValues` for the `calculate*` methods);
   - `BoxScope.matchParentSize`, `Arrangement.Absolute` (Left, Right, Center, SpaceBetween/Around/Evenly, `spacedBy`, `aligned`), `Modifier.visible`.
 - **intrinsics:** done (D1200–D1205): `IntrinsicSize`, `Modifier.width/height(IntrinsicSize)`, `requiredWidth/requiredHeight(IntrinsicSize)`, and Compose's intrinsics on every layout here. Flow layouts, `FlexBox` and `Grid` bring theirs.
-- **alignment-lines:** done (D1220): `paddingFrom` (Dp and TextUnit), `paddingFromBaseline`, `RowScope.alignBy` (line or lambda), `alignByBaseline`, `ColumnScope.alignBy`. `RichTooltip` and M3's `ListItem`, `Tab` and `TopAppBar` read them (D1567); `FlowRowScope` and `FlowColumnScope` take `alignBy` (D1569); `FlexBox`'s wait on `flexbox`.
+- **alignment-lines:** done (D1220): `paddingFrom` (Dp and TextUnit), `paddingFromBaseline`, `RowScope.alignBy` (line or lambda), `alignByBaseline`, `ColumnScope.alignBy`. `RichTooltip` and M3's `ListItem`, `Tab` and `TopAppBar` read them (D1567); `FlowRowScope` and `FlowColumnScope` take `alignBy` (D1569); `FlexBox` aligns by lines and blocks (D1367).
 - **flow-layout:** done (D1350–D1353; `flow_layout.rs`): `FlowRow`, `FlowColumn` (`maxItemsInEachRow`, `maxLines`, `itemVerticalAlignment`), `FlowRowScope.fillMaxRowHeight` (*exp*), `FlowColumnScope.fillMaxColumnWidth` (*exp*). The `overflow` overloads and `ContextualFlow*` are deprecated, and `FlowRowOverflowScope`/`FlowColumnOverflowScope` go with them: not here.
-- **flexbox:** `FlexBox`, `FlexBoxConfig`/`FlexBoxConfigScope`, `FlexConfig`/`FlexConfigScope`, `FlexBoxScope.flex`, `FlexDirection`, `FlexWrap`, `FlexJustifyContent`, `FlexAlignItems`, `FlexAlignSelf`, `FlexAlignContent`, `FlexBasis`. They are stable at tip, added 2025-12-08, after 1.12.
+- **flexbox:** done (D1367): `FlexBox`, `FlexBoxConfig`/`FlexBoxConfigScope`, `FlexConfig`/`FlexConfigScope`, `FlexBoxScope.flex`, `FlexDirection`, `FlexWrap`, `FlexJustifyContent`, `FlexAlignItems`, `FlexAlignSelf`, `FlexAlignContent`, `FlexBasis`. They are stable at tip, added 2025-12-08, after 1.12.
 - **grid-layout:** `Grid`, `GridConfigurationScope` (`row`/`column` by Dp, % or `Fr`, `gap`s, `area`, `minmax`), `GridScope.gridItem` (index, area, ranges), `GridTrackSize` (Fixed, Flex, MinMax, Percentage, Auto, MinContent, MaxContent), `Fr`, `GridFlow`, `columns`/`rows`. Stable, added 2025-12-09. Don't confuse it with lazy grids.
 - **ruler-fit:** `Modifier.fitInside(RectRulers)`, `fitOutside(RectRulers)`.
 - **window-insets:** done (D1355–D1358, D1361; `window_insets.rs`): fixed insets, `exclude`, `add`, `WindowInsetsSides` start/end, `consumeWindowInsets`, `onConsumedWindowInsetsChanged`, `recalculateWindowInsets`, the size modifiers, every padding shorthand and kind, `cutoutPath`, visibility, `asPaddingValues(density)`, `MutableWindowInsets` (*exp*), `AbstractComposeView.consumeWindowInsets` (`ComposeRsView.consumeWindowInsets`).
@@ -493,7 +493,7 @@ Each entry gives the Compose API, what it does, the test files that need it (by 
 18. **intrinsics.** Done (PL-3, D1200–D1205; `crates/compose-foundation/tests/suite/intrinsics.rs`).
     - API: `IntrinsicSize`, the intrinsic modifiers, min and max intrinsics on every layout.
     - Tests: IntrinsicTest, parts of RowColumnTest, SizeTest, BoxTest, AspectRatioTest, PaddingTest and ScrollTest are ported; FlowRowColumnTest's and FlexBoxTest's come with those layouts.
-19. **alignment-lines.** Done (D1220), the flow ones too (D1569); the flex ones with `flexbox`, which isn't here yet.
+19. **alignment-lines.** Done (D1220), the flow ones too (D1569), the flex ones too (D1367).
     - API: `paddingFrom`, `paddingFromBaseline`, `alignBy`, `alignByBaseline`.
     - Tests: AlignmentLineTest, RowColumnModifierTest, parts of RowColumnTest and FlexBoxTest.
     - Depends on: ui's alignment lines (`AlignmentLine`, `FirstBaseline`/`LastBaseline` in measure results, text reporting baselines; ui and text ledgers).
@@ -544,7 +544,7 @@ Each entry gives the Compose API, what it does, the test files that need it (by 
     - API: the insets API above.
     - Tests: WindowInsetsTest, WindowInsetsPaddingTest (42 of 50), WindowInsetsSizeTest, WindowInsetsIgnoringVisibilityTest. On a device, to run: WindowInsetsDeviceTest, WindowInsetsListenerUnsetTest. `imeNestedScroll` and WindowInsetsControllerTest are **ime-nested-scroll** (D1361).
     - Size: L. Experimental: partly (`MutableWindowInsets`).
-29. **flexbox.**
+29. **flexbox.** Done (D1367).
     - API: `FlexBox` and its configs.
     - Tests: FlexBoxTest, FlexBoxDirectionTest.
     - Depends on: alignment-lines (baseline tests), intrinsics (done).
@@ -593,7 +593,7 @@ Each entry gives the Compose API, what it does, the test files that need it (by 
 9. **transformable** (M) and **scrollable2d** (M), after ui's multi-pointer events.
 10. **pinnable** (M), **beyond-bounds-api** (M), **animate-item** (L).
 11. **pager** (XL), then **staggered-grid** (L–XL).
-12. **window-insets** (L, done), **flexbox** (L), **grid-layout** (L–XL), **ruler-fit** (M), **system-gesture-exclusion** (S).
+12. **window-insets** (L, done), **flexbox** (L, done, D1367), **grid-layout** (L–XL), **ruler-fit** (M), **system-gesture-exclusion** (S).
 13. **lazy-layout-public** (XL), after a design decision on composing during measurement.
 
 ## Notes for the porting agents

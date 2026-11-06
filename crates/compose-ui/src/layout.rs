@@ -353,6 +353,21 @@ impl IntrinsicMeasureScope<'_> {
         self.tree.node(measurable.node).parent_data
     }
 
+    /// The fractions its outermost `fill_max_width` and `fill_max_height` fill, horizontally and
+    /// vertically, as Compose's `FillModifierParentData`: what `FlexBox` grows a child by when it
+    /// sets no grow of its own. Read from its modifier when asked, so that layouts that don't ask
+    /// pay nothing.
+    pub fn fill_fractions(&self, measurable: Measurable) -> (Option<f32>, Option<f32>) {
+        let mut fractions = (None, None);
+        for element in self.tree.node(measurable.node).modifier.elements() {
+            if let crate::modifier::Element::Fill(fill) = element {
+                fractions.0 = fractions.0.or(fill.horizontal);
+                fractions.1 = fractions.1.or(fill.vertical);
+            }
+        }
+        fractions
+    }
+
     /// The smallest width `measurable` can take at `height` and still paint its content
     /// correctly, as `IntrinsicMeasurable.minIntrinsicWidth`.
     pub fn min_intrinsic_width(&mut self, measurable: IntrinsicMeasurable, height: i32) -> i32 {
@@ -655,6 +670,16 @@ impl<'a> MeasureScope<'a> {
             })
             .expect("compose-ui: its parent data says it has one");
         (block.1)(&mut Measured { scope: self, placeable })
+    }
+
+    /// Runs `block` on `placeable` as a `Measured`, as Compose's `AlignmentLineProvider.Block`
+    /// does for a layout reading a line a block of its own gives (`FlexBox`'s `alignItems`).
+    pub fn with_measured<R>(
+        &mut self,
+        placeable: &Placeable,
+        block: impl FnOnce(&mut Measured<'_, '_>) -> R,
+    ) -> R {
+        block(&mut Measured { scope: self, placeable })
     }
 
     /// `ModifierNode::baselines` of the node measuring changed, or came: who read one hears.

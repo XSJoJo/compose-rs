@@ -12,6 +12,8 @@ mod draggable_2d;
 mod draw_modifiers;
 mod drawing_api;
 mod effects;
+mod flex_box;
+mod flex_box_direction;
 mod fling;
 mod flow_layout;
 mod focus_model;
