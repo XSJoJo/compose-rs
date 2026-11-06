@@ -235,15 +235,15 @@ impl BringIntoViewResponderNode for ResponderNode {
 
     fn bring_child_into_view(
         &mut self,
-        _rect: Rect,
+        rect: Rect,
         _parent: Rect,
         bounds: BringIntoViewBounds,
         _scope: &BringIntoViewScope,
     ) -> Option<LocalBoxFuture<'static, ()>> {
         let responder = self.0.clone();
         // A read while the tree is busy (from inside another read of it) gives the rect last
-        // read: the requester hasn't gone.
-        let last = Cell::new(None);
+        // read, the walk's before the first read: the requester hasn't gone.
+        let last = Cell::new(Some(rect));
         let local_rect: Rc<dyn Fn() -> Option<Rect>> = Rc::new(move || match bounds.read() {
             BoundsRead::Now(rect, _) => {
                 last.set(Some(rect));

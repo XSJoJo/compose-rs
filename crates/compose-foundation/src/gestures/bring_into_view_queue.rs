@@ -93,24 +93,50 @@ impl Drop for Wait {
 /// can't be told now (the tree is busy).
 pub(crate) type ReadBounds = Rc<dyn Fn() -> Option<Option<Rect>>>;
 
+/// Reads in a row that can't tell (the tree busy) after which a request is taken for one whose
+/// requester went: a tree busy at every read would otherwise keep its stale bounds forever. A
+/// read at a frame's end finds the tree free, so a few frames' worth.
+pub(crate) const MOST_BUSY_READS: u32 = 8;
+
 /// A request: how to read what to show, what it last read, and its requester's side.
 #[derive(Clone)]
 pub(crate) struct Request {
     read: ReadBounds,
     bounds: Rc<Cell<Option<Rect>>>,
+    /// The reads in a row that couldn't tell.
+    busy_reads: Rc<Cell<u32>>,
     pub(crate) continuation: Rc<Continuation>,
 }
 
 impl Request {
     /// A request reading its bounds with `read`, `bounds` until it's first read.
     pub(crate) fn new(read: ReadBounds, bounds: Option<Rect>) -> Request {
-        Request { read, bounds: Rc::new(Cell::new(bounds)), continuation: Rc::default() }
+        Request {
+            read,
+            bounds: Rc::new(Cell::new(bounds)),
+            busy_reads: Rc::default(),
+            continuation: Rc::default(),
+        }
     }
 
-    /// Reads its bounds again; when they can't be told now, they stay what they were.
-    pub(crate) fn refresh(&self) {
-        if let Some(bounds) = (self.read)() {
-            self.bounds.set(bounds);
+    /// Reads its bounds again; when they can't be told now, they stay what they were, until
+    /// [`MOST_BUSY_READS`] reads in a row couldn't: then it's taken for gone. Returns whether
+    /// the read told.
+    pub(crate) fn refresh(&self) -> bool {
+        match (self.read)() {
+            Some(bounds) => {
+                self.busy_reads.set(0);
+                self.bounds.set(bounds);
+                true
+            }
+            None => {
+                let busy_reads = self.busy_reads.get() + 1;
+                self.busy_reads.set(busy_reads);
+                if busy_reads >= MOST_BUSY_READS {
+                    self.bounds.set(None);
+                }
+                false
+            }
         }
     }
 
@@ -378,6 +404,36 @@ mod tests {
         assert!(queue.enqueue(request.clone()));
         queue.resume_and_remove_while(|request| request.bounds().is_none());
         assert!(request.continuation.is_active());
+    }
+
+    // compose-rs's own: a request whose reads can't tell, read after read, is taken for one whose
+    // requester went once they reach the cap, rather than keeping stale bounds forever; a read
+    // that tells starts the count again.
+    #[test]
+    fn reads_that_cant_tell_past_the_cap_are_a_requester_gone() {
+        let busy = Rc::new(Cell::new(false));
+        let reads = busy.clone();
+        let rect = Rect::new(0.0, 0.0, 1.0, 1.0);
+        let request =
+            Request::new(Rc::new(move || if reads.get() { None } else { Some(Some(rect)) }), None);
+        request.refresh();
+        busy.set(true);
+        for _ in 1..MOST_BUSY_READS {
+            request.refresh();
+        }
+        assert_eq!(request.bounds(), Some(rect), "under the cap");
+        busy.set(false);
+        request.refresh();
+        busy.set(true);
+        for _ in 1..MOST_BUSY_READS {
+            request.refresh();
+        }
+        assert_eq!(request.bounds(), Some(rect), "counted again after a read that told");
+        request.refresh();
+        assert_eq!(request.bounds(), None, "at the cap");
+        let mut queue = BringIntoViewRequestPriorityQueue::default();
+        assert!(!queue.enqueue(request.clone()));
+        assert_eq!(request.continuation.outcome(), Outcome::Resumed);
     }
 
     // Compose: compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/gestures/BringIntoViewRequestPriorityQueueTest.kt, enqueuedRequest_isRemoved_whenCancelled

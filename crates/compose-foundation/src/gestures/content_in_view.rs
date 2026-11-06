@@ -251,11 +251,18 @@ impl ContentInView {
         }
     }
 
-    /// Reads every request's bounds again, outside the queue.
-    fn refresh(&self) -> Vec<Request> {
+    /// Reads every request's bounds again, outside the queue; `at_frame_end`, where the tree is
+    /// free, every read tells.
+    fn refresh(&self, at_frame_end: bool) -> Vec<Request> {
         let requests = self.requests.borrow_mut().snapshot();
         for request in &requests {
-            request.refresh();
+            let told = request.refresh();
+            // A tree busy at a frame's end is a bug; the cap on reads that can't tell
+            // (`MOST_BUSY_READS`) would otherwise take the request for gone frames later.
+            debug_assert!(
+                told || !at_frame_end,
+                "a bring-into-view request's bounds couldn't be read at the frame's end"
+            );
         }
         requests
     }
@@ -281,7 +288,7 @@ impl ContentInView {
         Box::pin(async move {
             let wait = request.continuation.clone().wait();
             // Where it and the others are now (it may be gone already: resumed at once).
-            this.refresh();
+            this.refresh(false);
             request.refresh();
             let enqueued = this.requests.borrow_mut().enqueue(request);
             if enqueued && !this.animating.get() {
@@ -344,7 +351,7 @@ impl ContentInView {
     /// first, as `resumeAndRemoveWhile { it == null || isMaxVisible(it) }`: each decided with
     /// nothing borrowed, then resumed if it's still the smallest.
     fn resume_shown(&self, spec: &dyn BringIntoViewSpec) {
-        let requests = self.refresh();
+        let requests = self.refresh(true);
         let shown: Vec<&Request> = requests
             .iter()
             .rev()
@@ -380,7 +387,7 @@ impl ContentInView {
             let (animation, spec, frames) = (&animation, &*spec, &frames);
             let scrolled = state
                 .scroll(MutatePriority::Default, move |scroll| async move {
-                    this.refresh();
+                    this.refresh(false);
                     animation.set_value(this.scroll_delta(spec));
                     animation
                         .animate_to_zero(
