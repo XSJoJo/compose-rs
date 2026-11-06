@@ -17,6 +17,7 @@ mod animated_shape;
 mod app_bar;
 mod bottom_sheet_scaffold;
 mod button;
+mod button_group;
 #[doc(hidden)]
 pub mod calendar_model;
 mod checkbox;
@@ -70,6 +71,10 @@ pub use bottom_sheet_scaffold::{
 pub use button::{
     Button, ButtonColors, ButtonDefaults, ButtonElevation, ButtonShapes, ElevatedButton,
     FilledTonalButton, OutlinedButton, TextButton,
+};
+pub use button_group::{
+    ButtonGroup, ButtonGroupDefaults, ButtonGroupMenuState, ButtonGroupModifiers,
+    ButtonGroupOverflowIndicator, ButtonGroupScope,
 };
 pub use checkbox::{Checkbox, CheckboxColors, CheckboxDefaults, TriStateCheckbox};
 pub use chips::{

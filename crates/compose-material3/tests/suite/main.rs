@@ -9,6 +9,8 @@ mod app_bar_port;
 mod app_bars;
 mod app_bars_expressive;
 mod bottom_sheet_scaffold;
+mod button_group;
+mod button_group_screenshots;
 mod button_shapes;
 mod buttons;
 mod calendar_model;
