@@ -866,15 +866,15 @@ impl Modifier {
     /// Blurs the content by `radius_x` and `radius_y`, its edges by `edge_treatment`, as
     /// `Modifier.blur(radiusX, radiusY, edgeTreatment)`: a graphics layer with a blur effect,
     /// clipped to the treatment's shape (its edge pixels repeated into the blur) or not
-    /// (blurring from transparent, past the bounds). None for a radius that isn't above 0, as
-    /// Compose's.
+    /// (blurring from transparent, past the bounds). For a radius that isn't above 0, no blur:
+    /// only the clip to the shape, if any, as Compose's (none at all without one).
     pub fn blur_with(
         self,
         radius_x: crate::unit::Dp,
         radius_y: crate::unit::Dp,
         edge_treatment: BlurredEdgeTreatment,
     ) -> Modifier {
-        if !(radius_x.0 > 0.0 && radius_y.0 > 0.0) {
+        if !(radius_x.0 > 0.0 && radius_y.0 > 0.0) && edge_treatment.shape.is_none() {
             return self;
         }
         let tile_mode = edge_treatment.tile_mode();

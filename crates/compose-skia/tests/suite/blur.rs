@@ -134,3 +134,42 @@ fn an_unbounded_blur_bleeds_past_its_edges() {
     let bled = outside(BlurredEdgeTreatment::UNBOUNDED);
     assert!(bled.red() < 235 && bled.blue() > bled.red(), "blue bleeds out: {bled:?}");
 }
+
+/// A blur of no radius with a shape blurs nothing but still clips to the shape, as Compose's
+/// `Modifier.blur` keeps its layer (`|| clip`, `Blur.kt`): a drawing past the node's bounds is
+/// cut at them. Unbounded, it's no layer at all (`testNoopBlur`).
+#[test]
+fn a_blur_of_no_radius_still_clips_to_its_shape() {
+    set_capture_renderer(compose_skia::raster_colors);
+    let past_the_edge = |treatment: BlurredEdgeTreatment| {
+        let mut ui = ComposeTestRule::sized(IntSize::new(100, 100), move || {
+            let treatment = treatment.clone();
+            Box!(
+                modifier = Modifier.test_tag("around").size(100.dp()).background(Color::WHITE),
+                content_alignment = compose::ui::Alignment::CENTER,
+                {
+                    Box!(
+                        modifier = Modifier
+                            .size(50.dp())
+                            .blur_with(Dp(0.0), Dp(0.0), treatment.clone())
+                            .draw_behind(|scope| {
+                                let size = scope.size();
+                                let outside = compose::ui::Rect::new(
+                                    -10.0,
+                                    -10.0,
+                                    size.width + 10.0,
+                                    size.height + 10.0,
+                                );
+                                scope.draw_rect(outside, Paint::fill(Color::BLUE));
+                            })
+                    );
+                }
+            );
+        });
+        let image = ui.on_node_with_tag("around").capture_to_image();
+        image.assert_pixel_color(Color::BLUE, 50, 50);
+        image.pixel(20, 50)
+    };
+    assert_eq!(past_the_edge(BlurredEdgeTreatment::RECTANGLE), Color::WHITE);
+    assert_eq!(past_the_edge(BlurredEdgeTreatment::UNBOUNDED), Color::BLUE);
+}
