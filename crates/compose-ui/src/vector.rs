@@ -687,33 +687,71 @@ impl RenderGroup {
         })
     }
 
-    fn draw(&self, scope: &mut DrawScope<'_>) {
+    /// Whether a group in it rotates.
+    fn rotates(&self) -> bool {
+        self.transform.is_some_and(|(_, _, rotation, _)| rotation != 0.0)
+            || self.children.iter().any(|child| match child {
+                RenderNode::Group(group) => group.rotates(),
+                RenderNode::Path(_) => false,
+            })
+    }
+
+    /// Draws it with its viewport scaled by `scale`, in the drawing's pixels: each path scaled
+    /// by its `DrawPath` (Android draws a small one from a mask at that size, D190), each
+    /// group's transform and clip moved to pixels. Exact for any group transform when the
+    /// scale is uniform, and for any without rotation; a gradient's path is drawn under the
+    /// scale, its positions in the viewport (`viewport`, its default extent).
+    fn draw(&self, scope: &mut DrawScope<'_>, scale: (f32, f32), viewport: Size) {
+        let scaled = |point: Offset| Offset::new(point.x * scale.0, point.y * scale.1);
         let saved = self.transform.is_some() || self.clip.is_some();
         if saved {
             scope.save();
         }
-        if let Some((pivot, scale, rotation, translation)) = self.transform {
-            scope.transform(pivot, scale, rotation, translation);
+        if let Some((pivot, group_scale, rotation, translation)) = self.transform {
+            scope.transform(scaled(pivot), group_scale, rotation, scaled(translation));
         }
         if let Some(clip) = &self.clip {
+            let clip = if scale == (1.0, 1.0) {
+                Arc::clone(clip)
+            } else {
+                let path = crate::path::Path::from_shared_data(Arc::clone(clip));
+                path.transform(&crate::path::Matrix::scaling(scale.0, scale.1));
+                path.data()
+            };
             let offset = scope.origin;
-            scope.list.push(DrawOp::ClipPath { path: Arc::clone(clip), offset });
+            scope.list.push(DrawOp::ClipPath { path: clip, offset });
         }
         for child in &self.children {
-            match child {
-                RenderNode::Group(group) => group.draw(scope),
-                RenderNode::Path(path) => {
-                    if let Some((brush, alpha)) = &path.fill {
-                        let paint = scope.brush_paint(brush, *alpha, PaintStyle::Fill);
-                        scope.draw_path(&path.path, paint);
-                    }
-                    if let Some((brush, alpha, width, cap)) = &path.stroke {
-                        let mut paint =
-                            scope.brush_paint(brush, *alpha, PaintStyle::Stroke(*width));
-                        paint.cap = *cap;
-                        scope.draw_path(&path.path, paint);
-                    }
+            let RenderNode::Path(path) = child else {
+                if let RenderNode::Group(group) = child {
+                    group.draw(scope, scale, viewport);
                 }
+                continue;
+            };
+            let fill = path
+                .fill
+                .as_ref()
+                .map(|(brush, alpha)| (brush, *alpha, PaintStyle::Fill, StrokeCap::Butt));
+            let stroke = path.stroke.as_ref().map(|(brush, alpha, width, cap)| {
+                (brush, *alpha, PaintStyle::Stroke(*width), *cap)
+            });
+            for (brush, alpha, style, cap) in fill.into_iter().chain(stroke) {
+                if let Brush::Solid(_) = brush {
+                    let mut paint = Paint::fill(brush.color(alpha));
+                    paint.style = style;
+                    paint.cap = cap;
+                    scope.draw_path_scaled(&path.path, Offset::ZERO, scale, paint);
+                    continue;
+                }
+                scope.save();
+                scope.transform(Offset::ZERO, scale, 0.0, Offset::ZERO);
+                let drawn = scope.size;
+                scope.size = viewport;
+                let mut paint = scope.brush_paint(brush, alpha, style);
+                paint.cap = cap;
+                scope.draw_path(&path.path, paint);
+                scope.size = drawn;
+                scope.restore();
             }
         }
         if saved {
@@ -1013,23 +1051,20 @@ impl VectorPainter {
             let center = Offset::new(size.width / 2.0, size.height / 2.0);
             scope.transform(center, (-1.0, 1.0), 0.0, Offset::ZERO);
         }
-        match &data.solid_fills {
+        let viewport = Size::new(data.viewport_width, data.viewport_height);
+        if let Some(fills) = &data.solid_fills {
             // Each path scaled itself, as Android draws a small one from a mask (D190).
-            Some(fills) => {
-                for (path, color) in fills {
-                    scope.draw_path_scaled(path, Offset::ZERO, scale, Paint::fill(*color));
-                }
+            for (path, color) in fills {
+                scope.draw_path_scaled(path, Offset::ZERO, scale, Paint::fill(*color));
             }
-            None => {
-                scope.save();
-                scope.transform(Offset::ZERO, scale, 0.0, Offset::ZERO);
-                // A brush's default extent is the viewport, where its paths are.
-                let drawn = scope.size;
-                scope.size = Size::new(data.viewport_width, data.viewport_height);
-                data.render.draw(scope);
-                scope.size = drawn;
-                scope.restore();
-            }
+        } else if scale.0 == scale.1 || !data.render.rotates() {
+            data.render.draw(scope, scale, viewport);
+        } else {
+            // A rotation under a stretch: the whole viewport scaled.
+            scope.save();
+            scope.transform(Offset::ZERO, scale, 0.0, Offset::ZERO);
+            data.render.draw(scope, (1.0, 1.0), viewport);
+            scope.restore();
         }
         if mirrored {
             scope.restore();

@@ -548,3 +548,34 @@ fn a_groups_transform_applies_around_its_pivot() {
     assert_ne!(image.pixel(5, 5), Color::RED, "moved down");
     assert_ne!(image.pixel(50, 65), Color::RED, "half as high as wide");
 }
+
+/// A rotated group in a vector stretched unevenly is drawn under the stretch: its square,
+/// a half turn around the center, still fills the stretched bounds.
+#[test]
+fn a_rotated_group_is_stretched_with_its_vector() {
+    let vector = ImageVector::builder(24.dp(), 24.dp(), 24.0, 24.0)
+        .group(
+            VectorGroup { rotation: 180.0, pivot_x: 12.0, pivot_y: 12.0, ..Default::default() },
+            |group| {
+                group.add_path(VectorPath {
+                    path_data: rectangle(24.0, 12.0),
+                    fill: Some(Brush::solid(Color::BLUE)),
+                    ..Default::default()
+                });
+            },
+        )
+        .build();
+    let mut ui = painted(300, move || {
+        let painter = remember_vector_painter(&vector);
+        PainterImage!(
+            painter,
+            None::<&str>,
+            modifier = Modifier.test_tag(TAG).size((192.dp(), 48.dp())).background(Color::RED),
+            content_scale = ContentScale::FillBounds
+        );
+    });
+    let image = capture(&mut ui);
+    image.assert_pixel_color(Color::RED, 96, 10);
+    image.assert_pixel_color(Color::BLUE, 96, 38);
+    image.assert_pixel_color(Color::BLUE, 2, 46);
+}
