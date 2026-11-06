@@ -89,7 +89,7 @@ pub(crate) struct LookaheadState {
     content_placed_in: u64,
     measured_in: u64,
     measured_in_block: bool,
-    motion_layers: u8,
+    motion_layers: u32,
     intrinsics_asked: bool,
     children_intrinsics_asked: bool,
 }
@@ -405,13 +405,14 @@ impl UiTree {
         let mut sum = IntOffset::ZERO;
         loop {
             let value = self.node(current);
-            let (layers, motion): (&[Layer], u8) = match (self.in_lookahead, &value.lookahead) {
+            let (layers, motion): (&[Layer], u32) = match (self.in_lookahead, &value.lookahead) {
                 (false, Some(state)) => (&state.layers, state.motion_layers),
                 _ => (&value.layers, value.motion_layers),
             };
             // What a scroll moved isn't a move, if so asked (`includeMotionFrameOfReference`).
-            let counted =
-                |at: usize, motion: u8| include_motion || at >= 8 || motion & (1 << at) == 0;
+            let counted = |at: usize, motion: u32| {
+                include_motion || at >= crate::tree::MOTION_LAYERS || motion & (1 << at) == 0
+            };
             for (at, entry) in layers.iter().enumerate().take(layer + 1).skip(1) {
                 if counted(at, motion) {
                     sum = sum + entry.offset;
@@ -419,7 +420,7 @@ impl UiTree {
             }
             if self.is_outermost_lookahead_root(current) {
                 // Its position's the other pass's, as `placeSelf`.
-                let (now, now_motion): (&[Layer], u8) = match (self.in_lookahead, &value.lookahead)
+                let (now, now_motion): (&[Layer], u32) = match (self.in_lookahead, &value.lookahead)
                 {
                     (true, Some(state)) => (&state.layers, state.motion_layers),
                     _ => (&value.layers, value.motion_layers),

@@ -1595,3 +1595,42 @@ fn a_draw_node_hears_of_a_new_size_now_only() {
     });
     assert_eq!(heard.get(), 1);
 }
+
+/// A scroll past a node's eighth layout modifier is a scroll too: left out of a lookahead position
+/// if so asked, as one in its first (D1225).
+#[test]
+fn a_scroll_deep_in_a_chain_is_left_out_of_a_lookahead_position_if_asked() {
+    type Kept = Rc<Cell<Option<(LookaheadScope, LayoutCoordinates)>>>;
+    let (outer, inner): (Kept, Kept) = (Rc::default(), Rc::default());
+    let (o, i) = (outer.clone(), inner.clone());
+    let _host = host(move || {
+        let (o, i) = (o.clone(), i.clone());
+        scoped(move |scope| {
+            let (o, i) = (o.clone(), i.clone());
+            let mut chain =
+                Modifier.on_placed(move |it: LayoutCoordinates| o.set(Some((scope, it))));
+            for _ in 0..10 {
+                chain = chain.layout(|scope, measurable, constraints| {
+                    let placeable = scope.measure(measurable, constraints);
+                    scope.layout_with(placeable.width, placeable.height, move |placement| {
+                        placement.place(&placeable, 0, 0);
+                    })
+                });
+            }
+            let scrolled = Modifier.layout(|scope, measurable, constraints| {
+                let placeable = scope.measure(measurable, constraints);
+                scope.with_motion_frame_of_reference_placement(|scope| {
+                    scope.place(&placeable, 0, -50);
+                });
+                scope.layout(placeable.width, placeable.height)
+            });
+            let inner = Modifier.on_placed(move |it: LayoutCoordinates| i.set(Some((scope, it))));
+            leaf(chain.then(scrolled).then(inner).then(sized(5)));
+        });
+    });
+    let (scope, outer) = outer.get().expect("placed");
+    let (_, inner) = inner.get().expect("placed");
+    let at = |include| scope.local_lookahead_position_of_with(outer, inner, Offset::ZERO, include);
+    assert_eq!(at(true), Offset::new(0.0, -50.0));
+    assert_eq!(at(false), Offset::ZERO);
+}
