@@ -379,6 +379,8 @@ pub struct UiTree {
     pub(crate) uri_handler: Rc<dyn crate::platform_services::UriHandler>,
     pub(crate) platform_uri_handler: crate::platform_services::PlatformUriHandler,
     pub(crate) haptic_feedback: Rc<dyn crate::platform_services::HapticFeedback>,
+    /// The platform's edge effects, if it has any: overscroll's default on Android.
+    pub(crate) edge_effects: Option<Rc<crate::edge_effect::PlatformEdgeEffects>>,
     pub(crate) density: Density,
     /// The host's view configuration, if it set one (else Android's at the density, D907).
     pub(crate) view_configuration: Option<crate::view_configuration::ViewConfiguration>,
@@ -600,6 +602,7 @@ impl UiTree {
             uri_handler: Rc::new(crate::platform_services::PlatformUriHandler::headless()),
             platform_uri_handler: crate::platform_services::PlatformUriHandler::headless(),
             haptic_feedback: Rc::new(crate::platform_services::NoHapticFeedback),
+            edge_effects: None,
             density,
             view_configuration: None,
             display_list: DisplayList::default(),

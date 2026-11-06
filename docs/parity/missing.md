@@ -10,7 +10,7 @@ These are on local branches, so they're not lost, but each still has to finish i
 
 | Work | Branch | State |
 |---|---|---|
-| Stretch and glow overscroll | `worktree-agent-ad25708f190fdec81` | Being built, not reviewed. Design: [stretch-overscroll.md](design/stretch-overscroll.md). |
+| Stretch and glow overscroll | `worktree-agent-ad25708f190fdec81` | Built (D1473 to D1476), reviewed, the review's fixes in (a finger going back in one batch, a drop guard); checked on a phone at API 37. To merge. Design and what held: [stretch-overscroll.md](design/stretch-overscroll.md). |
 
 ## The big missing things
 
@@ -26,7 +26,7 @@ These are on local branches, so they're not lost, but each still has to finish i
 - **Shared elements and `animateBounds`** (about 95), which wait on lookahead.
 - **`Modifier.onLayoutRectChanged` and its callbacks** (about 160).
 - **Android view interop**, `AndroidView` and hosting (about 280).
-- **Runtime:** composition registration observers (`Recomposer.observe`, about 11), error traces (about 33), composition data (about 15).
+- **Runtime:** composition registration observers (`Recomposer.observe`, about 11), error traces of what runs after a pass (11), composition data (about 15).
 
 ### 3. Graphics
 - **`GraphicsLayer` as an object** (about 95), **color spaces** (about 70), offscreen canvas and bitmaps.
@@ -37,7 +37,8 @@ These are on local branches, so they're not lost, but each still has to finish i
 
 ### 4. Foundation
 - **Style API** (about 160), **border parity** (about 80).
-- **Gestures and scrolling:** `transformable`'s trackpad pans and scales (7, with pointer-input-types; the rest is in, D1369), 2D scrolling (about 45), `bringIntoView` (about 90 across two rows), public lazy layout API (about 40), `BeyondBoundsLayout` (about 35).
+- **Overscroll's pixels:** `StretchOverscrollScreenshotTest` and `OverscrollTest`'s drawing tests have no port (a phone check stands for them). Lists and `vertical_scroll` clip both axes at rest, without `clipScrollableContainer`, so shadows across their axis are clipped where Compose's aren't.
+- **Gestures and scrolling:** `transformable`'s trackpad pans and scales (7, with pointer-input-types; the rest is in, D1369), 2D scrolling's remaining tests (about 20: semantics with nested scrolls, fling cancellations, the trackpad; D1370), `bringIntoView` (about 90 across two rows), public lazy layout API (about 40), `BeyondBoundsLayout` (about 35).
 
 ### 5. Material 3
 - **Whole components missing:** carousel (about 100), floating toolbar (about 80), search bar (about 65), wide navigation rail (about 45), wavy progress (about 45), short navigation bar (about 35), loading indicator (about 20), FAB menu (about 15).
@@ -61,6 +62,7 @@ Written and tested on the host, but not yet confirmed on a phone:
 - **A keyboard that really composes.** Gboard on the test phone doesn't compose, so long-lived composition hasn't run on a real keyboard (D1671).
 - A real D-pad and a real mouse, rotation, voice typing.
 - Android's real `RippleDrawable` (`feature:android-platform-ripple`).
+- **Overscroll's glow** (API 29 and 30): Compose's code path, built and linted, tested on a fake only; the stretch was checked on API 37.
 
 ## Known costs against Compose's shape
 

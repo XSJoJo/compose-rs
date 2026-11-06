@@ -93,6 +93,12 @@ pub(crate) struct Runtime {
     pub branch_removal: crate::composer::NodeOp,
     /// Body runs per composable, while tracking is on (`track_recompositions`).
     pub recomposition_counts: Option<std::collections::HashMap<&'static str, u64>>,
+    /// What a diagnostic stack trace says (`stack_trace`).
+    pub stack_trace_mode: crate::stack_trace::ComposeStackTraceMode,
+    /// The last trace made, or the one being made.
+    pub stack_trace: Option<Box<crate::stack_trace::PendingTrace>>,
+    /// Traces begun on this thread (`compose_stack_trace_sequence`).
+    pub stack_trace_sequence: u64,
     /// A group guard was dropped by an unwinding panic in this pass, leaving its group open.
     pub abandoned_groups: bool,
     /// The depth (`frames.len()`) of the reusable group whose content is being reused, or 0:
@@ -160,6 +166,9 @@ impl Runtime {
             node_changes: 0,
             branch_removal: crate::composer::NodeOp::None,
             recomposition_counts: None,
+            stack_trace_mode: crate::stack_trace::ComposeStackTraceMode::Auto,
+            stack_trace: None,
+            stack_trace_sequence: 0,
             abandoned_groups: false,
             reusing: 0,
             providers_invalid: 0,

@@ -2775,3 +2775,82 @@ fn an_alpha_animation_over_a_cut_shape_keeps_its_path() {
         assert!(!serialized.resources.has_pending(), "nothing defined again");
     }
 }
+
+// ---- Edge effects (D1475) ---------------------------------------------------------------------
+
+/// A list whose bottom edge can be pulled: the effect and its fake platform's.
+fn stretching_list()
+-> (Serialized, Rc<dyn compose_foundation::OverscrollEffect>, Rc<compose_test::FakeEdgeEffects>) {
+    use compose_foundation::LazyColumn;
+    use compose_foundation::lazy::LazyListScope;
+    use compose_foundation::{
+        EdgeEffectOverscrollFactory, LOCAL_OVERSCROLL_FACTORY, OverscrollFactory,
+        remember_overscroll_effect,
+    };
+    let fake = compose_test::FakeEdgeEffects::stretch();
+    let factory: Rc<dyn OverscrollFactory> =
+        Rc::new(EdgeEffectOverscrollFactory::new(fake.clone()));
+    let kept = Rc::new(std::cell::RefCell::new(None));
+    let into = kept.clone();
+    let serialized = Serialized::new(move || {
+        let into = into.clone();
+        compose_runtime::CompositionLocalProvider(
+            LOCAL_OVERSCROLL_FACTORY.provides(Some(factory.clone())),
+            move || {
+                let effect = remember_overscroll_effect();
+                *into.borrow_mut() = effect.clone();
+                LazyColumn!(
+                    modifier = Modifier.fill_max_size(),
+                    overscroll_effect = effect,
+                    content = |scope: LazyListScope| {
+                        scope.items(100, |_| {
+                            Leaf(Modifier.height(50.dp()).then(painted(|| Color::RED)))
+                        });
+                    }
+                );
+            },
+        );
+    });
+    let effect = kept.borrow().clone().expect("the effect");
+    (serialized, effect, fake)
+}
+
+fn pull(effect: &Rc<dyn compose_foundation::OverscrollEffect>) {
+    effect.apply_to_scroll(Offset::new(0.0, 40.0), NestedScrollSource::UserInput, &mut |_| {
+        Offset::ZERO
+    });
+}
+
+fn has_edge_effects(items: &[Item]) -> bool {
+    all_operations(items).contains(&tag::BEGIN_EDGE_EFFECTS)
+}
+
+#[test]
+fn a_list_at_rest_writes_no_edge_effects() {
+    let (mut serialized, _effect, fake) = stretching_list();
+    let (_, items) = read(&serialized.frame());
+    assert!(!has_edge_effects(&items));
+    assert_eq!(fake.made(), 0);
+}
+
+#[test]
+fn a_stretching_list_is_written_again_each_frame_its_items_kept() {
+    let (mut serialized, effect, fake) = stretching_list();
+    pull(&effect);
+    let (_, first) = read(&serialized.frame());
+    assert!(has_edge_effects(&first), "drawn under the effects");
+    assert!(serialized.host.needs_frame(), "it asks for the next while it isn't over");
+    let (_, second) = read(&serialized.frame());
+    assert!(has_edge_effects(&second));
+    let (outer, inner) = (groups(&first), groups(&second));
+    assert_eq!(outer.len(), inner.len());
+    assert!(outer.len() > 2, "items are groups: {outer:?}");
+    // The list's own group is drawn again; its items aren't.
+    let changed: Vec<_> = outer.iter().zip(&inner).filter(|(a, b)| a != b).collect();
+    assert_eq!(changed.len(), 1, "{outer:?} {inner:?}");
+    // Over: a frame sees it, and then there's none to ask for.
+    fake.at(compose_ui::EdgeEffectSide::Top).expect("pulled").finish();
+    let (_, over) = read(&serialized.frame());
+    assert!(!has_edge_effects(&over));
+    assert!(!serialized.host.needs_frame());
+}

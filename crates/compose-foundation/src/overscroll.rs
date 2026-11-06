@@ -1,11 +1,11 @@
 //! What a scroll does past its bounds, as Compose's `Overscroll.kt`: an [`OverscrollEffect`] takes a
 //! scrollable's deltas and velocities around the scrolling, and draws by [`Modifier::overscroll`]
-//! (D1464).
+//! (D1464). A platform's edge effects are one such effect, in `edge_effect_overscroll.rs`.
 
 use std::rc::Rc;
 
 use compose_runtime::{CompositionLocal, composable};
-use compose_ui::{Modifier, NestedScrollSource, Offset, Velocity};
+use compose_ui::{Density, DrawScope, IntSize, Modifier, NestedScrollSource, Offset, Velocity};
 
 use crate::gestures::LocalBoxFuture;
 
@@ -45,6 +45,37 @@ pub trait OverscrollEffect {
     fn modifier(&self) -> Modifier {
         Modifier
     }
+
+    /// What draws it for a node that holds it itself, as a node delegating to `node`: a
+    /// `vertical_scroll` reading the local factory at a press has no chain to add a modifier to
+    /// (D1464, D1465). `None` for an effect that doesn't draw that way.
+    fn node(&self) -> Option<Rc<dyn OverscrollNode>> {
+        None
+    }
+}
+
+/// An effect's `node`, called by the node that holds it.
+pub trait OverscrollNode {
+    /// The holder was attached, or reached it: returns whether it draws the effect. Only the first
+    /// to attach does, as Compose's `node` attaches once and a second `Modifier.overscroll` adds
+    /// nothing.
+    fn attach(&self, handle: compose_ui::NodeHandle) -> bool;
+    /// The holder that drew it left.
+    fn detach(&self);
+    /// Before its holder's content.
+    fn draw(&self, scope: &mut DrawScope<'_>);
+    /// After its holder's content.
+    fn draw_after(&self, scope: &mut DrawScope<'_>);
+    /// A pointer's event in the holder of `bounds`, as its pointer input.
+    fn on_pointer_event(
+        &self,
+        event: &compose_ui::PointerEvent,
+        pass: compose_ui::PointerEventPass,
+        bounds: IntSize,
+        density: Density,
+    );
+    /// The pointers were taken away.
+    fn on_pointer_cancelled(&self);
 }
 
 /// An effect without one of its sides, as `withoutVisualEffect` and `withoutEventHandling`.
@@ -89,6 +120,10 @@ impl OverscrollEffect for WrappedOverscrollEffect {
     fn modifier(&self) -> Modifier {
         if self.draws { self.inner.modifier() } else { Modifier }
     }
+
+    fn node(&self) -> Option<Rc<dyn OverscrollNode>> {
+        if self.draws { self.inner.node() } else { None }
+    }
 }
 
 /// `effect` handling the events only: for a place drawing it another way, as `withoutVisualEffect`.
@@ -106,10 +141,14 @@ pub trait OverscrollFactory {
     fn create_overscroll_effect(&self) -> Rc<dyn OverscrollEffect>;
 }
 
-/// The factory of [`remember_overscroll_effect`], as `LocalOverscrollFactory`. None by default:
-/// Android's stretch and glow, which Compose's default gives, are yet to come (D1464).
+/// The factory of [`remember_overscroll_effect`], as `LocalOverscrollFactory`. By default the edge
+/// effects of the host, if it has any: Android's stretch and glow, as Compose's default gives; none
+/// elsewhere, as Compose's non-Android stub.
 pub static LOCAL_OVERSCROLL_FACTORY: CompositionLocal<Option<Rc<dyn OverscrollFactory>>> =
-    CompositionLocal::new("LOCAL_OVERSCROLL_FACTORY", || None);
+    CompositionLocal::new(
+        "LOCAL_OVERSCROLL_FACTORY",
+        crate::edge_effect_overscroll::default_overscroll_factory,
+    );
 
 /// An effect of [`LOCAL_OVERSCROLL_FACTORY`]'s, the same until the factory changes, as
 /// `rememberOverscrollEffect`.

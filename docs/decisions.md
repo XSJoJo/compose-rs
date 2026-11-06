@@ -17,11 +17,11 @@ The log is split by area into the files below, one table each, rows in number or
 
 | File | Covers | Rows |
 |---|---|---|
-| [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 174 |
-| [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 393 |
+| [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 176 |
+| [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 396 |
 | [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 73 |
-| [lazy-and-prefetch](decisions/lazy-and-prefetch.md) | Lazy lists and grids, item reuse, the policy of composing only what is in view, prefetch. | 103 |
-| [android-drawing](decisions/android-drawing.md) | The display list and its replayer, render nodes and repaint boundaries, paths, shadows, layers. | 29 |
+| [lazy-and-prefetch](decisions/lazy-and-prefetch.md) | Lazy lists and grids, item reuse, the policy of composing only what is in view, prefetch. | 104 |
+| [android-drawing](decisions/android-drawing.md) | The display list and its replayer, render nodes and repaint boundaries, paths, shadows, layers. | 30 |
 | [android-host-and-performance](decisions/android-host-and-performance.md) | The view and activity glue, the frame loop, the hint session, jank, startup, memory, and the optimization flags. | 31 |
 | [desktop](decisions/desktop.md) | The desktop host: window, Skia rendering, input and events. | 6 |
 | [benchmarks](decisions/benchmarks.md) | The benchmark apps, protocols and rounds, and how results are read. | 35 |
@@ -849,6 +849,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1367 | [ui-and-layout](decisions/ui-and-layout.md#d1367) | current |
 | D1368 | [ui-and-layout](decisions/ui-and-layout.md#d1368) | current |
 | D1369 | [ui-and-layout](decisions/ui-and-layout.md#d1369) | current |
+| D1370 | [ui-and-layout](decisions/ui-and-layout.md#d1370) | current |
 | D1400 | [api-and-tooling](decisions/api-and-tooling.md#d1400) | revised by [D1402](api-and-tooling.md#d1402), [D1403](api-and-tooling.md#d1403) |
 | D1401 | [api-and-tooling](decisions/api-and-tooling.md#d1401) | current |
 | D1402 | [api-and-tooling](decisions/api-and-tooling.md#d1402) | current |
@@ -879,8 +880,8 @@ The log is split by area into the files below, one table each, rows in number or
 | D1461 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1461) | current |
 | D1462 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1462) | current |
 | D1463 | [ui-and-layout](decisions/ui-and-layout.md#d1463) | current |
-| D1464 | [ui-and-layout](decisions/ui-and-layout.md#d1464) | current |
-| D1465 | [ui-and-layout](decisions/ui-and-layout.md#d1465) | current |
+| D1464 | [ui-and-layout](decisions/ui-and-layout.md#d1464) | revised by [D1476](decisions/ui-and-layout.md#d1476), [D1474](decisions/ui-and-layout.md#d1474) |
+| D1465 | [ui-and-layout](decisions/ui-and-layout.md#d1465) | revised by [D1474](decisions/ui-and-layout.md#d1474) |
 | D1466 | [ui-and-layout](decisions/ui-and-layout.md#d1466) | current |
 | D1467 | [ui-and-layout](decisions/ui-and-layout.md#d1467) | current |
 | D1468 | [ui-and-layout](decisions/ui-and-layout.md#d1468) | current |
@@ -888,6 +889,10 @@ The log is split by area into the files below, one table each, rows in number or
 | D1470 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1470) | current |
 | D1471 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1471) | current |
 | D1472 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1472) | current |
+| D1473 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1473) | current |
+| D1474 | [ui-and-layout](decisions/ui-and-layout.md#d1474) | current |
+| D1475 | [android-drawing](decisions/android-drawing.md#d1475) | current |
+| D1476 | [ui-and-layout](decisions/ui-and-layout.md#d1476) | current |
 | D1500 | [runtime](decisions/runtime.md#d1500) | current |
 | D1501 | [runtime](decisions/runtime.md#d1501) | current |
 | D1502 | [runtime](decisions/runtime.md#d1502) | current |
@@ -895,6 +900,8 @@ The log is split by area into the files below, one table each, rows in number or
 | D1504 | [runtime](decisions/runtime.md#d1504) | current |
 | D1505 | [runtime](decisions/runtime.md#d1505) | current |
 | D1506 | [runtime](decisions/runtime.md#d1506) | current |
+| D1507 | [runtime](decisions/runtime.md#d1507) | current |
+| D1508 | [runtime](decisions/runtime.md#d1508) | current |
 | D1550 | [ui-and-layout](decisions/ui-and-layout.md#d1550) | current |
 | D1551 | [ui-and-layout](decisions/ui-and-layout.md#d1551) | current |
 | D1552 | [ui-and-layout](decisions/ui-and-layout.md#d1552) | current |

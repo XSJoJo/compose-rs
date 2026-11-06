@@ -244,9 +244,17 @@ struct LazyListInner {
     scroll_outer: RefCell<Option<Outer>>,
 }
 
-/// The nested-scroll parents a delta came through, the list's axis, whether it runs against the
-/// pointer, and the delta's source.
-type Outer = (compose_ui::platform::NestedScrollChain, bool, bool, compose_ui::NestedScrollSource);
+/// What a delta came through: the nested-scroll parents, the list's axis, whether it runs against
+/// the pointer, the delta's source, and the overscroll effect around it, as far as a drag's or a
+/// fling's.
+#[derive(Clone)]
+struct Outer {
+    chain: compose_ui::platform::NestedScrollChain,
+    vertical: bool,
+    reverse: bool,
+    source: compose_ui::NestedScrollSource,
+    overscroll: Option<Rc<dyn crate::OverscrollEffect>>,
+}
 
 /// What's told of a list's measurements: a pager, whose pages and position depend on its size.
 trait ListObserver {
@@ -404,13 +412,15 @@ impl LazyListInner {
     }
 }
 
-/// A delta taken past an estimated end with nested-scroll parents around (D479): the parents,
-/// the axis and whether the list runs against the pointer, where the list was before it, and
-/// the pixels asked since.
+/// A delta taken past an estimated end with nested-scroll parents or an overscroll effect around
+/// (D479, D1473): the parents, the axis and whether the list runs against the pointer, the effect,
+/// where the list was before it, and the pixels asked since.
 struct Overshoot {
     chain: compose_ui::platform::NestedScrollChain,
     vertical: bool,
     reverse: bool,
+    overscroll: Option<Rc<dyn crate::OverscrollEffect>>,
+    list: LazyListState,
     from: (usize, f32),
     /// The first visible item's key then: `from` follows it when items come and go before it
     /// (D488).
@@ -429,8 +439,10 @@ impl Overshoot {
         (index, self.from.1)
     }
 
-    /// Offering its parents what wasn't used, `moved` of what was asked: their post-scroll,
-    /// to run once the layout is over; `None` if nothing is left.
+    /// Offering its parents what wasn't used, `moved` of what was asked: their post-scroll, then
+    /// the overscroll effect what they left, as a scroll consuming nothing: what Compose's gets in
+    /// `applyToScroll` itself, its scroll measuring at once. To run once the layout is over; `None`
+    /// if nothing is left.
     fn rest(self, moved: f32) -> Option<Box<dyn FnOnce()>> {
         let left = self.asked - moved;
         if left * self.asked <= 0.0 || left.abs() < 0.5 {
@@ -444,7 +456,21 @@ impl Overshoot {
             } else {
                 compose_ui::Offset::new(along, 0.0)
             };
-            self.chain.post_scroll(compose_ui::Offset::ZERO, available, self.source);
+            let taken = self.chain.post_scroll(compose_ui::Offset::ZERO, available, self.source);
+            if let Some(effect) = self.overscroll {
+                effect.apply_to_scroll(available - taken, self.source, &mut |_| {
+                    compose_ui::Offset::ZERO
+                });
+                // The gesture ended while this waited for its layout, its fling over: no fling's
+                // end is left to release what this pulled.
+                if !self.list.is_scroll_in_progress() {
+                    compose_runtime::CoroutineScope::new().launch(async move {
+                        let nothing: crate::PerformFling =
+                            Rc::new(|_| Box::pin(async { compose_ui::Velocity::ZERO }));
+                        effect.apply_to_fling(compose_ui::Velocity::ZERO, nothing).await;
+                    });
+                }
+            }
         }))
     }
 }
@@ -688,17 +714,8 @@ impl LazyListState {
     /// cuts the delta: the measurement takes it all, composing in the frame what it reaches,
     /// and stops at the end it finds (D476); what it couldn't use then goes to the nested-scroll
     /// parents `outer` names (the axis, and whether the list runs against the pointer), as
-    /// Compose's post-scroll (D479).
-    fn dispatch(
-        &self,
-        pixels: f32,
-        outer: Option<(
-            compose_ui::platform::NestedScrollChain,
-            bool,
-            bool,
-            compose_ui::NestedScrollSource,
-        )>,
-    ) -> f32 {
+    /// Compose's post-scroll (D479), then to its overscroll effect (D1473).
+    fn dispatch(&self, pixels: f32, outer: Option<Outer>) -> f32 {
         let Some(inner) = self.inner() else { return 0.0 };
         let (backward_estimated, forward_estimated) = inner.room_estimated.get();
         let (room, estimated) = if pixels > 0.0 {
@@ -708,21 +725,26 @@ impl LazyListState {
         };
         let used =
             if estimated { pixels } else { pixels.signum() * pixels.abs().min(room.max(0.0)) };
-        if estimated && let Some((chain, vertical, reverse, source)) = outer {
+        {
+            // Once one is open, every delta counts, estimated or not: a finger going back in the
+            // batch would otherwise leave what it took back as left over.
             let mut overshoot = inner.overshoot.borrow_mut();
-            match &mut *overshoot {
-                Some(overshoot) => overshoot.asked += used,
-                None => {
-                    *overshoot = Some(Overshoot {
-                        chain,
-                        vertical,
-                        reverse,
-                        from: inner.position.get(),
-                        from_key: inner.first_key.get(),
-                        asked: inner.pending.get() + used,
-                        source,
-                    })
-                }
+            if let Some(open) = overshoot.as_mut() {
+                open.asked += used;
+            } else if estimated
+                && let Some(Outer { chain, vertical, reverse, source, overscroll }) = outer
+            {
+                *overshoot = Some(Overshoot {
+                    chain,
+                    vertical,
+                    reverse,
+                    overscroll,
+                    list: *self,
+                    from: inner.position.get(),
+                    from_key: inner.first_key.get(),
+                    asked: inner.pending.get() + used,
+                    source,
+                });
             }
         }
         if used != 0.0 {
@@ -3887,7 +3909,13 @@ fn outer_setter(state: LazyListState, axis: Rc<Cell<(bool, bool)>>) -> crate::sc
         if let Some(inner) = state.inner() {
             let (vertical, reverse) = axis.get();
             *inner.scroll_outer.borrow_mut() =
-                chain_and_source.map(|(chain, source)| (chain, vertical, reverse, source));
+                chain_and_source.map(|(chain, source, overscroll)| Outer {
+                    chain,
+                    vertical,
+                    reverse,
+                    source,
+                    overscroll,
+                });
         }
     })
 }
@@ -4257,7 +4285,13 @@ impl PointerInputModifierNode for LazyScrollNode {
             // an estimated end leaves of it too (D489).
             move |chain: &compose_ui::platform::NestedScrollChain,
                   source: compose_ui::NestedScrollSource| {
-                let outer = (!chain.is_empty()).then(|| (chain.clone(), vertical, reverse, source));
+                let outer = (!chain.is_empty()).then(|| Outer {
+                    chain: chain.clone(),
+                    vertical,
+                    reverse,
+                    source,
+                    overscroll: None,
+                });
                 // Unless a scroll of its own goes on, as Compose's `performRawScroll`.
                 Rc::new(move |delta| {
                     if flung.is_scroll_in_progress() {

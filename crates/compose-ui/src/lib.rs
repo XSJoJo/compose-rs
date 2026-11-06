@@ -31,6 +31,7 @@ mod display_list;
 mod draw;
 mod draw_capture;
 mod draw_modifiers;
+mod edge_effect;
 mod fixed_text;
 mod focus;
 mod focus_manager;
@@ -130,6 +131,7 @@ pub mod platform {
         Boundary, DisplayList, DrawGroup, DrawOp, FlatDisplayList, FlatGroup, Renderer, fits_in,
         single_drawing, single_drawing_extent,
     };
+    pub use crate::edge_effect::{PlatformEdgeEffects, platform_edge_effects};
     pub use crate::fixed_text::{FixedFontMetrics, FixedTextMeasurer};
     pub use crate::font::position_of_bytes;
     pub use crate::font::{FontMatcher, PlatformFontLoader};
@@ -208,6 +210,7 @@ pub use draw::{DrawScope, SharedPath};
 #[doc(hidden)]
 pub use draw_capture::DrawCapture;
 pub use draw_modifiers::{CacheDrawScope, ContentDrawScope, DrawResult};
+pub use edge_effect::{EdgeEffect, EdgeEffectFactory, EdgeEffectSide, next_edge_effects_owner};
 pub use focus::{FocusState, FocusTargetNode, Focusability, focus_target_modifier_node};
 pub use focus_manager::{
     FocusDirection, FocusManager, LOCAL_FOCUS_MANAGER, LOCAL_SOFTWARE_KEYBOARD_CONTROLLER,
