@@ -2387,7 +2387,7 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
             (start.min(count), end.min(count).max(start.min(count)))
         };
         // Each item measured once, when first needed.
-        let mut placeables: HashMap<usize, Placeable> = HashMap::new();
+        let mut placeables: slots::IndexMap<usize, Placeable> = Default::default();
         let mut sizes = state.sizes.borrow_mut();
         let main_of =
             move |placeable: &Placeable| if vertical { placeable.height } else { placeable.width };

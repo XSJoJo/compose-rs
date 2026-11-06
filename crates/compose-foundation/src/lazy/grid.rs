@@ -34,7 +34,6 @@ use crate::gestures::{
 use crate::layout::{HorizontalArrangement, MainAxisArrangement, VerticalArrangement};
 use crate::mutator::{MutatePriority, MutationInterrupted};
 use compose_ui::subcompose::SubcomposeMeasureScope;
-use std::collections::HashMap;
 
 /// How a grid's cross axis is cut into cells, as Compose's `GridCells`: a vertical grid's
 /// columns, a horizontal one's rows.
@@ -1516,7 +1515,7 @@ struct Measurer<'a, 's, 'scope> {
     /// are measured: beyond those wanted, up to a pinned one.
     before: &'a [usize],
     only_composed: bool,
-    placeables: HashMap<usize, Placeable>,
+    placeables: super::slots::IndexMap<usize, Placeable>,
     lines: &'a mut Lines,
     slots: &'a Slots,
     vertical: bool,
@@ -1776,7 +1775,7 @@ impl ItemsMeasurePolicy for LazyGridLayout {
             composer,
             before: &children,
             only_composed: false,
-            placeables: HashMap::new(),
+            placeables: Default::default(),
             lines: &mut lines,
             slots: &slots,
             vertical,

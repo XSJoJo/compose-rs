@@ -17,6 +17,34 @@ use compose_ui::{Constraints, Measurable, MeasureResult, Modifier};
 
 use super::{ItemStacking, Items, ItemsRef, LazyItem, LazyListState, prefetch};
 
+/// A hasher for item indices and keys: a multiply, where `HashMap`'s default hashes each byte
+/// through SipHash, per item per measurement.
+#[derive(Default)]
+pub(super) struct IndexHasher(u64);
+
+impl std::hash::Hasher for IndexHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0.rotate_left(8) ^ u64::from(*byte)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = (self.0 ^ value).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.write_u64(value as u64);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// A map by item index or key, with [`IndexHasher`].
+pub(super) type IndexMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<IndexHasher>>;
+
 /// The most deactivated items kept for reuse per content type, as Compose's
 /// `MaxItemsToRetainForReuse`.
 const MAX_ITEMS_TO_RETAIN_FOR_REUSE: usize = 7;
@@ -84,9 +112,9 @@ pub(super) struct ItemFactory {
 /// recomposing for a state of its own with the list's content changed sees the new items.
 #[derive(Default)]
 pub(super) struct ItemContents {
-    contents: RefCell<HashMap<u64, ItemContent>>,
+    contents: RefCell<IndexMap<u64, ItemContent>>,
     /// Each item's content's scope, by key: run again when the list's content changes.
-    pub(super) scopes: RefCell<HashMap<u64, compose_runtime::RecomposeScope>>,
+    pub(super) scopes: RefCell<IndexMap<u64, compose_runtime::RecomposeScope>>,
 }
 
 /// An item's content, and the index its key was last found at.
@@ -149,20 +177,20 @@ impl ItemFactory {
 /// once, its layout returned; in the order asked, which is their slots'.
 pub(super) struct ItemComposer {
     factory: Rc<ItemFactory>,
-    composed: HashMap<usize, Option<Measurable>>,
+    composed: IndexMap<usize, Option<Measurable>>,
     order: Vec<usize>,
     #[cfg(debug_assertions)]
-    keys: HashMap<u64, usize>,
+    keys: IndexMap<u64, usize>,
 }
 
 impl ItemComposer {
     fn new(factory: Rc<ItemFactory>) -> ItemComposer {
         ItemComposer {
             factory,
-            composed: HashMap::new(),
+            composed: IndexMap::default(),
             order: Vec::new(),
             #[cfg(debug_assertions)]
-            keys: HashMap::new(),
+            keys: IndexMap::default(),
         }
     }
 

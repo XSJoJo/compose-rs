@@ -961,14 +961,8 @@ impl SubcomposeMeasureScope<'_, '_> {
         slot_id: impl PartialEq + 'static,
         content: Callback,
     ) -> Vec<Measurable> {
-        let key: SlotKey = Rc::new(slot_id);
         let state = self.state.clone();
         let current = state.inner.borrow().current_index;
-        assert!(
-            state.slot_index(&*key, 0..current).is_none(),
-            "Error: currently it is not supported to subcompose the same slot id twice in a \
-             measurement"
-        );
         let mut tree = self.scope.base.tree.enter();
         let tree: &mut UiTree = &mut tree;
         let root = {
@@ -980,18 +974,32 @@ impl SubcomposeMeasureScope<'_, '_> {
             let end = inner.slots.len();
             (end - inner.precomposed_count - inner.reusable_count, end)
         };
-        let found = state.slot_index(&*key, current..active_end).or_else(|| {
+        // Where it was last, usually at `current`, its id compared in place: no allocation.
+        let id: &dyn SlotId = &slot_id;
+        let found = state.slot_index(id, current..active_end).or_else(|| {
             let precomposed = end - state.inner.borrow().precomposed_count;
-            let at = state.slot_index(&*key, precomposed..end)?;
+            let at = state.slot_index(id, precomposed..end)?;
             state.inner.borrow_mut().precomposed_count -= 1;
             Some(at)
         });
-        let at = match found.or_else(|| state.take_from_reusables(&key, tree)) {
+        let at = match found {
             Some(at) => at,
             None => {
-                let mut inner = state.inner.borrow_mut();
-                add_slot(&mut inner, tree, root, key.clone(), current);
-                current
+                // Not ahead: composed already in this measurement, which Compose forbids, or new.
+                assert!(
+                    state.slot_index(id, 0..current).is_none(),
+                    "Error: currently it is not supported to subcompose the same slot id twice in \
+                     a measurement"
+                );
+                let key: SlotKey = Rc::new(slot_id);
+                match state.take_from_reusables(&key, tree) {
+                    Some(at) => at,
+                    None => {
+                        let mut inner = state.inner.borrow_mut();
+                        add_slot(&mut inner, tree, root, key, current);
+                        current
+                    }
+                }
             }
         };
         {
