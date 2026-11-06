@@ -34,6 +34,9 @@ pub(crate) struct Touch {
     /// The handle drag the field follows: the handle, where it pointed in the text at the drag's
     /// start (Compose's `getAdjustedCoordinates`, a pixel up), and the field's scroll then.
     drag: Option<(Handle, Offset, Offset)>,
+    /// The offset under a selection handle's drag when the selection was last adjusted, as
+    /// Compose's `previousRawDragOffset`: none at the drag's start.
+    raw: Option<usize>,
     /// The timer of a finger's press becoming a long press.
     long_press_job: Option<compose_runtime::Job>,
     /// What the field resolves at its next measurement, with its paragraph: the long press, or
@@ -68,6 +71,7 @@ impl Touch {
             positions: HandlePositions::default(),
             active: false,
             drag: None,
+            raw: None,
             long_press_job: None,
             pending: None,
             long: None,
@@ -295,11 +299,12 @@ impl TextFieldNode {
         paragraph: ParagraphHandle,
     ) {
         let Some(handles) = &self.touch.handles else { return };
-        if handles.moved.get().is_none() && !handles.ended.get() {
+        if handles.moved.borrow().is_empty() && !handles.ended.get() {
             return;
         }
         let handles = handles.clone();
-        if let Some((handle, delta)) = handles.moved.take() {
+        let moves = std::mem::take(&mut *handles.moved.borrow_mut());
+        for (handle, delta) in moves {
             let (handle, start, scroll) = *self.touch.drag.get_or_insert_with(|| {
                 let pointed = self.touch.positions.text[handle.index()];
                 (handle, Offset::new(pointed.x, pointed.y - 1.0), self.scroll)
@@ -311,16 +316,93 @@ impl TextFieldNode {
                     self.cursor = offset;
                     self.anchor = offset;
                 }
-                // A selection never collapses while its handles are dragged, as Compose's.
-                Handle::SelectionStart if offset != self.cursor => self.anchor = offset,
-                Handle::SelectionEnd if offset != self.anchor => self.cursor = offset,
-                _ => {}
+                _ => {
+                    let start_handle = handle == Handle::SelectionStart;
+                    let layout = measurer.paragraph(paragraph);
+                    let (anchor, cursor) = self.accelerated(start_handle, offset, &*layout);
+                    self.touch.raw = Some(offset);
+                    // A selection never collapses while its handles are dragged, as Compose's.
+                    if anchor != cursor {
+                        self.anchor = anchor;
+                        self.cursor = cursor;
+                    }
+                }
             }
             self.preferred_x = None;
         }
         if handles.ended.replace(false) {
             self.touch.drag = None;
+            self.touch.raw = None;
         }
+    }
+
+    /// The selection a selection handle's drag to `raw` makes, as Compose's
+    /// `SelectionAdjustment.CharacterWithWordAccelerate` over one text: growing from an end at a
+    /// word's boundary, by words (snapped to the far side of the word under the finger, but never
+    /// onto the other end); shrinking, or within a word, by characters; to another line, by
+    /// words again.
+    fn accelerated(
+        &self,
+        start_handle: bool,
+        raw: usize,
+        layout: &dyn compose_ui::Paragraph,
+    ) -> (usize, usize) {
+        let line = |offset: usize| layout.get_line_for_offset(self.shown(offset));
+        let (start, end) = (self.anchor, self.cursor);
+        let (previous, other) = if start_handle { (start, end) } else { (end, start) };
+        let crossed = if start_handle { raw > end } else { start > raw };
+        let previous_raw = self.touch.raw;
+        let snapped = || {
+            // The word under the finger, kept to its line (a word broken across lines).
+            let word = self.unit_at(super::Unit::Word, raw);
+            let raw_line = line(raw);
+            let word_start = if line(word.start) == raw_line {
+                word.start
+            } else {
+                self.original_of(layout.get_line_start(raw_line))
+            };
+            let word_end = if line(word.end) == raw_line {
+                word.end
+            } else {
+                self.original_of(layout.get_line_end(raw_line, false))
+            };
+            if word_start == other {
+                word_end
+            } else if word_end == other {
+                word_start
+            } else if start_handle != crossed {
+                if raw <= word_end { word_start } else { word_end }
+            } else if raw >= word_start {
+                word_end
+            } else {
+                word_start
+            }
+        };
+        let moved_to = match previous_raw {
+            Some(previous_raw) if previous_raw == raw => previous,
+            Some(previous_raw) if line(previous_raw) != line(raw) => snapped(),
+            _ => {
+                let expanding = match previous_raw {
+                    None => true,
+                    Some(previous_raw) => {
+                        if start_handle != crossed {
+                            raw < previous_raw
+                        } else {
+                            raw > previous_raw
+                        }
+                    }
+                };
+                let word = self.unit_at(super::Unit::Word, previous);
+                if !expanding {
+                    raw
+                } else if previous == word.start || previous == word.end {
+                    snapped()
+                } else {
+                    raw
+                }
+            }
+        };
+        if start_handle { (moved_to, end) } else { (start, moved_to) }
     }
 
     /// Tells the handles which show and where, at the end of a measurement, as Compose's

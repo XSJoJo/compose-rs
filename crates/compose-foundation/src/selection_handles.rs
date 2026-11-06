@@ -115,7 +115,9 @@ pub(crate) struct TouchHandles {
     /// A handle's drag the field hasn't followed yet: the handle, and the finger's movement in the
     /// window since the drag passed the touch slop (Compose's `dragTotalDistance`, the slop taken
     /// off).
-    pub moved: Cell<Option<(Handle, Offset)>>,
+    /// Each move, in order: a selection handle's adjustment depends on the one before
+    /// (`CharacterWithWordAccelerate`).
+    pub moved: std::cell::RefCell<Vec<(Handle, Offset)>>,
     /// The drag ended (lifted or cancelled): the field forgets it, after its last move.
     pub ended: Cell<bool>,
     /// The cursor handle was tapped: what the text toolbar will toggle on (`text-context-menu`).
@@ -136,7 +138,7 @@ impl TouchHandles {
         TouchHandles {
             shown: compose_runtime::mutable_state_of(ShownHandles::default()),
             positions: compose_runtime::mutable_state_of(HandlePositions::default()),
-            moved: Cell::new(None),
+            moved: std::cell::RefCell::new(Vec::new()),
             ended: Cell::new(false),
             cursor_tapped: Cell::new(false),
             field: Cell::new(None),
@@ -167,7 +169,7 @@ impl TouchHandles {
 
     fn tell_field(&self, moved: Option<(Handle, Offset)>) {
         match moved {
-            Some(moved) => self.moved.set(Some(moved)),
+            Some(moved) => self.moved.borrow_mut().push(moved),
             None => self.ended.set(true),
         }
         self.measure_field();

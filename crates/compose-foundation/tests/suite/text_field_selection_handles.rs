@@ -197,3 +197,57 @@ fn dragging_a_selection_handle_past_the_other_reverses_the_selection() {
     drag_handle(&mut ui, Handle::SelectionEnd, true, FONT * 7.0);
     assert_eq!(state.selection(), TextRange::new(4, 0));
 }
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldSelectionHandlesTest.kt, dragStartSelectionHandle_extendsByWord
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldSelectionHandlesTest.kt, dragEndSelectionHandle_extendsByWord
+#[test]
+fn a_selection_handle_extends_by_words() {
+    let state = state_with("abc def ghj", TextRange::new(4, 7));
+    let mut ui = field(state, 200.0);
+    focus(&mut ui);
+    drag_handle(&mut ui, Handle::SelectionStart, true, FONT * 2.0);
+    assert_eq!(state.selection(), TextRange::new(0, 7));
+
+    let state = state_with("abc def ghj", TextRange::new(4, 7));
+    let mut ui = field(state, 200.0);
+    focus(&mut ui);
+    drag_handle(&mut ui, Handle::SelectionEnd, false, FONT * 2.0);
+    assert_eq!(state.selection(), TextRange::new(4, 11));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldSelectionHandlesTest.kt, dragStartSelectionHandle_shrinksByCharacter
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldSelectionHandlesTest.kt, dragEndSelectionHandle_shrinksByCharacter
+#[test]
+fn a_selection_handle_shrinks_by_characters() {
+    let state = state_with("abc def ghj", TextRange::new(4, 7));
+    let mut ui = field(state, 200.0);
+    focus(&mut ui);
+    drag_handle(&mut ui, Handle::SelectionStart, false, FONT);
+    assert_eq!(state.selection(), TextRange::new(5, 7));
+
+    let state = state_with("abc def ghj", TextRange::new(4, 7));
+    let mut ui = field(state, 200.0);
+    focus(&mut ui);
+    drag_handle(&mut ui, Handle::SelectionEnd, true, FONT);
+    assert_eq!(state.selection(), TextRange::new(4, 6));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldSelectionHandlesTest.kt, dragEndSelectionHandle_outOfBounds_horizontally
+#[test]
+fn the_end_handle_dragged_a_character_at_a_time_past_the_field_reaches_the_end() {
+    let text = "abc def ".repeat(10);
+    let state = state_with(&text, TextRange::new(0, 3));
+    let mut ui = touch_rule(move || {
+        BasicTextFieldOfState!(
+            state,
+            modifier = Modifier.test_tag(TAG).width(100.dp()),
+            text_style = style(),
+            line_limits = TextFieldLineLimits::SingleLine,
+        );
+    });
+    focus(&mut ui);
+    for _ in 0..80 {
+        drag_handle(&mut ui, Handle::SelectionEnd, false, FONT);
+    }
+    assert_eq!(state.selection(), TextRange::new(0, 80));
+}
