@@ -182,6 +182,9 @@ impl UiTree {
                 manager
                     .tracked
                     .retain(|tracked| manager.callbacks.has_rect_callbacks(tracked.node));
+                // Parents first, as Compose's rect list (a child's callback may read a parent's
+                // `LayoutBoundsHolder`, which the parent's sets).
+                manager.tracked.sort_by_cached_key(|tracked| self.depth_of(tracked.node));
                 for index in 0..manager.tracked.len() {
                     let Tracked { node, rect: last, inner: last_inner, updated } =
                         manager.tracked[index];
@@ -264,6 +267,17 @@ impl UiTree {
             }
         });
         manager.scheduled = Some((deadline, job));
+    }
+
+    /// How many ancestors `node` has (0 if it's gone).
+    fn depth_of(&self, node: NodeId) -> usize {
+        let mut depth = 0;
+        let mut current = self.get(node).and_then(|value| value.parent);
+        while let Some(parent) = current {
+            depth += 1;
+            current = self.get(parent).and_then(|value| value.parent);
+        }
+        depth
     }
 
     /// The rect of `node`'s outer layer in the window, as Compose's rect list keeps it: its

@@ -262,7 +262,10 @@ pub use layout_callbacks::{
 };
 pub use layout_modifiers::LineSpace;
 pub use layout_modifiers::{IntrinsicSize, SizeOrIntrinsic};
-pub use layout_rect_modifiers::DEFAULT_LAYOUT_RECT_DEBOUNCE_MILLIS;
+pub use layout_rect_modifiers::{
+    DEFAULT_LAYOUT_RECT_DEBOUNCE_MILLIS, LayoutBoundsHolder, OnVisibilityChangedNode,
+    on_visibility_changed_node,
+};
 pub use lookahead::{ApproachMeasureScope, LookaheadCoordinates, LookaheadScope};
 pub use modifier::AlignByScope;
 pub use modifier::{
