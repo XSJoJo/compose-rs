@@ -1326,6 +1326,66 @@ fn a_lazy_list_says_what_s_ahead() {
     assert!(!placed.borrow().contains(&2));
 }
 
+/// A `LazyColumn` of `count` items `item` tall, `ahead` tall ahead and `now` tall now, in a scope.
+fn list_by_pass(ahead: i32, now: i32, count: usize, item: i32) -> (ComposeTestRule, LazyListState) {
+    let owner = LazyListState::new(0, 0);
+    let state = *owner;
+    let ui = ComposeTestRule::sized(IntSize::new(100, 1000), move || {
+        let _ = &owner;
+        in_a_scope(move |_| {
+            let by_pass = Modifier.layout(move |scope, measurable, constraints| {
+                let tall = if scope.is_looking_ahead() { ahead } else { now };
+                let placeable = scope
+                    .measure(measurable, Constraints::new(0, constraints.max_width, tall, tall));
+                scope.layout_with(placeable.width, placeable.height, move |placement| {
+                    placement.place(&placeable, 0, 0);
+                })
+            });
+            LazyColumn!(state = state, modifier = by_pass, move |items: LazyListScope| {
+                items.items(count, move |_| Box!(modifier = Modifier.size(dp(item)), {}));
+            });
+        });
+    });
+    (ui, state)
+}
+
+/// All its items in view ahead, smaller now: it can't scroll, as what's ahead says, and a scroll
+/// takes nothing (the pass that's now telling its own room, it took 30 and nothing moved).
+#[test]
+fn a_lazy_list_all_in_view_ahead_takes_no_scroll_now() {
+    let (mut ui, state) = list_by_pass(200, 50, 10, 20);
+    ui.wait_for_idle();
+    assert_eq!(state.layout_info().visible_items_info.len(), 10);
+    assert!(!state.can_scroll_forward());
+    assert!(!state.can_scroll_backward());
+    let consumed = ui.run_on_ui_thread(move |_| state.dispatch_raw_delta(30.0));
+    ui.wait_for_idle();
+    assert_eq!(consumed, 0.0);
+    assert_eq!(
+        (state.first_visible_item_index(), state.first_visible_item_scroll_offset()),
+        (0, 0)
+    );
+}
+
+/// At its end ahead and larger now: what's now steps back to fill its room but leaves the scroll
+/// it couldn't take to no one, so the list stays where it's ahead.
+#[test]
+fn a_lazy_list_at_its_end_ahead_stays_there_when_larger_now() {
+    let (mut ui, state) = list_by_pass(50, 200, 20, 20);
+    ui.wait_for_idle();
+    ui.run_on_ui_thread(move |_| state.request_scroll_to_item(19, 0));
+    for _ in 0..3 {
+        ui.wait_for_idle();
+        assert_eq!(
+            (state.first_visible_item_index(), state.first_visible_item_scroll_offset()),
+            (17, 10)
+        );
+        assert!(!state.can_scroll_forward());
+        assert!(state.can_scroll_backward());
+        ui.host().frame();
+    }
+}
+
 // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/LookaheadScopeTest.kt, lookaheadMinWidthIntrinsicsTest
 #[test]
 fn a_column_of_min_intrinsic_width_is_the_same_in_a_scope() {
