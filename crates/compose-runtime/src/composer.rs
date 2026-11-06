@@ -1373,6 +1373,7 @@ fn start_group(kind: GroupKind, key: u64, data_key: u64) -> NodeStart {
     start_group_of(kind, key, data_key, false)
 }
 
+#[inline]
 fn start_group_of(kind: GroupKind, key: u64, data_key: u64, reusable: bool) -> NodeStart {
     let (op, start) =
         with_runtime(|runtime| runtime.start_group(kind, key, data_key, None, reusable));
