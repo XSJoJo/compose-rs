@@ -67,27 +67,80 @@ impl Shadow {
         Shadow { alpha: alpha.clamp(0.0, 1.0), ..self }
     }
 
-    /// Its paint at `alpha` (the painter's times its own), `style`d, blurred by its radius.
+    /// How opaque it's drawn at the painter's `alpha`: times its own, and its color's.
+    fn opacity(&self, alpha: f32) -> f32 {
+        let alpha = (alpha * self.alpha).clamp(0.0, 1.0);
+        match self.brush {
+            Some(_) => alpha,
+            None => alpha * self.color.alpha() as f32 / 255.0,
+        }
+    }
+
+    /// Its fill, blurred by its radius, its brush resolved over `extent` (in `scope`'s
+    /// coordinates; `None`: its bounds): at `alpha` (the painter's times its own), with its
+    /// blend mode and `filter`; or `opaque`, at full alpha and plain, for a layer composited
+    /// with them ([`draw_as_one`]).
     fn paint(
         &self,
         scope: &mut DrawScope<'_>,
         alpha: f32,
-        style: PaintStyle,
         filter: Option<&ColorFilter>,
+        extent: Option<Rect>,
+        opaque: bool,
     ) -> Paint {
-        let alpha = (alpha * self.alpha).clamp(0.0, 1.0);
+        let alpha = if opaque { 1.0 } else { (alpha * self.alpha).clamp(0.0, 1.0) };
         let mut paint = match &self.brush {
-            Some(brush) => scope.brush_paint(brush, alpha, style),
-            None => {
-                let mut paint = Paint::fill(self.color).with_alpha(alpha);
-                paint.style = style;
+            Some(brush) => {
+                let mut paint = Paint::fill(brush.color(alpha));
+                let (size, origin) = match extent {
+                    Some(extent) => (
+                        Size::new(extent.width(), extent.height()),
+                        scope.origin + Offset::new(extent.left, extent.top),
+                    ),
+                    None => (scope.size(), scope.origin),
+                };
+                if let Some(shader) = brush.shader(size, origin, alpha) {
+                    paint.shader = Some(scope.list.push_shader(shader));
+                }
                 paint
             }
+            None if opaque => Paint::fill(self.color.with_alpha(1.0)),
+            None => Paint::fill(self.color).with_alpha(alpha),
         };
-        paint = paint.with_blend_mode(self.blend_mode);
-        paint = scope.paint_with_color_filter(paint, filter);
+        if !opaque {
+            paint = paint.with_blend_mode(self.blend_mode);
+            paint = scope.paint_with_color_filter(paint, filter);
+        }
         paint.with_blur(scope.density().to_px(self.radius))
     }
+}
+
+/// Draws with `draw` (given the shadow's fill) drawings of `shadow` that overlap, a path's fill
+/// and its spread's band, as one mask, as Compose's bitmap is: in a layer bounded by `bounds`
+/// composited at its opacity, blend mode and `filter`, the drawings in it opaque, so its alpha
+/// doesn't compound where they overlap. Without one when they're opaque and plain already.
+fn draw_as_one(
+    scope: &mut DrawScope<'_>,
+    shadow: &Shadow,
+    alpha: f32,
+    filter: Option<&ColorFilter>,
+    (bounds, extent): (Rect, Option<Rect>),
+    draw: impl FnOnce(&mut DrawScope<'_>, Paint),
+) {
+    let opacity = shadow.opacity(alpha);
+    let plain = opacity >= 1.0
+        && shadow.brush.is_none()
+        && shadow.blend_mode == BlendMode::SrcOver
+        && filter.is_none();
+    if plain {
+        let paint = shadow.paint(scope, alpha, filter, extent, false);
+        draw(scope, paint);
+        return;
+    }
+    scope.save_layer(bounds, opacity, filter, shadow.blend_mode);
+    let paint = shadow.paint(scope, alpha, None, extent, true);
+    draw(scope, paint);
+    scope.restore();
 }
 
 impl compose_runtime::ComposeArg for Shadow {
@@ -137,23 +190,40 @@ fn draw_drop_shadow(
     let size = scope.size();
     let outline = shape.outline_in(size, &scope.density(), scope.layout_direction());
     let density = scope.density();
-    let spread = density.to_px(shadow.spread);
+    let (radius, spread) = (density.to_px(shadow.radius), density.to_px(shadow.spread));
     let offset = Offset::new(density.to_px(shadow.offset.x), density.to_px(shadow.offset.y));
-    let paint = shadow.paint(scope, alpha, PaintStyle::Fill, filter);
+    // Compose's shadow bitmap, which its brush is resolved for: the size grown by the radius
+    // and the spread each side, drawn from its top left moved back by them.
+    let reach = radius + spread;
+    let extent = Rect::new(
+        0.0 - reach,
+        0.0 - reach,
+        (size.width + reach * 2.0).ceil() - reach,
+        (size.height + reach * 2.0).ceil() - reach,
+    );
     scope.translate(offset.x, offset.y, |scope| match &outline {
-        Outline::Rectangle(rect) => scope.draw_rect(inflate(*rect, spread), paint),
-        Outline::Rounded(rect, radii) => scope.draw_round_rect(
-            inflate(*rect, spread),
-            radii.map(|radius| radius + spread),
-            paint,
-        ),
-        Outline::Generic(path, at) => {
-            scope.draw_path_scaled(path, *at, (1.0, 1.0), paint);
-            if spread > 0.0 {
+        Outline::Rectangle(rect) => {
+            let paint = shadow.paint(scope, alpha, filter, Some(extent), false);
+            scope.draw_rect(inflate(*rect, spread), paint);
+        }
+        Outline::Rounded(rect, radii) => {
+            let paint = shadow.paint(scope, alpha, filter, Some(extent), false);
+            let radii = radii.map(|radius| radius + spread);
+            scope.draw_round_rect(inflate(*rect, spread), radii, paint);
+        }
+        Outline::Generic(path, at) if spread > 0.0 => {
+            // The fill and the spread's band, as one mask: their blurs overlap.
+            let bounds = inflate(outline.bounds(), spread + radius * 3.0 + 1.0);
+            draw_as_one(scope, shadow, alpha, filter, (bounds, Some(extent)), |scope, paint| {
+                scope.draw_path_scaled(path, *at, (1.0, 1.0), paint);
                 let mut stroke = paint;
                 stroke.style = PaintStyle::Stroke(spread * 2.0);
                 scope.draw_path_scaled(path, *at, (1.0, 1.0), stroke);
-            }
+            });
+        }
+        Outline::Generic(path, at) => {
+            let paint = shadow.paint(scope, alpha, filter, Some(extent), false);
+            scope.draw_path_scaled(path, *at, (1.0, 1.0), paint);
         }
     });
 }
@@ -173,7 +243,6 @@ fn draw_inner_shadow(
     let outline = shape.outline_in(size, &density, scope.layout_direction());
     let (radius, spread) = (density.to_px(shadow.radius), density.to_px(shadow.spread));
     let offset = Offset::new(density.to_px(shadow.offset.x), density.to_px(shadow.offset.y));
-    let paint = shadow.paint(scope, alpha, PaintStyle::Fill, filter);
     // Around the shape, far enough that the blur doesn't reach its outer edge.
     let reach = radius * 3.0 + spread + offset.x.abs().max(offset.y.abs()) + 1.0;
     let around = Path::new();
@@ -202,13 +271,23 @@ fn draw_inner_shadow(
         }
     }
     around.set_fill_type(PathFillType::EvenOdd);
+    let bounds = outline.bounds();
     scope.save();
     scope.clip_outline(outline);
-    scope.draw_path_scaled(&around, offset, (1.0, 1.0), paint);
-    if let Some((path, at)) = band {
-        let mut stroke = paint;
-        stroke.style = PaintStyle::Stroke(spread * 2.0);
-        scope.draw_path_scaled(&path, at + offset, (1.0, 1.0), stroke);
+    match band {
+        // What's outside the shape and the spread's band, as one mask: their blurs overlap.
+        Some((path, at)) => {
+            draw_as_one(scope, shadow, alpha, filter, (bounds, None), |scope, paint| {
+                scope.draw_path_scaled(&around, offset, (1.0, 1.0), paint);
+                let mut stroke = paint;
+                stroke.style = PaintStyle::Stroke(spread * 2.0);
+                scope.draw_path_scaled(&path, at + offset, (1.0, 1.0), stroke);
+            })
+        }
+        None => {
+            let paint = shadow.paint(scope, alpha, filter, None, false);
+            scope.draw_path_scaled(&around, offset, (1.0, 1.0), paint);
+        }
     }
     scope.restore();
 }

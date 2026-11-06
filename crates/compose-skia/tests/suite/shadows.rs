@@ -9,19 +9,25 @@ use compose::runtime::*;
 use compose::test::*;
 use compose::ui::shadow::{DropShadowPainter, InnerShadowPainter, Shadow};
 use compose::ui::{
-    Alignment, Brush, Color, ColorFilter, ContentScale, Dp, DpOffset, IntSize, Modifier, Painter,
-    Shape, UnitExt,
+    Alignment, Brush, Color, ColorFilter, ContentScale, CornerSize, Dp, DpOffset, IntSize,
+    Modifier, Painter, Shape, UnitExt,
 };
 
 const TAG: &str = "shadowed";
 
 /// A 100 px white node with a 40 px red box in its middle casting `shadow` of `shape`.
 fn dropped(shape: Shape, shadow: Shadow) -> CapturedImage {
+    dropped_on(Color::WHITE, shape, shadow)
+}
+
+/// A 100 px node of `background` with a 40 px red box in its middle casting `shadow` of
+/// `shape`.
+fn dropped_on(background: Color, shape: Shape, shadow: Shadow) -> CapturedImage {
     set_capture_renderer(compose_skia::raster_colors);
     let mut ui = ComposeTestRule::sized(IntSize::new(100, 100), move || {
         let (shape, shadow) = (shape.clone(), shadow.clone());
         Box!(
-            modifier = Modifier.test_tag(TAG).size(100.dp()).background(Color::WHITE),
+            modifier = Modifier.test_tag(TAG).size(100.dp()).background(background),
             content_alignment = Alignment::CENTER,
             {
                 Box!(
@@ -86,6 +92,11 @@ fn a_drop_shadow_is_painted_by_its_brush() {
 
 /// A 60 px white box with `shadow` inside its rectangle.
 fn inner(shadow: Shadow) -> CapturedImage {
+    inner_of(Shape::Rectangle, shadow)
+}
+
+/// A 60 px white box with `shadow` inside `shape`.
+fn inner_of(shape: Shape, shadow: Shadow) -> CapturedImage {
     set_capture_renderer(compose_skia::raster_colors);
     let mut ui = ComposeTestRule::sized(IntSize::new(100, 100), move || {
         Box!(
@@ -93,7 +104,7 @@ fn inner(shadow: Shadow) -> CapturedImage {
                 .test_tag(TAG)
                 .size(60.dp())
                 .background(Color::WHITE)
-                .inner_shadow(Shape::Rectangle, shadow.clone())
+                .inner_shadow(shape.clone(), shadow.clone())
         );
     });
     ui.on_node_with_tag(TAG).capture_to_image()
@@ -202,5 +213,63 @@ fn an_inner_shadow_stays_inside_its_shape() {
     assert!(edge > 60, "inside the circle's edge: {edge}");
     for (x, y) in [(21, 21), (78, 78), (18, 50), (50, 18), (2, 2)] {
         image.assert_pixel_color(Color::WHITE, x, y);
+    }
+}
+
+/// A path's shape: a rectangle with its corners cut by 2 px (`Outline::Generic`).
+fn cut() -> Shape {
+    Shape::Cut([CornerSize::Px(2.0); 4])
+}
+
+/// A translucent shadow of a path spread past it is one mask faded, as Compose's tinted
+/// bitmap: half its alpha, or a color of half alpha, is half as dark as the opaque one, where
+/// the spread's band and the blurred fill overlap.
+#[test]
+fn a_translucent_path_shadow_with_a_spread_fades_as_one() {
+    let shadow = Shadow { spread: Dp(4.0), ..Shadow::new(Dp(6.0)) };
+    let opaque = dropped(cut(), shadow.clone());
+    let faded = dropped(cut(), shadow.clone().with_alpha(0.5));
+    let half_black = Shadow { color: Color::BLACK.with_alpha(0.5), ..shadow };
+    let tinted = dropped(cut(), half_black);
+    // The box spans 30 to 70; the spread reaches 26.
+    for x in [22, 25, 28] {
+        let full = darkness(opaque.pixel(x, 50)) as i32;
+        for image in [&faded, &tinted] {
+            let half = darkness(image.pixel(x, 50)) as i32;
+            assert!((half - full / 2).abs() <= 2, "at {x}: {half} against {full}");
+        }
+    }
+}
+
+/// An inner shadow of a path spread into it fades as one mask too.
+#[test]
+fn a_translucent_inner_path_shadow_with_a_spread_fades_as_one() {
+    let shadow = Shadow { spread: Dp(4.0), ..Shadow::new(Dp(6.0)) };
+    let opaque = inner_of(cut(), shadow.clone());
+    let faded = inner_of(cut(), shadow.with_alpha(0.5));
+    for x in [1, 4, 7] {
+        let full = darkness(opaque.pixel(x, 30)) as i32;
+        let half = darkness(faded.pixel(x, 30)) as i32;
+        assert!(full > 40, "at {x}: {full}");
+        assert!((half - full / 2).abs() <= 2, "at {x}: {half} against {full}");
+    }
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/draw/DropShadowScreenShotTest.kt, dropShadowGradientBrush
+/// A drop shadow's brush is resolved for the shadow's whole extent, as Compose's for its
+/// bitmap: the box grown by the radius and the spread each side, from its top left moved back
+/// by them. Over black, a horizontal gradient's blue share across it grows with x from there.
+#[test]
+fn a_drop_shadows_brush_spans_the_shadow() {
+    let brush = Brush::horizontal_gradient([Color::RED, Color::BLUE]);
+    let shadow = Shadow { spread: Dp(4.0), ..Shadow::brushed(Dp(6.0), brush) };
+    let image = dropped_on(Color::BLACK, Shape::Rectangle, shadow);
+    // The box spans 30 to 70; the shadow's bitmap 20 to 80.
+    for x in [24, 27, 73, 76] {
+        let pixel = image.pixel(x, 50);
+        let (red, blue) = (pixel.red() as f32, pixel.blue() as f32);
+        let share = blue / (red + blue);
+        let expected = (x as f32 + 0.5 - 20.0) / 60.0;
+        assert!((share - expected).abs() < 0.04, "at {x}: {share} against {expected}");
     }
 }
