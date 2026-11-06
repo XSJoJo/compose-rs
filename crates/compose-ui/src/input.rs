@@ -254,6 +254,23 @@ pub enum Key {
     /// Keyboard navigation's own keys, as `Key.NavigateNext` and `Key.NavigatePrevious`.
     NavigateNext,
     NavigatePrevious,
+    /// A keyboard's own clipboard keys and Insert, as `Key.Copy`, `Key.Cut`, `Key.Paste` and
+    /// `Key.Insert`.
+    Copy,
+    Cut,
+    Paste,
+    Insert,
+    /// The numeric keypad's navigation keys (Num Lock off), as `Key.NumPadDirectionUp` and the
+    /// others: a desktop's; Android has none.
+    NumPadDirectionUp,
+    NumPadDirectionDown,
+    NumPadDirectionLeft,
+    NumPadDirectionRight,
+    NumPadMoveHome,
+    NumPadMoveEnd,
+    NumPadPageUp,
+    NumPadPageDown,
+    NumPadInsert,
     /// The modifier keys, as Compose's `Key.ShiftLeft`… A host reports what they hold in
     /// [`KeyEvent::modifiers`]; tests' key injection presses them as keys (D903).
     ShiftLeft,
@@ -316,6 +333,23 @@ impl KeyEvent {
             Key::Back | Key::Escape => Direction::Exit,
             _ => return None,
         })
+    }
+
+    /// The key a numeric keypad's navigation key stands for (its arrows, Home, End, Page Up and
+    /// Down, Insert), as Compose's key mappings take either; any other key as it is.
+    pub fn without_num_pad(key: Key) -> Key {
+        match key {
+            Key::NumPadDirectionUp => Key::DirectionUp,
+            Key::NumPadDirectionDown => Key::DirectionDown,
+            Key::NumPadDirectionLeft => Key::DirectionLeft,
+            Key::NumPadDirectionRight => Key::DirectionRight,
+            Key::NumPadMoveHome => Key::MoveHome,
+            Key::NumPadMoveEnd => Key::MoveEnd,
+            Key::NumPadPageUp => Key::PageUp,
+            Key::NumPadPageDown => Key::PageDown,
+            Key::NumPadInsert => Key::Insert,
+            other => other,
+        }
     }
 
     pub fn down(key: Key) -> KeyEvent {

@@ -1119,6 +1119,10 @@ class ComposeRsView @JvmOverloads constructor(
         KeyEvent.KEYCODE_BACK -> 16
         KeyEvent.KEYCODE_NAVIGATE_NEXT -> 17
         KeyEvent.KEYCODE_NAVIGATE_PREVIOUS -> 18
+        KeyEvent.KEYCODE_COPY -> 19
+        KeyEvent.KEYCODE_CUT -> 20
+        KeyEvent.KEYCODE_PASTE -> 21
+        KeyEvent.KEYCODE_INSERT -> 22
         else -> 0
     }
 

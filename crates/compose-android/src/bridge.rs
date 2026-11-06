@@ -1833,6 +1833,10 @@ pub extern "system" fn Java_rs_compose_android_ComposeRsNative_key(
         16 => Key::Back,
         17 => Key::NavigateNext,
         18 => Key::NavigatePrevious,
+        19 => Key::Copy,
+        20 => Key::Cut,
+        21 => Key::Paste,
+        22 => Key::Insert,
         _ => match character {
             Some(c) => Key::Character(c),
             None => return false,

@@ -2031,10 +2031,14 @@ impl TextFieldNode {
         let x = *self.preferred_x.get_or_insert(rect.left);
         let height = context.text_measurer().metrics(paragraph).size.height as f32;
         let y = if down { rect.bottom + 1.0 } else { rect.top - 1.0 };
+        // Past the first or last line, the text's end, where the next line starts afresh, as
+        // Compose's cached x forgotten there (D1147).
         if y < 0.0 {
+            self.preferred_x = None;
             return 0;
         }
         if y >= height {
+            self.preferred_x = None;
             return self.text.len();
         }
         self.offset_at(Offset::new(x, y), context).unwrap_or(self.cursor)
@@ -2284,6 +2288,59 @@ fn offset_to_follow(value: f32, start: f32, end: f32, visible: f32) -> f32 {
 /// Away from zero to a whole number, as Compose's `roundToNext`.
 fn round_to_next(value: f32) -> f32 {
     if value > 0.0 { value.ceil() } else { value.floor() }
+}
+
+/// Where Backspace deletes back to from `offset`: the code point before it, or the emoji before
+/// it whole (a grapheme cluster that is one: pictographic, a flag, a keycap), as Compose's
+/// `findCodePointOrEmojiStartBefore` with EmojiCompat loaded (D1147).
+fn code_point_or_emoji_before(text: &str, offset: usize) -> usize {
+    let before = &text[..offset];
+    let Some(cluster) = before.graphemes(true).next_back() else { return 0 };
+    let is_emoji = cluster.chars().next().is_some_and(is_pictographic)
+        || cluster.chars().any(|c| c == '\u{20E3}' || c == '\u{FE0F}');
+    if is_emoji {
+        offset - cluster.len()
+    } else {
+        before.char_indices().next_back().map_or(0, |(index, _)| index)
+    }
+}
+
+/// Whether `c` starts an emoji: pictographic, or a flag's regional indicator.
+fn is_pictographic(c: char) -> bool {
+    matches!(
+        c as u32,
+        0xA9 | 0xAE
+            | 0x203C
+            | 0x2049
+            | 0x2122
+            | 0x2139
+            | 0x2194..=0x21AA
+            | 0x231A..=0x23FF
+            | 0x24C2
+            | 0x25AA..=0x25FE
+            | 0x2600..=0x27BF
+            | 0x2934..=0x2935
+            | 0x2B05..=0x2B55
+            | 0x3030
+            | 0x303D
+            | 0x3297
+            | 0x3299
+            | 0x1F000..=0x1FAFF
+    )
+}
+
+/// Where the paragraph after `offset` ends (past a new line just after it), as Compose's
+/// `findParagraphEnd`.
+fn paragraph_end(text: &str, offset: usize) -> usize {
+    let bytes = text.as_bytes();
+    (offset + 1..bytes.len()).find(|&index| bytes[index] == b'\n').unwrap_or(text.len())
+}
+
+/// Where the paragraph before `offset` starts (before a new line just before it), as Compose's
+/// `findParagraphStart`.
+fn paragraph_start(text: &str, offset: usize) -> usize {
+    let bytes = text.as_bytes();
+    (1..offset).rev().find(|&index| bytes[index - 1] == b'\n').unwrap_or(0)
 }
 
 /// The cursor a state-based field asks its containers to show: a collapsed cursor with no width,
@@ -2979,7 +3036,8 @@ impl TextFieldNode {
         if self.preedit || self.preedit_interrupted {
             return key_is_not_tab(event.key);
         }
-        let mut key = event.key;
+        // The keypad's navigation keys as the others, as Compose's key mapping (D1147).
+        let mut key = KeyEvent::without_num_pad(event.key);
         if emacs && let Key::Character(c) = key {
             let mapped = match c.to_ascii_lowercase() {
                 'a' => Key::MoveHome,
@@ -3003,13 +3061,34 @@ impl TextFieldNode {
             modifiers.ctrl = false;
         }
         let extend = modifiers.shift;
-        // Word motion: Option on macOS, Ctrl elsewhere. Line motion: Cmd on macOS.
+        // Word motion (and paragraphs with Up and Down): Option on macOS, Ctrl elsewhere. Line
+        // motion (and the text's ends with Up and Down): Cmd on macOS, Alt elsewhere, as Compose's
+        // Android key mapping (`platformDefaultKeyMapping`, D1147).
         let by_word = if is_macos() { modifiers.alt } else { modifiers.ctrl };
-        let by_line = is_macos() && modifiers.meta;
+        let by_line = if is_macos() {
+            modifiers.meta
+        } else {
+            modifiers.alt && !modifiers.ctrl && !modifiers.meta
+        };
         if !matches!(key, Key::DirectionUp | Key::DirectionDown) {
             self.preferred_x = None;
         }
-        if shortcut && let Key::Character(c) = key {
+        // The clipboard's own keys, and Insert's (Ctrl+Insert copies, Shift+Insert pastes), as
+        // Compose's `commonKeyMapping` (D1147).
+        let plain = !modifiers.shift && !modifiers.alt && !shortcut;
+        let clipboard_key = match key {
+            Key::Copy if plain => Some('c'),
+            Key::Cut if plain => Some('x'),
+            Key::Paste if plain => Some('v'),
+            Key::Insert if shortcut && !modifiers.shift && !modifiers.alt => Some('c'),
+            Key::Insert if modifiers.shift && !shortcut && !modifiers.alt => Some('v'),
+            _ => None,
+        };
+        let shortcut_key = match key {
+            Key::Character(c) if shortcut => Some(c),
+            _ => clipboard_key,
+        };
+        if let Some(c) = shortcut_key {
             let selected = self.text[self.selection()].to_string();
             match c.to_ascii_lowercase() {
                 'a' => {
@@ -3034,6 +3113,22 @@ impl TextFieldNode {
                 }
                 'z' if editable => self.undo(modifiers.shift, context),
                 'y' if editable && !is_macos() => self.undo(true, context),
+                // The selection collapsed to its end, as Compose's `DESELECT` (D1147).
+                '\\' if !modifiers.shift && !modifiers.alt => {
+                    self.anchor = self.cursor;
+                    context.invalidate_measure();
+                }
+                // Ctrl+H deletes back, as Compose's (macOS's Ctrl+H is the Emacs binding's).
+                'h' if editable && !is_macos() && !modifiers.alt => {
+                    return self.on_key_event_here(
+                        &KeyEvent {
+                            key: Key::Backspace,
+                            modifiers: compose_ui::KeyModifiers::default(),
+                            ..*event
+                        },
+                        context,
+                    );
+                }
                 _ => return false,
             }
             return true;
@@ -3071,17 +3166,22 @@ impl TextFieldNode {
                 } else if by_word {
                     self.previous_word(self.cursor)
                 } else {
-                    self.previous_boundary(self.cursor)
+                    // A code point, or an emoji whole, as Compose's
+                    // `moveCursorPrevByCodePointOrEmoji` (D1147).
+                    code_point_or_emoji_before(&self.text, self.cursor)
                 };
                 self.delete(start.min(self.cursor)..self.cursor, context);
                 true
             }
             Key::Delete if editable => {
-                let motion = if by_word { Motion::Word } else { Motion::Cluster };
+                let motion = Motion::of(by_line, by_word);
                 if self.delete_over_output(motion, true, context) {
                     return true;
                 }
-                let end = if by_word {
+                // To the line's end (Alt, or Cmd on macOS), as Compose's `DELETE_TO_LINE_END`.
+                let end = if by_line {
+                    self.line_edge(true, context)
+                } else if by_word {
                     self.next_word(self.cursor)
                 } else {
                     self.next_boundary(self.cursor)
@@ -3136,6 +3236,13 @@ impl TextFieldNode {
                 }
                 let cursor = if by_line {
                     if down { self.text.len() } else { 0 }
+                } else if by_word {
+                    // By paragraphs, as Compose's `NEXT_PARAGRAPH` and `PREV_PARAGRAPH` (D1147).
+                    if down {
+                        paragraph_end(&self.text, self.cursor)
+                    } else {
+                        paragraph_start(&self.text, self.cursor)
+                    }
                 } else {
                     self.vertical(down, context)
                 };
