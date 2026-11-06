@@ -327,6 +327,8 @@ fn draw_op(
         canvas.save_layer_alpha_f(None, alpha);
     }
     match op {
+        // The platform's edge effects: none on the desktop, and none in a capture.
+        DrawOp::BeginEdgeEffects { .. } | DrawOp::EndEdgeEffects => {}
         DrawOp::Save => {
             canvas.save();
         }

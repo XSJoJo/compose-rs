@@ -1872,12 +1872,16 @@ impl UiTree {
     /// What `EventContext::bring_into_view` asked of `node` (a focused node in a scrolling
     /// container is scrolled into view, as Compose's `FocusableNode`; one not placed yet, a lazy
     /// item composed ahead, once the next layout places it).
-    pub(crate) fn bring_focused_into_view(&mut self, node: NodeId) {
+    /// `rect`, a rect in a chain entry's layer, is what of it to show.
+    pub(crate) fn bring_focused_into_view(&mut self, node: NodeId, rect: Option<(usize, Rect)>) {
         if self.focus.moved_by_tree {
             return;
         }
         if self.is_laid_out(node) {
-            self.bring_into_view(node);
+            match rect {
+                Some((entry, rect)) => self.bring_entry_rect_into_view(node, entry, rect),
+                None => self.bring_into_view(node),
+            }
         } else {
             self.bring_into_view_after_layout = Some(node);
         }
@@ -1894,43 +1898,6 @@ impl UiTree {
             current = if value.overlay { None } else { value.parent };
         }
         true
-    }
-
-    /// Asks the scrolling ancestors of `node` to show it, innermost first, each shown where
-    /// the scrolling inside it will put it.
-    pub fn bring_into_view(&mut self, node: NodeId) {
-        let mut rect = self.bounds_in_root(node);
-        // An overlay's containers are its own: the ones around its host don't show it.
-        let mut ancestor = if self.node(node).overlay { None } else { self.node(node).parent };
-        while let Some(id) = ancestor {
-            ancestor = if self.node(id).overlay { None } else { self.node(id).parent };
-            let mut layer = 0;
-            for index in 0..self.node(id).chain.len() {
-                let origin = self.layer_origin(id, layer.min(self.node(id).layers.len() - 1));
-                let viewport =
-                    self.node(id).layers[layer.min(self.node(id).layers.len() - 1)].measured;
-                let local = Rect::new(
-                    rect.left - origin.x,
-                    rect.top - origin.y,
-                    rect.right - origin.x,
-                    rect.bottom - origin.y,
-                );
-                let is_layout = self.node(id).chain[index].kinds.any(NodeKinds::LAYOUT);
-                if let Some(value) = self.get_mut(id)
-                    && let Some(moved) = value.chain[index].bring_into_view(local, viewport)
-                {
-                    rect = Rect::new(
-                        moved.left + origin.x,
-                        moved.top + origin.y,
-                        moved.right + origin.x,
-                        moved.bottom + origin.y,
-                    );
-                }
-                if is_layout {
-                    layer += 1;
-                }
-            }
-        }
     }
 
     /// Tells the focused target where the tap that focused it was.

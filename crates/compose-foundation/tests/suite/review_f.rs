@@ -201,7 +201,9 @@ fn painted(
                 out.push((at, clip))
             }
             DrawOp::DrawImage { dst, .. } => out.push((moved(dst, x, y), clip)),
-            DrawOp::DrawLine(..)
+            DrawOp::BeginEdgeEffects { .. }
+            | DrawOp::EndEdgeEffects
+            | DrawOp::DrawLine(..)
             | DrawOp::Transform { .. }
             | DrawOp::ClipPath { .. }
             | DrawOp::DrawPath { .. }

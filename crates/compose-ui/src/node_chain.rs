@@ -345,15 +345,6 @@ impl ChainEntry {
         }
     }
 
-    /// Its node or delegate answering `bring_into_view`.
-    pub(crate) fn bring_into_view(
-        &mut self,
-        rect: crate::unit::Rect,
-        viewport: crate::unit::IntSize,
-    ) -> Option<crate::unit::Rect> {
-        crate::delegation::bring_into_view_of(&mut *self.node, rect, viewport)
-    }
-
     /// What hit testing is clipped by here. A graphics layer's is what its last block drew: a press
     /// runs no block and no shape, as Compose's `isInLayer`.
     pub(crate) fn hit_outline(

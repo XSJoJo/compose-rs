@@ -13,6 +13,7 @@
 extern crate compose_runtime as compose;
 
 mod dark_theme;
+mod edge_effect_overscroll;
 mod fling;
 pub mod gestures;
 mod image;
@@ -22,9 +23,11 @@ pub mod lazy;
 mod mutator;
 mod output_transformation;
 mod overscroll;
+pub mod relocation;
 mod scroll;
 mod scroll_indicator;
 pub mod scrollbar;
+mod secure_text_field;
 pub mod shape;
 mod text;
 mod text_field;
@@ -41,6 +44,9 @@ pub use compose_ui::{
 
 pub use compose_ui::{BorderRenderer, BorderStroke};
 pub use dark_theme::is_system_in_dark_theme;
+pub use edge_effect_overscroll::{
+    DEFAULT_GLOW_COLOR, EdgeEffectOverscrollFactory, remember_platform_overscroll_factory,
+};
 pub use gestures::{
     AnchoredDragScope, AnchoredDraggableDefaults, AnchoredDraggableModifier,
     AnchoredDraggableOptions, AnchoredDraggableState, DraggableAnchors, DraggableAnchorsConfig,
@@ -59,9 +65,11 @@ pub use gestures::{
     scrollable_state,
 };
 pub use gestures::{
-    DefaultTransformableState, LocalBoxFuture, TransformCalculations, TransformGestureDetector,
-    TransformScope, TransformableModifier, TransformableState, TransformableStateExt,
-    remember_transformable_state, transformable_state,
+    DefaultScrollable2DState, DefaultTransformableState, LocalBoxFuture, Scroll2DScope,
+    Scrollable2DModifier, Scrollable2DState, Scrollable2DStateExt, TransformCalculations,
+    TransformGestureDetector, TransformScope, TransformableModifier, TransformableState,
+    TransformableStateExt, remember_scrollable_2d_state, remember_transformable_state,
+    scrollable_2d_state, transformable_state,
 };
 pub use image::{ContentScale, Image, PainterImage, VectorImage};
 pub use input_transformation::{InputTransform, InputTransformation, KeyboardActionHandler};
@@ -88,13 +96,22 @@ pub use mutator::{MutatePriority, MutationInterrupted, MutatorMutex};
 pub use output_transformation::{OutputTransform, OutputTransformation};
 pub use overscroll::{
     LOCAL_OVERSCROLL_FACTORY, OverscrollEffect, OverscrollFactory, OverscrollModifier,
-    PerformFling, remember_overscroll_effect, without_event_handling, without_visual_effect,
+    OverscrollNode, PerformFling, remember_overscroll_effect, without_event_handling,
+    without_visual_effect,
+};
+pub use relocation::{
+    BringIntoViewModifiers, BringIntoViewRequester, BringIntoViewResponder, BringIntoViewSpec,
+    DefaultBringIntoViewSpec, LOCAL_BRING_INTO_VIEW_SPEC,
 };
 pub use scroll::{ScrollModifiers, ScrollState, remember_scroll_state};
 pub use scroll_indicator::ScrollIndicatorState;
 pub use scrollbar::{
     HorizontalScrollbar, LOCAL_SCROLLBAR_STYLE, ScrollbarAdapter, ScrollbarStyle,
     VerticalScrollbar, remember_lazy_list_scrollbar_adapter, remember_scrollbar_adapter,
+};
+pub use secure_text_field::{
+    BasicSecureTextField, DEFAULT_OBFUSCATION_CHARACTER, LOCAL_PASSWORD_VISIBILITY,
+    PasswordInputTransformation, PasswordVisibility, PerGlyph, TextObfuscationMode,
 };
 pub use shape::{
     AbsoluteCutCornerShape, AbsoluteRoundedCornerShape, CIRCLE_SHAPE, CornerSize, CornerSizes,

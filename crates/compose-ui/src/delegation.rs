@@ -289,20 +289,40 @@ pub(crate) fn hit_clip_of(
     delegates.entries.iter_mut().find_map(|entry| hit_clip_of(&mut *entry.node, size, density))
 }
 
-/// `node`'s `bring_into_view` or, if it doesn't scroll, its first delegate's that does.
-pub(crate) fn bring_into_view_of(
+/// `node` if it responds to bringing into view, or its first delegate that does.
+pub(crate) fn responder_of(
     node: &mut dyn ModifierNode,
-    rect: crate::unit::Rect,
-    viewport: crate::unit::IntSize,
-) -> Option<crate::unit::Rect> {
-    if let Some(moved) = node.bring_into_view(rect, viewport) {
-        return Some(moved);
+) -> Option<&mut dyn crate::relocation::BringIntoViewResponderNode> {
+    if node.as_bring_into_view_responder().is_some() {
+        return node.as_bring_into_view_responder();
     }
     let delegates = node.delegates()?;
-    delegates
-        .entries
-        .iter_mut()
-        .find_map(|entry| bring_into_view_of(&mut *entry.node, rect, viewport))
+    delegates.entries.iter_mut().find_map(|entry| responder_of(&mut *entry.node))
+}
+
+/// What `node`, or its first delegate that answers, does when asked to show `rect`: a
+/// responder's, or where it shows it at once (`bring_into_view`), in one pass over the delegates.
+pub(crate) fn bring_into_view_answer_of<'a>(
+    node: &'a mut dyn ModifierNode,
+    rect: crate::unit::Rect,
+    viewport: crate::unit::IntSize,
+    locals: compose_runtime::CompositionLocalAnchor,
+) -> crate::relocation::Answer<'a> {
+    use crate::relocation::Answer;
+    if node.as_bring_into_view_responder().is_some() {
+        return node.as_bring_into_view_responder().map_or(Answer::Nothing, Answer::Responder);
+    }
+    if let Some(shown) = node.bring_into_view_in(rect, viewport, locals) {
+        return Answer::Shown(shown);
+    }
+    let Some(delegates) = node.delegates() else { return Answer::Nothing };
+    for entry in delegates.entries.iter_mut() {
+        match bring_into_view_answer_of(&mut *entry.node, rect, viewport, locals) {
+            Answer::Nothing => {}
+            answer => return answer,
+        }
+    }
+    Answer::Nothing
 }
 
 /// `node` if it's selectable, or its first delegate that is, for `as_selectable`.

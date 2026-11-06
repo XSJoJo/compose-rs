@@ -120,6 +120,9 @@ pub(crate) struct Layer {
     pub(crate) measured_in: u64,
 }
 
+/// How many of a node's layers can be placed under a motion frame of reference.
+pub(crate) const MOTION_LAYERS: usize = 32;
+
 /// One UI element, as Compose's `LayoutNode`.
 pub struct LayoutNode {
     /// The node that lays it out, past any virtual node between them.
@@ -178,9 +181,9 @@ pub struct LayoutNode {
     pub(crate) measured_in_block: bool,
     /// Where it is in `UiTree::coordinate_readers`, or `u32::MAX`.
     pub(crate) reader_at: u32,
-    /// Which layers (the first 8) a motion frame of reference placed
-    /// (`with_motion_frame_of_reference_placement`).
-    pub(crate) motion_layers: u8,
+    /// Which layers a motion frame of reference placed
+    /// (`with_motion_frame_of_reference_placement`), the first `MOTION_LAYERS`.
+    pub(crate) motion_layers: u32,
     /// In `UiTree::layers_moved`.
     pub(crate) layer_moved: bool,
     /// The parent measurement that last measured it, to reject measuring it twice.
@@ -310,15 +313,20 @@ impl LayoutNode {
     /// nodes before it.
     #[cold]
     pub(crate) fn note_motion(&mut self, layer: usize, motion: bool) {
-        if layer < 8 {
-            let bit = 1u8 << layer;
+        debug_assert!(
+            !motion || layer < MOTION_LAYERS,
+            "compose-ui: a motion frame of reference past a node's {MOTION_LAYERS}th layout \
+             modifier isn't kept"
+        );
+        if layer < MOTION_LAYERS {
+            let bit = 1u32 << layer;
             self.motion_layers =
                 if motion { self.motion_layers | bit } else { self.motion_layers & !bit };
         }
     }
 
     pub(crate) fn placed_in_motion(&self, layer: usize) -> bool {
-        layer < 8 && self.motion_layers & (1 << layer) != 0
+        layer < MOTION_LAYERS && self.motion_layers & (1 << layer) != 0
     }
 
     pub(crate) fn layer_of(&self, index: usize) -> usize {
@@ -371,6 +379,8 @@ pub struct UiTree {
     pub(crate) uri_handler: Rc<dyn crate::platform_services::UriHandler>,
     pub(crate) platform_uri_handler: crate::platform_services::PlatformUriHandler,
     pub(crate) haptic_feedback: Rc<dyn crate::platform_services::HapticFeedback>,
+    /// The platform's edge effects, if it has any: overscroll's default on Android.
+    pub(crate) edge_effects: Option<Rc<crate::edge_effect::PlatformEdgeEffects>>,
     pub(crate) density: Density,
     /// The host's view configuration, if it set one (else Android's at the density, D907).
     pub(crate) view_configuration: Option<crate::view_configuration::ViewConfiguration>,
@@ -438,6 +448,8 @@ pub struct UiTree {
     /// is good only if they kept it since (`GraphicsLayerNode::note_transform`), so a layer no
     /// one under it listens to any more doesn't run its block for nothing.
     pub(crate) position_listeners: u32,
+    /// The layout-rect callbacks, from the first registration on: `None` costs nothing.
+    pub(crate) rects: Option<std::rc::Rc<std::cell::RefCell<crate::spatial::RectManager>>>,
     /// The nodes whose placing code last asked where they are: it runs again once they aren't
     /// there (D1212).
     pub(crate) coordinate_readers: Vec<crate::placement::CoordinateReader>,
@@ -592,6 +604,7 @@ impl UiTree {
             uri_handler: Rc::new(crate::platform_services::PlatformUriHandler::headless()),
             platform_uri_handler: crate::platform_services::PlatformUriHandler::headless(),
             haptic_feedback: Rc::new(crate::platform_services::NoHapticFeedback),
+            edge_effects: None,
             density,
             view_configuration: None,
             display_list: DisplayList::default(),
@@ -623,6 +636,7 @@ impl UiTree {
             placed_layers: Vec::new(),
             layers_moved: Vec::new(),
             position_listeners: 0,
+            rects: None,
             coordinate_readers: Vec::new(),
             lookahead_used: false,
             ahead_readers: Vec::new(),

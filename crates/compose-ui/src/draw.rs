@@ -357,6 +357,31 @@ impl DrawScope<'_> {
         self.list.push(DrawOp::SaveLayerAlpha { bounds, alpha });
     }
 
+    /// Draws what follows, to [`end_edge_effects`](Self::end_edge_effects), under the edge effects
+    /// of the scroller `owner`, this node's size, for a platform that has them
+    /// ([`DrawOp::BeginEdgeEffects`]).
+    pub fn begin_edge_effects(
+        &mut self,
+        owner: u32,
+        stamp: u32,
+        max_elevation: f32,
+        glow_padding: [f32; 4],
+    ) {
+        let bounds = self.to_list(self.bounds());
+        self.list.push(DrawOp::BeginEdgeEffects {
+            owner,
+            bounds,
+            stamp,
+            max_elevation,
+            glow_padding,
+        });
+    }
+
+    /// The end of [`begin_edge_effects`](Self::begin_edge_effects).
+    pub fn end_edge_effects(&mut self) {
+        self.list.push(DrawOp::EndEdgeEffects);
+    }
+
     /// Transforms what follows until the restore of a save made before: scaled and rotated
     /// (degrees, clockwise) around `pivot` (in the node's coordinates), then moved by
     /// `translation`.

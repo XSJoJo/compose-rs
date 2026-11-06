@@ -206,9 +206,11 @@ pub use tabs::{
     SecondaryTabRow, Tab, TabIndicatorModifiers, TabIndicatorScope, TabPosition, TabRowDefaults,
 };
 pub use text_field::{
-    LOCAL_TEXT_FIELD_LABEL_SCOPE, OutlinedTextField, OutlinedTextFieldContainer,
-    OutlinedTextFieldDecorationBox, OutlinedTextFieldDefaults, TextField, TextFieldContainer,
-    TextFieldDecorationBox, TextFieldLabelPosition, TextFieldLabelScope, TextFieldModifiers,
+    LOCAL_TEXT_FIELD_LABEL_SCOPE, OutlinedSecureTextField, OutlinedTextField,
+    OutlinedTextFieldContainer, OutlinedTextFieldDecorationBox, OutlinedTextFieldDecorator,
+    OutlinedTextFieldDefaults, OutlinedTextFieldOfState, SecureTextField, TextField,
+    TextFieldContainer, TextFieldDecorationBox, TextFieldDecorator, TextFieldLabelPosition,
+    TextFieldLabelScope, TextFieldModifiers, TextFieldOfState,
 };
 pub use theme::{
     ColorScheme, DEFAULT_LINE_HEIGHT_STYLE, DEFAULT_TEXT_STYLE, LOCAL_COLOR_SCHEME,
@@ -239,7 +241,8 @@ pub use tooltip::{
 #[doc(hidden)]
 pub use compose_foundation::{
     ImeAction, KeyboardActions, KeyboardCapitalization, KeyboardOptions, KeyboardType,
-    PasswordVisualTransformation, ScrollState, VisualTransformation, remember_scroll_state,
+    PasswordVisualTransformation, ScrollState, TextFieldLineLimits, VisualTransformation,
+    remember_scroll_state,
 };
 pub use compose_ui::{
     Alignment, AnnotatedString, Color, Dp, DpOffset, FontFamily, FontStyle, IntOffset, Modifier,

@@ -102,6 +102,20 @@ pub enum DrawOp {
         path: std::sync::Arc<crate::path::PathData>,
         offset: Offset,
     },
+    /// What follows, up to the matching [`EndEdgeEffects`](DrawOp::EndEdgeEffects), is drawn under
+    /// the edge effects of the scroller `owner` (`compose_ui::EdgeEffect`) of `bounds`, where the
+    /// platform has them: Android's replayer stretches or glows it; other renderers draw it as it
+    /// is. Only while one is active, each frame a new `stamp`: the platform's effect moves as it's
+    /// drawn, with the same bytes. `max_elevation` is how far across the axis a stretch keeps what's
+    /// drawn past `bounds`; `glow_padding` (left, top, right, bottom) how far in a glow is.
+    BeginEdgeEffects {
+        owner: u32,
+        bounds: Rect,
+        stamp: u32,
+        max_elevation: f32,
+        glow_padding: [f32; 4],
+    },
+    EndEdgeEffects,
 }
 
 impl DrawOp {
@@ -296,6 +310,23 @@ impl Same for DrawOp {
             (D::ClipPath { path: a, offset: oa }, D::ClipPath { path: b, offset: ob }) => {
                 a.same(b) && oa.same(ob)
             }
+            (
+                D::BeginEdgeEffects {
+                    owner: wa,
+                    bounds: a,
+                    stamp: sa,
+                    max_elevation: ea,
+                    glow_padding: pa,
+                },
+                D::BeginEdgeEffects {
+                    owner: wb,
+                    bounds: b,
+                    stamp: sb,
+                    max_elevation: eb,
+                    glow_padding: pb,
+                },
+            ) => wa == wb && a.same(b) && sa == sb && ea.same(eb) && pa.same(pb),
+            (D::EndEdgeEffects, D::EndEdgeEffects) => true,
             _ => false,
         }
     }
@@ -604,6 +635,10 @@ impl FlatDisplayList {
                     "transform pivot {},{} scale {}x{} rotate {} translate {},{}",
                     pivot.x, pivot.y, scale.0, scale.1, rotation, translation.x, translation.y
                 ),
+                DrawOp::BeginEdgeEffects { owner, bounds, stamp, .. } => {
+                    writeln!(out, "edge effects {owner} {} stamp {stamp}", rect_text(bounds))
+                }
+                DrawOp::EndEdgeEffects => writeln!(out, "end edge effects"),
                 DrawOp::ClipPath { path, offset } => writeln!(
                     out,
                     "clip path of {} commands at {},{}",
@@ -639,7 +674,9 @@ pub fn single_drawing(ops: &[DrawOp]) -> Option<usize> {
         match op {
             DrawOp::SaveLayerAlpha { .. }
             | DrawOp::SaveLayer { .. }
-            | DrawOp::SaveLayerEffect { .. } => return None,
+            | DrawOp::SaveLayerEffect { .. }
+            | DrawOp::BeginEdgeEffects { .. } => return None,
+            DrawOp::EndEdgeEffects => {}
             DrawOp::Save => depth += 1,
             DrawOp::Restore if depth == 0 => return (drawings == 1).then_some(index),
             DrawOp::Restore => depth -= 1,

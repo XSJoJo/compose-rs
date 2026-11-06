@@ -515,7 +515,8 @@ impl TextFieldBuffer {
         let start = floor_boundary(&self.text, start);
         let end = if collapsed { start } else { ceil_boundary(&self.text, end) };
         let text = &text[floor_boundary(text, text_start)..ceil_boundary(text, text_end)];
-        self.text_will_change(start, end, text.len(), from_hardware);
+        let one_character = text.chars().nth(1).is_none();
+        self.text_will_change(start, end, text.len(), one_character, from_hardware);
         self.text.replace_range(start..end, text);
         self.commit_composition();
     }
@@ -534,24 +535,44 @@ impl TextFieldBuffer {
     /// Compose's range form is a slice: `append(&text[start..end])`.
     pub fn append(&mut self, text: &str) {
         let length = self.length();
-        self.text_will_change(length, length, text.len(), false);
+        self.text_will_change(length, length, text.len(), false, false);
         self.text.push_str(text);
     }
 
     /// Adds `c` at the end, as Compose's `append(Char)`.
     pub fn append_char(&mut self, c: char) {
         let length = self.length();
-        self.text_will_change(length, length, c.len_utf8(), false);
+        self.text_will_change(length, length, c.len_utf8(), false, false);
         self.text.push(c);
     }
 
     /// Records a change and moves the selection, before the text changes, as Compose's
     /// `onTextWillChange`: edits from an application or a desktop place the selection somewhere
     /// sensible too.
-    fn text_will_change(&mut self, start: usize, end: usize, new_length: usize, hardware: bool) {
+    fn text_will_change(
+        &mut self,
+        start: usize,
+        end: usize,
+        new_length: usize,
+        new_is_one_character: bool,
+        hardware: bool,
+    ) {
         self.changes.track_change(start, end, new_length, hardware);
+        // One character for one character as long (a byte offset can't fall inside either):
+        // nothing to map,
+        // as Compose's skips one unit for one, so a transformation going character by character
+        // keeps the mapping short.
         if let Some(mapping) = &mut self.offset_mapping {
-            mapping.record_edit_operation(start, end, new_length);
+            let (min, max) = (start.min(end), start.max(end));
+            let one_for_one = max - min == new_length
+                && new_is_one_character
+                && self
+                    .text
+                    .get(min..max)
+                    .is_some_and(|replaced| replaced.chars().nth(1).is_none());
+            if !one_for_one {
+                mapping.record_edit_operation(start, end, new_length);
+            }
         }
         self.selection = adjust_text_range(self.selection, start, end, new_length);
     }

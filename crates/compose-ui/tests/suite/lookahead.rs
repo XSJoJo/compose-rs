@@ -1499,3 +1499,138 @@ fn both_passes_blocks_see_the_outermost_moved() {
     host.frame();
     assert_eq!((ahead.get(), now.get()), (7.0, 7.0));
 }
+
+// ---- From the next review ---------------------------------------------------------------------
+
+/// What an intrinsic run of a policy kept, its real measurement ahead replaces: the outermost
+/// asked from outside is measured ahead again, as `onIntrinsicsQueried`.
+#[test]
+fn an_outermost_asked_an_intrinsic_is_measured_ahead_after() {
+    let seen = Rc::new(Cell::new(None));
+    let again = mutable_state_of(0);
+    let (s, a) = (seen.clone(), again.handle());
+    let mut host = host(move || {
+        let s = s.clone();
+        let asking = measure_policy(move |scope, measurables, constraints| {
+            a.get();
+            scope.max_intrinsic_width(measurables[0], 10);
+            let placeable = scope.measure(measurables[0], constraints);
+            scope.layout_with(placeable.width, placeable.height, move |placement| {
+                placement.place(&placeable, 0, 0);
+            })
+        });
+        Layout(
+            Modifier,
+            asking,
+            callback(move || {
+                let s = s.clone();
+                scoped(move |_| {
+                    let s = s.clone();
+                    let keeping = measure_policy(move |scope, _, constraints| {
+                        // An intrinsic run measures with a constraint of its own: kept, unless
+                        // the real measurement runs after it.
+                        if scope.is_looking_ahead() {
+                            s.set(Some(constraints));
+                        }
+                        scope.layout(10, 10)
+                    });
+                    Layout(Modifier, keeping, callback(|| {}));
+                });
+            }),
+        );
+    });
+    // The host's window, not an intrinsic measurement's unbounded width; again with nothing new
+    // for the child but the intrinsic asked.
+    for round in 0..2 {
+        let last = seen.get().expect("measured ahead");
+        assert_eq!((last.max_width, last.max_height), (200, 100), "{round}");
+        again.set(round + 1);
+        host.frame();
+    }
+}
+
+struct HearingSize(Rc<Cell<u32>>);
+
+impl ModifierNode for HearingSize {
+    fn as_draw(&mut self) -> Option<&mut dyn DrawModifierNode> {
+        Some(self)
+    }
+}
+
+impl DrawModifierNode for HearingSize {
+    fn on_measure_result_changed(&mut self, _: &mut NodeContext<'_>) {
+        self.0.set(self.0.get() + 1);
+    }
+}
+
+struct HearingSizeElement(Rc<Cell<u32>>);
+
+impl ModifierNodeElement for HearingSizeElement {
+    type Node = HearingSize;
+    fn create(&self) -> HearingSize {
+        HearingSize(self.0.clone())
+    }
+    fn update(&self, node: &mut HearingSize) {
+        node.0 = self.0.clone();
+    }
+    fn same(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// A draw node hears of the size that's now, not of the one ahead.
+#[test]
+fn a_draw_node_hears_of_a_new_size_now_only() {
+    let heard = Rc::new(Cell::new(0));
+    let h = heard.clone();
+    let _host = host(move || {
+        let h = h.clone();
+        scoped(move |_| {
+            let by_pass = measure_policy(|scope, _, _| {
+                let side = if scope.is_looking_ahead() { 40 } else { 10 };
+                scope.layout(side, side)
+            });
+            Layout(Modifier.then_custom(HearingSizeElement(h.clone())), by_pass, callback(|| {}));
+        });
+    });
+    assert_eq!(heard.get(), 1);
+}
+
+/// A scroll past a node's eighth layout modifier is a scroll too: left out of a lookahead position
+/// if so asked, as one in its first (D1225).
+#[test]
+fn a_scroll_deep_in_a_chain_is_left_out_of_a_lookahead_position_if_asked() {
+    type Kept = Rc<Cell<Option<(LookaheadScope, LayoutCoordinates)>>>;
+    let (outer, inner): (Kept, Kept) = (Rc::default(), Rc::default());
+    let (o, i) = (outer.clone(), inner.clone());
+    let _host = host(move || {
+        let (o, i) = (o.clone(), i.clone());
+        scoped(move |scope| {
+            let (o, i) = (o.clone(), i.clone());
+            let mut chain =
+                Modifier.on_placed(move |it: LayoutCoordinates| o.set(Some((scope, it))));
+            for _ in 0..10 {
+                chain = chain.layout(|scope, measurable, constraints| {
+                    let placeable = scope.measure(measurable, constraints);
+                    scope.layout_with(placeable.width, placeable.height, move |placement| {
+                        placement.place(&placeable, 0, 0);
+                    })
+                });
+            }
+            let scrolled = Modifier.layout(|scope, measurable, constraints| {
+                let placeable = scope.measure(measurable, constraints);
+                scope.with_motion_frame_of_reference_placement(|scope| {
+                    scope.place(&placeable, 0, -50);
+                });
+                scope.layout(placeable.width, placeable.height)
+            });
+            let inner = Modifier.on_placed(move |it: LayoutCoordinates| i.set(Some((scope, it))));
+            leaf(chain.then(scrolled).then(inner).then(sized(5)));
+        });
+    });
+    let (scope, outer) = outer.get().expect("placed");
+    let (_, inner) = inner.get().expect("placed");
+    let at = |include| scope.local_lookahead_position_of_with(outer, inner, Offset::ZERO, include);
+    assert_eq!(at(true), Offset::new(0.0, -50.0));
+    assert_eq!(at(false), Offset::ZERO);
+}

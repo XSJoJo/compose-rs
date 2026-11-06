@@ -2,6 +2,8 @@
 
 #![allow(non_snake_case)]
 
+use std::rc::Rc;
+
 use compose_animation::{AnimationSpec, LINEAR_EASING, tween};
 use compose_foundation::layout::*;
 use compose_foundation::*;
@@ -201,16 +203,31 @@ struct Fixture {
 
 impl Fixture {
     fn new(params: Params, options: ListOptions, list: Vec<i32>) -> Fixture {
+        Fixture::new_with(params, options, list, false)
+    }
+
+    /// `new`, the list in a `LookaheadScope` if `scoped`.
+    fn new_with(params: Params, options: ListOptions, list: Vec<i32>, scoped: bool) -> Fixture {
         let list = mutable_state_of(list);
         let handle = list.handle();
         let state = LazyListState::new(options.start_index, 0);
         let state_handle = *state;
+        let options = Rc::new(options);
         let ui = paused(IntSize::new(1000, 1000), move || {
             let _ = &state;
             let items = handle.get();
-            lazy_list(params, options_again(&options), state_handle, move |scope| {
-                plain_items(&scope, items.clone(), params);
-            });
+            let options = options.clone();
+            let content = move || {
+                let items = items.clone();
+                lazy_list(params, options_again(&options), state_handle, move |scope| {
+                    plain_items(&scope, items.clone(), params);
+                });
+            };
+            if scoped {
+                compose_ui::LookaheadScope(callback(move |_| content()));
+            } else {
+                content();
+            }
         });
         Fixture { ui, list, state: state_handle, params }
     }
@@ -2465,4 +2482,193 @@ fn several_items_moving_out_of_view_take_few_rounds_a_frame() {
         // One for the frame, and one more when an item's left and goes from the composition.
         assert!(passes <= 3, "{passes} measurements in a frame");
     }
+}
+
+// ---- In a LookaheadScope (D1226) ------------------------------------------------------------------
+
+/// The same animation in a scope: no item animates twice for the pass ahead.
+#[test]
+fn two_items_reordered_swap_the_same_in_a_lookahead_scope() {
+    for params in PARAMS {
+        let mut fixture = Fixture::new_with(params, ListOptions::default(), vec![0, 1], true);
+        fixture.assert_positions(&[(0, 0.0), (1, f(ITEM))], None);
+        fixture.set_list(vec![1, 0]);
+        on_animation_frame(&mut fixture.ui, |ui, fraction| {
+            assert_positions_of(
+                ui,
+                params,
+                &[(0, f(ITEM) * fraction), (1, f(ITEM) * (1.0 - fraction))],
+                Some(fraction),
+                params.reverse,
+            );
+        });
+    }
+}
+
+/// Where the list says its items are is where they're going, from the pass ahead.
+#[test]
+fn the_layout_info_has_the_final_positions_in_a_lookahead_scope() {
+    let mut fixture = Fixture::new_with(PARAMS[0], ListOptions::default(), vec![0, 1], true);
+    fixture.set_list(vec![1, 0]);
+    let state = fixture.state;
+    on_animation_frame(&mut fixture.ui, |_, _| {
+        let offsets: Vec<(usize, i32)> =
+            state.layout_info().visible_items_info.iter().map(|it| (it.index, it.offset)).collect();
+        assert_eq!(offsets, [(0, 0), (1, ITEM)]);
+    });
+}
+
+/// Two items swapped in a `LazyColumn` 200 long ahead and 50 now, `reverse`d or not, arranged by
+/// `arrangement`: where the pass that's now has them, from (`first`, `second`) to the other's.
+fn swapped_ahead_and_now(reverse: bool, arrangement: VerticalArrangement, first: i32, second: i32) {
+    let list = mutable_state_of(vec![0, 1]);
+    let handle = list.handle();
+    let params = Params { vertical: true, reverse };
+    let mut ui = paused(IntSize::new(100, 1000), move || {
+        let items = handle.get();
+        let arrangement = arrangement.clone();
+        compose_ui::LookaheadScope(callback(move |_| {
+            let items = items.clone();
+            let arrangement = arrangement.clone();
+            let by_pass = Modifier.layout(|scope, measurable, constraints| {
+                let tall = if scope.is_looking_ahead() { 200 } else { 50 };
+                let placeable = scope.measure(
+                    measurable,
+                    compose_ui::Constraints::new(0, constraints.max_width, tall, tall),
+                );
+                scope.layout_with(placeable.width, placeable.height, move |placement| {
+                    placement.place(&placeable, 0, 0);
+                })
+            });
+            LazyColumn!(
+                modifier = by_pass.test_tag(LIST_TAG),
+                reverse_layout = reverse,
+                vertical_arrangement = arrangement,
+                content = move |scope| plain_items(&scope, items.clone(), params)
+            );
+        }));
+    });
+    ui.wait_for_idle();
+    assert_eq!((position_of(&mut ui, "0").1, position_of(&mut ui, "1").1), (first, second));
+    let set = list.handle();
+    ui.run_on_ui_thread(move |_| set.set(vec![1, 0]));
+    on_animation_frame(&mut ui, |ui, fraction| {
+        let along = ((second - first) as f32 * fraction).round() as i32;
+        assert_eq!(
+            (position_of(ui, "0").1, position_of(ui, "1").1),
+            (first + along, second - along),
+            "at {fraction}"
+        );
+    });
+}
+
+/// Centered, 200 long ahead and 50 now: the pass that's now places an animated item where it is
+/// ahead, and animates it toward there, as Compose's `lookaheadOffset` (D1226). Ahead, the two
+/// items are centered at 60 and 100; now, the list is too short to center them, but they're
+/// placed at 60 and 100 all the same, and swapped, each moves to the other's.
+#[test]
+fn an_item_in_a_lookahead_scope_animates_toward_where_it_is_ahead() {
+    swapped_ahead_and_now(false, Arrangement::CENTER.into(), 60, 100);
+}
+
+/// Reversed and from the top: ahead, the first item is 120 from the end of 200 (at 40), the second
+/// 160; now, 120 and 160 from the end of 50, so above it, and swapped they go to the other's, as
+/// Compose's (its `lookaheadOffset` is from the end, mirrored in the size now).
+#[test]
+fn a_reversed_item_in_a_lookahead_scope_animates_toward_its_offset_ahead_from_the_end() {
+    swapped_ahead_and_now(true, Arrangement::TOP, -110, -150);
+}
+
+/// A row with content padding, 200 by 100 ahead and 50 by 60 now, its items centered both ways:
+/// ahead, past the 10 of padding, the two are centered at 65 and 105 along and at 30 across; the
+/// pass that's now places them there, across too (Compose's `lookaheadOffset` is both axes), and
+/// swapped, each moves to the other's.
+#[test]
+fn a_row_with_padding_in_a_lookahead_scope_places_its_items_where_they_are_ahead() {
+    let list = mutable_state_of(vec![0, 1]);
+    let handle = list.handle();
+    let params = PARAMS[1];
+    let mut ui = paused(IntSize::new(1000, 1000), move || {
+        let items = handle.get();
+        compose_ui::LookaheadScope(callback(move |_| {
+            let items = items.clone();
+            let by_pass = Modifier.layout(|scope, measurable, _| {
+                let (wide, tall) = if scope.is_looking_ahead() { (200, 100) } else { (50, 60) };
+                let placeable =
+                    scope.measure(measurable, compose_ui::Constraints::fixed(wide, tall));
+                scope.layout_with(placeable.width, placeable.height, move |placement| {
+                    placement.place(&placeable, 0, 0);
+                })
+            });
+            let arrangement: HorizontalArrangement = Arrangement::CENTER.into();
+            LazyRow!(
+                modifier = by_pass.test_tag(LIST_TAG),
+                content_padding = PaddingValues { start: dp(10), ..PaddingValues::ZERO },
+                horizontal_arrangement = arrangement,
+                vertical_alignment = Alignment::CENTER_VERTICALLY,
+                content = move |scope| plain_items(&scope, items.clone(), params)
+            );
+        }));
+    });
+    ui.wait_for_idle();
+    assert_eq!((position_of(&mut ui, "0"), position_of(&mut ui, "1")), ((65, 30), (105, 30)));
+    let set = list.handle();
+    ui.run_on_ui_thread(move |_| set.set(vec![1, 0]));
+    on_animation_frame(&mut ui, |ui, fraction| {
+        let along = (f(ITEM) * fraction).round() as i32;
+        assert_eq!(
+            (position_of(ui, "0"), position_of(ui, "1")),
+            ((65 + along, 30), (105 - along, 30)),
+            "at {fraction}"
+        );
+    });
+}
+
+/// An item moving out of view toward the start, in a scope: ahead, it goes before the first item
+/// positioned, as Compose's `isLookingAhead` branch (at -10, scrolled 10 into item 3: to -50),
+/// where out of a scope it goes to `layoutMinOffset` (10, to -30); the pass that's now places it
+/// where it is ahead.
+#[test]
+fn an_item_moving_out_toward_the_start_in_a_lookahead_scope_goes_before_the_first() {
+    let options = ListOptions { start_index: 3, ..ListOptions::default() };
+    let mut fixture = Fixture::new_with(PARAMS[0], options, (0..10).collect(), true);
+    let state = fixture.state;
+    fixture.ui.run_on_ui_thread(move |_| state.dispatch_raw_delta(10.0));
+    fixture.ui.wait_for_idle();
+    fixture.assert_positions(&[(3, -10.0), (4, 30.0)], None);
+    fixture.set_list([4, 0, 1, 2, 3, 5, 6, 7, 8, 9].to_vec());
+    on_animation_frame(&mut fixture.ui, |ui, fraction| {
+        if fraction < 1.0 {
+            assert_positions_of(
+                ui,
+                PARAMS[0],
+                &[(3, -10.0), (4, 30.0 - 80.0 * fraction), (5, 70.0 - 40.0 * fraction)],
+                Some(fraction),
+                false,
+            );
+        }
+    });
+}
+
+/// A scroll while items animate in a scope moves them by the scroll alone, the animation going on
+/// toward their places: the pass ahead takes the scroll out of what it animates.
+#[test]
+fn a_scroll_while_items_animate_in_a_lookahead_scope_moves_them_by_the_scroll() {
+    let options = ListOptions { max_size: ITEM * 5, ..ListOptions::default() };
+    let mut fixture = Fixture::new_with(PARAMS[0], options, (0..6).collect(), true);
+    let state = fixture.state;
+    fixture.set_list(vec![0, 2, 1, 3, 4, 5]);
+    let mut scrolled = 0.0;
+    let item = f(ITEM);
+    on_animation_frame(&mut fixture.ui, |ui, fraction| {
+        let expected = |scrolled: f32| {
+            [(1, item + item * fraction - scrolled), (2, 2.0 * item - item * fraction - scrolled)]
+        };
+        assert_positions_of(ui, PARAMS[0], &expected(scrolled), Some(fraction), false);
+        if fraction == 0.5 {
+            scroll_list(ui, state, 10);
+            scrolled = 10.0;
+            assert_positions_of(ui, PARAMS[0], &expected(scrolled), Some(fraction), false);
+        }
+    });
 }

@@ -89,7 +89,7 @@ pub(crate) struct LookaheadState {
     content_placed_in: u64,
     measured_in: u64,
     measured_in_block: bool,
-    motion_layers: u8,
+    motion_layers: u32,
     intrinsics_asked: bool,
     children_intrinsics_asked: bool,
 }
@@ -391,7 +391,12 @@ impl UiTree {
     /// Where `layer` of `node` is ahead, in the coordinates it's a position in: its outermost
     /// root's parent's content, in a scope; out of any, the layer's own. Positions summed, as
     /// `LookaheadLayoutCoordinates`.
-    fn lookahead_position(&self, node: NodeId, layer: usize) -> (LayoutCoordinates, IntOffset) {
+    fn lookahead_position(
+        &self,
+        node: NodeId,
+        layer: usize,
+        include_motion: bool,
+    ) -> (LayoutCoordinates, IntOffset) {
         let of_layer = |node: NodeId, layer: usize| self.coordinates_of_layer(node, layer);
         if self.node(node).lookahead.is_none() {
             return (of_layer(node, layer), IntOffset::ZERO);
@@ -400,29 +405,37 @@ impl UiTree {
         let mut sum = IntOffset::ZERO;
         loop {
             let value = self.node(current);
-            let layers: &[Layer] = if self.in_lookahead {
-                &value.layers
-            } else {
-                value.lookahead.as_ref().map_or(&value.layers, |state| &state.layers)
+            let (layers, motion): (&[Layer], u32) = match (self.in_lookahead, &value.lookahead) {
+                (false, Some(state)) => (&state.layers, state.motion_layers),
+                _ => (&value.layers, value.motion_layers),
             };
-            for entry in layers.iter().take(layer + 1).skip(1) {
-                sum = sum + entry.offset;
+            // What a scroll moved isn't a move, if so asked (`includeMotionFrameOfReference`).
+            let counted = |at: usize, motion: u32| {
+                include_motion || at >= crate::tree::MOTION_LAYERS || motion & (1 << at) == 0
+            };
+            for (at, entry) in layers.iter().enumerate().take(layer + 1).skip(1) {
+                if counted(at, motion) {
+                    sum = sum + entry.offset;
+                }
             }
             if self.is_outermost_lookahead_root(current) {
                 // Its position's the other pass's, as `placeSelf`.
-                let now: &[Layer] = if self.in_lookahead {
-                    value.lookahead.as_ref().map_or(&value.layers, |state| &state.layers)
-                } else {
-                    &value.layers
+                let (now, now_motion): (&[Layer], u32) = match (self.in_lookahead, &value.lookahead)
+                {
+                    (true, Some(state)) => (&state.layers, state.motion_layers),
+                    _ => (&value.layers, value.motion_layers),
                 };
-                let sum = sum + now.first().map_or(IntOffset::ZERO, |it| it.offset);
+                let at_root = now.first().filter(|_| counted(0, now_motion));
+                let sum = sum + at_root.map_or(IntOffset::ZERO, |it| it.offset);
                 let frame = match value.parent {
                     Some(parent) => of_layer(parent, self.node(parent).layers.len() - 1),
                     None => of_layer(current, 0),
                 };
                 return (frame, sum);
             }
-            sum = sum + layers.first().map_or(IntOffset::ZERO, |it| it.offset);
+            if counted(0, motion) {
+                sum = sum + layers.first().map_or(IntOffset::ZERO, |it| it.offset);
+            }
             match value.parent {
                 Some(parent) if !value.overlay => {
                     layer = self.node(parent).layers.len() - 1;
@@ -467,7 +480,23 @@ impl LookaheadScope {
         source: LayoutCoordinates,
         at: Offset,
     ) -> Offset {
-        LookaheadCoordinates(coordinates).local_position_of(LookaheadCoordinates(source), at)
+        self.local_lookahead_position_of_with(coordinates, source, at, true)
+    }
+
+    /// `local_lookahead_position_of`, what a motion frame of reference placed left out unless
+    /// `include_motion_frame_of_reference`, as its `includeMotionFrameOfReference`.
+    pub fn local_lookahead_position_of_with(
+        &self,
+        coordinates: LayoutCoordinates,
+        source: LayoutCoordinates,
+        at: Offset,
+        include_motion_frame_of_reference: bool,
+    ) -> Offset {
+        LookaheadCoordinates(coordinates).local_position_of_with(
+            LookaheadCoordinates(source),
+            at,
+            include_motion_frame_of_reference,
+        )
     }
 }
 
@@ -493,8 +522,23 @@ impl LookaheadCoordinates {
     /// positions summed, no layer's transform in them; in two scopes, through what's around them.
     #[track_caller]
     pub fn local_position_of(&self, source: LookaheadCoordinates, at: Offset) -> Offset {
+        self.local_position_of_with(source, at, true)
+    }
+
+    /// `local_position_of`, what a motion frame of reference placed left out unless
+    /// `include_motion_frame_of_reference`.
+    #[track_caller]
+    pub fn local_position_of_with(
+        &self,
+        source: LookaheadCoordinates,
+        at: Offset,
+        include_motion_frame_of_reference: bool,
+    ) -> Offset {
+        let include = include_motion_frame_of_reference;
         let position = |of: &LayoutCoordinates| {
-            of.read_lookahead_position(|tree, node, layer| tree.lookahead_position(node, layer))
+            of.read_lookahead_position(|tree, node, layer| {
+                tree.lookahead_position(node, layer, include)
+            })
         };
         let (Some((this_frame, this_at)), Some((other_frame, other_at))) =
             (position(&self.0), position(&source.0))
@@ -505,7 +549,7 @@ impl LookaheadCoordinates {
             Offset::new(this_at.x as f32, this_at.y as f32),
             Offset::new(other_at.x as f32, other_at.y as f32),
         );
-        this_frame.local_position_of(&other_frame, other_at + at) - this_at
+        this_frame.local_position_of_with(&other_frame, other_at + at, include) - this_at
     }
 }
 

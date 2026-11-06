@@ -113,6 +113,11 @@ pub struct LazyListState {
 }
 
 struct LazyListInner {
+    /// It's been measured ahead, in a `LookaheadScope`: what it says of where it is is what's
+    /// ahead's, as Compose's `hasLookaheadOccurred` (D1226).
+    measured_ahead: Cell<bool>,
+    /// Where the pass ahead placed each animated item: the pass that's now places it there.
+    lookahead_places: RefCell<Vec<item_animator::LookaheadPlace>>,
     /// What runs `animate_item`, shared with its items' nodes.
     item_animator: Rc<ItemAnimator>,
     /// What `scroll_indicator_state` gives, one object as Compose's.
@@ -238,9 +243,17 @@ struct LazyListInner {
     scroll_outer: RefCell<Option<Outer>>,
 }
 
-/// The nested-scroll parents a delta came through, the list's axis, whether it runs against the
-/// pointer, and the delta's source.
-type Outer = (compose_ui::platform::NestedScrollChain, bool, bool, compose_ui::NestedScrollSource);
+/// What a delta came through: the nested-scroll parents, the list's axis, whether it runs against
+/// the pointer, the delta's source, and the overscroll effect around it, as far as a drag's or a
+/// fling's.
+#[derive(Clone)]
+struct Outer {
+    chain: compose_ui::platform::NestedScrollChain,
+    vertical: bool,
+    reverse: bool,
+    source: compose_ui::NestedScrollSource,
+    overscroll: Option<Rc<dyn crate::OverscrollEffect>>,
+}
 
 /// What's told of a list's measurements: a pager, whose pages and position depend on its size.
 trait ListObserver {
@@ -389,6 +402,8 @@ impl LazyListInner {
             dispose_leaving: Cell::new(false),
             core: crate::gestures::ScrollCore::new(),
             laid_out: layout_info::LaidOut::new(),
+            measured_ahead: Cell::new(false),
+            lookahead_places: RefCell::default(),
             density: Cell::new(1.0),
             laid_items: RefCell::new(None),
             scroll_outer: RefCell::new(None),
@@ -396,13 +411,15 @@ impl LazyListInner {
     }
 }
 
-/// A delta taken past an estimated end with nested-scroll parents around (D479): the parents,
-/// the axis and whether the list runs against the pointer, where the list was before it, and
-/// the pixels asked since.
+/// A delta taken past an estimated end with nested-scroll parents or an overscroll effect around
+/// (D479, D1473): the parents, the axis and whether the list runs against the pointer, the effect,
+/// where the list was before it, and the pixels asked since.
 struct Overshoot {
     chain: compose_ui::platform::NestedScrollChain,
     vertical: bool,
     reverse: bool,
+    overscroll: Option<Rc<dyn crate::OverscrollEffect>>,
+    list: LazyListState,
     from: (usize, f32),
     /// The first visible item's key then: `from` follows it when items come and go before it
     /// (D488).
@@ -421,8 +438,10 @@ impl Overshoot {
         (index, self.from.1)
     }
 
-    /// Offering its parents what wasn't used, `moved` of what was asked: their post-scroll,
-    /// to run once the layout is over; `None` if nothing is left.
+    /// Offering its parents what wasn't used, `moved` of what was asked: their post-scroll, then
+    /// the overscroll effect what they left, as a scroll consuming nothing: what Compose's gets in
+    /// `applyToScroll` itself, its scroll measuring at once. To run once the layout is over; `None`
+    /// if nothing is left.
     fn rest(self, moved: f32) -> Option<Box<dyn FnOnce()>> {
         let left = self.asked - moved;
         if left * self.asked <= 0.0 || left.abs() < 0.5 {
@@ -436,7 +455,21 @@ impl Overshoot {
             } else {
                 compose_ui::Offset::new(along, 0.0)
             };
-            self.chain.post_scroll(compose_ui::Offset::ZERO, available, self.source);
+            let taken = self.chain.post_scroll(compose_ui::Offset::ZERO, available, self.source);
+            if let Some(effect) = self.overscroll {
+                effect.apply_to_scroll(available - taken, self.source, &mut |_| {
+                    compose_ui::Offset::ZERO
+                });
+                // The gesture ended while this waited for its layout, its fling over: no fling's
+                // end is left to release what this pulled.
+                if !self.list.is_scroll_in_progress() {
+                    compose_runtime::CoroutineScope::new().launch(async move {
+                        let nothing: crate::PerformFling =
+                            Rc::new(|_| Box::pin(async { compose_ui::Velocity::ZERO }));
+                        effect.apply_to_fling(compose_ui::Velocity::ZERO, nothing).await;
+                    });
+                }
+            }
         }))
     }
 }
@@ -680,17 +713,8 @@ impl LazyListState {
     /// cuts the delta: the measurement takes it all, composing in the frame what it reaches,
     /// and stops at the end it finds (D476); what it couldn't use then goes to the nested-scroll
     /// parents `outer` names (the axis, and whether the list runs against the pointer), as
-    /// Compose's post-scroll (D479).
-    fn dispatch(
-        &self,
-        pixels: f32,
-        outer: Option<(
-            compose_ui::platform::NestedScrollChain,
-            bool,
-            bool,
-            compose_ui::NestedScrollSource,
-        )>,
-    ) -> f32 {
+    /// Compose's post-scroll (D479), then to its overscroll effect (D1473).
+    fn dispatch(&self, pixels: f32, outer: Option<Outer>) -> f32 {
         let Some(inner) = self.inner() else { return 0.0 };
         let (backward_estimated, forward_estimated) = inner.room_estimated.get();
         let (room, estimated) = if pixels > 0.0 {
@@ -700,21 +724,26 @@ impl LazyListState {
         };
         let used =
             if estimated { pixels } else { pixels.signum() * pixels.abs().min(room.max(0.0)) };
-        if estimated && let Some((chain, vertical, reverse, source)) = outer {
+        {
+            // Once one is open, every delta counts, estimated or not: a finger going back in the
+            // batch would otherwise leave what it took back as left over.
             let mut overshoot = inner.overshoot.borrow_mut();
-            match &mut *overshoot {
-                Some(overshoot) => overshoot.asked += used,
-                None => {
-                    *overshoot = Some(Overshoot {
-                        chain,
-                        vertical,
-                        reverse,
-                        from: inner.position.get(),
-                        from_key: inner.first_key.get(),
-                        asked: inner.pending.get() + used,
-                        source,
-                    })
-                }
+            if let Some(open) = overshoot.as_mut() {
+                open.asked += used;
+            } else if estimated
+                && let Some(Outer { chain, vertical, reverse, source, overscroll }) = outer
+            {
+                *overshoot = Some(Overshoot {
+                    chain,
+                    vertical,
+                    reverse,
+                    overscroll,
+                    list: *self,
+                    from: inner.position.get(),
+                    from_key: inner.first_key.get(),
+                    asked: inner.pending.get() + used,
+                    source,
+                });
             }
         }
         if used != 0.0 {
@@ -2640,6 +2669,26 @@ struct LazyListLayout {
 /// Measures an item by index (once), recording its size; `None` if it isn't composed.
 type MeasureItem<'a> = dyn FnMut(usize, &mut Sizes) -> Option<Placeable> + 'a;
 
+/// Notes where the pass ahead positioned each animated item, for the pass that's now to place it
+/// there (`before` is the content padding first along the axis).
+fn note_lookahead_places(
+    state: &LazyListInner,
+    positioned: &[item_animator::Positioned],
+    before: i32,
+) {
+    let animator = &state.item_animator;
+    let mut places = state.lookahead_places.borrow_mut();
+    places.clear();
+    places.extend(positioned.iter().filter(|it| animator.animates(it.key)).map(|it| {
+        item_animator::LookaheadPlace {
+            key: it.key,
+            index: it.index,
+            main: it.main + before,
+            cross: it.cross,
+        }
+    }));
+}
+
 impl MeasurePolicy for LazyListLayout {
     fn measure(
         &self,
@@ -2651,6 +2700,17 @@ impl MeasurePolicy for LazyListLayout {
         // Observed: a scroll measures the list again. Nothing else this measurement writes is
         // read here.
         state.remeasure.get();
+        // Ahead, it's where the list's going: it says so, and no item animates for it. Now, after
+        // that, it places what's on the way, telling nothing new of where it is.
+        let looking_ahead = scope.is_looking_ahead();
+        if looking_ahead {
+            state.measured_ahead.set(true);
+        }
+        // What it tells of itself (where it is, how far it can scroll, its layout info) and
+        // what it keeps for the next measurement (a scroll left over, prefetching's window) are
+        // the pass ahead's in a scope, as Compose's `applyMeasureResult` keeps only
+        // `approachLayoutInfo` after one: the pass that's now writes none of it.
+        let tells = looking_ahead || !state.measured_ahead.get();
         let info = &self.info;
         let vertical = info.vertical;
         let density = scope.density();
@@ -2703,7 +2763,9 @@ impl MeasurePolicy for LazyListLayout {
         } else {
             Constraints::new(0, Constraints::INFINITY, 0, cross_room)
         };
-        if state.item_constraints_written.replace(Some(item_constraints)) != Some(item_constraints)
+        if tells
+            && state.item_constraints_written.replace(Some(item_constraints))
+                != Some(item_constraints)
         {
             state.item_constraints.set(Some(item_constraints));
         }
@@ -2786,7 +2848,8 @@ impl MeasurePolicy for LazyListLayout {
         if count == 0 {
             // Before the first items (data still loading), the initial position waits for
             // them; a list emptied starts again at its top, as Compose's.
-            if state.had_items.get() {
+            if !tells {
+            } else if state.had_items.get() {
                 state.position.set((0, 0.0));
                 state.first_key.set(None);
                 state.had_items.set(false);
@@ -2794,22 +2857,24 @@ impl MeasurePolicy for LazyListLayout {
                 state.pending.set(state.pending.get() + offset - state.position.get().1);
             }
             // Nothing visible: the window starts over.
-            state.prefetch.after_layout(
-                state,
-                self.scheduler.as_ref(),
-                None,
-                0,
-                false,
-                None,
-                &[],
-                &mut |_| None,
-            );
-            // Known: an empty list takes no scroll (D480).
-            state.room_backward.set(0.0);
-            state.room_forward.set(0.0);
-            state.publish_can_scroll();
-            state.room_estimated.set((false, false));
-            state.beyond_more.set((false, false));
+            if tells {
+                state.prefetch.after_layout(
+                    state,
+                    self.scheduler.as_ref(),
+                    None,
+                    0,
+                    false,
+                    None,
+                    &[],
+                    &mut |_| None,
+                );
+                // Known: an empty list takes no scroll (D480).
+                state.room_backward.set(0.0);
+                state.room_forward.set(0.0);
+                state.publish_can_scroll();
+                state.room_estimated.set((false, false));
+                state.beyond_more.set((false, false));
+            }
             if let Some(observer) = state.observer.borrow().clone() {
                 compose_runtime::snapshots::Snapshot::without_read_observation(|| {
                     observer.after_measure();
@@ -2830,9 +2895,12 @@ impl MeasurePolicy for LazyListLayout {
             };
             // Its items gone, what they drew may fade out, and it holds their room for that.
             let size = if animator.idle() {
-                animator.note_items(&info.items, 0);
+                if tells {
+                    animator.note_items(&info.items, 0);
+                }
                 size
             } else {
+                // Animations are set up where they know where they go: ahead, in a scope.
                 let pass = item_animator::Pass {
                     items: &info.items,
                     vertical,
@@ -2842,8 +2910,11 @@ impl MeasurePolicy for LazyListLayout {
                     lane_count: 1,
                     layout_min: 0,
                     layout_max: 0,
+                    looking_ahead,
                 };
-                animator.on_measured(state, &pass, &[], &mut |_, _| None);
+                if tells {
+                    animator.on_measured(state, &pass, &[], &mut |_, _| None);
+                }
                 let min = animator.min_size_to_fit_disappearing();
                 IntSize::new(
                     constraints.constrain_width(size.width.max(min.width)),
@@ -2852,21 +2923,23 @@ impl MeasurePolicy for LazyListLayout {
             };
             state.laid_out.begin();
             let keys_changed = state.note_laid_items(&info.items);
-            state.laid_out.end(
-                layout_info::LaidViewport {
-                    start: -before,
-                    end: main_max - before,
-                    count: 0,
-                    size,
-                    vertical,
-                    reverse,
-                    before,
-                    after,
-                    spacing,
-                    max_span: 1,
-                },
-                keys_changed,
-            );
+            if tells {
+                state.laid_out.end(
+                    layout_info::LaidViewport {
+                        start: -before,
+                        end: main_max - before,
+                        count: 0,
+                        size,
+                        vertical,
+                        reverse,
+                        before,
+                        after,
+                        spacing,
+                        max_span: 1,
+                    },
+                    keys_changed,
+                );
+            }
             return scope.layout(size.width, size.height);
         }
         state.had_items.set(true);
@@ -2899,7 +2972,9 @@ impl MeasurePolicy for LazyListLayout {
                         // As many as cover the offset, as forward: a next round asks for more
                         // if they're smaller (D576).
                         let wanted = ((-*offset) / average).ceil().max(1.0) as usize;
-                        state.pending.set(state.pending.get() + *offset);
+                        if tells {
+                            state.pending.set(state.pending.get() + *offset);
+                        }
                         *offset = 0.0;
                         return wanted;
                     }
@@ -2992,7 +3067,9 @@ impl MeasurePolicy for LazyListLayout {
                 if wanted > 0 {
                     // Left to the next round, and no scroll anyone asked for: what it moves is
                     // for `animate_item` to animate.
-                    animator.note_scroll_back_left(state.pending.get() - pending_before_gap);
+                    if tells {
+                        animator.note_scroll_back_left(state.pending.get() - pending_before_gap);
+                    }
                     // The items before aren't composed: the rest waits for them (pending).
                     break;
                 }
@@ -3125,16 +3202,20 @@ impl MeasurePolicy for LazyListLayout {
             // items don't compose tens of thousands in a frame.
             let cap = placed.len().max(FIRST_STEP).max(2 * state.asked.get()).min(MOST_IN_A_ROUND);
             let more = room.div_ceil((in_view + spacing).max(1) as usize).min(cap);
-            state.asked.set(more);
+            if tells {
+                state.asked.set(more);
+            }
             wanted_end = (end_index + more + beyond_after).min(count);
-        } else {
+        } else if tells {
             state.asked.set(0);
         }
         let covers = composed_start <= wanted_start && composed_end >= wanted_end;
         let prefetch = &state.prefetch;
-        prefetch.policy.set(policy);
-        prefetch.vertical.set(info.vertical);
-        prefetch.visible.set(end_index - lead);
+        if tells {
+            prefetch.policy.set(policy);
+            prefetch.vertical.set(info.vertical);
+            prefetch.visible.set(end_index - lead);
+        }
         // The header sticking over the first item in view, if it's composed: its index, size and
         // where it sticks, as below. Compose's `visibleItemsInfo` holds it, by index (D895).
         let headers = info.items.headers_around(lead);
@@ -3151,7 +3232,7 @@ impl MeasurePolicy for LazyListLayout {
         });
         // The cache window, once the layout settled (nothing missing, nothing waiting to be composed
         // before, its header too): what it shows, and the scrolling since.
-        if !missing && wanted_before == 0 && (headers.is_none() || sticking.is_some()) {
+        if tells && !missing && wanted_before == 0 && (headers.is_none() || sticking.is_some()) {
             let laid = match (placed.first(), placed.last()) {
                 (Some((_, first_main)), Some((last, last_main))) => Some(Laid {
                     // A pager's pages beyond the viewport are composed: the window starts past
@@ -3202,13 +3283,18 @@ impl MeasurePolicy for LazyListLayout {
         // The items that may stay composed: those wanted, those in the window, and those requests
         // composed next to them.
         // A focus search that laid items out beyond the bounds is over.
-        let beyond_ended = state.beyond_ended.take();
+        let beyond_ended = tells && state.beyond_ended.take();
         if beyond_ended {
             prefetch.search_ended();
         }
         let header_apart =
             headers.map(|(header, _)| header).filter(|header| *header < wanted_start);
-        let limits = {
+        // Now, after the pass ahead, what's composed is what either wants (§7.8 of the lookahead
+        // design): what the pass ahead keeps, and more if this one needs it.
+        let limits = if !tells {
+            let (low, high) = prefetch.limits.get();
+            (low.min(wanted_start), high.max(wanted_end))
+        } else {
             let next = if prefetch.forward.get() {
                 wanted_end + 1
             } else {
@@ -3226,12 +3312,14 @@ impl MeasurePolicy for LazyListLayout {
                 (!beyond_ended).then_some(next),
             )
         };
-        prefetch.settle_detached(
-            header_apart.unwrap_or(lead),
-            (composed_start, composed_end),
-            limits,
-            header_apart.is_some(),
-        );
+        if tells {
+            prefetch.settle_detached(
+                header_apart.unwrap_or(lead),
+                (composed_start, composed_end),
+                limits,
+                header_apart.is_some(),
+            );
+        }
         // After a focus search that laid items out beyond the bounds, those it composed go
         // too, but the ones next to those wanted, as after a scroll (D482).
         let past_limits = composed_start < limits.0 || composed_end > limits.1;
@@ -3242,7 +3330,7 @@ impl MeasurePolicy for LazyListLayout {
         let mut composed = (composed_start, composed_end);
         let composed_more = state.composed_more.take();
         // A paused composition cancelled: the items composed again first (D594).
-        let recompose = lacked_unready.get() || prefetch.take_cancelled();
+        let recompose = lacked_unready.get() || (tells && prefetch.take_cancelled());
         if !covers || search_ended || recompose {
             // Items to compose (or a focus search's to let go): this composition deactivates
             // those the layout no longer wants too (kept for reuse), as Compose's measurement.
@@ -3251,28 +3339,37 @@ impl MeasurePolicy for LazyListLayout {
         } else if composed_more {
             state.composed.set(composed);
         }
-        // What prefetching works from.
-        prefetch.node.set(Some(node));
-        prefetch.count.set(count);
-        prefetch.wanted.set((wanted_start, wanted_end));
-        prefetch.limits.set(limits);
-        // Those no longer wanted, unplaced, are deactivated by the next composition: a
-        // request's, or one between frames; a frame with nothing to compose runs none for them
-        // (D575).
-        prefetch.trim_between_frames(state, self.scheduler.as_ref(), composed);
-        state.position.set((index, offset));
-        if count > 0 {
-            state.first_key.set(Some(info.items.key(index)));
-        }
-        let layout_info = (count, (average + spacing) as f32, spacing, main_max, before + after);
-        if state.layout_info_written.replace(layout_info) != layout_info {
-            state.layout_info.set(layout_info);
-        }
-        let rounded = (index, offset.round() as i32);
-        if state.published.get() != rounded {
-            state.published.set(rounded);
-            state.first_index.set(rounded.0);
-            state.first_offset.set(rounded.1);
+        if tells {
+            // What prefetching works from.
+            prefetch.node.set(Some(node));
+            prefetch.count.set(count);
+            prefetch.wanted.set((wanted_start, wanted_end));
+            prefetch.limits.set(limits);
+            // Those no longer wanted, unplaced, are deactivated by the next composition: a
+            // request's, or one between frames; a frame with nothing to compose runs none for
+            // them (D575).
+            prefetch.trim_between_frames(state, self.scheduler.as_ref(), composed);
+            state.position.set((index, offset));
+            if count > 0 {
+                state.first_key.set(Some(info.items.key(index)));
+            }
+            let layout_info =
+                (count, (average + spacing) as f32, spacing, main_max, before + after);
+            if state.layout_info_written.replace(layout_info) != layout_info {
+                state.layout_info.set(layout_info);
+            }
+            let rounded = (index, offset.round() as i32);
+            if state.published.get() != rounded {
+                state.published.set(rounded);
+                state.first_index.set(rounded.0);
+                state.first_offset.set(rounded.1);
+            }
+        } else {
+            // What either pass wants stays composed, and what's trimmed between frames is
+            // outside both.
+            let (start, end) = prefetch.wanted.get();
+            prefetch.wanted.set((start.min(wanted_start), end.max(wanted_end)));
+            prefetch.limits.set(limits);
         }
         // The items wanted are placed: those in view, and those a focus search asked for beyond
         // them (clipped away), so focus can move to them; those composed beyond the ones wanted
@@ -3318,7 +3415,8 @@ impl MeasurePolicy for LazyListLayout {
         // the layout is over.
         let mut post_scroll: Option<Box<dyn FnOnce()>> = None;
         // Once it settled: no scroll left waiting for items, none missing.
-        if pending == 0.0
+        if tells
+            && pending == 0.0
             && !missing
             && wanted_before == 0
             && let Some(overshoot) = state.overshoot.borrow_mut().take()
@@ -3332,20 +3430,24 @@ impl MeasurePolicy for LazyListLayout {
         // it can't use goes on to its parent).
         let average = sizes.average() as f32 + spacing as f32;
         let reaches_end = !missing && (end_index == count || placed_end >= count);
-        state.room_estimated.set((!reaches_start, !reaches_end));
-        state.beyond_more.set((placed_start.min(lead) > 0, placed_end.max(end_index) < count));
-        state.room_backward.set(if reaches_start {
-            (-extent_start) as f32 + pending
-        } else {
-            (placed_start.min(lead) as f32 * average - extent_start as f32 + pending).max(1.0)
-        });
-        state.room_forward.set(if reaches_end {
-            (extent_end.max(content_end) - main_max).max(0) as f32 - pending
-        } else {
-            let after_composed = count.saturating_sub(placed_end.max(end_index)) as f32 * average;
-            (after_composed + (extent_end.max(content_end) - main_max) as f32 - pending).max(1.0)
-        });
-        state.publish_can_scroll();
+        if tells {
+            state.room_estimated.set((!reaches_start, !reaches_end));
+            state.beyond_more.set((placed_start.min(lead) > 0, placed_end.max(end_index) < count));
+            state.room_backward.set(if reaches_start {
+                (-extent_start) as f32 + pending
+            } else {
+                (placed_start.min(lead) as f32 * average - extent_start as f32 + pending).max(1.0)
+            });
+            state.room_forward.set(if reaches_end {
+                (extent_end.max(content_end) - main_max).max(0) as f32 - pending
+            } else {
+                let after_composed =
+                    count.saturating_sub(placed_end.max(end_index)) as f32 * average;
+                (after_composed + (extent_end.max(content_end) - main_max) as f32 - pending)
+                    .max(1.0)
+            });
+            state.publish_can_scroll();
+        }
         // The sticky header over the first item laid out (under the start padding, if any, as
         // Compose's `applyStickyItems`), kept composed: at the list's start, or where it is if
         // lower, pushed out by the next header, its size and the spacing after it ending where
@@ -3363,12 +3465,14 @@ impl MeasurePolicy for LazyListLayout {
             });
         }
         let header = headers.map(|(header, _)| header);
-        if state.sticky_written.replace(header) != header {
-            state.sticky.set(header);
+        if tells {
+            if state.sticky_written.replace(header) != header {
+                state.sticky.set(header);
+            }
+            state.sticking_size.set(sticking.map_or(0, |(_, placeable, _)| main_of(&placeable)));
         }
-        state.sticking_size.set(sticking.map_or(0, |(_, placeable, _)| main_of(&placeable)));
         // Where the items are for `animate_item`, before a sticking header leaves them.
-        let animated_items = (!animator.idle()).then(|| {
+        let mut animated_items = (!animator.idle()).then(|| {
             let at = |base: usize| {
                 move |(position, (placeable, main)): (usize, &(Placeable, i32))| {
                     (base + position, *placeable, *main)
@@ -3440,7 +3544,9 @@ impl MeasurePolicy for LazyListLayout {
         // jump there has nothing laid out yet, and a list around this one would take an item of no
         // size for one scrolled past (D1456).
         let cross_size = if missing { cross_size.max(state.cross_size.get()) } else { cross_size };
-        state.cross_size.set(cross_size);
+        if tells {
+            state.cross_size.set(cross_size);
+        }
         let constrain_main = |main: i32| {
             if vertical {
                 constraints.constrain_height(main)
@@ -3468,7 +3574,9 @@ impl MeasurePolicy for LazyListLayout {
             }
         };
         let mut moved_away = Vec::new();
-        if let Some(items) = &animated_items {
+        // Across, where the pass ahead placed those the pass that's now places where they're ahead.
+        let mut crosses: Vec<(Placeable, i32)> = Vec::new();
+        if let Some(items) = &mut animated_items {
             if let Some((from_index, from_offset, asked)) = scrolled_from {
                 let moved =
                     sizes.distance((from_index, from_offset), (index, offset.round()), spacing);
@@ -3481,7 +3589,34 @@ impl MeasurePolicy for LazyListLayout {
                 && wanted_before == 0
                 && !lacked_unready.get()
                 && (headers.is_none() || sticking.is_some());
-            if settled {
+            if !tells {
+                // Now, after the pass ahead: each animated item where it is ahead, animating
+                // toward there, as Compose's `place` with a `lookaheadOffset`; those moving away
+                // too, where the pass ahead put them.
+                for place in state.lookahead_places.borrow().iter() {
+                    let Some(placeable) = measure(place.index, &mut sizes) else { continue };
+                    let main = place.main;
+                    crosses.push((placeable, place.cross));
+                    let entry = ahead.iter_mut().chain(&mut placed).chain(&mut beyond);
+                    match entry.into_iter().find(|(other, _)| *other == placeable) {
+                        Some(entry) => entry.1 = main,
+                        None => {
+                            beyond.push((placeable, main));
+                            moved_away.push((place.key, placeable, main));
+                        }
+                    }
+                    if let Some(it) = items.iter_mut().find(|(_, other, _)| *other == placeable) {
+                        it.2 = main;
+                    }
+                }
+                let min = animator.min_size_to_fit_disappearing();
+                if min != IntSize::ZERO {
+                    let (main_min, cross_min) =
+                        if vertical { (min.height, min.width) } else { (min.width, min.height) };
+                    main_total = constrain_main(main_total.max(main_min));
+                    cross_total = constrain_cross(cross_total.max(cross_min));
+                }
+            } else if settled {
                 let positioned: Vec<item_animator::Positioned> = items
                     .iter()
                     .map(|&(item, placeable, main)| item_animator::Positioned {
@@ -3513,7 +3648,11 @@ impl MeasurePolicy for LazyListLayout {
                     lane_count: 1,
                     layout_min: layout_bounds.map_or(0, |bounds| bounds.0),
                     layout_max: layout_bounds.map_or(0, |bounds| bounds.1),
+                    looking_ahead,
                 };
+                if looking_ahead {
+                    note_lookahead_places(state, &positioned, before);
+                }
                 let moved = animator.on_measured(state, &pass, &positioned, &mut |item, _| {
                     measure(item, &mut sizes).map(|it| (main_of(&it) + spacing).max(0))
                 });
@@ -3530,6 +3669,16 @@ impl MeasurePolicy for LazyListLayout {
                             beyond.push(entry);
                         }
                         moved_away.push((away.key, placeable, away.main + before));
+                        if looking_ahead {
+                            state.lookahead_places.borrow_mut().push(
+                                item_animator::LookaheadPlace {
+                                    key: away.key,
+                                    index: away.index,
+                                    main: away.main + before,
+                                    cross: away.cross,
+                                },
+                            );
+                        }
                     }
                 }
                 let min = animator.min_size_to_fit_disappearing();
@@ -3540,7 +3689,7 @@ impl MeasurePolicy for LazyListLayout {
                     cross_total = constrain_cross(cross_total.max(cross_min));
                 }
             }
-        } else if !missing && wanted_before == 0 {
+        } else if !missing && wanted_before == 0 && tells {
             animator.note_items(&info.items, index);
         }
         // Sizes far from view are forgotten, so the estimates follow the data.
@@ -3552,7 +3701,8 @@ impl MeasurePolicy for LazyListLayout {
             if vertical { (cross_total, main_total) } else { (main_total, cross_total) };
         let position_of = |placeable: &Placeable, main: i32| {
             let main = if reverse { main_total - main - main_of(placeable) } else { main };
-            let cross = aligned(placeable, cross_total);
+            let ahead = crosses.iter().find(|(other, _)| other == placeable);
+            let cross = ahead.map_or_else(|| aligned(placeable, cross_total), |(_, cross)| *cross);
             if vertical {
                 // The content padding's start is on the right in a right-to-left layout.
                 let before = if layout_direction == compose_ui::LayoutDirection::Rtl {
@@ -3580,7 +3730,7 @@ impl MeasurePolicy for LazyListLayout {
             layout(scope, placeable, *main);
         }
         scope.set_motion_frame_of_reference_placement(false);
-        if let Some(items) = &animated_items {
+        if let Some(items) = animated_items.as_ref().filter(|_| !looking_ahead) {
             let bounds = (-before, main_total + after, vertical);
             let note_placed = |key: u64, placeable: &Placeable, main: i32| {
                 let (x, y) = position_of(placeable, main);
@@ -3606,21 +3756,23 @@ impl MeasurePolicy for LazyListLayout {
         }
         drop(laid);
         let keys_changed = state.note_laid_items(&info.items);
-        state.laid_out.end(
-            layout_info::LaidViewport {
-                start: -before,
-                end: main_max - before,
-                count,
-                size: IntSize::new(width, height),
-                vertical,
-                reverse,
-                before,
-                after,
-                spacing,
-                max_span: 1,
-            },
-            keys_changed,
-        );
+        if tells {
+            state.laid_out.end(
+                layout_info::LaidViewport {
+                    start: -before,
+                    end: main_max - before,
+                    count,
+                    size: IntSize::new(width, height),
+                    vertical,
+                    reverse,
+                    before,
+                    after,
+                    spacing,
+                    max_span: 1,
+                },
+                keys_changed,
+            );
+        }
         if let Some(observer) = state.observer.borrow().clone() {
             compose_runtime::snapshots::Snapshot::without_read_observation(|| {
                 observer.after_measure();
@@ -3783,7 +3935,13 @@ fn outer_setter(state: LazyListState, axis: Rc<Cell<(bool, bool)>>) -> crate::sc
         if let Some(inner) = state.inner() {
             let (vertical, reverse) = axis.get();
             *inner.scroll_outer.borrow_mut() =
-                chain_and_source.map(|(chain, source)| (chain, vertical, reverse, source));
+                chain_and_source.map(|(chain, source, overscroll)| Outer {
+                    chain,
+                    vertical,
+                    reverse,
+                    source,
+                    overscroll,
+                });
         }
     })
 }
@@ -4153,7 +4311,13 @@ impl PointerInputModifierNode for LazyScrollNode {
             // an estimated end leaves of it too (D489).
             move |chain: &compose_ui::platform::NestedScrollChain,
                   source: compose_ui::NestedScrollSource| {
-                let outer = (!chain.is_empty()).then(|| (chain.clone(), vertical, reverse, source));
+                let outer = (!chain.is_empty()).then(|| Outer {
+                    chain: chain.clone(),
+                    vertical,
+                    reverse,
+                    source,
+                    overscroll: None,
+                });
                 // Unless a scroll of its own goes on, as Compose's `performRawScroll`.
                 Rc::new(move |delta| {
                     if flung.is_scroll_in_progress() {

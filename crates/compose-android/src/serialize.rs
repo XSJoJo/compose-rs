@@ -88,7 +88,15 @@ pub mod tag {
     /// A layer with a paint (`DrawOp::SaveLayer`): bounds, alpha (f32), blend mode (u8), color
     /// filter.
     pub const SAVE_LAYER: u8 = 24;
+    /// What's drawn up to the end of it, under the edge effects of a scroller (D1475): its number
+    /// (u32), its bounds (left, top, right, bottom), a stamp (u32), the elevation kept across a
+    /// stretch's axis, the padding in from its bounds of a glow (left, top, right, bottom) (f32s),
+    /// then the length in bytes of what it holds (u32), which follows.
+    pub const BEGIN_EDGE_EFFECTS: u8 = 25;
 }
+
+/// What follows a `BEGIN_EDGE_EFFECTS` tag up to what it holds: its operands and that length.
+pub const EDGE_EFFECTS_HEADER_BYTES: usize = 4 + 16 + 4 + 4 + 16 + 4;
 
 /// A path command's kind, as `Replayer.kt` reads it.
 pub mod command {
@@ -674,6 +682,8 @@ pub fn operand_bytes(bytes: &[u8], at: usize) -> usize {
         tag::CLIP_ROUND_RECT => 32,
         tag::CLIP_PATH => 4 + 8,
         tag::GROUP_REF => 8,
+        // What it holds comes after, and reads as what it is.
+        tag::BEGIN_EDGE_EFFECTS => EDGE_EFFECTS_HEADER_BYTES,
         tag::KEPT => {
             4 + KEPT_ENTRY_BYTES
                 * u32::from_le_bytes(bytes[at + 1..at + 5].try_into().unwrap()) as usize
@@ -1341,6 +1351,8 @@ impl<'a> Serializer<'a> {
         let ops = &recording.ops;
         let boundaries = &recording.boundaries;
         let mut boundary = 0;
+        // Where the lengths of the edge effects open are.
+        let mut edge_effects: Vec<usize> = Vec::new();
         for index in 0..ops.len() {
             while boundaries.get(boundary).is_some_and(|boundary| boundary.at <= index) {
                 child = self.write_reference(boundaries[boundary].key, child);
@@ -1363,6 +1375,15 @@ impl<'a> Serializer<'a> {
             let alpha: f32 = self.folds.iter().map(|(_, alpha)| alpha).product();
             let tables = (&recording.shaders[..], &recording.color_filters[..]);
             write_op(&ops[index], alpha, tables, self.resources, self.out);
+            match ops[index] {
+                DrawOp::BeginEdgeEffects { .. } => edge_effects.push(self.out.bytes.len() - 4),
+                DrawOp::EndEdgeEffects => {
+                    let at = edge_effects.pop().expect("edge effects begin before they end");
+                    let length = (self.out.bytes.len() - at - 4) as u32;
+                    self.out.bytes[at..at + 4].copy_from_slice(&length.to_le_bytes());
+                }
+                _ => {}
+            }
         }
         for rest in &boundaries[boundary..] {
             child = self.write_reference(rest.key, child);
@@ -1537,6 +1558,18 @@ fn write_op(
             out.u32(handle.0 as u32);
             out.offset(*offset);
         }
+        DrawOp::BeginEdgeEffects { owner, bounds, stamp, max_elevation, glow_padding } => {
+            out.u8(tag::BEGIN_EDGE_EFFECTS);
+            out.u32(*owner);
+            out.rect(bounds);
+            out.u32(*stamp);
+            out.f32(*max_elevation);
+            out.radii(glow_padding);
+            // Its length, set at its end (`write_recording`).
+            out.u32(0);
+        }
+        // The end of its length.
+        DrawOp::EndEdgeEffects => {}
         DrawOp::SaveLayerAlpha { bounds, alpha } => {
             out.u8(tag::SAVE_LAYER_ALPHA);
             out.rect(bounds);
@@ -1766,6 +1799,7 @@ mod tests {
         assert_eq!(constant("COMPOSITING_EFFECT"), compositing::EFFECT);
         assert_eq!(constant("COMPOSITING_STRATEGY"), compositing::EFFECT - 1);
         assert_eq!(constant("SAVE_LAYER"), tag::SAVE_LAYER);
+        assert_eq!(constant("BEGIN_EDGE_EFFECTS"), tag::BEGIN_EDGE_EFFECTS);
         assert_eq!(constant("DRAW_IMAGE"), tag::DRAW_IMAGE);
         assert_eq!(constant("FILTER_NONE"), color_filter::NONE);
         assert_eq!(constant("FILTER_BLEND_MODE"), color_filter::BLEND_MODE);
@@ -2401,6 +2435,40 @@ mod tests {
         assert_eq!(radial_written(0.0, TileMode::Decal), (Color::TRANSPARENT, 0));
         assert_eq!(radial_written(-1.0, TileMode::Clamp), (Color::from_argb(0x8011_2233), 0));
         assert_eq!(radial_written(1.0, TileMode::Clamp).1, shader::RADIAL);
+    }
+
+    /// The replayer reads what edge effects hold by a length written at their end, and carries on
+    /// with what follows it.
+    #[test]
+    fn edge_effects_say_how_long_what_they_hold_is() {
+        let mut list = DisplayList::default();
+        list.push(DrawOp::BeginEdgeEffects {
+            owner: 7,
+            bounds: Rect::new(1.0, 2.0, 3.0, 4.0),
+            stamp: 9,
+            max_elevation: 30.0,
+            glow_padding: [5.0, 6.0, 7.0, 8.0],
+        });
+        list.push(DrawOp::Save);
+        list.push(DrawOp::Restore);
+        list.push(DrawOp::EndEdgeEffects);
+        list.push(DrawOp::Save);
+        let (mut resources, mut out) = (Resources::default(), Writer::default());
+        write_display_list(
+            &list,
+            &mut resources,
+            &mut GroupCache::new(Optimizations::defaults()),
+            &mut out,
+        );
+        let bytes = &out.bytes;
+        assert_eq!(bytes[0], tag::BEGIN_EDGE_EFFECTS);
+        let le = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"));
+        assert_eq!(le(1), 7);
+        assert_eq!(le(1 + 4 + 16), 9);
+        let content = 1 + EDGE_EFFECTS_HEADER_BYTES;
+        assert_eq!(le(content - 4), 2);
+        assert_eq!(&bytes[content..content + 2], &[tag::SAVE, tag::RESTORE]);
+        assert_eq!(&bytes[content + 2..], &[tag::SAVE]);
     }
 
     /// A layer folded into a gradient's paint multiplies the shader's alpha (what Android's

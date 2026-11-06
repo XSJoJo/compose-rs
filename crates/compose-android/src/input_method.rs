@@ -182,30 +182,17 @@ enum Edit {
     FinishComposingText,
 }
 
-/// `new_cursor_position` relative to text taking the place of `value`'s composition or selection,
-/// as a command's: in bytes of what's around it (`CommitTextCommand`, `SetComposingTextCommand`).
-fn cursor_position_in_bytes(value: &TextFieldValue, new_cursor_position: i32) -> isize {
-    let replaced = value.composition().unwrap_or(value.selection());
-    if new_cursor_position > 0 {
-        let units = new_cursor_position as usize - 1;
-        bytes_of_units(value.text()[replaced.max()..].chars(), units, false) as isize + 1
-    } else {
-        let units = new_cursor_position.unsigned_abs() as usize;
-        -(bytes_of_units(value.text()[..replaced.min()].chars().rev(), units, true) as isize)
-    }
-}
-
 /// `edit` as Compose's command in bytes, against `value`.
 fn command_of(edit: &Edit, value: &TextFieldValue) -> Box<dyn EditCommand> {
     let text = value.text();
     match edit {
+        // The cursor's position counted where the command applies, in the field's own text (not a
+        // transformation's), as Compose's (D1135).
         Edit::CommitText(inserted, position) => {
-            let position = cursor_position_in_bytes(value, *position);
-            Box::new(CommitTextCommand::new(inserted.as_str(), position))
+            Box::new(CommitTextCommand::in_utf16(inserted.as_str(), *position as isize))
         }
         Edit::SetComposingText(composing, position) => {
-            let position = cursor_position_in_bytes(value, *position);
-            Box::new(SetComposingTextCommand::new(composing.as_str(), position))
+            Box::new(SetComposingTextCommand::in_utf16(composing.as_str(), *position as isize))
         }
         Edit::SetComposingRegion(start, end) => {
             let (from, to) = range_in_bytes(text, *start, *end);

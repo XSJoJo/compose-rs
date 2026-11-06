@@ -14,11 +14,13 @@ compose-macros.workspace = true
 [features]
 # `tooling::CompositionObserver` (D1505): off by default, a pass then takes no step for it.
 composition-observer = []
+# `tooling::CompositionData` (D1509): off by default, a pass then takes no step for it.
+composition-data = []
 
 [dev-dependencies]
-# Its own tests run with the observers on. A unit test in `src` naming `compose_runtime::…` would
+# Its own tests run with the tools on. A unit test in `src` naming `compose_runtime::…` would
 # link this second copy, with thread-locals of its own: unit tests use `crate::`.
-compose-runtime = { path = ".", features = ["composition-observer"] }
+compose-runtime = { path = ".", features = ["composition-observer", "composition-data"] }
 
 [lints]
 workspace = true

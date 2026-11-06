@@ -19,6 +19,7 @@ extern crate compose_runtime as compose;
 mod bounds;
 mod capture;
 mod configuration_override;
+mod edge_effects;
 mod injection;
 mod interaction;
 mod matcher;
@@ -39,6 +40,7 @@ pub use capture::{
     CaptureRenderer, CapturedImage, ShapeCheck, clear_capture_renderer, set_capture_renderer,
 };
 pub use configuration_override::DeviceConfigurationOverride;
+pub use edge_effects::{FakeEdgeEffect, FakeEdgeEffects};
 pub use injection::{
     InjectionScope, KeyInjectionScope, MouseButton, MouseInjectionScope, ScrollWheel,
     TouchInjectionScope,

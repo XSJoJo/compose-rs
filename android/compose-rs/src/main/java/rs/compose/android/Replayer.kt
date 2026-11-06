@@ -95,7 +95,7 @@ internal inline fun ByteBuffer.floatAt(index: Int): Float = Float.fromBits(getIn
  * node at alpha 0, which the render thread skips: the frame placing one again finds its version
  * recorded, and records nothing.
  */
-internal class Replayer(var text: TextMeasurer) {
+internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEdgeEffects) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     /**
      * Gradients by their bytes (kind to stops) and local transform (x, y, scale x, scale y
@@ -636,6 +636,7 @@ internal class Replayer(var text: TextMeasurer) {
                     }
                 }
                 DRAW_SHADOW -> skipShadow(buffer)
+                BEGIN_EDGE_EFFECTS -> edgeEffects(canvas, buffer)
                 DRAW_ARC -> {
                     buffer.readRect(rect)
                     val startAngle = buffer.float()
@@ -689,6 +690,78 @@ internal class Replayer(var text: TextMeasurer) {
             }
         }
         canvas.restoreToCount(start)
+    }
+
+    /**
+     * What's drawn under a scroller's edge effects (D1475), read up to its end: on a recording
+     * ahead as it is, as an edge effect only moves in the real draw. A stretch is on a render node
+     * of the scroller's size, grown across its axis by the elevation so that what's drawn past its
+     * bounds there isn't clipped, as Compose's `StretchOverscrollNode`; its recording's canvas
+     * size is the group's, not the scroller's, so sizes come with the op. In software a stretch
+     * can't be, and ends at once, as in Views; a glow is drawn on the content.
+     */
+    private fun edgeEffects(canvas: Canvas, buffer: ByteBuffer) {
+        val owner = buffer.getInt()
+        val left = buffer.float()
+        val top = buffer.float()
+        val right = buffer.float()
+        val bottom = buffer.float()
+        buffer.getInt() // Its stamp: what made the group's version.
+        val maxElevation = buffer.float()
+        val paddingLeft = buffer.float()
+        val paddingTop = buffer.float()
+        val paddingRight = buffer.float()
+        val paddingBottom = buffer.float()
+        val length = buffer.getInt()
+        val end = buffer.position() + length
+        val width = (right - left + 0.5f).toInt()
+        val height = (bottom - top + 0.5f).toInt()
+        val kept = effects.owner(owner)
+        if (kept == null || recordingAhead || width <= 0 || height <= 0) {
+            replay(canvas, buffer, end)
+            return
+        }
+        if (!effects.stretches()) {
+            replay(canvas, buffer, end)
+            val restore = canvas.save()
+            canvas.translate(left, top)
+            effects.drawGlow(
+                kept, canvas, right - left, bottom - top,
+                paddingLeft, paddingTop, paddingRight, paddingBottom,
+            )
+            canvas.restoreToCount(restore)
+            return
+        }
+        if (!hardware) {
+            effects.finishAll(kept)
+            replay(canvas, buffer, end)
+            return
+        }
+        val vertical = effects.showsVertical(kept)
+        val horizontal = effects.showsHorizontal(kept)
+        if (!vertical && !horizontal) {
+            replay(canvas, buffer, end)
+            return
+        }
+        // Both ways: nothing's kept across, as it would stretch.
+        val acrossX = if (vertical && !horizontal) maxElevation else 0f
+        val acrossY = if (horizontal && !vertical) maxElevation else 0f
+        val node = kept.node ?: RenderNode("compose-rs edge effects").also { kept.node = it }
+        val nodeWidth = width + (acrossX * 2f).toInt()
+        val nodeHeight = height + (acrossY * 2f).toInt()
+        node.setPosition(0, 0, nodeWidth, nodeHeight)
+        val recording = node.beginRecording(nodeWidth, nodeHeight)
+        try {
+            effects.drawStretch(kept, recording)
+            recording.translate(acrossX - left, acrossY - top)
+            replay(recording, buffer, end)
+        } finally {
+            node.endRecording()
+        }
+        val restore = canvas.save()
+        canvas.translate(left - acrossX, top - acrossY)
+        canvas.drawRenderNode(node)
+        canvas.restoreToCount(restore)
     }
 
     /**
@@ -1621,6 +1694,7 @@ internal class Replayer(var text: TextMeasurer) {
     }
 
     fun clear() {
+        effects.discardNodes()
         keptNode.discardDisplayList()
         flushNode.discardDisplayList()
         flushLayers = false
@@ -1701,6 +1775,7 @@ internal class Replayer(var text: TextMeasurer) {
         const val DEFINE_IMAGE = 22
         const val DROP_IMAGE = 23
         const val SAVE_LAYER = 24
+        const val BEGIN_EDGE_EFFECTS = 25
 
         const val FILTER_NONE = 0
         const val FILTER_BLEND_MODE = 1
