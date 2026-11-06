@@ -924,6 +924,9 @@ pub(crate) struct SelectionContainerNode {
 }
 
 struct FingerPress {
+    /// The finger pressing: a long press's drag follows it alone, as Compose's
+    /// `drag(pointerId)`.
+    pointer: crate::input::PointerId,
     at: Offset,
     job: Option<compose_runtime::Job>,
     long: bool,
@@ -998,7 +1001,10 @@ impl PointerInputModifierNode for SelectionContainerNode {
         if pass == PointerEventPass::Initial {
             // A long press's drag is the selection's before what's inside sees it, as Compose's
             // texts take it ahead of the scrollables around them (a lazy column's items).
-            let long = self.finger.as_ref().is_some_and(|finger| finger.long);
+            let long = self
+                .finger
+                .as_ref()
+                .is_some_and(|finger| finger.long && finger.pointer == event.pointer);
             if long && event.kind == PointerEventType::Move && event.pressed && !event.consumed {
                 let Some(position) = context.pointer_position() else { return };
                 event.consume();
@@ -1083,6 +1089,10 @@ impl SelectionContainerNode {
         context: &mut EventContext<'_>,
     ) {
         let container = context.node;
+        // Another finger of the gesture under way isn't its.
+        if self.finger.as_ref().is_some_and(|finger| finger.pointer != event.pointer) {
+            return;
+        }
         match event.kind {
             PointerEventType::Press => {
                 self.end_finger();
@@ -1102,7 +1112,8 @@ impl SelectionContainerNode {
                         });
                     })
                 });
-                self.finger = Some(FingerPress { at: position, job, long: false });
+                let pointer = event.pointer;
+                self.finger = Some(FingerPress { pointer, at: position, job, long: false });
             }
             PointerEventType::Move if event.pressed => {
                 let Some(finger) = &mut self.finger else { return };

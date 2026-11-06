@@ -86,3 +86,39 @@ fn the_layout_heard_is_of_the_shown_text() {
     assert_eq!(texts(&heard), ["hi!", "his!"]);
     assert_eq!(state.text().as_str(), "his");
 }
+
+/// A field's layout result says the constraints its text was laid out at, as Compose's text
+/// under the field's scroll: a single line's unbounded in width, so a text wider than the field
+/// is as wide as it, and lines' unbounded in height.
+// Compose: compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/text/input/internal/TextFieldCoreModifier.kt, measureHorizontalScroll and measureVerticalScroll (the text measured at `maxWidth`, or `maxHeight`, `Constraints.Infinity`)
+#[test]
+fn the_layout_input_constraints_are_the_scrolled_texts() {
+    use compose_ui::Constraints;
+    for single in [true, false] {
+        let state = **Box::leak(Box::new(TextFieldState::new("wide ".repeat(30))));
+        let heard: Heard = Rc::default();
+        let into = heard.clone();
+        let limits =
+            if single { TextFieldLineLimits::SingleLine } else { TextFieldLineLimits::default() };
+        let _ui = compose_test(move || {
+            let into = into.clone();
+            BasicTextFieldOfState!(
+                state,
+                modifier = Modifier.width(100.dp()).height(40.dp()).test_tag("field"),
+                line_limits = limits,
+                on_text_layout =
+                    Some(move |result: TextLayoutResult| into.borrow_mut().push(result)),
+            );
+        });
+        let result = heard.borrow().last().cloned().expect("a layout");
+        let constraints = result.layout_input.constraints;
+        if single {
+            assert_eq!(constraints.max_width, Constraints::INFINITY);
+            assert!(result.size.width > 100, "{:?}", result.size);
+        } else {
+            assert_eq!(constraints.max_height, Constraints::INFINITY);
+            assert!(result.size.height > 40, "{:?}", result.size);
+        }
+        assert_eq!(constraints.constrain(result.size), result.size, "single {single}");
+    }
+}

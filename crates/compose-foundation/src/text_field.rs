@@ -1086,6 +1086,13 @@ impl TextFieldNode {
     ) -> Option<compose_ui::TextLayoutResult> {
         let (paragraph, constraints) = (self.paragraph?, self.constraints?);
         let text = self.shown_text.clone().unwrap_or_else(|| self.text.clone());
+        // The text's constraints under the field's scroll, as Compose's: a single line unbounded
+        // in width, lines in height (`TextFieldCoreModifier`'s `measure*Scroll`).
+        let input_constraints = if self.single_line {
+            Constraints { max_width: Constraints::INFINITY, ..constraints }
+        } else {
+            Constraints { max_height: Constraints::INFINITY, ..constraints }
+        };
         let input = compose_ui::TextLayoutInput {
             text: text.into(),
             style: self.style.clone(),
@@ -1096,7 +1103,7 @@ impl TextFieldNode {
             layout_direction: self.direction,
             font_family_resolver,
             default_locale_list,
-            constraints,
+            constraints: input_constraints,
             placeholders: None,
         };
         // Laid out at the field's least height, as Compose's text under `heightInLines`, and
