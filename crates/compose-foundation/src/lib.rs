@@ -20,6 +20,7 @@ mod input_transformation;
 pub mod layout;
 pub mod lazy;
 mod mutator;
+mod output_transformation;
 mod overscroll;
 mod scroll;
 mod scroll_indicator;
@@ -79,6 +80,7 @@ pub use lazy::{
     remember_lazy_staggered_grid_state,
 };
 pub use mutator::{MutatePriority, MutationInterrupted, MutatorMutex};
+pub use output_transformation::{OutputTransform, OutputTransformation};
 pub use overscroll::{
     LOCAL_OVERSCROLL_FACTORY, OverscrollEffect, OverscrollFactory, OverscrollModifier,
     PerformFling, remember_overscroll_effect, without_event_handling, without_visual_effect,

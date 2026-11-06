@@ -3,6 +3,7 @@
 
 #![allow(non_snake_case)]
 
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -12,7 +13,7 @@ use compose_runtime::*;
 use compose_test::*;
 use compose_ui::{
     CommitTextCommand, ImeOptions, Key, Locale, SemanticsActions as A, SemanticsConfiguration,
-    SemanticsProperties as P, SetComposingTextCommand, TextRange, UnitExt,
+    SemanticsProperties as P, SetComposingTextCommand, SetSelectionCommand, TextRange, UnitExt,
 };
 
 // ---- KeyboardOptions ------------------------------------------------------------------------
@@ -223,6 +224,68 @@ fn a_transformed_composition_restarts_the_input_method() {
     assert_eq!(value.text(), "HI", "what the keyboard reads");
 }
 
+/// A transformation taking the input method's edit as it was proposed (a limit it's under, the
+/// proposed text itself or an equal one, nothing done) leaves the composition, and the input
+/// method isn't restarted.
+#[test]
+fn a_transformation_taking_the_edit_as_it_is_keeps_the_composition() {
+    let transformations = [
+        InputTransformation::max_length_trim(10),
+        InputTransformation::by_value(|_, proposed| Cow::Borrowed(proposed)),
+        InputTransformation::by_value(|_, proposed| Cow::Owned(proposed.to_string())),
+        InputTransformation::from_fn(|_| {}),
+    ];
+    for (index, transformation) in transformations.into_iter().enumerate() {
+        let (mut ui, state) = field_with("", transformation, KeyboardOptions::DEFAULT);
+        ui.host().take_input_method_restart();
+        for composed in ["h", "he", "hel"] {
+            assert!(ui.host().send_edit_commands(&[&SetComposingTextCommand::new(composed, 1)]));
+            ui.wait_for_idle();
+            assert_eq!(state.text().as_str(), composed, "transformation {index}");
+            let composition = Some(TextRange::new(0, composed.len()));
+            assert_eq!(state.composition(), composition, "transformation {index}: {composed}");
+            assert!(!ui.host().take_input_method_restart(), "transformation {index}: {composed}");
+        }
+    }
+}
+
+/// A transformation moving the cursor the input method set is shown in the semantics' selection.
+#[test]
+fn a_selection_the_transformation_moved_is_the_one_told() {
+    let not_before_two = InputTransformation::from_fn(|buffer| {
+        if buffer.selection().start < 2 {
+            buffer.set_selection(TextRange::at(2));
+        }
+    });
+    let (mut ui, state) = field_with("abc", not_before_two, KeyboardOptions::DEFAULT);
+    assert_eq!(selection_told(&mut ui), TextRange::at(3));
+    ui.wait_for_idle();
+    assert!(!ui.host().semantics_changed_since_frame());
+    assert!(ui.host().send_edit_commands(&[&SetSelectionCommand::new(0, 0)]));
+    // The frame tells the platform (a screen reader) the semantics changed.
+    assert!(ui.host().semantics_changed_since_frame());
+    ui.wait_for_idle();
+    assert_eq!(state.selection(), TextRange::at(2));
+    assert_eq!(selection_told(&mut ui), TextRange::at(2));
+}
+
+/// An input method's new selection, the text unchanged, is told to the platform too.
+#[test]
+fn an_input_methods_selection_is_told() {
+    let none = InputTransformation::from_fn(|_| {});
+    let (mut ui, _) = field_with("abc", none, KeyboardOptions::DEFAULT);
+    ui.wait_for_idle();
+    assert!(ui.host().send_edit_commands(&[&SetSelectionCommand::new(1, 1)]));
+    assert!(ui.host().semantics_changed_since_frame());
+    ui.wait_for_idle();
+    assert_eq!(selection_told(&mut ui), TextRange::at(1));
+}
+
+fn selection_told(ui: &mut ComposeTestRule) -> TextRange {
+    let node = ui.on_node_with_tag("field").fetch_semantics_snapshot();
+    *node.config.get(&P::TEXT_SELECTION_RANGE).expect("a field's selection")
+}
+
 /// The transformation's keyboard options fill what the field's don't say, and its semantics are
 /// the field's.
 #[test]
@@ -320,11 +383,17 @@ fn without_a_handler_next_and_previous_move_the_focus() {
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldKeyboardActionsTest.kt, textField_performsDefaultBehavior_forDone
 #[test]
-fn without_a_handler_done_hides_the_keyboard() {
-    let (mut ui, _) = field_between_boxes(ImeAction::Done, None, TextFieldLineLimits::DEFAULT);
-    ui.host().take_software_keyboard_request();
-    ui.on_node_with_tag("field").perform_semantics_action(&A::ON_IME_ACTION);
-    assert_eq!(ui.host().take_software_keyboard_request(), Some(false));
+fn done_hides_the_keyboard_without_a_handler_or_when_one_asks() {
+    let calls = Rc::new(Cell::new(0));
+    for handler in [None, counting(&calls, true)] {
+        let (mut ui, _) =
+            field_between_boxes(ImeAction::Done, handler, TextFieldLineLimits::DEFAULT);
+        ui.host().take_software_keyboard_request();
+        ui.on_node_with_tag("field").perform_semantics_action(&A::ON_IME_ACTION);
+        ui.wait_for_idle();
+        assert_eq!(ui.host().take_software_keyboard_request(), Some(false));
+    }
+    assert_eq!(calls.get(), 1);
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/TextFieldKeyboardActionsTest.kt, textField_canOverrideDefaultBehavior
