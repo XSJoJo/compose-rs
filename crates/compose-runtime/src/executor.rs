@@ -308,10 +308,15 @@ fn is_live(key: TaskKey) -> bool {
 /// ready. For hosts: between events and frames. A task woken again after its poll here (one
 /// that yields) waits for the next call, so it can't hold the thread: frames and input come
 /// between its steps, as Compose's `yield()`. Returns whether a task ran.
+///
+/// A task whose poll panics finishes, as a coroutine completing exceptionally, and the others
+/// still run, as a dispatcher runs its next task when one throws; the first panic is raised
+/// once none is ready (where panics unwind: under abort, the first ends the process).
 pub fn run_ready() -> bool {
     // A turn, if any task is ready: what the tasks write is sent when it ends (D751).
     let mut turn = None;
     let mut ran = false;
+    let mut panic = None;
     // A set: a frame resumes hundreds of tasks (an animated value each), and a scan per key
     // made that quadratic; the first few in an array, so a run polling a task or two (an
     // event's) allocates nothing.
@@ -339,6 +344,11 @@ pub fn run_ready() -> bool {
             if turn.is_none() {
                 crate::snapshots::send_unsent_outside_turns();
             }
+            if let Some(panic) = panic {
+                // The turn ends first, sending what the tasks wrote, as without the panic.
+                drop(turn);
+                std::panic::resume_unwind(panic);
+            }
             return ran;
         }
         turn.get_or_insert_with(crate::snapshots::Turn::begin);
@@ -349,7 +359,7 @@ pub fn run_ready() -> bool {
                 }
                 continue;
             }
-            ran |= poll_task(key);
+            ran |= poll_task(key, &mut panic);
         }
         keys.clear();
         with_executor(|executor| executor.polling = keys);
@@ -387,8 +397,12 @@ impl Polled {
     }
 }
 
-/// Polls task `key` once, if it's live and not being polled; returns whether it was.
-fn poll_task(key: TaskKey) -> bool {
+/// A panic caught from a task's poll, raised later.
+type Panic = Box<dyn std::any::Any + Send>;
+
+/// Polls task `key` once, if it's live and not being polled; returns whether it was. A poll
+/// that panics finishes the task; its panic goes to `panic` unless one is there already.
+fn poll_task(key: TaskKey, panic: &mut Option<Panic>) -> bool {
     let polled = with_executor(|executor| {
         let shared = &executor.shared;
         let slot = executor
@@ -405,11 +419,22 @@ fn poll_task(key: TaskKey) -> bool {
     let mut context = Context::from_waker(&waker);
     // The task being polled, for [`cancel_current_task`]; restored after (a nested `poll_now`).
     let previous = CURRENT_TASK.with(|current| current.replace(Some(key)));
-    let poll = future.as_mut().poll(&mut context);
+    // Caught so the task finishes and its executor's state stays whole (`CURRENT_TASK`, its
+    // slot, the run's other tasks); free where nothing panics.
+    let poll = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        future.as_mut().poll(&mut context)
+    }));
     CURRENT_TASK.with(|current| current.set(previous));
+    let finished = match poll {
+        Ok(poll) => poll.is_ready(),
+        Err(caught) => {
+            panic.get_or_insert(caught);
+            true
+        }
+    };
     let done = with_executor(move |executor| {
         let Some(slot) = executor.slot(key) else { return Some(future) };
-        if poll.is_ready() || slot.cancelled {
+        if finished || slot.cancelled {
             slot.live = false;
             slot.cancelled = false;
             slot.waker = None;
@@ -485,9 +510,15 @@ pub fn current_job() -> Option<Job> {
 
 /// Polls `job` now, on this thread, if it's waiting (not finished, nor being polled): for
 /// handlers whose task must see an event before the dispatch goes on (`pointer_input`, as
-/// Compose resumes it undispatched). Returns whether it was polled.
+/// Compose resumes it undispatched). Returns whether it was polled. A panicking poll finishes
+/// the task and is raised here.
 pub fn poll_now(job: Job) -> bool {
-    poll_task(job.key)
+    let mut panic = None;
+    let polled = poll_task(job.key, &mut panic);
+    if let Some(panic) = panic {
+        std::panic::resume_unwind(panic);
+    }
+    polled
 }
 
 /// Wakes the tasks whose `delay` is over, by the executor's clock. For hosts, before
@@ -1129,6 +1160,50 @@ mod tests {
         wakes.store(0, Ordering::SeqCst);
         let _other = launch(async {});
         assert_eq!(wakes.load(Ordering::SeqCst), 1, "wakes reach the host again");
+    }
+
+    /// A task whose poll panics finishes, as a coroutine completing exceptionally: the tasks
+    /// ready with it still run in that `run_ready` (a dispatcher runs the next task when one
+    /// throws), which raises the panic after them; the executor goes on as before.
+    #[test]
+    fn a_panicking_task_finishes_and_the_tasks_ready_with_it_still_run() {
+        let ran = Rc::new(Cell::new(false));
+        let panicking = launch(async { panic!("task failed") });
+        let other = {
+            let ran = ran.clone();
+            launch(async move { ran.set(true) })
+        };
+        let result = std::panic::catch_unwind(run_ready);
+        assert_eq!(result.unwrap_err().downcast_ref::<&str>(), Some(&"task failed"));
+        assert!(ran.get(), "the task ready with the panicking one ran");
+        assert!(!other.is_active());
+        assert!(!panicking.is_active(), "the panicking task finished");
+        assert!(!poll_now(panicking));
+        assert!(current_job().is_none(), "no task is being polled");
+        assert!(!has_ready_tasks());
+        // A later run works, the finished task's slot reused.
+        let later = Rc::new(Cell::new(false));
+        let next = {
+            let later = later.clone();
+            launch(async move {
+                assert!(current_job().is_some());
+                later.set(true);
+            })
+        };
+        assert!(run_ready());
+        assert!(later.get());
+        assert!(!next.is_active());
+    }
+
+    /// Two tasks panicking in one `run_ready`: both finish, the first's panic is raised.
+    #[test]
+    fn of_two_panicking_tasks_the_first_panic_is_raised() {
+        let first = launch(async { panic!("first") });
+        let second = launch(async { panic!("second") });
+        let result = std::panic::catch_unwind(run_ready);
+        assert_eq!(result.unwrap_err().downcast_ref::<&str>(), Some(&"first"));
+        assert!(!first.is_active() && !second.is_active());
+        assert!(!run_ready(), "nothing left to run");
     }
 
     /// Only the dispatching executor's wakes are quiet: a frame awaiter on another thread that

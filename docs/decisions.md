@@ -17,10 +17,10 @@ The log is split by area into the files below, one table each, rows in number or
 
 | File | Covers | Rows |
 |---|---|---|
-| [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 172 |
+| [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 173 |
 | [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 387 |
 | [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 70 |
-| [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 172 |
+| [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 173 |
 | [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 387 |
 | [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 70 |
 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md) | Lazy lists and grids, item reuse, the policy of composing only what is in view, prefetch. | 103 |
@@ -888,6 +888,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1502 | [runtime](decisions/runtime.md#d1502) | current |
 | D1503 | [runtime](decisions/runtime.md#d1503) | current |
 | D1504 | [runtime](decisions/runtime.md#d1504) | current |
+| D1505 | [runtime](decisions/runtime.md#d1505) | current |
 | D1550 | [ui-and-layout](decisions/ui-and-layout.md#d1550) | current |
 | D1551 | [ui-and-layout](decisions/ui-and-layout.md#d1551) | current |
 | D1552 | [ui-and-layout](decisions/ui-and-layout.md#d1552) | current |
