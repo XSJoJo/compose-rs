@@ -1386,6 +1386,55 @@ fn a_lazy_list_at_its_end_ahead_stays_there_when_larger_now() {
     }
 }
 
+/// Larger now than ahead, or smaller: the items either pass places stay composed, idle time after
+/// idle time, though the other wants fewer (what's composed is what either wants).
+#[test]
+fn a_lazy_list_keeps_what_either_pass_places_composed() {
+    for (ahead, now) in [(50, 200), (200, 50)] {
+        composed_once(ahead, now);
+    }
+}
+
+fn composed_once(ahead: i32, now: i32) {
+    let owner = LazyListState::new(0, 0);
+    let state = *owner;
+    let composed = Rc::new(Cell::new(0));
+    let c = composed.clone();
+    let mut ui = ComposeTestRule::sized(IntSize::new(100, 1000), move || {
+        let _ = &owner;
+        let c = c.clone();
+        in_a_scope(move |_| {
+            let c = c.clone();
+            let by_pass = Modifier.layout(move |scope, measurable, constraints| {
+                let tall = if scope.is_looking_ahead() { ahead } else { now };
+                let placeable = scope
+                    .measure(measurable, Constraints::new(0, constraints.max_width, tall, tall));
+                scope.layout_with(placeable.width, placeable.height, move |placement| {
+                    placement.place(&placeable, 0, 0);
+                })
+            });
+            LazyColumn!(state = state, modifier = by_pass, move |items: LazyListScope| {
+                let c = c.clone();
+                items.items(40, move |_| {
+                    c.set(c.get() + 1);
+                    Box!(modifier = Modifier.size(dp(20)), {});
+                });
+            });
+        });
+    });
+    ui.wait_for_idle();
+    let settled = composed.get();
+    assert!(settled >= 10, "{settled}");
+    // Idle times between frames, where what's no longer wanted is let go (D575).
+    let later = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    for _ in 0..5 {
+        while ui.host().prefetch(later) {}
+        state.force_remeasure();
+        ui.wait_for_idle();
+    }
+    assert_eq!(composed.get(), settled, "{ahead} ahead, {now} now");
+}
+
 // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/LookaheadScopeTest.kt, lookaheadMinWidthIntrinsicsTest
 #[test]
 fn a_column_of_min_intrinsic_width_is_the_same_in_a_scope() {
