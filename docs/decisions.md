@@ -971,3 +971,6 @@ The log is split by area into the files below, one table each, rows in number or
 | D1900 | [android-drawing](decisions/android-drawing.md#d1900) | current |
 | D1901 | [ui-and-layout](decisions/ui-and-layout.md#d1901) | current |
 | D1902 | [ui-and-layout](decisions/ui-and-layout.md#d1902) | current |
+| D1906 | [ui-and-layout](decisions/ui-and-layout.md#d1906) | current |
+| D1907 | [api-and-tooling](decisions/api-and-tooling.md#d1907) | current |
+| D1908 | [ui-and-layout](decisions/ui-and-layout.md#d1908) | current |

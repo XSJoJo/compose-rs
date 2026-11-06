@@ -8,6 +8,7 @@ mod color_filters;
 mod line_height;
 mod painter;
 mod paragraph;
+mod path_geometry;
 mod path_semantics;
 mod path_steps;
 mod placeholders;

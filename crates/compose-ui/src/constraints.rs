@@ -19,17 +19,83 @@ impl Constraints {
     /// An unbounded maximum, as `Constraints.Infinity`.
     pub const INFINITY: i32 = i32::MAX;
 
+    /// As `Constraints(minWidth, maxWidth, minHeight, maxHeight)`: panics, with Compose's message,
+    /// unless each maximum is at least its minimum and the minima aren't negative.
     pub fn new(min_width: i32, max_width: i32, min_height: i32, max_height: i32) -> Constraints {
-        assert!(
-            0 <= min_width && min_width <= max_width && 0 <= min_height && min_height <= max_height,
-            "invalid constraints: width {min_width}..{max_width}, height {min_height}..{max_height}"
-        );
+        if !(0 <= min_width
+            && min_width <= max_width
+            && 0 <= min_height
+            && min_height <= max_height)
+        {
+            invalid_constraints(min_width, max_width, min_height, max_height);
+        }
         Constraints { min_width, max_width, min_height, max_height }
     }
 
-    /// Exactly `width` by `height`.
+    /// Exactly `width` by `height`, as `Constraints.fixed`.
     pub fn fixed(width: i32, height: i32) -> Constraints {
-        Constraints::new(width, width, height, height)
+        assert!(width >= 0 && height >= 0, "width({width}) and height({height}) must be >= 0");
+        Constraints { min_width: width, max_width: width, min_height: height, max_height: height }
+    }
+
+    /// Exactly `width` wide, any height, as `Constraints.fixedWidth`.
+    pub fn fixed_width(width: i32) -> Constraints {
+        assert!(width >= 0, "width({width}) must be >= 0");
+        Constraints {
+            min_width: width,
+            max_width: width,
+            min_height: 0,
+            max_height: Self::INFINITY,
+        }
+    }
+
+    /// Exactly `height` high, any width, as `Constraints.fixedHeight`.
+    pub fn fixed_height(height: i32) -> Constraints {
+        assert!(height >= 0, "height({height}) must be >= 0");
+        Constraints {
+            min_width: 0,
+            max_width: Self::INFINITY,
+            min_height: height,
+            max_height: height,
+        }
+    }
+
+    /// As `Constraints.fitPrioritizingWidth`: Compose cuts the values down to what its packed
+    /// `Long` holds, width first; compose-rs's fields hold every `i32`, so these are the values.
+    pub fn fit_prioritizing_width(
+        min_width: i32,
+        max_width: i32,
+        min_height: i32,
+        max_height: i32,
+    ) -> Constraints {
+        Constraints::new(min_width, max_width, min_height, max_height)
+    }
+
+    /// As `Constraints.fitPrioritizingHeight`: the values, as
+    /// [`fit_prioritizing_width`](Self::fit_prioritizing_width).
+    pub fn fit_prioritizing_height(
+        min_width: i32,
+        max_width: i32,
+        min_height: i32,
+        max_height: i32,
+    ) -> Constraints {
+        Constraints::new(min_width, max_width, min_height, max_height)
+    }
+
+    /// A maximum is zero, so whatever is measured has no area, as `isZero`.
+    pub fn is_zero(&self) -> bool {
+        self.max_width == 0 || self.max_height == 0
+    }
+
+    /// Whether `size` is within both ranges, as `isSatisfiedBy`.
+    pub fn is_satisfied_by(&self, size: IntSize) -> bool {
+        (self.min_width..=self.max_width).contains(&size.width)
+            && (self.min_height..=self.max_height).contains(&size.height)
+    }
+
+    /// The same maxima, minima zero, as `copyMaxDimensions` (and [`loosen`](Self::loosen)).
+    pub fn copy_max_dimensions(&self) -> Constraints {
+        self.loosen()
     }
 
     /// At most `width` by `height`, as `Constraints(maxWidth = …, maxHeight = …)`.
@@ -98,6 +164,25 @@ impl Constraints {
             other.min_height.clamp(self.min_height, self.max_height),
             other.max_height.clamp(self.min_height, self.max_height),
         )
+    }
+}
+
+/// Compose's message for constraints that can't be, out of the constructor's way.
+#[cold]
+#[inline(never)]
+#[track_caller]
+fn invalid_constraints(min_width: i32, max_width: i32, min_height: i32, max_height: i32) -> ! {
+    panic!(
+        "maxWidth({max_width}) must be >= than minWidth({min_width}),\n\
+         maxHeight({max_height}) must be >= than minHeight({min_height}),\n\
+         minWidth({min_width}) and minHeight({min_height}) must be >= 0"
+    )
+}
+
+/// Unbounded, as `Constraints()`.
+impl Default for Constraints {
+    fn default() -> Constraints {
+        Constraints::unbounded()
     }
 }
 
