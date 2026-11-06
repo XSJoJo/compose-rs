@@ -393,16 +393,15 @@ fn reordered_items_keep_their_nodes_and_a_removed_ones_is_reused() {
     for (item, node) in (0..5).zip(&first) {
         assert_eq!(node_of(item), *node, "item {item}");
     }
-    // Item 2 removed: the composed range moves with the first visible item (item 0, one
-    // place up, D458), so at most one item comes in, taking item 2's nodes; else item 2's slot
-    // is kept for reuse, for the next item to come. No node is created or released.
+    // Item 2 removed: at most one item comes in, composed before item 2's slot is let go (kept
+    // for reuse, for the next item to come), as Compose's measurement: one item's nodes more.
     reversed.retain(|item| *item != 2);
     let composed: HashSet<u64> = live().into_iter().collect();
     let nodes = list.ui.host().with_tree(|tree| tree.node_count());
     list.set_items(untyped(reversed));
     let came: Vec<u64> = live().into_iter().filter(|item| !composed.contains(item)).collect();
     assert!(came.len() <= 1, "{came:?}");
-    assert_eq!(list.ui.host().with_tree(|tree| tree.node_count()), nodes);
+    assert!(list.ui.host().with_tree(|tree| tree.node_count()) <= nodes + 2);
     list.ui.on_node_with_tag("item 2: 20").assert_does_not_exist();
     for (item, node) in [0, 1, 3, 4].into_iter().zip([first[0], first[1], first[3], first[4]]) {
         assert_eq!(node_of(item), node, "item {item}");
@@ -530,12 +529,12 @@ fn items_inserted_before_others_leave_the_others_composition_alone() {
     assert_eq!(events(), ["remembered 100"]);
     assert_eq!((0..4).map(node_of).collect::<Vec<_>>(), nodes);
     list.ui.on_node_with_tag("item 3: 7").assert_exists();
-    // In the middle too (item 3 now out of view, still composed, its count kept); and items
-    // appended don't widen what's composed.
+    // In the middle too: those pushed out of view leave, as Compose's measurement lets go of what
+    // it doesn't compose (D1312); and items appended don't widen what's composed.
     list.set_items(untyped([100, 0, 1, 101, 102, 2, 3]));
-    assert_eq!(events(), ["remembered 101", "remembered 102"]);
-    assert!(live().contains(&3));
-    assert_eq!(COUNTS.with(|counts| counts.borrow()[&3].get()), 7);
+    let heard = events();
+    assert_eq!(heard[..2], ["remembered 101", "remembered 102"]);
+    assert!(heard[2..].iter().all(|event| event.starts_with("forgotten")), "{heard:?}");
     let mut long = untyped([100, 0, 1, 101, 102, 2, 3]);
     long.extend(untyped(1000..2000));
     list.set_items(long);
@@ -610,12 +609,9 @@ fn TallItem(item: u64, height: i32) {
     compose_ui::Layout(Modifier, policy, callback(|| {}));
 }
 
-/// A list's first layout estimates the items it lacks from those it has: here a 4 px header,
-/// so 24 more of 40 px items to fill 100 px. Knowing few sizes, it asks for 4 at most (D472):
-/// the header and items 1 to 3 fill the viewport, and item 4 is composed and never measured
-/// (it once composed about 50, D460). An item that leaves without having been measured is
-/// disposed rather than kept for reuse, as Compose, composing items as its measurement reaches
-/// them, never composes it (D460); those laid out are kept.
+/// A list's first layout composes the items as its measurement reaches them, as Compose's: the 4 px
+/// header and items 1 to 3 fill the 100 px viewport, and nothing past them is composed (it once
+/// composed about 50, D460, then one past them, D472; D1312). Those laid out are kept for reuse.
 #[test]
 fn the_first_layout_composes_few_items_beyond_those_it_lays_out_and_keeps_none_for_reuse() {
     reset();
@@ -637,16 +633,16 @@ fn the_first_layout_composes_few_items_beyond_those_it_lays_out_and_keeps_none_f
         );
     });
     ui.wait_for_idle();
-    assert_eq!(live(), [0, 1, 2, 3, 4]);
+    assert_eq!(live(), [0, 1, 2, 3]);
     let measured: HashSet<u64> = NODES.with(|nodes| nodes.borrow().keys().copied().collect());
-    assert_eq!(measured, HashSet::from([0, 1, 2, 3]), "item 4 composed, not measured");
+    assert_eq!(measured, HashSet::from([0, 1, 2, 3]), "each composed item measured");
     let children = |ui: &mut ComposeTestRule| {
         ui.host().with_tree(|tree| {
             let item = tree.parent_of(node_of(0)).expect("an item's node");
             tree.children_of(tree.parent_of(item).expect("the list")).count()
         })
     };
-    // A jump: all five leave; the four laid out are kept for reuse, item 4 is disposed.
+    // A jump: all four leave and are kept for reuse.
     state.request_scroll_to_item(500, 0);
     ui.wait_for_idle();
     let composed = live();

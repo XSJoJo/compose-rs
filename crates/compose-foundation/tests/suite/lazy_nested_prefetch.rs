@@ -442,8 +442,7 @@ fn a_nested_grid_prefetches_as_many_as_the_last_one_showed() {
         scrolled_grid(handle, ui, 40.0);
         prefetch(ui);
     });
-    // Two, then the rest of those in view, in a pass after the measurement short of them, where
-    // Compose's measurement composes them.
+    // Two, then the rest of those in view, composed by the measurement short of them.
     assert_eq!(
         actions,
         [
@@ -455,7 +454,6 @@ fn a_nested_grid_prefetches_as_many_as_the_last_one_showed() {
             Measure(2, Some(5)),
             Compose(2, Some(6)),
             Compose(2, Some(7)),
-            Measure(2, None),
             Measure(2, Some(6)),
             Measure(2, Some(7)),
         ]
