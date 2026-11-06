@@ -236,3 +236,34 @@ fn a_builder_builds_once_with_composes_defaults() {
     let group = VectorGroup::default();
     assert_eq!((group.scale_x, group.scale_y, group.rotation), (1.0, 1.0, 0.0));
 }
+
+/// A command's second arc may run its flags into its numbers too.
+#[test]
+fn every_arc_of_a_command_may_run_its_flags_into_its_numbers() {
+    let arc = |large: bool, sweep: bool, end: f32| PathNode::RelativeArcTo {
+        horizontal_ellipse_radius: 1.0,
+        vertical_ellipse_radius: 1.0,
+        theta: 0.0,
+        is_more_than_half: large,
+        is_positive_arc: sweep,
+        arc_start_dx: end,
+        arc_start_dy: end,
+    };
+    assert_eq!(nodes("a1 1 0 01 2 2 1 1 0 11 3 3"), [arc(false, true, 2.0), arc(true, true, 3.0)]);
+}
+
+/// A relative move after a close starts where the closed contour did.
+#[test]
+fn a_relative_move_after_a_close_starts_at_the_closed_contours_start() {
+    let path = PathParser::new().parse_path_string("M10 10 l5 0 z m2 2 l1 0").unwrap().to_path();
+    assert_eq!(
+        path.data().commands(),
+        [
+            PathCommand::MoveTo(Offset::new(10.0, 10.0)),
+            PathCommand::LineTo(Offset::new(15.0, 10.0)),
+            PathCommand::Close,
+            PathCommand::MoveTo(Offset::new(12.0, 12.0)),
+            PathCommand::LineTo(Offset::new(13.0, 12.0)),
+        ]
+    );
+}

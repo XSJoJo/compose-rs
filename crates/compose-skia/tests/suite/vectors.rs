@@ -386,7 +386,9 @@ fn an_auto_mirrored_vector_is_mirrored_right_to_left() {
     for (x, y) in [(2, 2), (2, height - 3), (width / 2 - 3, 2), (width / 2 - 3, height - 3)] {
         image.assert_pixel_color(Color::BLUE, x, y);
     }
-    for (x, y) in [(width - 3, 2), (width - 3, height - 3), (width / 2 + 3, 2)] {
+    let red =
+        [(width - 3, 2), (width - 3, height - 3), (width / 2 + 3, 2), (width / 2 + 3, height - 3)];
+    for (x, y) in red {
         image.assert_pixel_color(Color::RED, x, y);
     }
 }
@@ -578,4 +580,109 @@ fn a_rotated_group_is_stretched_with_its_vector() {
     image.assert_pixel_color(Color::RED, 96, 10);
     image.assert_pixel_color(Color::BLUE, 96, 38);
     image.assert_pixel_color(Color::BLUE, 2, 46);
+}
+
+/// A 10 × 10 viewport drawn at 100 px of `group` holding a blue square over all of it, over
+/// red, stretched to `size` (`FillBounds`).
+fn group_drawn(
+    group: VectorGroup,
+    size: (i32, i32),
+    inner: Vec<compose::ui::PathNode>,
+) -> CapturedImage {
+    let vector = ImageVector::builder(Dp(100.0), Dp(100.0), 10.0, 10.0)
+        .group(group, move |group| {
+            group.add_path(VectorPath {
+                path_data: inner,
+                fill: Some(Brush::solid(Color::BLUE)),
+                ..Default::default()
+            });
+        })
+        .build();
+    let mut ui = painted(300, move || {
+        let painter = remember_vector_painter(&vector);
+        PainterImage!(
+            painter,
+            None::<&str>,
+            modifier = Modifier
+                .test_tag(TAG)
+                .size((Dp(size.0 as f32), Dp(size.1 as f32)))
+                .background(Color::RED),
+            content_scale = ContentScale::FillBounds
+        );
+    });
+    capture(&mut ui)
+}
+
+/// A group's pivot is in its viewport: scaled with it to the drawing's pixels.
+#[test]
+fn a_groups_pivot_is_scaled_with_the_viewport() {
+    let group = VectorGroup { scale_x: 2.0, pivot_x: 5.0, pivot_y: 5.0, ..Default::default() };
+    // The middle fifth, doubled around the center: 30 px to 70 px.
+    let image = group_drawn(
+        group,
+        (100, 100),
+        path_data(|path| {
+            path.move_to(4.0, 0.0).line_to(6.0, 0.0).line_to(6.0, 10.0).line_to(4.0, 10.0).close();
+        }),
+    );
+    image.assert_pixel_color(Color::BLUE, 32, 50);
+    image.assert_pixel_color(Color::BLUE, 68, 50);
+    image.assert_pixel_color(Color::RED, 27, 50);
+    image.assert_pixel_color(Color::RED, 73, 50);
+}
+
+/// A quarter turn in a vector stretched unevenly turns in the viewport, then stretches: the top
+/// half turned to the right half.
+#[test]
+fn a_quarter_turn_under_a_stretch_turns_in_the_viewport() {
+    let group = VectorGroup { rotation: 90.0, pivot_x: 5.0, pivot_y: 5.0, ..Default::default() };
+    let image = group_drawn(group, (200, 50), rectangle(10.0, 5.0));
+    image.assert_pixel_color(Color::BLUE, 150, 25);
+    image.assert_pixel_color(Color::BLUE, 105, 5);
+    image.assert_pixel_color(Color::RED, 50, 25);
+    image.assert_pixel_color(Color::RED, 95, 45);
+}
+
+/// A clip path is in the viewport: scaled with it.
+#[test]
+fn a_clip_path_is_scaled_with_the_viewport() {
+    let group = VectorGroup { clip_path_data: rectangle(5.0, 10.0), ..Default::default() };
+    let image = group_drawn(group, (100, 100), rectangle(10.0, 10.0));
+    image.assert_pixel_color(Color::BLUE, 45, 50);
+    image.assert_pixel_color(Color::RED, 55, 50);
+}
+
+/// One painter drawn left to right, then right to left, is mirrored once it is: its recording
+/// is kept per direction.
+#[test]
+fn a_painter_drawn_right_to_left_after_left_to_right_is_mirrored() {
+    let vector = ImageVector::builder(20.dp(), 20.dp(), 20.0, 20.0)
+        .auto_mirror(true)
+        .add_path(VectorPath {
+            path_data: rectangle(10.0, 20.0),
+            fill: Some(Brush::solid(Color::BLUE)),
+            ..Default::default()
+        })
+        .build();
+    let rtl = mutable_state_of(false);
+    let handle = rtl.handle();
+    let mut ui = painted(100, move || {
+        let painter = remember_vector_painter(&vector);
+        let direction = if handle.get() { LayoutDirection::Rtl } else { LayoutDirection::Ltr };
+        CompositionLocalProvider(LOCAL_LAYOUT_DIRECTION.provides(direction), move || {
+            PainterImage!(
+                painter.clone(),
+                None::<&str>,
+                modifier = Modifier.test_tag(TAG).background(Color::RED)
+            );
+        });
+    });
+    let image = capture(&mut ui);
+    image.assert_pixel_color(Color::BLUE, 2, 10);
+    image.assert_pixel_color(Color::RED, 17, 10);
+    rtl.set(true);
+    ui.wait_for_idle();
+    let image = capture(&mut ui);
+    image.assert_pixel_color(Color::RED, 2, 10);
+    image.assert_pixel_color(Color::BLUE, 17, 10);
 }
