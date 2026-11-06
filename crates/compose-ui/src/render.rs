@@ -122,6 +122,7 @@ impl UiTree {
     /// kept boundary drawing it is drawn again in this frame. A measurement it invalidates is
     /// left to the next frame, which the write asked for (as before boundaries kept anything).
     pub fn draw(&mut self) -> bool {
+        let _pass = crate::graphics_layer_object::DrawPass::enter();
         // Drawing runs what they'd have run for a query.
         self.new_layers.clear();
         self.apply_observed_writes();
@@ -360,6 +361,7 @@ impl UiTree {
     /// Called between frames, after `prefetch`, by a platform that records groups (Android's
     /// render nodes): the frame revealing an item then neither draws nor records it.
     pub fn draw_ahead(&mut self) -> Option<Vec<DrawGroup>> {
+        let _pass = crate::graphics_layer_object::DrawPass::enter();
         let node = loop {
             if self.measured_ahead.is_empty() {
                 return None;

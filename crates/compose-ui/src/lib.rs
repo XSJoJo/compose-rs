@@ -42,6 +42,7 @@ mod font_resolver;
 mod font_variation;
 mod graphics;
 mod graphics_layer;
+mod graphics_layer_object;
 mod host;
 mod image;
 mod indication;
@@ -231,6 +232,7 @@ pub use graphics::{
 pub use graphics_layer::{
     CompositingStrategy, DEFAULT_SHADOW_COLOR, GraphicsLayerScope, TransformOrigin,
 };
+pub use graphics_layer_object::{GraphicsLayer, remember_graphics_layer};
 pub use host::LOCAL_DENSITY;
 pub use image::{ImageBitmap, decode_image_bytes, remember_image_resource};
 pub use indication::{Indication, IndicationNodeFactory, LOCAL_INDICATION};

@@ -29,7 +29,8 @@ These are on local branches, so they're not lost, but each still has to finish i
 - **Runtime:** composition registration observers (`Recomposer.observe`, about 11), error traces of what runs after a pass (11), composition data (about 15).
 
 ### 3. Graphics
-- **`GraphicsLayer` as an object** (about 95), **color spaces** (about 70), offscreen canvas and bitmaps.
+- **`GraphicsLayer` as an object** is in (D1903): recorded, drawn by any drawing any number of times, its transform, alpha, clip and outline, shadow, color filter, blend mode and compositing strategy; copied into each drawing that draws it. Still missing: `toImageBitmap`, its 3D rotations, camera distance and render effect, `placeWithLayer`, `GraphicsContext`.
+- **Color spaces** (about 70), offscreen canvas and bitmaps.
 - **`Painter`** is in (D1901): `Painter`, `BitmapPainter`, `ColorPainter`, `Modifier.paint`, `Image(painter)` (`PainterImage`) and Material's `Icon(painter)` with a color or a `ColorProducer` tint. Still missing: `BrushPainter`, `FilterQuality`, and `painterResource`.
 - **Blend modes and color filters** are in (D1900): `BlendMode`, `ColorFilter`'s tint, lighting and matrix, `ColorMatrix`, on paints, images and layers, on Skia and Android (checked on the phone with the demo's `graphics` tab: filters, blend modes, tinted icons and a vector). Still missing: `Brush.composite`, a blend mode on `drawImage`, and a graphics layer's `colorFilter` and `blendMode`.
 - **Vector graphics** are in (D1902): `ImageVector` and its builder, `PathNode`, `PathParser`, `VectorPainter` with `remember_vector_painter`, groups with transforms and clip paths, a recorded drawing kept per size, `Image(imageVector)` (`VectorImage`). Still missing: trim paths (waits on `PathMeasure`), stroke joins and miters, vector composition (`Group`/`Path` composables and `rememberVectorPainter { }`), and **animated image vectors** (about 20).
