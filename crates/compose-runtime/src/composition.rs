@@ -130,6 +130,12 @@ impl Composition {
         crate::tooling::ObservableComposition { id: self.id }
     }
 
+    /// Its slot table as tools read it, as `Composer.compositionData` (`tooling`).
+    #[cfg(feature = "composition-data")]
+    pub fn composition_data(&self) -> crate::tooling::CompositionInstance {
+        crate::tooling::CompositionInstance::of(self.id)
+    }
+
     /// Whether [`dispose`](Composition::dispose) was called, as `isDisposed`.
     pub fn is_disposed(&self) -> bool {
         with_runtime(|runtime| runtime.compositions.get(self.id).is_none_or(|data| data.disposed))
@@ -853,6 +859,8 @@ impl Pass {
                 ..
             } = runtime;
             let data = compositions.get_mut(id).expect("a live composition");
+            #[cfg(feature = "composition-data")]
+            crate::tooling::writing(data);
             data.table.movable.parking = matches!(kind, PassKind::Whole | PassKind::Late);
             let sentinel = &mut data.table[SENTINEL];
             let dirty = sentinel.dirty && !resume;
@@ -925,6 +933,10 @@ impl Pass {
         #[cfg(feature = "composition-observer")]
         {
             pass.observer = crate::tooling::begin_pass(id, &mut pass.snapshot);
+        }
+        #[cfg(feature = "composition-data")]
+        if kind != PassKind::Late {
+            crate::tooling::inspect(id);
         }
         Some(pass)
     }
@@ -1991,6 +2003,11 @@ impl Disposal {
     }
 
     fn run(mut self) {
+        // It leaves the inspection tables that collected it (`tooling`).
+        #[cfg(feature = "composition-data")]
+        if let Some(data) = &mut self.data {
+            crate::tooling::disposed(self.id, std::mem::take(&mut data.inspection_tables));
+        }
         let disposing = Disposing;
         let applier = self.applier.clone();
         {

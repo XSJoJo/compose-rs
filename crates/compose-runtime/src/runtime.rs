@@ -656,6 +656,12 @@ pub(crate) struct CompositionData {
     /// The observer of its pass in progress, as it began.
     #[cfg(feature = "composition-observer")]
     pub pass_observer: Option<Rc<dyn crate::tooling::CompositionObserver>>,
+    /// Passes begun of it: what tools read of its table is stale once this moves (`tooling`).
+    #[cfg(feature = "composition-data")]
+    pub writes: u64,
+    /// The inspection tables that collected it, to leave at its disposal (`tooling`).
+    #[cfg(feature = "composition-data")]
+    pub inspection_tables: Vec<crate::tooling::InspectionTables>,
 }
 
 impl CompositionData {
@@ -685,6 +691,10 @@ impl CompositionData {
             observer: None,
             #[cfg(feature = "composition-observer")]
             pass_observer: None,
+            #[cfg(feature = "composition-data")]
+            writes: 0,
+            #[cfg(feature = "composition-data")]
+            inspection_tables: Vec::new(),
         }
     }
 
@@ -693,6 +703,11 @@ impl CompositionData {
         let mut closed = CompositionData::new(data.applier.clone(), data.root_node);
         closed.closed = true;
         closed.child_count = data.child_count;
+        // What was read of the table it had is stale.
+        #[cfg(feature = "composition-data")]
+        {
+            closed.writes = data.writes.wrapping_add(1);
+        }
         closed
     }
 

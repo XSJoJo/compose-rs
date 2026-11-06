@@ -16,15 +16,15 @@ What compose-rs's runtime (`crates/compose-runtime`, `crates/compose-macros`) ha
 | Status | Files | Tests |
 |---|---|---|
 | `covered` | 5 | 27 |
-| `ported` | 30 | 538 |
+| `ported` | 32 | 553 |
 | `port` | 0 | 0 |
 | `partial` | 18 | 455 |
-| `feature:…` | 7 | 31 |
+| `feature:…` | 5 | 16 |
 | `n/a` | 91 | 968 |
 
-810 tests are ported so far (each cites its Compose test in a `// Compose:` comment), in `ported` and `partial` files.
+825 tests are ported so far (each cites its Compose test in a `// Compose:` comment), in `ported` and `partial` files.
 
-The `feature:…` files by feature: movable-content 2 (5), composition-observer 3 (11), composition-data 2 (15). `partial` rows name further features they need for some of their tests (composition-context, composition-api, recomposer, movable-content, host-defaults, snapshot-isolation).
+The `feature:…` files by feature: movable-content 2 (5), composition-observer 3 (11). `partial` rows name further features they need for some of their tests (composition-context, composition-api, recomposer, movable-content, host-defaults, snapshot-isolation).
 
 Of the 968 `n/a` tests, 142 are Android Lint checks, 122 benchmarks, 513 tests of internal data structures and internal APIs (two slot tables, change lists, collections, snapshot id sets, the opt-in tracing API), 49 hot reload (Live Edit), and 142 platform or language specifics (threads, JVM reflection, `Parcelable`, RxJava, LiveData, Kotlin delegates and autoboxing, the Kotlin compiler's ABI and group sizes, Android tracing).
 
@@ -79,8 +79,8 @@ The core suite alone (`nonEmulatorCommonTest`, 1,099 tests) splits: 17 in `cover
 | `compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/SnapshotTests.kt` | 89 | Snapshots: isolation, nested and mutable snapshots, apply and conflicts, merging policies, read/write/apply observers, transparent snapshots, record reuse. | ported: 83 in crates/compose-runtime/tests/suite/snapshot_isolation.rs (step S5, D769-D790) and snapshot_observation.rs (the observers', steps S1 and S2; `stateReadsCanBeObserved` and `stateWritesCanBeObserved` on `Snapshot::observe` there, on snapshots in the first); `Transparent…` are on `Snapshot::observe`'s frames (D771), whose 5 tests of the object's reuse, and `readOnly_clearsParentSnapshotOnRelease`, are n/a. |
 | `compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/SnapshotWeakSetTests.kt` | 5 | Internal weak set. | n/a: internal. |
 | `compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/snapshots/tooling/SnapshotObserverTests.kt` | 14 | `observeSnapshots`/`SnapshotObserver` (experimental): creation, apply, dispose, reads and writes per snapshot. | ported: 14 in crates/compose-runtime/tests/suite/snapshot_tooling.rs (D1502, D1503) |
-| `compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/tooling/CompositionDataTests.kt` | 10 | `CompositionData`/`CompositionGroup`: iterating the slot table, finding nodes and source info, groups without calls. | feature:composition-data |
-| `compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/tooling/CompositionInstanceTests.kt` | 5 | `findCompositionInstance`, context groups and parent instances. | feature:composition-data (also composition-context). |
+| `compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/tooling/CompositionDataTests.kt` | 10 | `CompositionData`/`CompositionGroup`: iterating the slot table, finding nodes and source info, groups without calls. | ported: 10 in crates/compose-runtime/tests/suite/composition_data.rs (D1509: groups made by composing, not written by hand; keys hashed; Compose's groupless calls are non-restartable composables' groups here) |
+| `compose/runtime/runtime/src/nonEmulatorCommonTest/kotlin/androidx/compose/runtime/tooling/CompositionInstanceTests.kt` | 5 | `findCompositionInstance`, context groups and parent instances. | ported: 5 in crates/compose-runtime/tests/suite/composition_data.rs (D1509) |
 
 ### `runtime`: other source sets (`commonTest`, `jvm*Test`, `nonEmulatorJvmTest`, native, wasm, `androidDeviceTest`)
 
@@ -276,7 +276,7 @@ From each module's `api/current.txt` (`restricted_current.txt` only to tell what
 | remember-serializable (`runtime.saveable`) | `rememberSerializable` (4 forms, kotlinx.serialization) | none; the Rust analogue would be serde (a dependency decision) |
 | retain (`runtime.retain`) | `retain(keys…, calculation)`, `RetainObserver` (`onRetained`, `onEnteredComposition`, `onExitedComposition`, `onRetired`, `onUnused`), `RetainedValuesStore`, `ForgetfulRetainedValuesStore`, `ManagedRetainedValuesStore` (+ `retainManagedRetainedValuesStore`), `RetainedValuesStoreRegistry` (+ `retainRetainedValuesStoreRegistry`, `LocalRetainedValuesStoreProvider(key)`, `clearChild`, `clearChildren`, `dispose`), `LocalRetainedValuesStore`, `LocalRetainedValuesStoreProvider`, `withLocalRetainedValuesStore`, `RetainedEffect` (1 to 3 keys, vararg), `RetainedEffectScope.onRetire`, `RetainedEffectResult` | `compose::runtime::retain` (D1306): `retain`, `retain_keyed`, and `retain_observer`(`_keyed`) for values with callbacks; keys as one value, tuples for several; the store's `consume_exited_value` is an `Option` for `defaultValue` |
 | composition-observer | `tooling.CompositionObserver`, `CompositionObserverHandle`, `ObservableComposition`, `Composition.setObserver`, `CompositionRegistrationObserver`, `Recomposer.observe`, `RecomposerInfo.observe` *(all exp)* | `CompositionObserver`, its handle, `ObservableComposition` and `Composition.setObserver` done (D1505: `tooling`, `Composition::set_observer`, behind compose-runtime's `composition-observer` feature); not there: `CompositionRegistrationObserver`, `Recomposer.observe`, `RecomposerInfo.observe` |
-| composition-data | `tooling.CompositionData` (`compositionGroups`, `isEmpty`, `find`), `CompositionGroup` (`key`, `node`, `data`, `identity`, `sourceInfo`, `groupSize`, `slotsSize`), `CompositionInstance`, `findCompositionInstance`, `LocalInspectionTables`, `Composer.compositionData`, `CompositionServices`, `CompositionServiceKey` | `Composition::dump` (a text dump for tests) |
+| composition-data | `tooling.CompositionData` (`compositionGroups`, `isEmpty`, `find`), `CompositionGroup` (`key`, `node`, `data`, `identity`, `sourceInfo`, `groupSize`, `slotsSize`), `CompositionInstance`, `findCompositionInstance`, `LocalInspectionTables`, `Composer.compositionData`, `CompositionServices`, `CompositionServiceKey` | done but the services (D1509: `tooling::{CompositionData, CompositionGroup, CompositionInstance, GroupIdentity, LOCAL_INSPECTION_TABLES, current_composition_data}`, `Composition::composition_data`, behind compose-runtime's `composition-data` feature); `CompositionServices`, `CompositionServiceKey` n/a: Compose looks an `ObservableComposition` up through them, compose-rs has `Composition::observable` |
 | error-traces | `tooling.ComposeStackTraceMode` (`None`, `GroupKeys`, `SourceInformation`, `Auto`), `Composer.setDiagnosticStackTraceMode`, `CompositionErrorContext.attachComposeStackTrace`, `LocalCompositionErrorContext` | `ComposeStackTraceMode`, `setDiagnosticStackTraceMode` done (D1507, D1508: `stack_trace`, the trace taken with `take_compose_stack_trace` and matched to its panic by `compose_stack_trace_sequence`), for panics in a pass; not there: traces of deferred work, `CompositionErrorContext`, `LocalCompositionErrorContext` |
 | composition-tracing | `Composer.setTracer`, `CompositionTracer`, `isTraceInProgress`, `traceEventStart`, `traceEventEnd` | `platform::track_recompositions`, `COMPOSE_FRAME_STATS` |
 
@@ -420,10 +420,10 @@ Sizes: S under a day, M a few days, L one to two weeks, XL multi-week. None of t
 - **Tests:** `ErrorTraceTests` (33): 21 ported; 11 wait for traces of what runs after the pass, 1 n/a.
 - **Depends on:** a table from group keys to names and locations (the transform knows them; keys hash the declaration path); movable-content for 5 tests.
 
-### composition-data (M)
+### composition-data (M): done (D1509)
 - **APIs:** `CompositionData`, `CompositionGroup`, `CompositionInstance`, `findCompositionInstance`, `LocalInspectionTables`, `CompositionServices`.
 - **Does:** tooling's read-only view of the slot table (Layout Inspector).
-- **Tests:** `CompositionDataTests` (10), `CompositionInstanceTests` (5).
+- **Tests:** `CompositionDataTests` (10), `CompositionInstanceTests` (5): ported.
 - **Depends on:** composition-context for instances' parents; the group-name table of error-traces.
 
 ### composition-tracing (S)
@@ -442,7 +442,7 @@ Sizes: S under a day, M a few days, L one to two weeks, XL multi-week. None of t
 6. **movable-content (L)**, in a composition done, then **retain (L)**: done.
 7. **composition-context (L)**: done (it unblocks movable content across compositions and the ui area's `SubcomposeLayout`).
 8. **host-content-groups (M)**, when its decision is made, before more tests are ported through `compose_test(|| …)` with branches.
-9. **error-traces (M)**, **composition-tracing (S)**, **composition-observer (M, exp)**, **composition-data (M)**, **composable-annotations (S)**.
+9. **error-traces (M)**, **composition-tracing (S)**, **composition-observer (M, exp)**, **composition-data (M)** (done), **composable-annotations (S)**.
 10. **remember-serializable** if serde is accepted.
 
 ## Notes for the porting agents

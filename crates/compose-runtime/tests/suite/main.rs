@@ -9,6 +9,7 @@ mod composition_and_computed_state;
 mod composition_and_derived_state;
 mod composition_api;
 mod composition_context;
+mod composition_data;
 mod composition_fuzz;
 mod composition_local;
 mod composition_observer;
