@@ -110,6 +110,10 @@ pub(crate) trait DragBehavior: 'static {
     fn on_drag_started(&self, scope: CoroutineScope, position: Offset);
     fn on_drag_stopped(&self, scope: CoroutineScope, velocity: Velocity);
     fn start_drag_immediately(&self) -> bool;
+    /// Whether a pointer of `pointer_type` drags it, as `canDrag` (`scrollable2D`'s: not a mouse).
+    fn can_drag(&self, _pointer_type: compose_ui::PointerType) -> bool {
+        true
+    }
 }
 
 /// `GestureState`, for the gestures inside to read.
@@ -384,7 +388,10 @@ impl DragGestureNode {
         context: &mut NodeContext<'_>,
     ) {
         // `isAnyChangedToDown`: the first of the pointers down starts it.
-        if event.kind != PointerEventType::Press || self.other_down(event.pointer).is_some() {
+        if event.kind != PointerEventType::Press
+            || self.other_down(event.pointer).is_some()
+            || !self.behavior.can_drag(event.pointer_type)
+        {
             return;
         }
         let Detection::AwaitDown { await_slop, consumed_on_initial, seen_initial } = self.detection

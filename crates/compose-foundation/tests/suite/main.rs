@@ -135,6 +135,7 @@ mod scroll_indicator_lazy;
 mod scroll_state;
 mod scroll_support;
 mod scrollable;
+mod scrollable_2d;
 mod scrollable_nested;
 mod scrollbar;
 mod selection;
