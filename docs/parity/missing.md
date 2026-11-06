@@ -27,7 +27,7 @@ These are on local branches, so they're not lost, but each still has to finish i
 - **`Modifier.onLayoutRectChanged` and its callbacks** (about 160).
 - **Android view interop**, `AndroidView` and hosting (about 280).
 - **Runtime:** composition registration observers (`Recomposer.observe`, about 11), error traces of what runs after a pass (11).
-- **Geometry and units** are in (D1906, D1907): Compose's API of `Offset`, `Size`, `Rect`, `MutableRect`, `RoundRect`, `CornerRadius`, `Dp`, `DpSize`, `DpRect`, `IntOffset`, `IntSize`, `IntRect`, `Velocity`, `Density`, `Constraints`, `Matrix` and a generic `lerp`, with their 290 tests. Still missing: foundation's fling and nested scroll taking `Velocity`.
+- **Geometry and units** are in (D1906, D1907): Compose's API of `Offset`, `Size`, `Rect`, `MutableRect`, `RoundRect`, `CornerRadius`, `Dp`, `DpSize`, `DpRect`, `IntOffset`, `IntSize`, `IntRect`, `Velocity`, `Density`, `Constraints`, `Matrix` and a generic `lerp`, with their tests (18 files, about 280 tests). Still missing: foundation's fling and nested scroll taking `Velocity`.
 
 ### 3. Graphics
 - **`GraphicsLayer` as an object** (about 95), **color spaces** (about 70), offscreen canvas and bitmaps.
