@@ -97,6 +97,9 @@ impl Composition {
     pub fn dispose(&self) {
         // Paused content is discarded first, its nodes released and its observers abandoned.
         crate::pausable::cancel_for_disposal(self.id);
+        // It's its recomposer's no more (`tooling`), told once it's gone.
+        #[cfg(feature = "composition-observer")]
+        let unregistering = crate::tooling::unregistering(self.id);
         let disposal = with_runtime(|runtime| {
             if runtime.compositions.get(self.id).is_some_and(|data| data.composing) {
                 misuse(ComposeError::DisposedDuringPass)
@@ -113,6 +116,10 @@ impl Composition {
         }
         #[cfg(feature = "composition-observer")]
         crate::tooling::flush();
+        #[cfg(feature = "composition-observer")]
+        if let Some(unregistering) = unregistering {
+            unregistering.tell();
+        }
     }
 
     /// Sets its observer, as `Composition.setObserver` (`tooling`).
@@ -127,7 +134,7 @@ impl Composition {
     /// It, as an observer names it (`tooling::ObservableComposition`).
     #[cfg(feature = "composition-observer")]
     pub fn observable(&self) -> crate::tooling::ObservableComposition {
-        crate::tooling::ObservableComposition { id: self.id }
+        crate::tooling::ObservableComposition::of(self.id)
     }
 
     /// Its slot table as tools read it, as `Composer.compositionData` (`tooling`).
@@ -363,6 +370,9 @@ impl Drop for Composition {
     fn drop(&mut self) {
         // Paused content is discarded first, its nodes released and its observers abandoned.
         crate::pausable::cancel_for_disposal(self.id);
+        #[cfg(feature = "composition-observer")]
+        let unregistering =
+            std::panic::catch_unwind(|| crate::tooling::unregistering(self.id)).ok().flatten();
         let Some(Some(disposal)) = try_with_runtime(|runtime| {
             if !std::thread::panicking() {
                 runtime.rehome_parked(self.id);
@@ -375,6 +385,10 @@ impl Drop for Composition {
         #[cfg(feature = "composition-observer")]
         if !std::thread::panicking() {
             crate::tooling::flush();
+        }
+        #[cfg(feature = "composition-observer")]
+        if let Some(unregistering) = unregistering {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unregistering.tell()));
         }
     }
 }
@@ -766,6 +780,13 @@ impl OuterPass {
     }
 
     fn restore(self, runtime: &mut Runtime) {
+        // Its pass goes on writing: what tools read of it meanwhile is stale (`tooling`).
+        #[cfg(feature = "composition-data")]
+        if let Some(data) =
+            self.active.and_then(|active| runtime.compositions.get_mut(active.composition))
+        {
+            crate::tooling::writing(data);
+        }
         runtime.active = self.active;
         runtime.frames = self.frames;
         runtime.abandoned_groups = self.abandoned_groups;
@@ -933,6 +954,10 @@ impl Pass {
         #[cfg(feature = "composition-observer")]
         {
             pass.observer = crate::tooling::begin_pass(id, &mut pass.snapshot);
+            // Its first composition registers it with its recomposer, as `composeInitial`.
+            if mode == Mode::Normal && matches!(kind, PassKind::Whole | PassKind::Pausable) {
+                crate::tooling::registering(id);
+            }
         }
         #[cfg(feature = "composition-data")]
         if kind != PassKind::Late {
@@ -1191,10 +1216,11 @@ fn compose_tree(id: CompositionId, frame: u64) -> std::thread::Result<()> {
         }
         let mut queued = queued.into_iter();
         while let Some(child) = queued.next() {
-            // What holds it may have just gone, in the parent's pass.
+            // What holds it may have just gone, in the parent's pass; or it's composing, a frame run
+            // from inside its pass: its invalidations are for a frame after it.
             let going = with_runtime(|runtime| {
                 let compositions = &runtime.compositions;
-                compositions.get(child).map(|data| compositions.is_going(data))
+                compositions.get(child).map(|data| compositions.is_going(data) || data.composing)
             });
             match going {
                 None => {}
@@ -1718,6 +1744,10 @@ impl Drop for Pass {
                 }
             });
         }
+        // Poisoned, it's its recomposer's no more, as a failed composition (`tooling`).
+        #[cfg(feature = "composition-observer")]
+        let unregistering =
+            std::panic::catch_unwind(|| crate::tooling::unregistering(self.id)).ok().flatten();
         // Its observer hears its end still, as Compose's `finally`.
         #[cfg(feature = "composition-observer")]
         let observer = {
@@ -1772,6 +1802,10 @@ impl Drop for Pass {
         });
         #[cfg(feature = "composition-observer")]
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(observer)));
+        #[cfg(feature = "composition-observer")]
+        if let Some(unregistering) = unregistering {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unregistering.tell()));
+        }
         // What it wrote applies, as `composing`'s `finally`, with the pass over: observers and
         // values' `Drop`s are user code, which may recompose, or panic with this one unwinding. A
         // conflict's error doesn't replace this panic.

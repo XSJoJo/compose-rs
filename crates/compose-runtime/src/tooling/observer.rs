@@ -22,6 +22,8 @@ use crate::scope::{RecomposeScope, ScopeId};
 use crate::snapshots::StateObjectId;
 use crate::state::StateId;
 
+use super::registration;
+
 /// Hears a composition's passes and scopes, as Compose's `CompositionObserver`. Every method does
 /// nothing unless overridden.
 pub trait CompositionObserver: 'static {
@@ -53,9 +55,15 @@ pub trait CompositionObserver: 'static {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ObservableComposition {
     pub(crate) id: CompositionId,
+    /// The thread's: it names a composition of this thread's runtime.
+    _not_send: PhantomData<*const ()>,
 }
 
 impl ObservableComposition {
+    pub(crate) fn of(id: CompositionId) -> ObservableComposition {
+        ObservableComposition { id, _not_send: PhantomData }
+    }
+
     /// Sets the composition's observer, replacing any, as `setObserver`: it hears this composition
     /// and those under it that have none of their own. The handle removes it, disposed or dropped,
     /// if it's still the one set.
@@ -76,16 +84,25 @@ impl ObservableComposition {
         });
         // Outside the borrow: an observer's `Drop` is user code.
         drop(replaced);
-        CompositionObserverHandle { composition: self.id, token, _not_send: PhantomData }
+        CompositionObserverHandle {
+            observed: Observed::Composition(self.id, token),
+            _not_send: PhantomData,
+        }
     }
 }
 
-/// Removes an observer [`ObservableComposition::set_observer`] set, as Compose's
+/// Removes an observer [`ObservableComposition::set_observer`] or
+/// [`Recomposer::observe`](crate::Recomposer::observe) set, as Compose's
 /// `CompositionObserverHandle`: disposed, or dropped.
 pub struct CompositionObserverHandle {
-    composition: CompositionId,
-    token: u64,
-    _not_send: PhantomData<*const ()>,
+    pub(crate) observed: Observed,
+    pub(crate) _not_send: PhantomData<*const ()>,
+}
+
+/// What a handle's observer observes, and its token there.
+pub(crate) enum Observed {
+    Composition(CompositionId, u64),
+    Recomposer(crate::Recomposer, u64),
 }
 
 impl CompositionObserverHandle {
@@ -95,11 +112,18 @@ impl CompositionObserverHandle {
 
 impl Drop for CompositionObserverHandle {
     fn drop(&mut self) {
+        let (composition, token) = match self.observed {
+            Observed::Composition(composition, token) => (composition, token),
+            Observed::Recomposer(recomposer, token) => {
+                registration::stop(recomposer, token);
+                return;
+            }
+        };
         // What was logged for it is told first.
         flush();
         let removed = try_with_runtime(|runtime| {
-            let data = runtime.compositions.get_mut(self.composition)?;
-            if data.observer.as_ref().is_none_or(|(token, _)| *token != self.token) {
+            let data = runtime.compositions.get_mut(composition)?;
+            if data.observer.as_ref().is_none_or(|(other, _)| *other != token) {
                 return None;
             }
             let removed = data.observer.take();
@@ -240,7 +264,7 @@ pub(crate) fn begin_pass(
         }
         Some(observer)
     })?;
-    observer.on_begin_composition(&ObservableComposition { id });
+    observer.on_begin_composition(&ObservableComposition::of(id));
     if let Some(snapshot) = snapshot {
         snapshot.push_read_frame(read_observer(id, observer.clone()));
     }
@@ -255,7 +279,7 @@ pub(crate) fn end_pass(
 ) -> Option<Rc<dyn CompositionObserver>> {
     let observer = observer.take()?;
     flush();
-    observer.on_end_composition(&ObservableComposition { id });
+    observer.on_end_composition(&ObservableComposition::of(id));
     Some(observer)
 }
 
