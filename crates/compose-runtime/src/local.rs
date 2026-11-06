@@ -17,7 +17,7 @@
 //! - A **computed** one (`with_computed_default`, `provides_computed`) is a function of other
 //!   locals, run at each read where it's read.
 
-use std::any::{Any, TypeId};
+use std::any::Any;
 use std::rc::Rc;
 
 use crate::__private::ReplaceGroup;
@@ -215,11 +215,12 @@ enum Holder<T: 'static> {
 }
 
 impl<T: Clone + 'static> Holder<T> {
-    fn read(&self, scope: &CompositionLocalAccessorScope) -> T {
+    /// Its value, a computed one where `scope` says: made only for one.
+    fn read(&self, scope: impl FnOnce() -> CompositionLocalAccessorScope) -> T {
         match self {
             Holder::Dynamic(state) => state.get(),
             Holder::Static(value) => value.clone(),
-            Holder::Computed(compute) => compute(scope),
+            Holder::Computed(compute) => compute(&scope()),
         }
     }
 }
@@ -237,10 +238,95 @@ struct Entry {
     given: bool,
 }
 
-/// A provider group's first slot: the locals it provides.
-#[derive(Default)]
+/// A provider group's first slot: the locals it provides, and its place's cell.
 struct ProviderEntries {
     entries: std::cell::RefCell<Vec<Entry>>,
+    /// Where its group is (`PLACES`): what a [`CompositionLocalAnchor`] finds its provider by.
+    place: PlaceId,
+}
+
+impl ProviderEntries {
+    fn new(place: (CompositionId, u32)) -> ProviderEntries {
+        ProviderEntries { entries: Default::default(), place: Places::make(place) }
+    }
+}
+
+impl Drop for ProviderEntries {
+    fn drop(&mut self) {
+        Places::free(self.place);
+    }
+}
+
+/// A cell of [`PLACES`]: its index, and the generation that tells it from what was there before.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct PlaceId {
+    index: u32,
+    generation: u32,
+}
+
+/// Where each provider group is, by the cell its entries hold, as Compose's `Anchor`s say where
+/// their groups are: a composition and a group index, rewritten when the group moves to another
+/// composition's table with content (`move_group`), and the cell freed when the entries go with
+/// their group. So a cell lives exactly as long as a provider (D1511, third review). Its own
+/// thread-local, not the runtime's: entries are dropped wherever their group's values are, the
+/// runtime borrowed or not.
+#[derive(Default)]
+struct Places {
+    cells: Vec<(u32, (CompositionId, u32))>,
+    free: Vec<u32>,
+}
+
+thread_local! {
+    static PLACES: std::cell::RefCell<Places> = std::cell::RefCell::new(Places::default());
+}
+
+impl Places {
+    fn make(place: (CompositionId, u32)) -> PlaceId {
+        PLACES.with_borrow_mut(|places| match places.free.pop() {
+            Some(index) => {
+                let cell = &mut places.cells[index as usize];
+                cell.1 = place;
+                PlaceId { index, generation: cell.0 }
+            }
+            None => {
+                let index = u32::try_from(places.cells.len()).expect("too many providers");
+                places.cells.push((0, place));
+                PlaceId { index, generation: 0 }
+            }
+        })
+    }
+
+    fn free(id: PlaceId) {
+        // At a thread's exit, the cells may be gone first: nothing's left to find them.
+        let _ = PLACES.try_with(|places| {
+            let mut places = places.borrow_mut();
+            places.cells[id.index as usize].0 = id.generation.wrapping_add(1);
+            places.free.push(id.index);
+        });
+    }
+
+    /// Where the provider of `id` is, if it's still there.
+    fn get(id: PlaceId) -> Option<(CompositionId, u32)> {
+        PLACES.with_borrow(|places| {
+            let (generation, place) = *places.cells.get(id.index as usize)?;
+            (generation == id.generation).then_some(place)
+        })
+    }
+
+    fn set(id: PlaceId, place: (CompositionId, u32)) {
+        PLACES.with_borrow_mut(|places| places.cells[id.index as usize].1 = place);
+    }
+
+    /// How many cells are kept, live or free to reuse.
+    fn kept() -> usize {
+        PLACES.with_borrow(|places| places.cells.len())
+    }
+}
+
+/// How many provider places are kept: one per provider that ever lived at once, at most (D1511).
+#[doc(hidden)]
+pub fn provider_place_count() -> usize {
+    Places::kept()
 }
 
 impl<T: ComposeArg + Clone + 'static> CompositionLocal<Option<T>> {
@@ -428,22 +514,23 @@ impl<T: 'static> CompositionLocal<T> {
     where
         T: Clone,
     {
-        let here = CompositionLocalAccessorScope { map: None, anchor: None };
+        let here = || CompositionLocalAccessorScope { map: None, anchor: None };
         match find_provided(self.id()) {
             Some(holder) => holder
                 .downcast_ref::<Holder<T>>()
                 .expect("a local's type is in its identity")
-                .read(&here),
-            None => self.default_value(&here),
+                .read(here),
+            None => self.default_value(here),
         }
     }
 
-    fn default_value(&self, scope: &CompositionLocalAccessorScope) -> T {
+    /// Its default, a computed one where `scope` says: made only for one.
+    fn default_value(&self, scope: impl FnOnce() -> CompositionLocalAccessorScope) -> T {
         match self.default {
             LocalDefault::Value(default) => default(),
-            LocalDefault::Computed(compute) => compute(scope),
+            LocalDefault::Computed(compute) => compute(&scope()),
             LocalDefault::Host { key, resolve } => {
-                let host = scope.current_value(&LOCAL_HOST_DEFAULT_PROVIDER);
+                let host = scope().current_value(&LOCAL_HOST_DEFAULT_PROVIDER);
                 resolve(key, host.get_host_default(key))
             }
         }
@@ -518,11 +605,27 @@ pub(crate) fn map_at(
 
 /// A provider group's entries.
 fn entries_of(table: &crate::slot_table::SlotTable, group: u32) -> Option<Rc<ProviderEntries>> {
-    let slot = table[group].slots.first()?;
-    if slot.value.value_type_id() != TypeId::of::<Rc<ProviderEntries>>() {
-        return None;
+    entries_at(table, group).cloned()
+}
+
+/// A provider group's entries, where its first slot holds them.
+#[inline]
+fn entries_at(table: &crate::slot_table::SlotTable, group: u32) -> Option<&Rc<ProviderEntries>> {
+    match &table[group].slots.first()?.value {
+        crate::slot_table::SlotValue::Plain(value)
+        | crate::slot_table::SlotValue::KeptOnReuse(value) => {
+            value.downcast_ref::<Rc<ProviderEntries>>()
+        }
+        _ => None,
     }
-    slot.value.to_any()?.downcast_ref::<Rc<ProviderEntries>>().cloned()
+}
+
+/// `group` of `table`, a provider, moved there, of `id`, with content: its entries say so, for its
+/// anchors.
+pub(crate) fn provider_moved(table: &crate::slot_table::SlotTable, group: u32, id: CompositionId) {
+    if let Some(entries) = entries_at(table, group) {
+        Places::set(entries.place, (id, group));
+    }
 }
 
 /// What the providers above the composable composing now provide, nearest first, a local
@@ -631,15 +734,15 @@ impl CompositionLocalMap {
     /// The value of `local` in the map, or its default. Reading a dynamic local during
     /// composition subscribes the composing scope, as reading it through `current()`.
     pub fn get<T: Clone + 'static>(&self, local: &CompositionLocal<T>) -> T {
-        let scope = CompositionLocalAccessorScope { map: Some(self.clone()), anchor: None };
+        let scope = || CompositionLocalAccessorScope { map: Some(self.clone()), anchor: None };
         let id = local.id();
         match self.entries.iter().find(|entry| entry.local == id) {
             Some(entry) => entry
                 .holder
                 .downcast_ref::<Holder<T>>()
                 .expect("a local's type is in its identity")
-                .read(&scope),
-            None => local.default_value(&scope),
+                .read(scope),
+            None => local.default_value(scope),
         }
     }
 }
@@ -675,12 +778,17 @@ pub fn current_composition_local_map() -> CompositionLocalMap {
 /// Two anchors are equal while what they read can only have changed through a dynamic local's
 /// state: a provider's static value or its set of locals changing moves its version
 /// (`Group::provider_version`) and those of the providers in its content, not anyone else's.
-/// An anchor whose provider has moved on, or whose composition is gone, reads defaults: its node
-/// is about to be composed again, or gone.
+///
+/// It names its provider by the cell its entries hold (`PLACES`), which says where the provider's
+/// group is, moved with content to another composition too, as Compose's `Anchor` does (D1511):
+/// nothing is kept for it but the provider's own cell. An anchor whose provider has moved on
+/// (another version), or is gone, reads defaults: its node is about to be composed again, or gone.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CompositionLocalAnchor {
-    composition: CompositionId,
-    provider: u32,
+    /// Its provider's place cell; `index` is `NONE` where no provider is above, and then
+    /// `generation` and `top` are the composition at the top of those it reads.
+    place: PlaceId,
+    /// Its provider's version; with no provider, the top composition's index.
     version: u32,
 }
 
@@ -692,55 +800,52 @@ impl Default for CompositionLocalAnchor {
 
 impl CompositionLocalAnchor {
     /// Reads no provider: every local reads its default.
-    pub const NONE: CompositionLocalAnchor = CompositionLocalAnchor {
-        composition: CompositionId { index: NONE, generation: 0 },
-        provider: NONE,
-        version: 0,
-    };
+    pub const NONE: CompositionLocalAnchor =
+        CompositionLocalAnchor { place: PlaceId { index: NONE, generation: 0 }, version: NONE };
 
-    /// Its composition, if its provider is as it was. A composition being disposed is still there
-    /// for its nodes' `on_detach`.
-    fn data<'a>(&self, runtime: &'a Runtime) -> Option<&'a CompositionData> {
-        provider_at(runtime, self.composition, self.provider, self.version)
-    }
-
-    /// Its composition and provider: where they are, or, moved with content to another
-    /// composition, where they went (D1511). Its version names that state of that provider.
-    fn resolve<'a>(&self, runtime: &'a Runtime) -> Option<(&'a CompositionData, u32)> {
-        if let Some(data) = self.data(runtime) {
-            return Some((data, self.provider));
+    /// No provider above, the composition at the top of those it reads being `id`.
+    fn top(id: CompositionId) -> CompositionLocalAnchor {
+        CompositionLocalAnchor {
+            place: PlaceId { index: NONE, generation: id.generation },
+            version: id.index,
         }
-        let moved =
-            runtime.moved_groups.follow(self.composition.index, self.provider, |moved| {
-                moved.from_generation == self.composition.generation
-                    && provider_at(runtime, moved.to, moved.group, self.version).is_some()
-            })?;
-        Some((provider_at(runtime, moved.to, moved.group, self.version)?, moved.group))
     }
 
-    fn table<'a>(&self, runtime: &'a Runtime) -> Option<&'a crate::slot_table::SlotTable> {
-        self.data(runtime).map(|data| &data.table)
+    /// The composition at the top of those it reads, with no provider above.
+    fn top_id(&self) -> Option<CompositionId> {
+        (self.place.index == NONE)
+            .then_some(CompositionId { index: self.version, generation: self.place.generation })
+    }
+
+    /// Its provider's composition and group, where they are now, if the provider is still at its
+    /// version. A composition being disposed is still there for its nodes' `on_detach`.
+    fn resolve<'a>(&self, runtime: &'a Runtime) -> Option<(&'a CompositionData, u32)> {
+        if self.place.index == NONE {
+            return None;
+        }
+        let (id, group) = Places::get(self.place)?;
+        Some((provider_at(runtime, id, group, self.version)?, group))
     }
 
     /// The value of `local` here, or its default, as `currentValueOf`. A dynamic local is a
     /// state's value: reading it is observed where reads are (measuring, drawing, a composing
     /// scope). An anchor outlives nothing: its composition gone, it reads defaults.
     pub fn get<T: Clone + 'static>(&self, local: &CompositionLocal<T>) -> T {
-        let scope = CompositionLocalAccessorScope { map: None, anchor: Some(*self) };
+        let scope = || CompositionLocalAccessorScope { map: None, anchor: Some(*self) };
         let id = local.id();
         match self.find(id) {
             Some(holder) => holder
                 .downcast_ref::<Holder<T>>()
                 .expect("a local's type is in its identity")
-                .read(&scope),
-            None => local.default_value(&scope),
+                .read(scope),
+            None => local.default_value(scope),
         }
     }
 
     /// What's provided here, as a map: for a node reading locals often, each read then a look
     /// through what's provided rather than a walk up the providers.
     pub fn map(&self) -> CompositionLocalMap {
-        if self.provider == NONE {
+        if self.place.index == NONE {
             return CompositionLocalMap::empty();
         }
         let entries = with_runtime(|runtime| {
@@ -757,22 +862,29 @@ impl CompositionLocalAnchor {
     /// when a list's item is a provider of its own (`false` only says it isn't known).
     #[doc(hidden)]
     pub fn reads_same_statics_as(&self, other: &CompositionLocalAnchor, locals: &[u64]) -> bool {
-        if self.composition != other.composition {
-            return false;
-        }
-        if self.provider == other.provider {
+        if self.place == other.place {
             return self.version == other.version;
         }
-        if self.provider == NONE || other.provider == NONE {
+        if self.place.index == NONE || other.place.index == NONE {
             return false;
         }
+        let (Some((id, mine)), Some((their_id, theirs))) =
+            (Places::get(self.place), Places::get(other.place))
+        else {
+            return false;
+        };
+        if id != their_id {
+            return false;
+        }
+        let version = other.version;
         with_runtime(|runtime| {
             // Gone or moved on, what it gave `other` isn't known.
-            let Some(table) = other.table(runtime) else { return false };
-            let Some(mine) = table.groups.get(self.provider as usize) else { return false };
-            let theirs = &table.groups[other.provider as usize];
+            let Some(data) = provider_at(runtime, their_id, theirs, version) else { return false };
+            let table = &data.table;
+            let Some(my_group) = table.groups.get(mine as usize) else { return false };
+            let their_group = &table.groups[theirs as usize];
             let provides = |group: u32| {
-                entries_of(table, group).is_some_and(|entries| {
+                entries_at(table, group).is_some_and(|entries| {
                     let entries = entries.entries.borrow();
                     entries.iter().any(|entry| locals.contains(&entry.local))
                 })
@@ -780,23 +892,23 @@ impl CompositionLocalAnchor {
             // Versions only grow: what's around it changed after `other` read it if its version
             // is the later, the nodes being composed one at a time.
             let unchanged_since = |around: u32| {
-                around == NONE || table.groups[around as usize].provider_version() < other.version
+                around == NONE || table.groups[around as usize].provider_version() < version
             };
-            if mine.enclosing_provider == other.provider {
-                !provides(self.provider)
-            } else if theirs.enclosing_provider == self.provider {
-                unchanged_since(self.provider) && !provides(other.provider)
+            if my_group.enclosing_provider == theirs {
+                !provides(mine)
+            } else if their_group.enclosing_provider == mine {
+                unchanged_since(mine) && !provides(theirs)
             } else {
-                mine.enclosing_provider == theirs.enclosing_provider
-                    && unchanged_since(mine.enclosing_provider)
-                    && !provides(self.provider)
-                    && !provides(other.provider)
+                my_group.enclosing_provider == their_group.enclosing_provider
+                    && unchanged_since(my_group.enclosing_provider)
+                    && !provides(mine)
+                    && !provides(theirs)
             }
         })
     }
 
     fn find(&self, local: u64) -> Option<Rc<dyn Any>> {
-        if self.provider == NONE {
+        if self.place.index == NONE {
             return None;
         }
         with_runtime(|runtime| {
@@ -826,14 +938,13 @@ fn provider_at(
         .then_some(data)
 }
 
-/// The anchor of the composable composing now. Costs a look at its group: what every layout
-/// node's emission asks.
+/// The anchor of the composable composing now. Costs a look at its group and its provider's
+/// entries: what every layout node's emission asks.
 pub fn current_composition_local_anchor() -> CompositionLocalAnchor {
     with_runtime(|runtime| anchor_here(runtime))
 }
 
-/// [`current_composition_local_anchor`] of a runtime composing. Nothing marks its provider: every
-/// provider leaving for another composition has its departure kept (`MovedGroups`, D1511).
+/// [`current_composition_local_anchor`] of a runtime composing.
 pub(crate) fn anchor_here(runtime: &Runtime) -> CompositionLocalAnchor {
     let composition = runtime.check_composing();
     let mut id = runtime.active.expect("composing").composition;
@@ -852,15 +963,29 @@ pub(crate) fn anchor_here(runtime: &Runtime) -> CompositionLocalAnchor {
         (id, data) = (above, above_data);
         provider = data.table.provider_at_or_above(place);
     }
-    let version = if provider == NONE { 0 } else { data.table[provider].provider_version() };
-    CompositionLocalAnchor { composition: id, provider, version }
+    if provider == NONE {
+        return CompositionLocalAnchor::top(id);
+    }
+    let version = data.table[provider].provider_version();
+    match entries_at(&data.table, provider) {
+        Some(entries) => CompositionLocalAnchor { place: entries.place, version },
+        // A provider whose entries aren't remembered yet: it provides nothing to find.
+        None => {
+            CompositionLocalAnchor { place: PlaceId { index: NONE - 1, generation: 0 }, version }
+        }
+    }
 }
 
 impl CompositionLocalAnchor {
-    /// Its provider and version if it's of `composition`, as a group's nearest provider there is;
-    /// none, for a child composition reading above its root.
-    pub(crate) fn provider_in(&self, composition: CompositionId) -> (u32, u32) {
-        if self.composition == composition { (self.provider, self.version) } else { (NONE, 0) }
+    /// Its provider and version if it's of `composition`, as a group's nearest provider there is:
+    /// no provider (`NONE`) for a child composition reading above its root, and `None` if its
+    /// provider is gone, which nothing's known of.
+    pub(crate) fn provider_in(&self, composition: CompositionId) -> Option<(u32, u32)> {
+        if self.place.index == NONE {
+            return Some((NONE, 0));
+        }
+        let (id, group) = Places::get(self.place)?;
+        Some(if id == composition { (group, self.version) } else { (NONE, 0) })
     }
 
     /// What was provided here, if it's still known: its provider as it was (where it is, or moved
@@ -869,9 +994,9 @@ impl CompositionLocalAnchor {
     /// `Runtime::composed_under` states: a child's pass after a change above it composes from its
     /// root (`providers_changed`).
     pub(crate) fn map_if_known(&self, runtime: &Runtime) -> Option<CompositionLocalMap> {
-        let (data, provider) = match self.provider {
-            NONE => (runtime.compositions.get(self.composition)?, NONE),
-            _ => self.resolve(runtime)?,
+        let (data, provider) = match self.top_id() {
+            Some(id) => (runtime.compositions.get(id)?, NONE),
+            None => self.resolve(runtime)?,
         };
         Some(map_at(&runtime.compositions, data, provider))
     }
@@ -1065,8 +1190,9 @@ pub fn with_composition_local<R>(value: impl ProvidedValues, content: impl FnOnc
 
 /// Provides `values` to `content` and returns what it returns, as `withCompositionLocals`.
 pub fn with_composition_locals<R>(values: impl ProvidedValues, content: impl FnOnce() -> R) -> R {
-    let group = start_provider();
-    let entries: Rc<ProviderEntries> = remember(|| Rc::new(ProviderEntries::default()));
+    let (group, place) = start_provider();
+    // Where it is from now on, kept by `move_group` if it moves to another composition's table.
+    let entries: Rc<ProviderEntries> = remember(|| Rc::new(ProviderEntries::new(place)));
     let inserting = crate::composer::current().inserting();
     let mut update = ProviderUpdate {
         entries: std::mem::take(&mut *entries.entries.borrow_mut()),
@@ -1091,9 +1217,9 @@ pub fn with_composition_locals<R>(values: impl ProvidedValues, content: impl FnO
     result
 }
 
-/// Starts a provider's group.
-fn start_provider() -> ReplaceGroup {
+/// Starts a provider's group: it, and where it is.
+fn start_provider() -> (ReplaceGroup, (CompositionId, u32)) {
     let group = ReplaceGroup::start(PROVIDER_KEY, "compose_runtime::CompositionLocalProvider");
-    with_runtime(|runtime| runtime.mark_provider());
-    group
+    let place = with_runtime(|runtime| runtime.mark_provider());
+    (group, place)
 }

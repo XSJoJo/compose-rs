@@ -69,11 +69,12 @@ pub(crate) struct MovableState {
     /// The contexts removed by this pass with compositions under them: what's in those is
     /// available too, as Compose's `reportAllMovableContent`.
     pub going_contexts: Vec<crate::context::ContextId>,
-    /// How many groups left each index for another table (`move_group`), the indices none left
-    /// missing: a group's stay at its index, which tells it from those there before it and after
-    /// (D1511). Groups removed otherwise don't count: what named them went with their nodes. Made
-    /// at the first: a table costs nothing more to make, as every lazy item's is.
-    departures: Option<std::collections::HashMap<u32, u32>>,
+    /// The identities of the groups flagged `NAMED`, by group: what key tokens made of them check
+    /// them by (`saveable::token_here`), going with them to another table (`move_group`) and gone
+    /// when they are (`SlotTable::free`), so one entry per named group lives, however often it
+    /// moves (D1511). Made at the first: a table costs nothing more to make, as every lazy item's
+    /// is.
+    named: Option<std::collections::HashMap<u32, u32>>,
 }
 
 impl Parked {
@@ -83,21 +84,31 @@ impl Parked {
 }
 
 impl MovableState {
-    /// The stay of the group at `group`: how many left that index for another table before it.
-    /// What every node's key token asks: one test while nothing ever left this table.
-    #[inline]
-    pub fn stay_of(&self, group: u32) -> u32 {
-        match &self.departures {
-            None => 0,
-            Some(departures) => departures.get(&group).copied().unwrap_or(0),
-        }
+    /// The identity of `group`, flagged `NAMED`.
+    pub fn identity_of(&self, group: u32) -> Option<u32> {
+        self.named.as_ref()?.get(&group).copied()
     }
 
-    /// The group at `group` leaves for another table: its stay, the next group's being one more.
-    fn depart(&mut self, group: u32) -> u32 {
-        let stay = self.departures.get_or_insert_default().entry(group).or_insert(0);
-        *stay += 1;
-        *stay - 1
+    /// Gives `group` `identity`; the caller flags it `NAMED`.
+    pub fn name(&mut self, group: u32, identity: u32) {
+        self.named.get_or_insert_default().insert(group, identity);
+    }
+
+    /// `group` goes, from here at least: its identity, which no group here has now.
+    pub fn unname(&mut self, group: u32) -> Option<u32> {
+        self.named.as_mut()?.remove(&group)
+    }
+
+    /// The group here whose identity is `identity`: where a token made of a group that moved
+    /// across compositions finds it. A look through this table's named groups.
+    pub fn named_group(&self, identity: u32) -> Option<u32> {
+        let named = self.named.as_ref()?;
+        named.iter().find_map(|(group, named)| (*named == identity).then_some(*group))
+    }
+
+    /// How many groups here are named.
+    pub fn named_count(&self) -> usize {
+        self.named.as_ref().map_or(0, |named| named.len())
     }
 
     /// Whether a pass has anything left to do for it, before it ends.
@@ -533,8 +544,12 @@ fn can_take(table: &SlotTable, identity: u64) -> bool {
     })
 }
 
-/// Moves `old` of `source` and what's under it to `target`, as a tree of its own to be linked:
-/// its scopes and contexts follow it, and what's nested provides from the new groups.
+/// Moves `old` of `source` (`from`'s table) and what's under it to `target`, as a tree of its own
+/// to be linked: its scopes and contexts follow it, and what's nested provides from the new
+/// groups. What handles name it by goes with it, as Compose's anchors move with their groups
+/// (D1511): a provider's entries say where it is now, which is where a `CompositionLocalAnchor`
+/// finds it, and a group's identity, which key tokens check it by, is named where it goes. Each is
+/// the group's alone and goes when it does: nothing is kept of where it was.
 #[allow(clippy::too_many_arguments)]
 fn move_group(
     source: &mut SlotTable,
@@ -543,7 +558,7 @@ fn move_group(
     contexts: &mut crate::context::Contexts,
     target_id: CompositionId,
     moved_contexts: &mut Vec<crate::context::ContextId>,
-    moved: &mut Vec<Departure>,
+    from: CompositionId,
     old: u32,
     parent: u32,
     provider: u32,
@@ -553,13 +568,26 @@ fn move_group(
         target.alloc(group.kind, group.key, group.data_key, parent)
     };
     let context = crate::context::context_of_group(source, old);
+    // What key tokens made of it check it by goes with it: its identity if it was given one, or a
+    // node group's, which is its node's as a token made here folded it (`saveable::token_here`).
+    let (flags, kind, node, key) = {
+        let group = &source[old];
+        (group.flags, group.kind, group.node, group.key)
+    };
+    let identity = if flags & NAMED != 0 {
+        source.movable.unname(old)
+    } else if kind == GroupKind::Node {
+        Some(crate::saveable::node_identity(node.bits(), key, from.generation))
+    } else {
+        None
+    };
     let group = &mut source[old];
     let (first_child, scope) = (group.first_child, group.scope);
+    group.flags &= !NAMED;
     {
         let moved = &mut target[new];
         moved.dirty = group.dirty;
-        // Nothing names its new place yet.
-        moved.flags = group.flags & !NAMED;
+        moved.flags = group.flags;
         moved.slot_position = group.slot_position;
         moved.enclosing_provider = provider;
         moved.node_count = group.node_count;
@@ -571,6 +599,14 @@ fn move_group(
         moved.identity = group.identity.take();
     }
     group.scope = crate::scope::ScopeId::NONE;
+    if let Some(identity) = identity {
+        target.movable.name(new, identity);
+        target[new].flags |= NAMED;
+    }
+    // Its entries say where it is: what anchors of it find it by.
+    if target[new].is_provider() {
+        crate::local::provider_moved(target, new, target_id);
+    }
     if let Some(entry) = scopes.get_mut(scope) {
         entry.composition = target_id.index;
         entry.group = new;
@@ -593,7 +629,7 @@ fn move_group(
             contexts,
             target_id,
             moved_contexts,
-            moved,
+            from,
             child,
             new,
             inner,
@@ -602,15 +638,7 @@ fn move_group(
         previous = moved;
         child = next;
     }
-    // A provider's place may be an anchor's, a node group's a layout node's token, which don't
-    // mark them: marking costs every node's emission.
-    let named = source[old].flags & NAMED != 0
-        || source[old].is_provider()
-        || source[old].kind == GroupKind::Node;
     source.free(old);
-    let from_stay = source.movable.depart(old);
-    let stay = target.movable.stay_of(new);
-    moved.push(Departure { old, from_stay, new, stay, named });
     new
 }
 
@@ -755,20 +783,25 @@ impl Runtime {
         (op, Start::Placeholder, None)
     }
 
-    /// The group composing now last composed under `last`, and is under `now`: if what's provided
-    /// isn't the same, all of it composes. Returns whether it does.
-    fn force_if_moved(&mut self, last: (u32, u32), now: (u32, u32)) -> bool {
+    /// The group composing now last composed under `last` (`None` if that provider is gone), and
+    /// is under `now`: if what's provided isn't the same, all of it composes. Returns whether it
+    /// does.
+    fn force_if_moved(&mut self, last: Option<(u32, u32)>, now: Option<(u32, u32)>) -> bool {
         let composition = self.active.expect("composing").composition.index;
         let table = &self.compositions.data(composition).table;
         // A provider that's still what it was can be asked what it provides.
-        let known = last.0 == NONE
-            || table.groups.get(last.0 as usize).is_some_and(|group| {
-                group.kind != GroupKind::Free
-                    && group.is_provider()
-                    && group.provider_version() == last.1
-            });
+        let known = last.is_some_and(|(group, version)| {
+            group == NONE
+                || table.groups.get(group as usize).is_some_and(|group| {
+                    group.kind != GroupKind::Free
+                        && group.is_provider()
+                        && group.provider_version() == version
+                })
+        });
+        let (last, now) =
+            (last.map_or(NONE, |(group, _)| group), now.map_or(NONE, |(group, _)| group));
         let same =
-            known && crate::local::same_locals_at(&self.compositions, composition, last.0, now.0);
+            known && crate::local::same_locals_at(&self.compositions, composition, last, now);
         if same {
             return false;
         }
@@ -833,10 +866,9 @@ impl Runtime {
     /// Moves `group`, in no tree, from `from`'s table to `to`'s: what's under its contexts is under
     /// `to` from now on.
     fn transplant(&mut self, from: CompositionId, to: CompositionId, group: u32) -> u32 {
-        let Runtime { compositions, scopes, moved_groups, .. } = self;
+        let Runtime { compositions, scopes, .. } = self;
         let mut contexts = std::mem::take(&mut compositions.contexts);
         let mut moved_contexts = Vec::new();
-        let mut moved = Vec::new();
         let (source, target) = compositions.two_tables(from, to);
         let new = move_group(
             source,
@@ -845,14 +877,13 @@ impl Runtime {
             &mut contexts,
             to,
             &mut moved_contexts,
-            &mut moved,
+            from,
             group,
             NONE,
             NONE,
         );
         compositions.contexts = contexts;
         compositions.children_moved(from, to, &moved_contexts);
-        moved_groups.record(compositions, from, to, &moved);
         new
     }
 
@@ -1082,153 +1113,4 @@ fn retire_placeholder(
     }
     group.slots.clear();
     table.free(placeholder);
-}
-
-/// A group of content moved to another table: where it was and where it went, each with its stay,
-/// and whether a handle names it where it was.
-pub(crate) struct Departure {
-    old: u32,
-    from_stay: u32,
-    new: u32,
-    stay: u32,
-    named: bool,
-}
-
-/// Where the groups content moved to another composition went, for what names them by place and
-/// wasn't made again (a node's `CompositionLocalAnchor` and `CompositeKeyToken`): consulted only
-/// when such a handle finds its place no longer what it named (D1511).
-///
-/// A place alone doesn't name a group: content coming back to a table gets new indices there, its
-/// old ones going to other groups, its own among them, which may leave too. So an entry is a
-/// departure, unique by construction: the table it left (its composition's index and generation),
-/// the index and the group's stay there (`MovableState::stay_of`). One place keeps all its
-/// departures, and each says where its group is now, with its stay there: a move rewrites those
-/// leading to a group it moves. Only a group a key token names where it leaves (`NAMED`), a
-/// provider or a node group (which anchors and layout nodes' tokens name, unmarked: marking them
-/// cost every node's emission) has its departure kept, so content moving on without composing
-/// adds its providers' and its nodes' departures, not all its groups'. A handle is checked against each departure from its place, by
-/// what it knows of its group (an anchor its provider's version, which is unique; a token its
-/// key, generation and stay, folded).
-pub(crate) struct MovedGroups {
-    /// A composition's index and a group index, to the departures from there; made at the first.
-    map: Option<Box<MovedMap>>,
-    /// Past this many places, a move drops the departures whose group is gone.
-    sweep_at: usize,
-}
-
-type MovedMap = std::collections::HashMap<(u32, u32), Vec<Moved>>;
-
-/// A group's departure from a place, and where it is now.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Moved {
-    /// The generation of the composition it left, whose index is its place's.
-    pub from_generation: u32,
-    /// Its stay at the place it left.
-    pub from_stay: u32,
-    pub to: CompositionId,
-    pub group: u32,
-    /// Its stay where it is.
-    pub stay: u32,
-}
-
-impl MovedGroups {
-    pub(crate) const fn new() -> MovedGroups {
-        MovedGroups { map: None, sweep_at: Self::SWEEP }
-    }
-
-    /// The fewest places a sweep waits for.
-    const SWEEP: usize = 1024;
-
-    /// `moved`, groups of `from`, went to `to`: their departures are added, and those leading to
-    /// them lead where they went, so every departure says where its group is now.
-    fn record(
-        &mut self,
-        compositions: &crate::runtime::Compositions,
-        from: CompositionId,
-        to: CompositionId,
-        moved: &[Departure],
-    ) {
-        let map = self.map.get_or_insert_with(Default::default);
-        let leads_here = |entry: &Moved| entry.to == from;
-        if map.values().flatten().any(leads_here) {
-            let went: std::collections::HashMap<(u32, u32), (u32, u32)> = moved
-                .iter()
-                .map(|left| ((left.old, left.from_stay), (left.new, left.stay)))
-                .collect();
-            for entry in map.values_mut().flatten() {
-                if entry.to == from
-                    && let Some(&(new, stay)) = went.get(&(entry.group, entry.stay))
-                {
-                    (entry.to, entry.group, entry.stay) = (to, new, stay);
-                }
-            }
-        }
-        // What no handle names needn't be found again: content moving on without composing
-        // keeps no more than where it was named.
-        for left in moved.iter().filter(|left| left.named) {
-            map.entry((from.index, left.old)).or_default().push(Moved {
-                from_generation: from.generation,
-                from_stay: left.from_stay,
-                to,
-                group: left.new,
-                stay: left.stay,
-            });
-        }
-        if map.len() > self.sweep_at {
-            map.retain(|_, entries| {
-                entries.retain(|entry| {
-                    compositions.get(entry.to).is_some_and(|data| {
-                        data.table.groups.get(entry.group as usize).is_some_and(|group| {
-                            group.kind != GroupKind::Free
-                                && data.table.movable.stay_of(entry.group) == entry.stay
-                        })
-                    })
-                });
-                !entries.is_empty()
-            });
-            self.sweep_at = (map.len() * 2).max(Self::SWEEP);
-        }
-    }
-
-    /// Where a group that was at `group` of the composition at `index`, and moved across
-    /// compositions, is now: the departure from there that `ok` takes.
-    pub(crate) fn follow(
-        &self,
-        index: u32,
-        group: u32,
-        mut ok: impl FnMut(&Moved) -> bool,
-    ) -> Option<Moved> {
-        self.map.as_ref()?.get(&(index, group))?.iter().find(|entry| ok(entry)).copied()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const fn id(index: u32) -> CompositionId {
-        CompositionId { index, generation: 1 }
-    }
-
-    fn left(old: u32, from_stay: u32, new: u32, named: bool) -> Departure {
-        Departure { old, from_stay, new, stay: 0, named }
-    }
-
-    /// Two groups leaving one place in turn, each at its stay, and the first moving on: each
-    /// departure leads where its own group is, neither replacing the other.
-    #[test]
-    fn departures_from_one_place_are_each_kept_and_followed() {
-        let compositions = crate::runtime::Compositions::new();
-        let mut moved = MovedGroups::new();
-        moved.record(&compositions, id(0), id(1), &[left(5, 0, 3, true)]);
-        moved.record(&compositions, id(0), id(2), &[left(5, 1, 8, true)]);
-        moved.record(&compositions, id(1), id(2), &[left(3, 0, 4, false)]);
-        let found = |index, group, stay| {
-            moved.follow(index, group, |entry| entry.from_stay == stay).map(|m| (m.to, m.group))
-        };
-        assert_eq!(found(0, 5, 0), Some((id(2), 4)));
-        assert_eq!(found(0, 5, 1), Some((id(2), 8)));
-        // Nothing named the group where it was second: that departure isn't kept.
-        assert_eq!(found(1, 3, 0), None);
-    }
 }

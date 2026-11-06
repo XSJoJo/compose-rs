@@ -764,8 +764,8 @@ impl OuterPass {
             // Made as a panic unwinds passes, each adding its own.
             stack_trace: _,
             stack_trace_sequence: _,
-            // Whole-thread, as moves are.
-            moved_groups: _,
+            // Whole-thread: identities are unique among all compositions.
+            key_token_serial: _,
         } = runtime;
         active.is_some().then(|| {
             Box::new(OuterPass {

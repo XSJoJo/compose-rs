@@ -99,8 +99,8 @@ pub(crate) struct Runtime {
     pub stack_trace: Option<Box<crate::stack_trace::PendingTrace>>,
     /// Traces begun on this thread (`compose_stack_trace_sequence`).
     pub stack_trace_sequence: u64,
-    /// Where content moved across compositions went, for handles naming its old places (D1511).
-    pub moved_groups: crate::movable::MovedGroups,
+    /// The last identity given a group a key token named (`saveable::token_here`, D1511).
+    pub key_token_serial: u32,
     /// A group guard was dropped by an unwinding panic in this pass, leaving its group open.
     pub abandoned_groups: bool,
     /// The depth (`frames.len()`) of the reusable group whose content is being reused, or 0:
@@ -171,7 +171,7 @@ impl Runtime {
             stack_trace_mode: crate::stack_trace::ComposeStackTraceMode::Auto,
             stack_trace: None,
             stack_trace_sequence: 0,
-            moved_groups: crate::movable::MovedGroups::new(),
+            key_token_serial: 0,
             abandoned_groups: false,
             reusing: 0,
             providers_invalid: 0,
@@ -854,6 +854,11 @@ impl Compositions {
     /// The live composition at `index`.
     pub fn id_at(&self, index: u32) -> CompositionId {
         CompositionId { index, generation: self.entries[index as usize].generation }
+    }
+
+    /// Every live composition's data.
+    pub fn all_data(&self) -> impl Iterator<Item = &CompositionData> {
+        self.entries.iter().filter_map(|entry| entry.data.as_ref())
     }
 
     pub fn data(&self, index: u32) -> &CompositionData {

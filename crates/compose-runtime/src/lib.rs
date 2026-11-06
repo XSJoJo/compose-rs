@@ -97,7 +97,8 @@ pub use local::{
     CompositionLocalContext, CompositionLocalMap, CompositionLocalProvider, HostDefaultKey,
     HostDefaultProvider, LOCAL_HOST_DEFAULT_PROVIDER, ProvidedValue, ProvidedValues,
     current_composition_local_anchor, current_composition_local_context,
-    current_composition_local_map, with_composition_local, with_composition_locals,
+    current_composition_local_map, provider_place_count, with_composition_local,
+    with_composition_locals,
 };
 pub use movable::{movable_content_of, movable_content_of_with, movable_content_with_receiver_of};
 pub use pausable::{PausedComposition, PausedWatch, ShouldPauseCallback};
@@ -114,7 +115,7 @@ pub use saveable::{
     AutoSaver, CompositeKeyToken, LOCAL_SAVEABLE_STATE_REGISTRY, RegistryEntry, RememberSaveable,
     Saveable, SaveableStateRegistry, SavedState, SavedValue, Saver, composite_key_hash_of,
     current_composite_key_hash_code, current_composite_key_token, current_node_composite_key_token,
-    list_saver, map_saver, remember_saveable, remember_saveable_with, saver,
+    list_saver, map_saver, named_group_count, remember_saveable, remember_saveable_with, saver,
 };
 pub use saveable_state_holder::{SaveableStateHolder, remember_saveable_state_holder};
 pub use scope::RecomposeScope;
