@@ -14,6 +14,7 @@ use compose_ui::subcompose::{
 use compose_ui::{Constraints, Measurable, MeasureResult, MeasureScope, Modifier};
 
 use super::super::slots::{IndexMap, ItemComposer, ItemContent, LazyItemReusePolicy, SlotSource};
+use super::prefetch_state::LazyLayoutPrefetchState;
 
 /// What a [`LazyLayout`] shows, as Compose's `LazyLayoutItemProvider`: how many items, each one's
 /// content, key and content type.
@@ -251,6 +252,7 @@ fn ProviderItem(provider: ProviderRef, holder: SaveableStateHolder, index: usize
 pub fn LazyLayout(
     item_provider: impl Fn() -> Rc<dyn LazyLayoutItemProvider> + 'static,
     #[default(Modifier)] modifier: Modifier,
+    #[default(None)] prefetch_state: Option<LazyLayoutPrefetchState>,
     measure_policy: Rc<dyn LazyLayoutMeasurePolicy>,
 ) {
     let provider = item_provider();
@@ -271,6 +273,19 @@ pub fn LazyLayout(
     let layout = compose_runtime::platform::remember_across_reuse(|| {
         SubcomposeLayoutState::with_policy(LazyItemReusePolicy)
     });
+    // The prefetch state's requests work on this layout while it's composed with it, on the
+    // host's scheduler (none outside a host: they do nothing).
+    let scheduler = compose_ui::LOCAL_PREFETCH_SCHEDULER.current();
+    if let (Some(state), Some(scheduler)) = (prefetch_state, scheduler) {
+        let (source, layout) = (source.clone(), layout.clone());
+        compose_runtime::DisposableEffect(
+            (state.clone(), source.clone(), layout.clone(), scheduler.clone()),
+            move |scope| {
+                let provider = state.attach(source, layout, scheduler);
+                scope.on_dispose(move || state.detach(&provider))
+            },
+        );
+    }
     let measure = compose_runtime::remember_keyed((measure_policy.clone(), source.clone()), || {
         let (policy, source) = (measure_policy.clone(), source.clone());
         compose_ui::subcompose::subcompose_policy(move |scope, constraints| {

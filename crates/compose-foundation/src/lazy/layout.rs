@@ -4,6 +4,7 @@
 use std::cell::Cell;
 
 mod lazy_layout;
+mod prefetch_state;
 
 pub use super::animate_scroll::LazyLayoutScrollScope;
 pub use super::cache_window::LazyLayoutCacheWindow;
@@ -11,6 +12,7 @@ pub use lazy_layout::{
     LazyLayout, LazyLayoutItemProvider, LazyLayoutMeasurePolicy, LazyLayoutMeasureScope,
     get_default_lazy_layout_key, lazy_layout_measure_policy,
 };
+pub use prefetch_state::{LazyLayoutPrefetchState, PrefetchHandle, PrefetchResultScope};
 
 /// Runs of items, each holding a value, found by an item's index, as Compose's `IntervalList`:
 /// what a lazy layout's content declares (`item`, `items(count)`) is one run each.
@@ -71,6 +73,8 @@ impl<T> Interval<T> {
 #[derive(Debug)]
 pub struct MutableIntervalList<T> {
     intervals: Vec<Interval<T>>,
+    /// Each run's first item, apart: the binary search reads these only, next to each other.
+    starts: Vec<usize>,
     size: usize,
     /// The run found last, by its place in `intervals`, as Compose's `lastInterval`.
     last_found: Cell<usize>,
@@ -78,7 +82,12 @@ pub struct MutableIntervalList<T> {
 
 impl<T> Default for MutableIntervalList<T> {
     fn default() -> Self {
-        MutableIntervalList { intervals: Vec::new(), size: 0, last_found: Cell::new(0) }
+        MutableIntervalList {
+            intervals: Vec::new(),
+            starts: Vec::new(),
+            size: 0,
+            last_found: Cell::new(0),
+        }
     }
 }
 
@@ -94,6 +103,7 @@ impl<T> MutableIntervalList<T> {
             return;
         }
         self.intervals.push(Interval { start_index: self.size, size, value });
+        self.starts.push(self.size);
         self.size += size;
     }
 
@@ -102,13 +112,21 @@ impl<T> MutableIntervalList<T> {
         &self.intervals
     }
 
+    /// The run holding item `index`, which the caller knows is in bounds (a lazy list's items,
+    /// per item per measurement).
+    #[inline]
+    pub(in crate::lazy) fn get_in_bounds(&self, index: usize) -> &Interval<T> {
+        &self.intervals[self.position_of(index)]
+    }
+
     /// The place in `intervals` of the run holding item `index`, which is in bounds.
+    #[inline]
     fn position_of(&self, index: usize) -> usize {
         let last = self.last_found.get();
         if self.intervals.get(last).is_some_and(|interval| interval.contains(index)) {
             return last;
         }
-        let found = self.intervals.partition_point(|interval| interval.start_index <= index) - 1;
+        let found = self.starts.partition_point(|start| *start <= index) - 1;
         self.last_found.set(found);
         found
     }
@@ -138,8 +156,7 @@ impl<T> IntervalList<T> for MutableIntervalList<T> {
             "compose-foundation: to_index ({to_index}) should be not smaller than from_index \
              ({from_index})"
         );
-        let first =
-            self.intervals.partition_point(|interval| interval.start_index <= from_index) - 1;
+        let first = self.starts.partition_point(|start| *start <= from_index) - 1;
         for interval in &self.intervals[first..] {
             if interval.start_index > to_index {
                 break;

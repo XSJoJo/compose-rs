@@ -1661,7 +1661,7 @@ impl Items {
         if index >= self.count {
             return None;
         }
-        let interval = layout::IntervalList::get(&self.intervals, index);
+        let interval = self.intervals.get_in_bounds(index);
         Some((interval.value(), index - interval.start_index()))
     }
 

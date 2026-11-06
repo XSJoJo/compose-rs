@@ -212,16 +212,19 @@ fn a_default_key_is_the_same_for_an_index_and_not_the_index() {
 /// What a box filling what it's given that counts its measurements composes: one modifier for
 /// all, as Compose's test makes it once.
 fn counted_box(measures: Rc<Cell<i32>>) -> impl Fn(usize) + 'static {
-    let modifier = Modifier
-        .layout(move |scope, measurable, constraints| {
-            let placeable = scope.measure(measurable, constraints);
-            measures.set(measures.get() + 1);
-            scope.layout_with(placeable.width, placeable.height, move |placement| {
-                placement.place(&placeable, 0, 0);
-            })
-        })
-        .fill_max_size();
+    let modifier = counting(measures).fill_max_size();
     move |_| Box!(modifier = modifier.clone())
+}
+
+/// A modifier counting its measurements in `measures`.
+fn counting(measures: Rc<Cell<i32>>) -> Modifier {
+    Modifier.layout(move |scope, measurable, constraints| {
+        let placeable = scope.measure(measurable, constraints);
+        measures.set(measures.get() + 1);
+        scope.layout_with(placeable.width, placeable.height, move |placement| {
+            placement.place(&placeable, 0, 0);
+        })
+    })
 }
 
 // Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/layout/LazyLayoutTest.kt, nodeIsReusedWithoutExtraRemeasure
@@ -410,4 +413,383 @@ fn a_new_provider_runs_the_items_it_keeps_with_its_own_content() {
     ui.wait_for_idle();
     ui.on_node_with_tag("first").assert_does_not_exist();
     ui.on_node_with_tag("second").assert_exists();
+}
+
+// Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/layout/LazyLayoutTest.kt, keptForReuseItemIsDisposedWhenCanceled
+#[test]
+fn an_item_no_longer_composed_and_kept_for_reuse_disposes_its_effects() {
+    let need = mutable_state_of(true);
+    let composed = Rc::new(Cell::new(false));
+    let live = composed.clone();
+    let items = provider(
+        || 1,
+        move |_| {
+            let live = live.clone();
+            DisposableEffect((), move |scope| {
+                live.set(true);
+                scope.on_dispose(move || live.set(false))
+            });
+        },
+    );
+    let wanted = need.handle();
+    let mut ui = ComposeTestRule::sized(IntSize::new(200, 200), move || {
+        let items = items.clone();
+        LazyLayout!(
+            move || items.clone(),
+            measure_policy = remember(|| lazy_layout_measure_policy(move |scope, constraints| {
+                if wanted.get() {
+                    for layout in scope.compose(0) {
+                        scope.measure(layout, constraints);
+                    }
+                }
+                scope.layout(10, 10)
+            }))
+        );
+    });
+    ui.wait_for_idle();
+    assert!(composed.get());
+    need.set(false);
+    ui.wait_for_idle();
+    assert!(!composed.get());
+}
+
+/// Runs the host's prefetch requests to their end, as Compose's
+/// `TestPrefetchScheduler.executeActiveRequests` (no deadline in reach).
+fn execute_active_requests(ui: &mut ComposeTestRule) {
+    while ui.host().prefetch(compose_ui::prefetch_now() + std::time::Duration::from_secs(60)) {}
+}
+
+/// Runs the host's prefetch requests until one has work left for the next idle time, as
+/// `TestPrefetchScheduler.executeOneRequest` does with a request that pauses.
+fn execute_one_request(ui: &mut ComposeTestRule) {
+    ui.host().prefetch(compose_ui::prefetch_now() + std::time::Duration::from_secs(60));
+}
+
+/// A layout of `count` items that composes item 0 at `constraints` once `show` says so, its
+/// prefetch state `prefetch`; the items count their measurements in `measures`.
+fn prefetching_layout(
+    typed: bool,
+    prefetch: LazyLayoutPrefetchState,
+    show: MutableState<bool>,
+    measures: Rc<Cell<i32>>,
+) -> ComposeTestRule {
+    let measured = counting(measures);
+    let items: Rc<dyn LazyLayoutItemProvider> = Rc::new(TestProvider {
+        count: Box::new(|| 1),
+        typed,
+        content: Box::new(move |index| {
+            Box!(
+                modifier =
+                    Modifier.fill_max_size().test_tag(index.to_string()).then(measured.clone())
+            );
+        }),
+    });
+    let mut ui = ComposeTestRule::sized(IntSize::new(200, 200), move || {
+        let items = items.clone();
+        LazyLayout!(
+            move || items.clone(),
+            prefetch_state = Some(prefetch.clone()),
+            measure_policy = remember(|| lazy_layout_measure_policy(move |scope, _| {
+                if show.get() {
+                    let layout = scope.compose(0)[0];
+                    let placeable = scope.measure(layout, Constraints::fixed(50, 50));
+                    scope.place(&placeable, 0, 0);
+                }
+                scope.layout(100, 100)
+            }))
+        );
+    });
+    ui.wait_for_idle();
+    ui
+}
+
+// Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/layout/LazyLayoutTest.kt, prefetchItem
+// Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/layout/LazyLayoutTest.kt, prefetchItemWithContentType
+#[test]
+fn a_prefetched_item_is_measured_ahead_and_not_again_when_shown() {
+    for typed in [false, true] {
+        let prefetch = LazyLayoutPrefetchState::new();
+        let show = mutable_state_of(false);
+        let measures = Rc::new(Cell::new(0));
+        let mut ui = prefetching_layout(typed, prefetch.clone(), show.handle(), measures.clone());
+        assert_eq!(measures.get(), 0);
+        prefetch.schedule_precomposition_and_premeasure(0, Constraints::fixed(50, 50));
+        execute_active_requests(&mut ui);
+        assert_eq!(measures.get(), 1, "typed: {typed}");
+        ui.on_node_with_tag("0").assert_is_not_displayed();
+        show.set(true);
+        ui.wait_for_idle();
+        ui.on_node_with_tag("0").assert_is_displayed();
+        assert_eq!(measures.get(), 1, "typed: {typed}");
+    }
+}
+
+// Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/layout/LazyLayoutTest.kt, prefetchItem_reportMeasuredSizeAfterPremeasure
+#[test]
+fn a_prefetched_item_reports_its_sizes_once_measured() {
+    let prefetch = LazyLayoutPrefetchState::new();
+    let show = mutable_state_of(false);
+    let measures = Rc::new(Cell::new(0));
+    let mut ui = prefetching_layout(false, prefetch.clone(), show.handle(), measures.clone());
+    let calls = Rc::new(Cell::new(0));
+    let called = calls.clone();
+    prefetch.schedule_precomposition_and_premeasure_with(
+        0,
+        Constraints::fixed(50, 50),
+        move |result| {
+            called.set(called.get() + 1);
+            assert_eq!(result.index(), 0);
+            assert_eq!(result.placeables_count(), 1);
+            for placeable in 0..result.placeables_count() {
+                assert_eq!(result.get_size(placeable), IntSize::new(50, 50));
+            }
+        },
+    );
+    execute_active_requests(&mut ui);
+    assert_eq!(measures.get(), 1);
+    assert_eq!(calls.get(), 1);
+}
+
+// Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/layout/LazyLayoutTest.kt, cancelPrefetchedItem
+#[test]
+fn a_cancelled_prefetch_lets_its_item_go() {
+    let composed = Rc::new(Cell::new(false));
+    let live = composed.clone();
+    let items = provider(
+        || 1,
+        move |_| {
+            Box!(modifier = Modifier.fill_max_size());
+            let live = live.clone();
+            DisposableEffect((), move |scope| {
+                live.set(true);
+                scope.on_dispose(move || live.set(false))
+            });
+        },
+    );
+    let prefetch = LazyLayoutPrefetchState::new();
+    let state = prefetch.clone();
+    let mut ui = ComposeTestRule::sized(IntSize::new(200, 200), move || {
+        let items = items.clone();
+        LazyLayout!(
+            move || items.clone(),
+            prefetch_state = Some(state.clone()),
+            measure_policy =
+                remember(|| lazy_layout_measure_policy(|scope, _| scope.layout(100, 100)))
+        );
+    });
+    ui.wait_for_idle();
+    let handle = prefetch.schedule_precomposition_and_premeasure(0, Constraints::fixed(50, 50));
+    execute_active_requests(&mut ui);
+    assert!(composed.get());
+    handle.cancel();
+    ui.wait_for_idle();
+    assert!(!composed.get());
+}
+
+/// A provider of one layout per item filling its constraints, keyed by a list in a state, which
+/// says whether it was composed and measured.
+struct Lettered {
+    keys: MutableState<Vec<u64>>,
+    composed: Rc<Cell<bool>>,
+    measured: Rc<Cell<bool>>,
+}
+
+impl LazyLayoutItemProvider for Lettered {
+    fn item_count(&self) -> usize {
+        self.keys.with(|keys| keys.len())
+    }
+
+    fn item(&self, _index: usize, _key: u64) {
+        let composed = self.composed.clone();
+        DisposableEffect((), move |scope| {
+            composed.set(true);
+            scope.on_dispose(move || composed.set(false))
+        });
+        let measured = self.measured.clone();
+        compose_ui::Layout(
+            Modifier,
+            compose_ui::measure_policy(move |scope, _, constraints| {
+                measured.set(true);
+                scope.layout(constraints.max_width, constraints.max_height)
+            }),
+            Callback::new(|| {}),
+        );
+    }
+
+    fn key(&self, index: usize) -> u64 {
+        self.keys.with(|keys| keys[index])
+    }
+
+    fn index_of(&self, key: u64) -> Option<usize> {
+        self.keys.with(|keys| keys.iter().position(|it| *it == key))
+    }
+}
+
+// Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/layout/LazyLayoutTest.kt, changingKeyForPrefetchingItemInTheMiddleOfRequest
+#[test]
+fn a_prefetch_whose_items_key_changed_while_composed_stops_and_lets_it_go() {
+    const A: u64 = 10;
+    const B: u64 = 11;
+    let keys = mutable_state_of(vec![A, B]);
+    let composed = Rc::new(Cell::new(false));
+    let measured = Rc::new(Cell::new(false));
+    let items: Rc<dyn LazyLayoutItemProvider> = Rc::new(Lettered {
+        keys: keys.handle(),
+        composed: composed.clone(),
+        measured: measured.clone(),
+    });
+    let prefetch = LazyLayoutPrefetchState::new();
+    let state = prefetch.clone();
+    let mut ui = ComposeTestRule::sized(IntSize::new(200, 200), move || {
+        let items = items.clone();
+        LazyLayout!(
+            move || items.clone(),
+            prefetch_state = Some(state.clone()),
+            measure_policy =
+                remember(|| lazy_layout_measure_policy(|scope, _| scope.layout(100, 100)))
+        );
+    });
+    ui.wait_for_idle();
+    prefetch.pause_between_precomposition_and_premeasure(true);
+    prefetch.schedule_precomposition_and_premeasure(0, Constraints::fixed(50, 50));
+    // Composed, not measured yet.
+    execute_one_request(&mut ui);
+    assert!(composed.get());
+    assert!(!measured.get());
+    keys.set(vec![B, A]);
+    ui.wait_for_idle();
+    // Its index holds another key: it's no longer valid, and measures nothing.
+    execute_active_requests(&mut ui);
+    assert!(!measured.get());
+    ui.wait_for_idle();
+    assert!(!composed.get());
+}
+
+/// What item 1's effects saw: how many times it was composed, and disposed.
+#[derive(Default)]
+struct Lives {
+    composed: Cell<i32>,
+    disposed: Cell<i32>,
+}
+
+// Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/layout/LazyLayoutTest.kt, prefetchItemNotDisposedAfterApproach
+#[test]
+fn a_prefetched_item_stays_after_both_passes_measure_again() {
+    let composed = Rc::new(RefCell::new(Vec::<usize>::new()));
+    let list = composed.clone();
+    let size = mutable_state_of(100);
+    let items = provider(
+        || 10,
+        move |index| {
+            tagged_box(index.to_string());
+            let list = list.clone();
+            DisposableEffect((), move |scope| {
+                list.borrow_mut().push(index);
+                scope.on_dispose(move || list.borrow_mut().retain(|it| *it != index))
+            });
+        },
+    );
+    let prefetch = LazyLayoutPrefetchState::new();
+    let state = prefetch.clone();
+    let side = size.handle();
+    let mut ui = ComposeTestRule::sized(IntSize::new(200, 200), move || {
+        let items = items.clone();
+        let state = state.clone();
+        compose_ui::LookaheadScope(callback(move |_: compose_ui::LookaheadScope| {
+            let items = items.clone();
+            LazyLayout!(
+                move || items.clone(),
+                prefetch_state = Some(state.clone()),
+                measure_policy = remember(|| lazy_layout_measure_policy(move |scope, _| {
+                    let size = side.get();
+                    let layout = scope.compose(0)[0];
+                    let placeable = scope.measure(layout, Constraints::fixed(size, size));
+                    scope.place(&placeable, 0, 0);
+                    scope.layout(size, size)
+                }))
+            );
+        }));
+    });
+    ui.wait_for_idle();
+    assert_eq!(composed.borrow().len(), 1);
+    prefetch.schedule_precomposition_and_premeasure(1, Constraints::fixed(100, 100));
+    execute_active_requests(&mut ui);
+    ui.wait_for_idle();
+    assert_eq!(composed.borrow().len(), 2);
+    // Both passes measure again, at other constraints.
+    size.set(150);
+    ui.wait_for_idle();
+    assert_eq!(composed.borrow().len(), 2);
+    ui.on_node_with_tag("0").assert_is_displayed();
+}
+
+// Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/layout/LazyLayoutTest.kt, disposePrefetchedItemWhileStillNeededInApproach
+#[test]
+fn an_item_the_pass_thats_now_composes_outlives_a_cancelled_prefetch_of_it() {
+    let in_approach = mutable_state_of(true);
+    let lives = Rc::new(Lives::default());
+    let seen = lives.clone();
+    let items = provider(
+        || 10,
+        move |index| {
+            let seen = seen.clone();
+            Box!(modifier = Modifier.fill_max_size().test_tag(index.to_string()), {
+                let seen = seen.clone();
+                DisposableEffect((), move |scope| {
+                    if index == 1 {
+                        seen.composed.set(seen.composed.get() + 1);
+                    }
+                    scope.on_dispose(move || {
+                        if index == 1 {
+                            seen.disposed.set(seen.disposed.get() + 1);
+                        }
+                    })
+                });
+            });
+        },
+    );
+    let prefetch = LazyLayoutPrefetchState::new();
+    let state = prefetch.clone();
+    let wanted = in_approach.handle();
+    let mut ui = ComposeTestRule::sized(IntSize::new(200, 200), move || {
+        let items = items.clone();
+        let state = state.clone();
+        compose_ui::LookaheadScope(callback(move |_: compose_ui::LookaheadScope| {
+            let items = items.clone();
+            LazyLayout!(
+                move || items.clone(),
+                prefetch_state = Some(state.clone()),
+                measure_policy =
+                    remember(|| lazy_layout_measure_policy(move |scope, constraints| {
+                        let layout = scope.compose(0)[0];
+                        let placeable = scope.measure(layout, constraints);
+                        if wanted.get() && !scope.is_looking_ahead() {
+                            let other = scope.compose(1)[0];
+                            scope.measure(other, constraints);
+                        }
+                        scope.place(&placeable, 0, 0);
+                        scope.layout(placeable.width, placeable.height)
+                    }))
+            );
+        }));
+    });
+    ui.wait_for_idle();
+    // Composed by the pass that's now.
+    assert_eq!((lives.composed.get(), lives.disposed.get()), (1, 0));
+    let handle = prefetch.schedule_precomposition_and_premeasure(1, Constraints::fixed(100, 100));
+    execute_active_requests(&mut ui);
+    // Not composed again.
+    assert_eq!((lives.composed.get(), lives.disposed.get()), (1, 0));
+    handle.cancel();
+    ui.wait_for_idle();
+    // Compose's pass that's now composes item 1 as a precomposed slot of its own, which the
+    // prefetch took and its cancel disposes, the pass composing it again: (2, 1). Here the pass
+    // that's now composes it as an active slot (D1316), which a prefetch leaves alone: the
+    // cancel lets nothing go, and the item outlives it all the same (D1324).
+    assert_eq!((lives.composed.get(), lives.disposed.get()), (1, 0));
+    in_approach.set(false);
+    ui.wait_for_idle();
+    // Let go by the pass that's now, no longer wanting it.
+    assert_eq!((lives.composed.get(), lives.disposed.get()), (1, 1));
+    ui.on_node_with_tag("0").assert_is_displayed();
 }
