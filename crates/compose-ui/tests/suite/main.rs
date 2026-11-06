@@ -48,6 +48,7 @@ mod review_d_support;
 mod review_groups;
 mod review_retained;
 mod rulers;
+mod shadow_values;
 mod single_drawing_extent;
 mod span_style;
 #[path = "../support/mod.rs"]

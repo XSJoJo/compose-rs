@@ -161,7 +161,8 @@ impl Writer {
     fn color(&mut self, color: Color) {
         self.u32(color.argb());
     }
-    /// Color, style flags (1 stroke, 2 a blend mode follows, 4 a color filter follows), stroke
+    /// Color, style flags (1 stroke, 2 a blend mode follows, 4 a color filter follows, 8 a blur
+    /// radius follows: a mask filter, a shadow's), stroke
     /// width, cap (0 butt, 1 round, 2 square), its shader (from `shaders`): see
     /// [`Writer::shader`]; then its blend mode (u8, Compose's order) if not `SrcOver`, and its
     /// color filter (from `filters`, [`Writer::color_filter`]) if any: a plain paint's bytes are
@@ -182,7 +183,9 @@ impl Writer {
         self.color(faded(color, alpha));
         let filter = paint.color_filter().and_then(|index| filters.get(index.0 as usize));
         let blended = paint.blend_mode != BlendMode::SrcOver;
-        let flags = u8::from(blended) << 1 | u8::from(filter.is_some()) << 2;
+        let blurred = paint.blur_radius() > 0.0;
+        let flags =
+            u8::from(blended) << 1 | u8::from(filter.is_some()) << 2 | u8::from(blurred) << 3;
         match paint.style {
             PaintStyle::Fill => {
                 self.u8(flags);
@@ -209,6 +212,9 @@ impl Writer {
         }
         if let Some(filter) = filter {
             self.color_filter(Some(filter));
+        }
+        if blurred {
+            self.f32(paint.blur_radius());
         }
     }
     /// A color filter: its kind (a [`color_filter`] constant), then for a blend mode filter
@@ -703,6 +709,9 @@ fn paint_bytes(bytes: &[u8], at: usize) -> usize {
     }
     if flags & 4 != 0 {
         end += color_filter_bytes(bytes, end);
+    }
+    if flags & 8 != 0 {
+        end += 4;
     }
     end - at
 }
@@ -1675,6 +1684,23 @@ mod tests {
         assert_eq!(read_u32(bytes, second + after_shader + 1), Color::BLUE.argb());
         assert_eq!(bytes[second + after_shader + 5], BlendMode::SrcIn as u8);
         assert_eq!(bytes[second + 1 + operand_bytes(bytes, second)], tag::RESTORE);
+    }
+
+    /// A blurred paint (a shadow's) flags 8 and writes its radius last.
+    #[test]
+    fn a_paints_blur_radius_comes_last() {
+        let mut list = DisplayList::default();
+        let rect = Rect::new(0.0, 0.0, 1.0, 1.0);
+        let paint = Paint::fill(Color::RED).with_blend_mode(BlendMode::Xor).with_blur(3.5);
+        list.push(DrawOp::DrawRect(rect, paint));
+        list.push(DrawOp::Restore);
+        let (mut resources, mut out) = (Resources::default(), Writer::default());
+        write_display_list(&list, &mut resources, &mut GroupCache::default(), &mut out);
+        let bytes = &out.bytes;
+        assert_eq!(bytes[1 + 16 + 4], 2 | 8, "fill, a blend mode, a blur");
+        let blur = 1 + 16 + 4 + 1 + 4 + 1 + 1 + 1;
+        assert_eq!(f32::from_le_bytes(bytes[blur..blur + 4].try_into().unwrap()), 3.5);
+        assert_eq!(bytes[1 + operand_bytes(bytes, 0)], tag::RESTORE);
     }
 
     // Compose: compose/ui/ui-graphics/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/AndroidBlendModeTest.kt, testBlendModeClearMapsToPorterDuffClear and the other mappings

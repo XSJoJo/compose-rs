@@ -160,6 +160,15 @@ fn skia_paint(paint: &Paint, filters: &[ColorFilter]) -> skia_safe::Paint {
     if let Some(filter) = paint.color_filter().and_then(|index| filters.get(index.0 as usize)) {
         skia.set_color_filter(skia_color_filter(filter));
     }
+    if paint.blur_radius() > 0.0 {
+        // Android's `BlurMaskFilter` radius, as Skia's sigma (`ConvertRadiusToSigma`).
+        let sigma = paint.blur_radius() * 0.57735 + 0.5;
+        skia.set_mask_filter(skia_safe::MaskFilter::blur(
+            skia_safe::BlurStyle::Normal,
+            sigma,
+            None,
+        ));
+    }
     match paint.style {
         PaintStyle::Fill => {
             skia.set_style(paint::Style::Fill);

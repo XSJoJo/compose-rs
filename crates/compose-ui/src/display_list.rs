@@ -695,6 +695,9 @@ fn paint_text(paint: &Paint, shaders: &[crate::brush::Shader], filters: &[ColorF
         text.push_str(&filter_text(filter));
     }
     text.push_str(&blend_text(paint.blend_mode));
+    if paint.blur_radius > 0.0 {
+        text.push_str(&format!(" blur {}", paint.blur_radius));
+    }
     text
 }
 

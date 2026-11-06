@@ -501,6 +501,9 @@ pub struct Paint {
     /// Its color filter, in the display list it's recorded in (`DisplayList::color_filters`),
     /// as `Paint.colorFilter`: `DrawScope::paint_with_color_filter` sets it.
     pub(crate) color_filter: Option<crate::color_filter::ColorFilterIndex>,
+    /// A blur mask filter's radius in pixels, 0 for none: what draws a shadow's soft edges, as
+    /// the shadows' `BlurFilter` (Android's `BlurMaskFilter`, `NORMAL`).
+    pub(crate) blur_radius: f32,
 }
 
 impl Paint {
@@ -525,9 +528,22 @@ impl Paint {
         Paint { color_filter: Some(color_filter), ..self }
     }
 
-    /// Whether it draws as plain color over what's under it: blending `SrcOver`, unfiltered.
+    /// Whether it draws as plain color over what's under it: blending `SrcOver`, unfiltered,
+    /// unblurred.
     pub fn is_plain(&self) -> bool {
-        self.blend_mode == crate::color_filter::BlendMode::SrcOver && self.color_filter.is_none()
+        self.blend_mode == crate::color_filter::BlendMode::SrcOver
+            && self.color_filter.is_none()
+            && self.blur_radius == 0.0
+    }
+
+    /// The same paint with its shape blurred by `radius` pixels (a mask filter), as a shadow's.
+    pub fn with_blur(self, radius: f32) -> Paint {
+        Paint { blur_radius: radius.max(0.0), ..self }
+    }
+
+    /// Its blur mask filter's radius, 0 for none.
+    pub fn blur_radius(&self) -> f32 {
+        self.blur_radius
     }
 
     /// A stroke `width` pixels wide, its ends flat, as `Stroke(width)`.
@@ -544,6 +560,7 @@ impl Paint {
             shader: None,
             blend_mode: crate::color_filter::BlendMode::SrcOver,
             color_filter: None,
+            blur_radius: 0.0,
         }
     }
 

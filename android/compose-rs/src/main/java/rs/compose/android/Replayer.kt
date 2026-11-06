@@ -3,6 +3,7 @@ package rs.compose.android
 import android.graphics.Bitmap
 import android.graphics.BlendMode
 import android.graphics.BlendModeColorFilter
+import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.ColorFilter
 import android.graphics.ColorMatrixColorFilter
@@ -177,11 +178,14 @@ internal class Replayer(var text: TextMeasurer) {
     private var paintShader: Shader? = null
     private var paintBlendMode = BLEND_SRC_OVER
     private var paintFilter: ColorFilter? = null
+    /** The radius of the paint's blur mask filter (a shadow's), 0 for none. */
+    private var paintBlur = 0f
 
     /**
      * Reads a paint: color, style flags (1 stroke, 2 a blend mode follows, 4 a color filter
-     * follows), width, cap, its shader (a kind; for a gradient, its definition and alpha), then
-     * its blend mode and color filter if the flags say so. A drawing scaled by ([scaleX],
+     * follows, 8 a blur radius follows), width, cap, its shader (a kind; for a gradient, its
+     * definition and alpha), then its blend mode, color filter and blur if the flags say so: a
+     * blur is a `BlurMaskFilter` (`NORMAL`), made only when its radius changes. A drawing scaled by ([scaleX],
      * [scaleY]) then moved by ([x], [y]) (a path's) has its gradient moved back, as
      * compose-skia's: a gradient is in the list's coordinates.
      */
@@ -199,6 +203,11 @@ internal class Replayer(var text: TextMeasurer) {
         }
         val blendMode = if (flags and 2 != 0) get().toInt() else BLEND_SRC_OVER
         val filter = if (flags and 4 != 0) readColorFilter() else null
+        val blur = if (flags and 8 != 0) float() else 0f
+        if (blur != paintBlur) {
+            paintBlur = blur
+            paint.maskFilter = if (blur > 0f) BlurMaskFilter(blur, BlurMaskFilter.Blur.NORMAL) else null
+        }
         if (blendMode != paintBlendMode) {
             paintBlendMode = blendMode
             paint.blendMode = blendModeOf(blendMode)
@@ -640,7 +649,7 @@ internal class Replayer(var text: TextMeasurer) {
                     // A mask is tinted by a color: a gradient, a filter or a blend mode draws the
                     // path.
                     val masked = !paintStroke && paintShader == null && paintFilter == null &&
-                        paintBlendMode == BLEND_SRC_OVER && maskNew(kept, scaleX, scaleY)
+                        paintBlendMode == BLEND_SRC_OVER && paintBlur == 0f && maskNew(kept, scaleX, scaleY)
                     if (kept != null && (!masked || !drawMask(canvas, kept, x, y, scaleX, scaleY))) {
                         kept.drawnAsPath = true
                         canvas.save()
@@ -1594,6 +1603,8 @@ internal class Replayer(var text: TextMeasurer) {
         filterNext = 0
         paintFilter = null
         paint.colorFilter = null
+        paintBlur = 0f
+        paint.maskFilter = null
         bitmapPaint.colorFilter = null
         layerPaint.colorFilter = null
     }

@@ -184,9 +184,7 @@ fn painted(
             DrawOp::Save
             | DrawOp::SaveLayerAlpha { .. }
             | DrawOp::SaveLayer { .. }
-            | DrawOp::SaveLayerEffect { .. } => {
-                saved.push(clip)
-            }
+            | DrawOp::SaveLayerEffect { .. } => saved.push(clip),
             DrawOp::Restore => clip = saved.pop().unwrap_or(everything),
             DrawOp::Translate(offset) => {
                 x += offset.x;
