@@ -1775,7 +1775,11 @@ impl ItemsMeasurePolicy for LazyGridLayout {
             composer,
             before: &children,
             only_composed: false,
-            placeables: Default::default(),
+            placeables: {
+                let mut placeables = super::slots::IndexMap::default();
+                placeables.reserve(children.len() + 8);
+                placeables
+            },
             lines: &mut lines,
             slots: &slots,
             vertical,

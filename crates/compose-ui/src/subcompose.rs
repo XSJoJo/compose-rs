@@ -961,6 +961,26 @@ impl SubcomposeMeasureScope<'_, '_> {
         slot_id: impl PartialEq + 'static,
         content: Callback,
     ) -> Vec<Measurable> {
+        let node = self.compose_into_slot(slot_id, content);
+        let tree = self.scope.base.tree.enter();
+        tree.virtual_measurables(node)
+    }
+
+    /// [`subcompose`](Self::subcompose), for a slot of one layout: its first, with no list made
+    /// (a lazy layout's item, per item per measurement).
+    pub fn subcompose_first(
+        &mut self,
+        slot_id: impl PartialEq + 'static,
+        content: Callback,
+    ) -> Option<Measurable> {
+        let node = self.compose_into_slot(slot_id, content);
+        let tree = self.scope.base.tree.enter();
+        tree.first_virtual_measurable(node)
+    }
+
+    /// The slot of `slot_id` at this measurement's next place, its content composed if it has to
+    /// be: its virtual node.
+    fn compose_into_slot(&mut self, slot_id: impl PartialEq + 'static, content: Callback) -> NodeId {
         let state = self.state.clone();
         let current = state.inner.borrow().current_index;
         let mut tree = self.scope.base.tree.enter();
@@ -1008,8 +1028,7 @@ impl SubcomposeMeasureScope<'_, '_> {
             inner.current_index = current + 1;
         }
         state.compose_slot(current, content, Some(tree), false);
-        let inner = state.inner.borrow();
-        tree.virtual_measurables(inner.slots[current].node)
+        state.inner.borrow().slots[current].node
     }
 }
 

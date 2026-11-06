@@ -2396,7 +2396,11 @@ impl ItemsMeasurePolicy for StaggeredLayout {
         let mut context = Context {
             scope,
             composer,
-            placeables: Default::default(),
+            placeables: {
+                let mut placeables = super::slots::IndexMap::default();
+                placeables.reserve(children.len() + 8);
+                placeables
+            },
             lane_info: &mut taken_lanes,
             slots: &slots,
             items: &info.items,

@@ -1034,6 +1034,13 @@ impl UiTree {
         self.free_subtree(node);
     }
 
+    /// The first node of a virtual node not deactivated, as a measurable.
+    pub(crate) fn first_virtual_measurable(&self, node: NodeId) -> Option<Measurable> {
+        (self.node(node).children.iter())
+            .find(|child| self.get(child.node).is_some_and(|value| !value.deactivated))
+            .copied()
+    }
+
     /// The nodes of a virtual node, as measurables, without what's deactivated.
     pub(crate) fn virtual_measurables(&self, node: NodeId) -> Vec<Measurable> {
         (self.node(node).children.iter())

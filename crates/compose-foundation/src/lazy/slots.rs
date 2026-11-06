@@ -132,7 +132,11 @@ impl ItemFactory {
 
     /// Item `index`'s content.
     pub(super) fn content(&self, index: usize) -> Callback {
-        let key = self.items.0.key(index);
+        self.content_of(index, self.items.0.key(index))
+    }
+
+    /// Item `index`'s content, its key `key`.
+    fn content_of(&self, index: usize, key: u64) -> Callback {
         let inner = self.state.inner_or_detached();
         let mut contents = inner.contents.contents.borrow_mut();
         if let Some((near, content)) = contents.get(&key) {
@@ -184,10 +188,12 @@ pub(super) struct ItemComposer {
 }
 
 impl ItemComposer {
-    fn new(factory: Rc<ItemFactory>) -> ItemComposer {
+    fn new(factory: Rc<ItemFactory>, expected: usize) -> ItemComposer {
+        let mut composed = IndexMap::default();
+        composed.reserve(expected);
         ItemComposer {
             factory,
-            composed: IndexMap::default(),
+            composed,
             order: Vec::new(),
             #[cfg(debug_assertions)]
             keys: IndexMap::default(),
@@ -206,17 +212,17 @@ impl ItemComposer {
         if index >= self.factory.count() {
             return None;
         }
+        let slot = self.factory.slot(index);
         // Two items of one key would share a slot: Compose's lazy layouts panic, and so does this.
         #[cfg(debug_assertions)]
         {
-            let key = self.factory.items.0.key(index);
-            if let Some(&other) = self.keys.get(&key) {
+            if let Some(&other) = self.keys.get(&slot.key) {
                 self.factory.items.0.check_keys(&[other, index]);
             }
-            self.keys.insert(key, index);
+            self.keys.insert(slot.key, index);
         }
-        let measurables = scope.subcompose(self.factory.slot(index), self.factory.content(index));
-        let measurable = measurables.first().copied();
+        let content = self.factory.content_of(index, slot.key);
+        let measurable = scope.subcompose_first(slot, content);
         self.composed.insert(index, measurable);
         self.order.push(index);
         measurable
@@ -296,7 +302,8 @@ pub(super) fn LazyItemsLayout(
     let measure = compose_runtime::remember_keyed((policy.clone(), factory.clone()), || {
         let (policy, factory) = (policy.clone(), factory.clone());
         subcompose_policy(move |scope, constraints| {
-            let mut composer = ItemComposer::new(factory.clone());
+            let expected = factory.state.inner_or_detached().children.borrow().len() + 8;
+            let mut composer = ItemComposer::new(factory.clone(), expected);
             let result = policy.measure(scope, &mut composer, constraints);
             let inner = factory.state.inner_or_detached();
             *inner.children.borrow_mut() = composer.order;

@@ -2388,6 +2388,7 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
         };
         // Each item measured once, when first needed.
         let mut placeables: slots::IndexMap<usize, Placeable> = Default::default();
+        placeables.reserve(children.len() + 8);
         let mut sizes = state.sizes.borrow_mut();
         let main_of =
             move |placeable: &Placeable| if vertical { placeable.height } else { placeable.width };
