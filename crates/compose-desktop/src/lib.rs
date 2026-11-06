@@ -688,6 +688,7 @@ pub fn application(content: impl Fn() + 'static) {
     compose_ui::platform::install_stderr_logger();
     // `decode_image_bytes` and `remember_image_resource` decode with Skia.
     compose_ui::platform::set_image_decoder(Arc::new(compose_skia::SkiaImageDecoder));
+    compose_ui::platform::set_bitmap_rasterizer(Arc::new(compose_skia::SkiaBitmapRasterizer));
     // `Path::op` computed by Skia when it's called, as Compose Desktop's (D535).
     compose_skia::install_path_operator();
     let event_loop =
@@ -796,7 +797,7 @@ fn update_pointer_icon(shown: &mut Shown, event_loop: &ActiveEventLoop) {
     shown.custom_cursor = None;
     if let Some((bitmap, hot_spot)) = icon.bitmap() {
         let source = winit::window::CustomCursor::from_rgba(
-            unpremultiplied(bitmap.pixels()),
+            unpremultiplied(&bitmap.pixels()),
             bitmap.width().min(u16::MAX as u32) as u16,
             bitmap.height().min(u16::MAX as u32) as u16,
             hot_spot.x.max(0.0) as u16,

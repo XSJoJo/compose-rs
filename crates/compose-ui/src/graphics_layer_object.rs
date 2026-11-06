@@ -414,6 +414,29 @@ impl GraphicsLayer {
         self.0.released.get()
     }
 
+    /// Its drawing, with its properties, as a bitmap of its size, as `toImageBitmap` (Compose's
+    /// is a coroutine: here, the bitmap is drawn when it returns, by the platform's
+    /// `BitmapRasterizer`). Its top left isn't applied: the bitmap is the layer at its origin.
+    pub fn to_image_bitmap(&self) -> crate::image::ImageBitmap {
+        let size = self.size();
+        let image =
+            crate::image::ImageBitmap::new(size.width.max(0) as u32, size.height.max(0) as u32);
+        let mut canvas = crate::canvas::Canvas::new(&image);
+        let top_left = self.top_left();
+        crate::canvas::CanvasDrawScope::draw(
+            &mut canvas,
+            crate::unit::Density::new(1.0),
+            crate::alignment::LayoutDirection::Ltr,
+            Size::new(size.width as f32, size.height as f32),
+            |scope| {
+                scope.translate(-top_left.x as f32, -top_left.y as f32, |scope| {
+                    scope.draw_layer(self);
+                });
+            },
+        );
+        image
+    }
+
     /// Drops its recording: it draws nothing until recorded again, as
     /// `GraphicsContext.releaseGraphicsLayer`.
     pub fn release(&self) {

@@ -883,11 +883,34 @@ fn skia_image(image: &compose_ui::ImageBitmap) -> Option<skia_safe::Image> {
             skia_safe::AlphaType::Premul,
             None,
         );
-        let data = skia_safe::Data::new_copy(image.pixels());
+        let data = skia_safe::Data::new_copy(&image.pixels());
         let skia = skia_safe::images::raster_from_data(&info, data, image.width() as usize * 4)?;
         images.insert(image.id(), (image.downgrade(), skia.clone()));
         Some(skia)
     })
+}
+
+/// The platform bitmap rasterizer on desktop (`compose_ui::platform::set_bitmap_rasterizer`):
+/// draws a bitmap's canvas's operations into its pixels with Skia, as Compose Desktop's
+/// `Canvas(imageBitmap)` draws with Skiko. Paragraphs aren't drawn (no text measurer).
+pub struct SkiaBitmapRasterizer;
+
+impl compose_ui::platform::BitmapRasterizer for SkiaBitmapRasterizer {
+    fn draw(&self, list: &DisplayList, width: u32, height: u32, pixels: &mut [u8]) {
+        let info = skia_safe::ImageInfo::new(
+            (width as i32, height as i32),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Premul,
+            None,
+        );
+        let Some(mut surface) =
+            skia_safe::surfaces::wrap_pixels(&info, pixels, width as usize * 4, None)
+        else {
+            return;
+        };
+        let measurer = compose_ui::platform::FixedTextMeasurer::default();
+        draw_display_list(surface.canvas(), list, &measurer);
+    }
 }
 
 /// Decodes an encoded image (PNG, JPEG, WebP, GIF's first frame, …) with Skia, as the

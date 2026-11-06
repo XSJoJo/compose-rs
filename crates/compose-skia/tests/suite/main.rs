@@ -8,6 +8,7 @@ mod capture;
 mod color_filters;
 mod graphics_layers;
 mod line_height;
+mod offscreen;
 mod painter;
 mod paragraph;
 mod path_geometry;
