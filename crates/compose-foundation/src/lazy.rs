@@ -1463,6 +1463,11 @@ impl Hash for DefaultKey {
     }
 }
 
+/// Item `index`'s key when it has none given: its `DefaultKey`, hashed.
+fn default_key(index: usize) -> u64 {
+    hash_key(&DefaultKey(index))
+}
+
 impl ComposeArg for LazyListScope {
     fn same(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.intervals, &other.intervals)
@@ -1675,7 +1680,7 @@ impl Items {
     }
 
     fn key(&self, index: usize) -> u64 {
-        let default = || hash_key(&DefaultKey(index));
+        let default = || default_key(index);
         let Some(cached) = self.keys.get(index.checked_rem(self.keys.len()).unwrap_or(0)) else {
             return default();
         };

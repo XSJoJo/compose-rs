@@ -3,8 +3,14 @@
 
 use std::cell::Cell;
 
+mod lazy_layout;
+
 pub use super::animate_scroll::LazyLayoutScrollScope;
 pub use super::cache_window::LazyLayoutCacheWindow;
+pub use lazy_layout::{
+    LazyLayout, LazyLayoutItemProvider, LazyLayoutMeasurePolicy, LazyLayoutMeasureScope,
+    get_default_lazy_layout_key, lazy_layout_measure_policy,
+};
 
 /// Runs of items, each holding a value, found by an item's index, as Compose's `IntervalList`:
 /// what a lazy layout's content declares (`item`, `items(count)`) is one run each.

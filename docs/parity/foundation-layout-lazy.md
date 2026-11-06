@@ -32,8 +32,8 @@ By area: `foundation-layout` 29 files (850 tests); lazy lists, grids and `LazyLa
 | `covered` | 13 | 132 |
 | `ported` | 69 | 929 |
 | `port` | 2 | 11 |
-| `partial` | 42 | 1,133 |
-| `feature:<name>` | 48 | 776 |
+| `partial` | 43 | 1,152 |
+| `feature:<name>` | 47 | 757 |
 | `n/a` | 11 | 148 |
 | **Total** | **185** | **3,129** |
 
@@ -164,7 +164,7 @@ The table's suite references (`lazy_api.rs`, `fling.rs`, …) are files in `crat
 | Path | Tests | Covers | Status |
 |---|---|---|---|
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/layout/LazyLayoutStateRestorationTest.kt | 6 | Saveable state of items (also nested, custom keys, reorders) restored | ported (`lazy_state_restoration.rs`: all 6, on `LazyColumn`, as `LazyLayout` isn't public: lazy-layout-public) |
-| compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/layout/LazyLayoutTest.kt | 19 | The public `LazyLayout`: item provider, measure scope, `LazyLayoutPrefetchState` scheduling and cancelling, approach | feature:lazy-layout-public |
+| compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/layout/LazyLayoutTest.kt | 19 | The public `LazyLayout`: item provider, measure scope, `LazyLayoutPrefetchState` scheduling and cancelling, approach | partial (`lazy_layout.rs`: the composing, measuring and reuse cases, 9, and `nodeIsReusedWhenRemovedFirst` ignored as Compose's, D1323; the prefetch ones wait on lazy-layout-public's step 3) |
 | compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/lazy/MutableIntervalListTest.kt | 19 | `MutableIntervalList` add and search | ported (`lazy/layout.rs`'s `interval_list_tests`: all 19, D1322) |
 | compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/lazy/layout/CacheWindowLogicTest.kt | 1 | Lane resize resets the cache-window strategy | ported (`cache_window.rs`, `a_change_of_lanes_starts_the_window_over`) |
 
@@ -380,9 +380,9 @@ From `compose/foundation/foundation-layout/api/current.txt` and `compose/foundat
 - **beyond-bounds-api:** ui's `BeyondBoundsLayout` (`ModifierLocalBeyondBoundsLayout`, `layout(direction) {}`) answered by lazy layouts. compose-rs answers focus searches only.
 - **animate-item:** `Modifier::animate_item` and `animate_item_with(scope, fade_in_spec, placement_spec, fade_out_spec)` (`AnimateItemModifier`), D1472: lists, grids and staggered grids (`LazyStaggeredGridItemScope`) done. In lookahead scopes all three (D1226). Left: their Compose lookahead tests, the rows' remaining tests.
 - **lazy-layout-public:**
-  - layout: `LazyLayout(itemProvider, modifier, prefetchState, measurePolicy)`, `LazyLayoutItemProvider`, `LazyLayoutMeasurePolicy`, `LazyLayoutMeasureScope.compose(index)`;
+  - layout: in (D1323): `LazyLayout(item_provider, modifier, measure_policy)`, `LazyLayoutItemProvider`, `LazyLayoutMeasurePolicy`, `LazyLayoutMeasureScope::compose(index)`, `get_default_lazy_layout_key`; its `prefetchState` parameter comes with the prefetch below. Not ported: the deprecated `LazyLayoutMeasureScope.measure(index, constraints)`;
   - prefetch: `LazyLayoutPrefetchState` (`schedulePrecomposition`, `schedulePrecompositionAndPremeasure`, `PrefetchHandle.cancel`/`markAsUrgent`, `PrefetchResultScope`), the `onNestedPrefetch` constructor (*exp*), `NestedPrefetchScope` (*exp*);
-  - content: `LazyLayoutIntervalContent`, `LazyLayoutKeyIndexMap`, `getDefaultLazyLayoutKey`. (`IntervalList`/`MutableIntervalList` are in, D1322.)
+  - content: `LazyLayoutIntervalContent`, `LazyLayoutKeyIndexMap`. (`IntervalList`/`MutableIntervalList` are in, D1322.)
 - **staggered-grid:** Done (D1469, D1470; `scrollIndicatorState` too, D1568) but for `animateItem` and `IndexForKey`: `LazyVerticalStaggeredGrid`, `LazyHorizontalStaggeredGrid`, `StaggeredGridCells`, `StaggeredGridItemSpan`, `LazyStaggeredGridScope`, `LazyStaggeredGridState`, `LazyStaggeredGridLayoutInfo`, `LazyStaggeredGridDefaults`, `LazyLayoutScrollScope(state, scope)`.
 - **pager:** Done (D1467; `scrollIndicatorState` too, D1559) but for `PagerDefaults.bringIntoViewSpec` and `PagerState` as an abstract class:
   - composables: `HorizontalPager`, `VerticalPager`;
@@ -562,7 +562,7 @@ Each entry gives the Compose API, what it does, the test files that need it (by 
 32. **lazy-layout-public.**
     - API: `LazyLayout` and its provider, measure scope and prefetch-state API, `MutableIntervalList`.
     - Tests: LazyLayoutTest, MutableIntervalListTest.
-    - Depends on: a public `LazyLayout` on the lazy layouts' subcomposition (D1312, C8's stage 4). Design, steps and tests: [lazy-layout-api.md](design/lazy-layout-api.md) (being built: step 1, the interval lists, is in, D1322).
+    - Depends on: a public `LazyLayout` on the lazy layouts' subcomposition (D1312, C8's stage 4). Design, steps and tests: [lazy-layout-api.md](design/lazy-layout-api.md) (being built: step 1, the interval lists, is in, D1322; step 2, `LazyLayout` and its provider, D1323).
     - Size: XL. Experimental: partly (`NestedPrefetchScope`, the `onNestedPrefetch` constructor).
 33. **system-gesture-exclusion.**
     - API: `Modifier.systemGestureExclusion`.

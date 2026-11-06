@@ -51,6 +51,7 @@ mod lazy_grid_layout_info;
 mod lazy_grid_reuse;
 mod lazy_grid_scroll;
 mod lazy_grids_in_a_scope;
+mod lazy_layout;
 mod lazy_layout_info;
 mod lazy_list;
 mod lazy_list_arrangements;
