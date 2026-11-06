@@ -147,6 +147,7 @@ mod semantics_tree;
 mod shadow;
 mod shape_parity;
 mod snapping;
+mod stretch_overscroll;
 mod subcompose_layout;
 mod text_field_output;
 mod text_field_semantics;

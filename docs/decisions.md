@@ -877,8 +877,8 @@ The log is split by area into the files below, one table each, rows in number or
 | D1461 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1461) | current |
 | D1462 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1462) | current |
 | D1463 | [ui-and-layout](decisions/ui-and-layout.md#d1463) | current |
-| D1464 | [ui-and-layout](decisions/ui-and-layout.md#d1464) | current |
-| D1465 | [ui-and-layout](decisions/ui-and-layout.md#d1465) | current |
+| D1464 | [ui-and-layout](decisions/ui-and-layout.md#d1464) | revised by [D1476](decisions/ui-and-layout.md#d1476), [D1474](decisions/ui-and-layout.md#d1474) |
+| D1465 | [ui-and-layout](decisions/ui-and-layout.md#d1465) | revised by [D1474](decisions/ui-and-layout.md#d1474) |
 | D1466 | [ui-and-layout](decisions/ui-and-layout.md#d1466) | current |
 | D1467 | [ui-and-layout](decisions/ui-and-layout.md#d1467) | current |
 | D1468 | [ui-and-layout](decisions/ui-and-layout.md#d1468) | current |
@@ -886,6 +886,10 @@ The log is split by area into the files below, one table each, rows in number or
 | D1470 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1470) | current |
 | D1471 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1471) | current |
 | D1472 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1472) | current |
+| D1473 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1473) | current |
+| D1474 | [ui-and-layout](decisions/ui-and-layout.md#d1474) | current |
+| D1475 | [android-drawing](decisions/android-drawing.md#d1475) | current |
+| D1476 | [ui-and-layout](decisions/ui-and-layout.md#d1476) | current |
 | D1500 | [runtime](decisions/runtime.md#d1500) | current |
 | D1501 | [runtime](decisions/runtime.md#d1501) | current |
 | D1502 | [runtime](decisions/runtime.md#d1502) | current |
