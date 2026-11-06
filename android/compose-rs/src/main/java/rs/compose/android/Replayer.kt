@@ -334,6 +334,11 @@ internal class Replayer(var text: TextMeasurer) {
         /** The `LAYERS` entry (after its key) last set on [node], while [layered]. */
         val applied = ByteArray(LAYER_ENTRY_BYTES - 8)
         /**
+         * The render effect's bytes last set on [node] (null: none): what [resetLayer] clears,
+         * so a node that never had one isn't touched.
+         */
+        var effect: ByteArray? = null
+        /**
          * The size last given to [node], read here rather than with `RenderNode.getWidth` and
          * `getHeight` (not compiled in the boot image: they'd run in the interpreter). -1
          * until set: a node from the pool keeps its last group's size.
@@ -477,7 +482,7 @@ internal class Replayer(var text: TextMeasurer) {
                 // Gone: this frame has no record of it, so no recording drawn from now on draws
                 // it (one that did changed, and was recorded again).
                 iterator.remove()
-                if (group.layered) resetLayer(group.node)
+                if (group.layered) resetLayer(group)
                 pool.recycle(group.node)
             }
         }
@@ -507,7 +512,7 @@ internal class Replayer(var text: TextMeasurer) {
         }
         for (group in groups.values) {
             if (!group.layered || group.layerFrame == frame) continue
-            resetLayer(group.node)
+            resetLayer(group)
             group.setPosition(width, height)
             group.layered = false
             group.outlineClips = true
@@ -860,13 +865,22 @@ internal class Replayer(var text: TextMeasurer) {
     }
 
     private fun skipLayers(buffer: ByteBuffer) {
-        buffer.position(buffer.position() + 4 + buffer.getInt(buffer.position()) * LAYER_ENTRY_BYTES)
+        val count = buffer.getInt()
+        var at = buffer.position()
+        var end = at + count * LAYER_ENTRY_BYTES
+        repeat(count) {
+            if (buffer.get(at + 8 + ENTRY_COMPOSITING).toInt() and COMPOSITING_EFFECT != 0) {
+                end += EFFECT_BYTES
+            }
+            at += LAYER_ENTRY_BYTES
+        }
+        buffer.position(end)
     }
 
     /** Drops every group recorded ahead that no frame named. */
     private fun dropAhead() {
         for (group in ahead.values) {
-            if (group.layered) resetLayer(group.node)
+            if (group.layered) resetLayer(group)
             pool.recycle(group.node)
         }
         ahead.clear()
@@ -908,13 +922,16 @@ internal class Replayer(var text: TextMeasurer) {
     /**
      * The `LAYERS` section: each group's layer, set on its node (a new group's node made now,
      * recorded when its record comes), whether its record is read this frame or skipped inside
-     * a kept parent's. In a software draw, where each entry is, for [group].
+     * a kept parent's. In a software draw, where each entry is, for [group]. The render effects
+     * follow the entries, one for each entry flagging one, in their order.
      */
     private fun layers(hardware: Boolean, buffer: ByteBuffer) {
         val count = buffer.getInt()
         var at = buffer.position()
+        var effectAt = at + count * LAYER_ENTRY_BYTES
         repeat(count) {
             val key = buffer.getLong(at)
+            val hasEffect = buffer.get(at + 8 + ENTRY_COMPOSITING).toInt() and COMPOSITING_EFFECT != 0
             if (hardware) {
                 // Ahead, a group of the last frame's is left to the frames.
                 val group = if (recordingAhead && groups.containsKey(key)) null else groupOf(key)
@@ -928,12 +945,58 @@ internal class Replayer(var text: TextMeasurer) {
                     group.layered = true
                 }
                 if (group != null) group.layerFrame = frame
+                // Only a group with an effect, or that had one, reads or clears it.
+                if (group != null && (hasEffect || group.effect != null)) {
+                    setEffect(group, buffer, if (hasEffect) effectAt else -1)
+                }
             } else {
                 softwareLayers[key] = at + 8
             }
+            if (hasEffect) effectAt += EFFECT_BYTES
             at += LAYER_ENTRY_BYTES
         }
-        buffer.position(at)
+        buffer.position(effectAt)
+    }
+
+    /**
+     * Sets the render effect at [at] (after the `LAYERS` entries; -1: none) on [group]'s node
+     * when its bytes differ from the last set, as Compose's `BlurEffect` on its layer's render
+     * node: API 31's render effects; below, none, as Compose's.
+     */
+    private fun setEffect(group: Group, buffer: ByteBuffer, at: Int) {
+        if (at < 0) {
+            group.effect = null
+            if (Build.VERSION.SDK_INT >= 31) group.node.setRenderEffect(null)
+            return
+        }
+        val last = group.effect
+        val bytes = last ?: ByteArray(EFFECT_BYTES)
+        var changed = last == null
+        for (index in 0 until EFFECT_BYTES) {
+            val byte = buffer.get(at + index)
+            if (bytes[index] != byte) {
+                bytes[index] = byte
+                changed = true
+            }
+        }
+        group.effect = bytes
+        if (!changed || Build.VERSION.SDK_INT < 31) return
+        val effect = if (buffer.get(at + EFFECT_KIND).toInt() == EFFECT_BLUR) {
+            val tile = when (buffer.get(at + EFFECT_TILE).toInt()) {
+                1 -> Shader.TileMode.REPEAT
+                2 -> Shader.TileMode.MIRROR
+                3 -> Shader.TileMode.DECAL
+                else -> Shader.TileMode.CLAMP
+            }
+            RenderEffect.createBlurEffect(
+                buffer.floatAt(at + EFFECT_RADII),
+                buffer.floatAt(at + EFFECT_RADII + 4),
+                tile,
+            )
+        } else {
+            null
+        }
+        group.node.setRenderEffect(effect)
     }
 
     /** The `LAYERS` entry being read (after its key). */
@@ -960,7 +1023,7 @@ internal class Replayer(var text: TextMeasurer) {
      */
     private fun setLayer(group: Group, buffer: ByteBuffer, at: Int, old: ByteArray?) {
         val node = group.node
-        if (changed(old, ENTRY_BOUNDS, ENTRY_EFFECT)) {
+        if (changed(old, ENTRY_BOUNDS, ENTRY_END)) {
             group.setPosition(
                 ceil(buffer.floatAt(at + ENTRY_BOUNDS + 8)).toInt(),
                 ceil(buffer.floatAt(at + ENTRY_BOUNDS + 12)).toInt(),
@@ -1012,7 +1075,7 @@ internal class Replayer(var text: TextMeasurer) {
         // Compose's strategies: an offscreen buffer (a compositing layer) always, or HWUI's for
         // an alpha below 1 when overlapping, or the alpha multiplying each drawing's.
         if (changed(old, ENTRY_COMPOSITING, ENTRY_BOUNDS)) {
-            when (buffer.get(at + ENTRY_COMPOSITING).toInt()) {
+            when (buffer.get(at + ENTRY_COMPOSITING).toInt() and COMPOSITING_STRATEGY) {
                 COMPOSITING_OFFSCREEN -> {
                     node.setUseCompositingLayer(true, null)
                     node.setHasOverlappingRendering(true)
@@ -1026,26 +1089,6 @@ internal class Replayer(var text: TextMeasurer) {
                     node.setHasOverlappingRendering(true)
                 }
             }
-        }
-        // A blur, as Compose's `BlurEffect` on its layer's render node: API 31's render
-        // effects; below, none, as Compose's.
-        if (changed(old, ENTRY_EFFECT, ENTRY_END) && Build.VERSION.SDK_INT >= 31) {
-            val effect = if (buffer.get(at + ENTRY_EFFECT).toInt() == EFFECT_BLUR) {
-                val tile = when (buffer.get(at + ENTRY_EFFECT_TILE).toInt()) {
-                    1 -> Shader.TileMode.REPEAT
-                    2 -> Shader.TileMode.MIRROR
-                    3 -> Shader.TileMode.DECAL
-                    else -> Shader.TileMode.CLAMP
-                }
-                RenderEffect.createBlurEffect(
-                    buffer.floatAt(at + ENTRY_EFFECT_RADII),
-                    buffer.floatAt(at + ENTRY_EFFECT_RADII + 4),
-                    tile,
-                )
-            } else {
-                null
-            }
-            node.setRenderEffect(effect)
         }
     }
 
@@ -1146,8 +1189,16 @@ internal class Replayer(var text: TextMeasurer) {
         }
     }
 
-    /** No layer: [node]'s properties back to a render node's defaults. */
-    private fun resetLayer(node: RenderNode) {
+    /**
+     * No layer: [group]'s node's properties back to a render node's defaults, its render effect
+     * cleared only if it had one.
+     */
+    private fun resetLayer(group: Group) {
+        val node = group.node
+        if (group.effect != null) {
+            group.effect = null
+            if (Build.VERSION.SDK_INT >= 31) node.setRenderEffect(null)
+        }
         node.setAlpha(1f)
         node.setScaleX(1f)
         node.setScaleY(1f)
@@ -1161,7 +1212,6 @@ internal class Replayer(var text: TextMeasurer) {
         node.setSpotShadowColor(BLACK)
         node.setUseCompositingLayer(false, null)
         node.setHasOverlappingRendering(true)
-        if (Build.VERSION.SDK_INT >= 31) node.setRenderEffect(null)
     }
 
     /**
@@ -1195,7 +1245,8 @@ internal class Replayer(var text: TextMeasurer) {
             clip.addRoundRect(rect, radii, Path.Direction.CW)
             canvas.clipPath(clip)
         }
-        if (alpha < 1f || buffer.get(at + ENTRY_COMPOSITING).toInt() == COMPOSITING_OFFSCREEN) {
+        val strategy = buffer.get(at + ENTRY_COMPOSITING).toInt() and COMPOSITING_STRATEGY
+        if (alpha < 1f || strategy == COMPOSITING_OFFSCREEN) {
             // Bounded as the node's offscreen layer is.
             canvas.saveLayerAlpha(
                 0f,
@@ -1701,10 +1752,10 @@ internal class Replayer(var text: TextMeasurer) {
         /**
          * The bytes of a `LAYERS` entry (`serialize.rs`): its key, 8 floats, whether it clips,
          * its outline's kind, bounds and radii, its elevation, its shadows' colors, its
-         * compositing, its bounds, its render effect (kind, radii, tile mode):
-         * 8 + 8 * 4 + 1 + 1 + 4 * 4 + 4 * 4 + 4 + 4 + 4 + 1 + 4 * 4 + 1 + 4 * 2 + 1.
+         * compositing (with [COMPOSITING_EFFECT] if a render effect follows the entries), its
+         * bounds: 8 + 8 * 4 + 1 + 1 + 4 * 4 + 4 * 4 + 4 + 4 + 4 + 1 + 4 * 4.
          */
-        const val LAYER_ENTRY_BYTES = 113
+        const val LAYER_ENTRY_BYTES = 103
         // Where each property is in a `LAYERS` entry, after its key (`serialize::layer_entry`).
         const val ENTRY_ALPHA = 0
         const val ENTRY_PIVOT = 4
@@ -1720,16 +1771,25 @@ internal class Replayer(var text: TextMeasurer) {
         const val ENTRY_SPOT = 74
         const val ENTRY_COMPOSITING = 78
         const val ENTRY_BOUNDS = 79
-        const val ENTRY_EFFECT = 95
-        const val ENTRY_EFFECT_RADII = 96
-        const val ENTRY_EFFECT_TILE = 104
-        const val ENTRY_END = 105
+        const val ENTRY_END = 95
+        /**
+         * The bytes of a render effect, after the `LAYERS` entries, one for each entry flagging
+         * one, in their order (`serialize::layer_effect`): its kind, its radii, its tile mode.
+         */
+        const val EFFECT_BYTES = 10
+        const val EFFECT_KIND = 0
+        const val EFFECT_RADII = 1
+        const val EFFECT_TILE = 9
         const val EFFECT_BLUR = 1
         const val OUTLINE_NONE = 0
         const val OUTLINE_PATH = 3
         const val COMPOSITING_AUTO = 0
         const val COMPOSITING_OFFSCREEN = 1
         const val COMPOSITING_MODULATE_ALPHA = 2
+        /** The compositing byte's strategy bits. */
+        const val COMPOSITING_STRATEGY = 3
+        /** The compositing byte's flag: a render effect follows the entries for this one. */
+        const val COMPOSITING_EFFECT = 4
         const val BLACK = 0xFF000000.toInt()
     }
 }

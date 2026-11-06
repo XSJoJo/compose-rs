@@ -631,7 +631,7 @@ fn flatten_group(
     *next += 1;
     let layer_start = flat.ops.len();
     if let Some(layer) = &group.layer {
-        flat.ops.extend(layer.operations());
+        layer.operations(|op| flat.ops.push(op));
     }
     let start = flat.ops.len();
     flatten_into(&group.content, groups, next, flat);

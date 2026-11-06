@@ -853,6 +853,9 @@ pub struct GroupCache {
     unchanged: usize,
     /// The groups whose layers are still to be listed (`write_layers`), kept for its capacity.
     open: Vec<usize>,
+    /// The render effects of the layers listed, in their order (`write_layers`), kept for its
+    /// capacity.
+    effects: Vec<compose_ui::RenderEffect>,
     /// The keys of the records written ahead (`write_groups_ahead`) that no frame wrote or
     /// copied since, by item (one write's), oldest first: kept until a frame does,
     /// `AHEAD_CAPACITY` items at most.
@@ -987,12 +990,34 @@ pub mod layer_entry {
     pub const SPOT: usize = 74;
     pub const COMPOSITING: usize = 78;
     pub const BOUNDS: usize = 79;
-    /// Its render effect: a kind (0 none, 1 a blur), the blur's radii (f32 each) and its edge
-    /// treatment (a tile mode: 0 clamp, 1 repeated, 2 mirror, 3 decal).
-    pub const EFFECT: usize = 95;
-    pub const EFFECT_RADII: usize = 96;
-    pub const EFFECT_TILE: usize = 104;
-    pub const END: usize = 105;
+    pub const END: usize = 95;
+}
+
+/// A layer's render effect, after the `LAYERS` section's entries: one for each entry whose
+/// compositing byte has [`compositing::EFFECT`], in the entries' order, so a frame without
+/// effects writes no byte more for them (D1904). Its kind (0 none, 1 a blur), the blur's radii
+/// (f32 each) and its edge treatment (a tile mode: 0 clamp, 1 repeated, 2 mirror, 3 decal), as
+/// `Replayer.kt`'s `EFFECT_` constants read them.
+pub mod layer_effect {
+    pub const KIND: usize = 0;
+    pub const RADII: usize = 1;
+    pub const TILE: usize = 9;
+    pub const BYTES: usize = 10;
+    pub const BLUR: u8 = 1;
+}
+
+/// Where the `LAYERS` section at `at` in `bytes` ends: its entries, then the render effects
+/// those flagging one have.
+pub fn layers_section_end(bytes: &[u8], at: usize) -> usize {
+    let count = u32::from_le_bytes(bytes[at + 1..at + 5].try_into().unwrap()) as usize;
+    let entries = at + 5;
+    let effects = (0..count)
+        .filter(|index| {
+            let compositing = entries + index * LAYER_ENTRY_BYTES + 8 + layer_entry::COMPOSITING;
+            bytes[compositing] & compositing::EFFECT != 0
+        })
+        .count();
+    entries + count * LAYER_ENTRY_BYTES + effects * layer_effect::BYTES
 }
 
 /// A `LAYERS` entry's outline kind, as `Replayer.kt` reads it.
@@ -1014,6 +1039,9 @@ pub mod compositing {
     pub const OFFSCREEN: u8 = 1;
     /// Never: the alpha multiplies each drawing's (`ModulateAlpha`).
     pub const MODULATE_ALPHA: u8 = 2;
+    /// A flag on the strategy: the layer's render effect follows the section's entries
+    /// ([`layer_effect`](super::layer_effect)).
+    pub const EFFECT: u8 = 4;
 }
 
 /// The bytes of one entry of the `KEPT` section: a key, whether it is outermost.
@@ -1096,7 +1124,7 @@ pub fn write_groups_ahead(
 }
 
 /// The `LAYERS` section: every group's layer, if one has one, each after the ones nested in it
-/// (as drawing closes them).
+/// (as drawing closes them), then the render effects of those that have one, in that order.
 fn write_layers(
     groups: &[DrawGroup],
     cache: &mut GroupCache,
@@ -1111,29 +1139,40 @@ fn write_layers(
     out.u8(tag::LAYERS);
     out.u32(count as u32);
     let mut open = std::mem::take(&mut cache.open);
+    let mut effects = std::mem::take(&mut cache.effects);
     for index in 0..=groups.len() {
         // The groups closed before this one, innermost first.
         while let Some(&last) = open.last()
             && (index == groups.len() || last + groups[last].descendants < index)
         {
             open.pop();
-            write_layer(groups, last, cache, resources, out);
+            if let Some(effect) = write_layer(groups, last, cache, resources, out) {
+                effects.push(effect);
+            }
         }
         if groups.get(index).is_some_and(layered) {
             open.push(index);
         }
     }
+    for compose_ui::RenderEffect::Blur { radius_x, radius_y, edge_treatment } in effects.drain(..) {
+        out.u8(layer_effect::BLUR);
+        out.f32(radius_x);
+        out.f32(radius_y);
+        out.u8(tile_mode_byte(edge_treatment));
+    }
     cache.open = open;
+    cache.effects = effects;
 }
 
-/// The `LAYERS` entry of the group at `index` of `groups`.
+/// The `LAYERS` entry of the group at `index` of `groups`, and its render effect, which the
+/// section writes after its entries.
 fn write_layer(
     groups: &[DrawGroup],
     index: usize,
     cache: &GroupCache,
     resources: &mut Resources,
     out: &mut Writer,
-) {
+) -> Option<compose_ui::RenderEffect> {
     let group = &groups[index];
     let layer = group.layer.as_ref().expect("a layer");
     out.u32(group.key as u32);
@@ -1173,25 +1212,14 @@ fn write_layer(
         }
     }
     out.f32(layer.shadow_elevation);
-    out.color(layer.ambient_shadow_color);
-    out.color(layer.spot_shadow_color);
-    out.u8(compositing_of(groups, index, cache));
+    out.color(layer.ambient_shadow_color());
+    out.color(layer.spot_shadow_color());
+    let effect = layer.render_effect();
+    let flag = if effect.is_some() { compositing::EFFECT } else { 0 };
+    out.u8(compositing_of(groups, index, cache) | flag);
     out.rect(&layer.bounds);
-    match layer.render_effect {
-        None => {
-            out.u8(0);
-            out.f32(0.0);
-            out.f32(0.0);
-            out.u8(0);
-        }
-        Some(compose_ui::RenderEffect::Blur { radius_x, radius_y, edge_treatment }) => {
-            out.u8(1);
-            out.f32(radius_x);
-            out.f32(radius_y);
-            out.u8(tile_mode_byte(edge_treatment));
-        }
-    }
     debug_assert_eq!(out.bytes.len() - start, layer_entry::END - layer_entry::CLIP);
+    effect
 }
 
 /// How the group at `index` of `groups` composites its content: its layer's strategy, except
@@ -1723,10 +1751,14 @@ mod tests {
         let constant = |name: &str| number(name) as u8;
         assert_eq!(number("LAYER_ENTRY_BYTES"), LAYER_ENTRY_BYTES);
         assert_eq!(number("ENTRY_BOUNDS"), layer_entry::BOUNDS);
-        assert_eq!(number("ENTRY_EFFECT"), layer_entry::EFFECT);
-        assert_eq!(number("ENTRY_EFFECT_RADII"), layer_entry::EFFECT_RADII);
-        assert_eq!(number("ENTRY_EFFECT_TILE"), layer_entry::EFFECT_TILE);
         assert_eq!(number("ENTRY_END"), layer_entry::END);
+        assert_eq!(number("EFFECT_BYTES"), layer_effect::BYTES);
+        assert_eq!(number("EFFECT_KIND"), layer_effect::KIND);
+        assert_eq!(number("EFFECT_RADII"), layer_effect::RADII);
+        assert_eq!(number("EFFECT_TILE"), layer_effect::TILE);
+        assert_eq!(constant("EFFECT_BLUR"), layer_effect::BLUR);
+        assert_eq!(constant("COMPOSITING_EFFECT"), compositing::EFFECT);
+        assert_eq!(constant("COMPOSITING_STRATEGY"), compositing::EFFECT - 1);
         assert_eq!(constant("SAVE_LAYER"), tag::SAVE_LAYER);
         assert_eq!(constant("DRAW_IMAGE"), tag::DRAW_IMAGE);
         assert_eq!(constant("FILTER_NONE"), color_filter::NONE);

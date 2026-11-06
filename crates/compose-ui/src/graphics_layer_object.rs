@@ -470,7 +470,7 @@ impl DrawScope<'_> {
         if painted {
             strategy = CompositingStrategy::Offscreen;
         }
-        let layer_properties = LayerProperties {
+        let mut layer_properties = LayerProperties {
             alpha: properties.alpha.clamp(0.0, 1.0),
             pivot: pivot + origin,
             scale: (properties.scale_x, properties.scale_y),
@@ -479,33 +479,37 @@ impl DrawScope<'_> {
             clip: properties.clip,
             outline,
             shadow_elevation: shadow,
-            ambient_shadow_color: properties.ambient_shadow_color,
-            spot_shadow_color: properties.spot_shadow_color,
             compositing_strategy: strategy,
             bounds: Rect::new(origin.x, origin.y, origin.x + size.width, origin.y + size.height),
             density: cell.density.get(),
-            render_effect: None,
+            extras: None,
         };
-        for op in layer_properties.operations() {
-            match op {
-                // A filter or a blend mode goes into the offscreen buffer's paint.
-                DrawOp::SaveLayerAlpha { bounds, alpha } if painted => {
-                    let filter = properties.color_filter.as_ref();
-                    self.save_layer(
-                        Rect::new(
-                            bounds.left - self.origin.x,
-                            bounds.top - self.origin.y,
-                            bounds.right - self.origin.x,
-                            bounds.bottom - self.origin.y,
-                        ),
-                        alpha,
-                        filter,
-                        properties.blend_mode,
-                    );
-                }
-                op => self.list.push(op),
-            }
+        let colors = (properties.ambient_shadow_color, properties.spot_shadow_color);
+        if colors != (Color::BLACK, Color::BLACK) {
+            layer_properties.extras = Some(Box::new(crate::graphics_layer::LayerExtras {
+                ambient_shadow_color: colors.0,
+                spot_shadow_color: colors.1,
+                render_effect: None,
+            }));
         }
+        layer_properties.operations(|op| match op {
+            // A filter or a blend mode goes into the offscreen buffer's paint.
+            DrawOp::SaveLayerAlpha { bounds, alpha } if painted => {
+                let filter = properties.color_filter.as_ref();
+                self.save_layer(
+                    Rect::new(
+                        bounds.left - self.origin.x,
+                        bounds.top - self.origin.y,
+                        bounds.right - self.origin.x,
+                        bounds.bottom - self.origin.y,
+                    ),
+                    alpha,
+                    filter,
+                    properties.blend_mode,
+                );
+            }
+            op => self.list.push(op),
+        });
         let modulated = layer_properties.modulated_alpha();
         self.replay_layer(&cell.recording.borrow(), origin - cell.recorded_origin.get(), modulated);
         for _ in 0..layer_properties.restores() {

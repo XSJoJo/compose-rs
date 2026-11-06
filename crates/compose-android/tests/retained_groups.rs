@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use compose_android::serialize::{
     AHEAD_CAPACITY, GroupCache, KEPT_ENTRY_BYTES, LAYER_ENTRY_BYTES, Resources, Writer,
-    compositing, layer_entry, operand_bytes, outline_kind, shader, tag, write_display_list,
-    write_groups_ahead,
+    compositing, layer_effect, layer_entry, layers_section_end, operand_bytes, outline_kind,
+    shader, tag, write_display_list, write_groups_ahead,
 };
 use compose_foundation::ScrollableState;
 use compose_runtime::*;
@@ -121,6 +121,8 @@ fn read(bytes: &[u8]) -> (Vec<Layer>, Vec<Item>) {
             });
             at += LAYER_ENTRY_BYTES;
         }
+        // Past the render effects after the entries.
+        at = layers_section_end(bytes, 0);
     }
     // The groups' records (D323), then the frame's operations.
     let mut records = HashMap::new();
@@ -732,12 +734,10 @@ fn a_record_is_its_content_its_layer_an_entry() {
         clip: false,
         outline: None,
         shadow_elevation: 0.0,
-        ambient_shadow_color: Color::BLACK,
-        spot_shadow_color: Color::BLACK,
         compositing_strategy: CompositingStrategy::Auto,
         bounds: Rect::new(0.0, 0.0, 4.0, 4.0),
         density: 1.0,
-        render_effect: None,
+        extras: None,
     };
     list.groups.push(group(9, 3, Some(layer), content));
     let (mut resources, mut out) = (Resources::default(), Writer::default());
@@ -753,6 +753,62 @@ fn a_record_is_its_content_its_layer_an_entry() {
             Item::Operation(tag::DRAW_RECT),
         ]
     );
+}
+
+/// A layer's render effect follows the `LAYERS` section's entries, flagged in its entry's
+/// compositing byte: the entries stay `LAYER_ENTRY_BYTES` each, and a layer without one writes
+/// nothing for it.
+#[test]
+fn a_render_effect_follows_the_layer_entries() {
+    let rect = || DrawOp::DrawRect(Rect::new(0.0, 0.0, 4.0, 4.0), Paint::fill(Color::BLACK));
+    let layer = |extras: Option<Box<LayerExtras>>| LayerProperties {
+        alpha: 1.0,
+        pivot: Offset::new(2.0, 2.0),
+        scale: (1.0, 1.0),
+        rotation: 0.0,
+        translation: Offset::ZERO,
+        clip: false,
+        outline: None,
+        shadow_elevation: 0.0,
+        compositing_strategy: CompositingStrategy::Offscreen,
+        bounds: Rect::new(0.0, 0.0, 4.0, 4.0),
+        density: 1.0,
+        extras,
+    };
+    let mut blurred = GraphicsLayerScope::default();
+    blurred.set_render_effect(Some(RenderEffect::blur(3.0, 4.0, TileMode::Decal)));
+    let mut list = DisplayList::default();
+    for (index, (key, extras)) in [(9, None), (10, blurred.extras.clone())].into_iter().enumerate()
+    {
+        let mut content = DisplayList::default();
+        content.push(rect());
+        list.boundaries.push(Boundary { at: index, key });
+        list.push(DrawOp::Translate(Offset::new(1.0, 1.0)));
+        list.groups.push(group(key, 1, Some(layer(extras)), content));
+    }
+    let (mut resources, mut out) = (Resources::default(), Writer::default());
+    write_display_list(&list, &mut resources, &mut GroupCache::default(), &mut out);
+    let bytes = &out.bytes;
+    assert_eq!(LAYER_ENTRY_BYTES, 103);
+    let entry = |index: usize| 5 + index * LAYER_ENTRY_BYTES;
+    assert_eq!((u64_at(bytes, entry(0)), u64_at(bytes, entry(1))), (9, 10));
+    let compositing = |index: usize| bytes[entry(index) + 8 + layer_entry::COMPOSITING];
+    assert_eq!(compositing(0), compositing::OFFSCREEN);
+    assert_eq!(compositing(1), compositing::OFFSCREEN | compositing::EFFECT);
+    let effect = entry(2);
+    assert_eq!(bytes[effect + layer_effect::KIND], layer_effect::BLUR);
+    assert_eq!(f32_at(bytes, effect + layer_effect::RADII), 3.0);
+    assert_eq!(f32_at(bytes, effect + layer_effect::RADII + 4), 4.0);
+    assert_eq!(bytes[effect + layer_effect::TILE], 3, "decal");
+    assert_eq!(layers_section_end(bytes, 0), effect + layer_effect::BYTES);
+    assert_eq!(bytes[effect + layer_effect::BYTES], tag::GROUP, "the records follow");
+    let (layers, items) = read(bytes);
+    assert_eq!(layers.len(), 2);
+    assert_eq!(items.len(), 4, "{items:?}");
+    // Without the effect, nothing follows the entries.
+    list.groups[1].layer = Some(layer(None));
+    write_display_list(&list, &mut resources, &mut GroupCache::default(), &mut out);
+    assert_eq!(out.bytes[entry(2)], tag::GROUP);
 }
 
 // ---- Resources -------------------------------------------------------------------------------
@@ -1823,6 +1879,12 @@ fn the_kotlin_constants_are_rusts() {
         ("COMPOSITING_AUTO", compositing::AUTO as u64),
         ("COMPOSITING_OFFSCREEN", compositing::OFFSCREEN as u64),
         ("COMPOSITING_MODULATE_ALPHA", compositing::MODULATE_ALPHA as u64),
+        ("COMPOSITING_EFFECT", compositing::EFFECT as u64),
+        ("EFFECT_BYTES", layer_effect::BYTES as u64),
+        ("EFFECT_KIND", layer_effect::KIND as u64),
+        ("EFFECT_RADII", layer_effect::RADII as u64),
+        ("EFFECT_TILE", layer_effect::TILE as u64),
+        ("EFFECT_BLUR", layer_effect::BLUR as u64),
         ("OUTLINE_NONE", outline_kind::NONE as u64),
         ("OUTLINE_PATH", outline_kind::PATH as u64),
         ("ENTRY_ALPHA", e::ALPHA as u64),

@@ -105,6 +105,60 @@ impl BlurredEdgeTreatment {
 /// The shadows' default color, as Compose's `DefaultShadowColor`.
 pub const DEFAULT_SHADOW_COLOR: Color = Color::BLACK;
 
+/// A layer's rarely set properties, out of line in [`GraphicsLayerScope::extras`] and
+/// [`LayerProperties::extras`] (`None` for all their defaults), so a layer without them, as most
+/// are, carries and copies a pointer's worth: its shadow colors and its render effect.
+#[derive(Clone, PartialEq, Debug)]
+pub struct LayerExtras {
+    /// The ambient shadow's color (its alpha scaled by the platform's ambient shadow alpha).
+    pub ambient_shadow_color: Color,
+    /// The spot shadow's color (its alpha scaled by the platform's spot shadow alpha).
+    pub spot_shadow_color: Color,
+    /// What its content goes through as it's composited, as `renderEffect` (a blur).
+    pub render_effect: Option<RenderEffect>,
+}
+
+impl LayerExtras {
+    const DEFAULT: LayerExtras = LayerExtras {
+        ambient_shadow_color: DEFAULT_SHADOW_COLOR,
+        spot_shadow_color: DEFAULT_SHADOW_COLOR,
+        render_effect: None,
+    };
+
+    /// `extras`, changed by `change`: `None` again if it's all defaults.
+    fn update(extras: &mut Option<Box<LayerExtras>>, change: impl FnOnce(&mut LayerExtras)) {
+        let mut changed = extras.take().unwrap_or_else(|| Box::new(LayerExtras::DEFAULT));
+        change(&mut changed);
+        *extras = (*changed != LayerExtras::DEFAULT).then_some(changed);
+    }
+}
+
+impl Default for LayerExtras {
+    fn default() -> Self {
+        LayerExtras::DEFAULT
+    }
+}
+
+/// Reading a layer's extras, their defaults when it has none.
+macro_rules! extras_getters {
+    () => {
+        /// The ambient shadow's color: [`DEFAULT_SHADOW_COLOR`] unless set.
+        pub fn ambient_shadow_color(&self) -> Color {
+            self.extras.as_ref().map_or(DEFAULT_SHADOW_COLOR, |extras| extras.ambient_shadow_color)
+        }
+
+        /// The spot shadow's color: [`DEFAULT_SHADOW_COLOR`] unless set.
+        pub fn spot_shadow_color(&self) -> Color {
+            self.extras.as_ref().map_or(DEFAULT_SHADOW_COLOR, |extras| extras.spot_shadow_color)
+        }
+
+        /// Its render effect, if any.
+        pub fn render_effect(&self) -> Option<RenderEffect> {
+            self.extras.as_ref().and_then(|extras| extras.render_effect)
+        }
+    };
+}
+
 /// The properties a graphics layer applies, as Compose's `GraphicsLayerScope`.
 #[derive(Clone, PartialEq, Debug)]
 pub struct GraphicsLayerScope {
@@ -121,17 +175,16 @@ pub struct GraphicsLayerScope {
     /// shadow of `shape` is drawn under the layer, as Compose's `shadowElevation` (an Android
     /// elevation shadow, lit by the window's light).
     pub shadow_elevation: f32,
-    /// The ambient shadow's color (its alpha scaled by the platform's ambient shadow alpha).
-    pub ambient_shadow_color: Color,
-    /// The spot shadow's color (its alpha scaled by the platform's spot shadow alpha).
-    pub spot_shadow_color: Color,
     /// The layer's outline, for its shadow and its clip.
     pub shape: Shape,
     /// Clips the content to `shape`.
     pub clip: bool,
     pub compositing_strategy: CompositingStrategy,
-    /// What its content goes through as it's composited, as `renderEffect` (a blur).
-    pub render_effect: Option<RenderEffect>,
+    /// Its shadow colors and render effect, `None` for their defaults: set them with
+    /// [`set_ambient_shadow_color`](GraphicsLayerScope::set_ambient_shadow_color),
+    /// [`set_spot_shadow_color`](GraphicsLayerScope::set_spot_shadow_color) and
+    /// [`set_render_effect`](GraphicsLayerScope::set_render_effect).
+    pub extras: Option<Box<LayerExtras>>,
     /// The layer's size, set before its block runs (as `GraphicsLayerScope.size`).
     pub size: Size,
     /// The density, set before its block runs (Compose's scope is a `Density`).
@@ -149,15 +202,32 @@ impl Default for GraphicsLayerScope {
             translation_y: 0.0,
             transform_origin: TransformOrigin::CENTER,
             shadow_elevation: 0.0,
-            ambient_shadow_color: DEFAULT_SHADOW_COLOR,
-            spot_shadow_color: DEFAULT_SHADOW_COLOR,
             shape: Shape::Rectangle,
             clip: false,
             compositing_strategy: CompositingStrategy::Auto,
-            render_effect: None,
+            extras: None,
             size: Size::ZERO,
             density: Density::default(),
         }
+    }
+}
+
+impl GraphicsLayerScope {
+    extras_getters!();
+
+    /// Sets the ambient shadow's color, as `ambientShadowColor`.
+    pub fn set_ambient_shadow_color(&mut self, color: Color) {
+        LayerExtras::update(&mut self.extras, |extras| extras.ambient_shadow_color = color);
+    }
+
+    /// Sets the spot shadow's color, as `spotShadowColor`.
+    pub fn set_spot_shadow_color(&mut self, color: Color) {
+        LayerExtras::update(&mut self.extras, |extras| extras.spot_shadow_color = color);
+    }
+
+    /// Sets what its content goes through as it's composited, as `renderEffect` (a blur).
+    pub fn set_render_effect(&mut self, effect: Option<RenderEffect>) {
+        LayerExtras::update(&mut self.extras, |extras| extras.render_effect = effect);
     }
 }
 
@@ -170,6 +240,18 @@ struct ShadowSpec {
     clip: bool,
     ambient_color: Color,
     spot_color: Color,
+}
+
+impl ShadowSpec {
+    /// Its colors as a layer's extras: none for the default ones.
+    fn extras(&self) -> Option<Box<LayerExtras>> {
+        let extras = LayerExtras {
+            ambient_shadow_color: self.ambient_color,
+            spot_shadow_color: self.spot_color,
+            render_effect: None,
+        };
+        (extras != LayerExtras::DEFAULT).then(|| Box::new(extras))
+    }
 }
 
 #[derive(Clone)]
@@ -361,8 +443,7 @@ impl GraphicsLayerNode {
             }
             Layer::Shadow(shadow) => GraphicsLayerScope {
                 shadow_elevation: density.to_px(shadow.elevation),
-                ambient_shadow_color: shadow.ambient_color,
-                spot_shadow_color: shadow.spot_color,
+                extras: shadow.extras(),
                 shape: shadow.shape.clone(),
                 clip: shadow.clip,
                 size,
@@ -530,16 +611,14 @@ pub struct LayerProperties {
     pub outline: Option<Outline>,
     /// Pixels; a shadow of its outline is drawn under it above 0.
     pub shadow_elevation: f32,
-    pub ambient_shadow_color: Color,
-    pub spot_shadow_color: Color,
     pub compositing_strategy: CompositingStrategy,
     /// Its bounds: its size at its origin (a render node's position; an offscreen buffer for
     /// its alpha is bounded by them on Android, as Compose's).
     pub bounds: Rect,
     /// Pixels per dp: desktop's shadow light is placed in dp (`operations`).
     pub density: f32,
-    /// What its content goes through, its layer's `render_effect`.
-    pub render_effect: Option<RenderEffect>,
+    /// Its layer's shadow colors and render effect, `None` for their defaults.
+    pub extras: Option<Box<LayerExtras>>,
 }
 
 impl LayerProperties {
@@ -567,14 +646,14 @@ impl LayerProperties {
             clip: layer.clip,
             outline,
             shadow_elevation,
-            ambient_shadow_color: layer.ambient_shadow_color,
-            spot_shadow_color: layer.spot_shadow_color,
             compositing_strategy: layer.compositing_strategy,
             bounds,
             density: layer.density.density,
-            render_effect: layer.render_effect,
+            extras: layer.extras.clone(),
         }
     }
+
+    extras_getters!();
 
     fn transforms(&self) -> bool {
         self.scale != (1.0, 1.0) || self.rotation != 0.0 || self.translation != Offset::ZERO
@@ -609,47 +688,58 @@ impl LayerProperties {
     /// `SaveLayerAlpha` (if [`offscreen`](LayerProperties::offscreen)).
     /// [`restores`](LayerProperties::restores) restores end them. A `ModulateAlpha` alpha is
     /// left to the renderer ([`modulated_alpha`](LayerProperties::modulated_alpha)).
-    pub fn operations(&self) -> impl Iterator<Item = DrawOp> + use<> {
+    pub fn operations(&self, mut push: impl FnMut(DrawOp)) {
         let transforms = self.transforms();
         let shadow = self.casts_shadow();
-        let save = (transforms || self.clip || shadow).then_some(DrawOp::Save);
-        let transform = transforms.then_some(DrawOp::Transform {
-            pivot: self.pivot,
-            scale: self.scale,
-            rotation: self.rotation,
-            translation: self.translation,
-        });
-        let px = |dp: f32| dp * self.density;
-        let shadow = self.outline.clone().filter(|_| shadow).map(|outline| DrawOp::DrawShadow {
-            outline,
-            elevation: self.shadow_elevation,
-            light: (0.0, -px(300.0), px(600.0)),
-            light_radius: px(800.0),
-            // Compose Desktop's alphas times the layer's and the colors' (Skiko's
-            // `RenderNode::drawShadow`).
-            ambient: faded(self.ambient_shadow_color, 0.039 * self.alpha),
-            spot: faded(self.spot_shadow_color, 0.19 * self.alpha),
-            transparent_occluder: self.alpha < 1.0,
-        });
-        let clip = self.outline.clone().filter(|_| self.clip).map(|outline| match outline {
-            Outline::Rectangle(rect) => DrawOp::ClipRect(rect),
-            Outline::Rounded(rect, radii) => DrawOp::ClipRoundRect(rect, radii),
-            Outline::Generic(path, offset) => DrawOp::ClipPath { path, offset },
-        });
-        let effect = self
-            .render_effect
-            .map(|effect| DrawOp::SaveLayerEffect { bounds: self.bounds, effect });
-        let alpha = self
-            .offscreen()
-            .then_some(DrawOp::SaveLayerAlpha { bounds: self.bounds, alpha: self.alpha });
-        [save, transform, shadow, clip, effect, alpha].into_iter().flatten()
+        if transforms || self.clip || shadow {
+            push(DrawOp::Save);
+        }
+        if transforms {
+            push(DrawOp::Transform {
+                pivot: self.pivot,
+                scale: self.scale,
+                rotation: self.rotation,
+                translation: self.translation,
+            });
+        }
+        if shadow && let Some(outline) = &self.outline {
+            let px = |dp: f32| dp * self.density;
+            push(DrawOp::DrawShadow {
+                outline: outline.clone(),
+                elevation: self.shadow_elevation,
+                light: (0.0, -px(300.0), px(600.0)),
+                light_radius: px(800.0),
+                // Compose Desktop's alphas times the layer's and the colors' (Skiko's
+                // `RenderNode::drawShadow`).
+                ambient: faded(self.ambient_shadow_color(), 0.039 * self.alpha),
+                spot: faded(self.spot_shadow_color(), 0.19 * self.alpha),
+                transparent_occluder: self.alpha < 1.0,
+            });
+        }
+        if self.clip
+            && let Some(outline) = &self.outline
+        {
+            push(match outline {
+                Outline::Rectangle(rect) => DrawOp::ClipRect(*rect),
+                Outline::Rounded(rect, radii) => DrawOp::ClipRoundRect(*rect, *radii),
+                Outline::Generic(path, offset) => {
+                    DrawOp::ClipPath { path: std::sync::Arc::clone(path), offset: *offset }
+                }
+            });
+        }
+        if let Some(effect) = self.render_effect() {
+            push(DrawOp::SaveLayerEffect { bounds: self.bounds, effect });
+        }
+        if self.offscreen() {
+            push(DrawOp::SaveLayerAlpha { bounds: self.bounds, alpha: self.alpha });
+        }
     }
 
     /// How many restores end its [`operations`](LayerProperties::operations).
     pub fn restores(&self) -> u8 {
         u8::from(self.transforms() || self.clip || self.casts_shadow())
             + u8::from(self.offscreen())
-            + u8::from(self.render_effect.is_some())
+            + u8::from(self.render_effect().is_some())
     }
 }
 
@@ -790,7 +880,9 @@ impl Modifier {
         let tile_mode = edge_treatment.tile_mode();
         self.graphics_layer(move |layer| {
             let (x, y) = (layer.density.to_px(radius_x), layer.density.to_px(radius_y));
-            layer.render_effect = (x > 0.0 && y > 0.0).then(|| RenderEffect::blur(x, y, tile_mode));
+            layer.set_render_effect(
+                (x > 0.0 && y > 0.0).then(|| RenderEffect::blur(x, y, tile_mode)),
+            );
             layer.clip = edge_treatment.shape.is_some();
             layer.shape = edge_treatment.shape.clone().unwrap_or(Shape::Rectangle);
         })

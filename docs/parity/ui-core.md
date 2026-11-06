@@ -593,7 +593,7 @@ One entry per feature, in the suggested order (below, after the entries). Sizes:
 - *Depends on:* 3.36 for `toImageBitmap`; 3.4 (release on detach). Animation: shared elements' overlay; foundation and apps: capturing content to a bitmap.
 - `CapturedAnimatedVisibility` moves to `GraphicsLayer` when this lands, and `DrawCapture` (D1413, not a parity API) goes.
 
-**3.35 `layer-3d-and-effects`** — M to L. **Started** (D1904): `GraphicsLayerScope::render_effect` with `RenderEffect::Blur` (`BlurEffect`), drawn by Skia's blur image filter and by Android's render node (`RenderEffect.createBlurEffect`, API 31+). **Left:** `rotationX`, `rotationY`, `cameraDistance`, `colorFilter`, `blendMode` and `outsets` on `GraphicsLayerScope`, `OffsetEffect`, chained effects.
+**3.35 `layer-3d-and-effects`** — M to L. **Started** (D1904): `GraphicsLayerScope::set_render_effect` with `RenderEffect::Blur` (`BlurEffect`), drawn by Skia's blur image filter and by Android's render node (`RenderEffect.createBlurEffect`, API 31+). **Left:** `rotationX`, `rotationY`, `cameraDistance`, `colorFilter`, `blendMode` and `outsets` on `GraphicsLayerScope`, `OffsetEffect`, chained effects.
 - *API:* `GraphicsLayerScope.rotationX`, `rotationY`, `cameraDistance`, `renderEffect`, `colorFilter`, `blendMode`, `outsets`; `RenderEffect`, `BlurEffect`, `OffsetEffect`, `LayerOutsets`.
 - *Tests:* AndroidRenderEffectTest, RenderEffectTest; completes GraphicsLayerTest (draw), GraphicsLayerScopeTest.
 - *Depends on:* 3.30; renderers: Skia's 3D matrices and image filters, Android's `RenderNode` (render effects on API 31+).

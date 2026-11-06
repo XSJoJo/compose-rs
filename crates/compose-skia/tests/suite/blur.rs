@@ -43,7 +43,7 @@ fn blurred_and_layered(
                     .test_tag("layer")
                     .then(chain())
                     .graphics_layer(move |layer| {
-                        layer.render_effect = Some(RenderEffect::blur(4.0, 4.0, tile_mode));
+                        layer.set_render_effect(Some(RenderEffect::blur(4.0, 4.0, tile_mode)));
                         layer.clip = clip;
                         layer.shape = shape.clone();
                     })

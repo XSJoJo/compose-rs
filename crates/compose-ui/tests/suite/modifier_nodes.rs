@@ -432,7 +432,7 @@ fn a_node_opting_out_of_auto_invalidation_is_not_measured_on_update() {
 // ---- Graphics layer equality --------------------------------------------------------------------
 
 fn layer_with(values: [f32; 7], origin: TransformOrigin, shape: Shape, clip: bool) -> Modifier {
-    Modifier.graphics_layer_with(GraphicsLayerScope {
+    let mut layer = GraphicsLayerScope {
         scale_x: values[0],
         scale_y: values[1],
         alpha: values[2],
@@ -441,12 +441,13 @@ fn layer_with(values: [f32; 7], origin: TransformOrigin, shape: Shape, clip: boo
         shadow_elevation: values[5],
         rotation_z: values[6],
         transform_origin: origin,
-        ambient_shadow_color: Color::from_argb(0xFF00FF42),
-        spot_shadow_color: Color::from_argb(0xFF00FF64),
         shape,
         clip,
         ..GraphicsLayerScope::default()
-    })
+    };
+    layer.set_ambient_shadow_color(Color::from_argb(0xFF00FF42));
+    layer.set_spot_shadow_color(Color::from_argb(0xFF00FF64));
+    Modifier.graphics_layer_with(layer)
 }
 
 // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/draw/GraphicsLayerModifierTest.kt, testEquals

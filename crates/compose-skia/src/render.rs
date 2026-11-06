@@ -272,19 +272,17 @@ impl Walk<'_> {
             {
                 layer.compositing_strategy = CompositingStrategy::ModulateAlpha;
             }
-            for op in layer.operations() {
-                match op {
-                    // An offscreen layer inside a modulated one is faded as one composite,
-                    // its content drawn at full alpha in it (HWUI multiplies a child node's
-                    // layer alpha, not what's inside its layer).
-                    DrawOp::SaveLayerAlpha { bounds, alpha } => {
-                        let alpha = (alpha * self.alpha).clamp(0.0, 1.0);
-                        self.canvas.save_layer_alpha_f(rect(&bounds), alpha);
-                        self.alpha = 1.0;
-                    }
-                    op => draw_op(self.canvas, &op, (&[], &[]), self.measurer, start, self.alpha),
+            layer.operations(|op| match op {
+                // An offscreen layer inside a modulated one is faded as one composite, its
+                // content drawn at full alpha in it (HWUI multiplies a child node's layer alpha,
+                // not what's inside its layer).
+                DrawOp::SaveLayerAlpha { bounds, alpha } => {
+                    let alpha = (alpha * self.alpha).clamp(0.0, 1.0);
+                    self.canvas.save_layer_alpha_f(rect(&bounds), alpha);
+                    self.alpha = 1.0;
                 }
-            }
+                op => draw_op(self.canvas, &op, (&[], &[]), self.measurer, start, self.alpha),
+            });
             if let Some(alpha) = layer.modulated_alpha() {
                 self.alpha *= alpha;
             }

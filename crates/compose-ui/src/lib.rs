@@ -232,7 +232,7 @@ pub use graphics::{
 };
 pub use graphics_layer::{
     BlurredEdgeTreatment, CompositingStrategy, DEFAULT_SHADOW_COLOR, GraphicsLayerScope,
-    RenderEffect, TransformOrigin,
+    LayerExtras, RenderEffect, TransformOrigin,
 };
 pub use graphics_layer_object::{GraphicsLayer, remember_graphics_layer};
 pub use host::LOCAL_DENSITY;
