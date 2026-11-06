@@ -8,9 +8,9 @@ use std::rc::Rc;
 use compose_animation::Animatable;
 use compose_foundation::layout::Box;
 use compose_foundation::{
-    BasicTextField, BasicTextFieldOfState, InputTransformation, KeyboardActionHandler,
-    KeyboardActions, KeyboardOptions, OutputTransformation, TextFieldLineLimits, TextFieldState,
-    VisualTransformation,
+    BasicSecureTextField, BasicTextField, BasicTextFieldOfState, InputTransformation,
+    KeyboardActionHandler, KeyboardActions, KeyboardOptions, OutputTransformation,
+    TextFieldLineLimits, TextFieldState, TextObfuscationMode, VisualTransformation,
 };
 use compose_runtime::{Callback, CompositionLocalProvider, composable, mutable_state_of, remember};
 use compose_ui::{
@@ -1065,6 +1065,7 @@ pub fn TextFieldOfState(
             line_limits,
             on_text_layout: on_text_layout.map(compose_runtime::callback),
             scroll_state,
+            secure: None,
         },
         modifier,
         enabled,
@@ -1130,10 +1131,145 @@ pub fn OutlinedTextFieldOfState(
             line_limits,
             on_text_layout: on_text_layout.map(compose_runtime::callback),
             scroll_state,
+            secure: None,
         },
         modifier,
         enabled,
         read_only,
+        text_style,
+        label_position,
+        Slots {
+            label: label.map(compose_runtime::callback),
+            placeholder: placeholder.map(compose_runtime::callback),
+            leading_icon: leading_icon.map(compose_runtime::callback),
+            trailing_icon: trailing_icon.map(compose_runtime::callback),
+            prefix: prefix.map(compose_runtime::callback),
+            suffix: suffix.map(compose_runtime::callback),
+            supporting_text: supporting_text.map(compose_runtime::callback),
+        },
+        is_error,
+        keyboard_options,
+        colors,
+        shape,
+        content_padding,
+        interaction_source,
+    );
+}
+
+/// A filled field for a password over a [`TextFieldState`], as Compose's `SecureTextField`:
+/// [`TextFieldOfState`]'s decoration around a
+/// [`BasicSecureTextField`](compose_foundation::BasicSecureTextField), always a single line, its
+/// text hidden by `text_obfuscation_mode` behind `text_obfuscation_character`; the label floats
+/// and the placeholder hides by the state's text (D1143).
+#[composable]
+#[allow(non_snake_case)]
+pub fn SecureTextField(
+    state: TextFieldState,
+    #[default(crate::Modifier)] modifier: Modifier,
+    #[default(true)] enabled: bool,
+    #[default(crate::LOCAL_TEXT_STYLE.current())] text_style: TextStyle,
+    #[default(crate::TextFieldLabelPosition::inside())] label_position: TextFieldLabelPosition,
+    #[default(None)] label: Option<impl Fn() + 'static>,
+    #[default(None)] placeholder: Option<impl Fn() + 'static>,
+    #[default(None)] leading_icon: Option<impl Fn() + 'static>,
+    #[default(None)] trailing_icon: Option<impl Fn() + 'static>,
+    #[default(None)] prefix: Option<impl Fn() + 'static>,
+    #[default(None)] suffix: Option<impl Fn() + 'static>,
+    #[default(None)] supporting_text: Option<impl Fn() + 'static>,
+    #[default(false)] is_error: bool,
+    #[default(None)] input_transformation: Option<InputTransformation>,
+    #[default(compose_foundation::TextObfuscationMode::System)]
+    text_obfuscation_mode: TextObfuscationMode,
+    #[default(compose_foundation::DEFAULT_OBFUSCATION_CHARACTER)] text_obfuscation_character: char,
+    #[default(crate::KeyboardOptions::SECURE_TEXT_FIELD)] keyboard_options: KeyboardOptions,
+    #[default(None)] on_keyboard_action: Option<KeyboardActionHandler>,
+    #[default(None)] on_text_layout: Option<impl Fn(compose_ui::TextLayoutResult) + 'static>,
+    #[default(crate::TextFieldDefaults::shape())] shape: Shape,
+    #[default(crate::TextFieldDefaults::colors())] colors: TextFieldColors,
+    #[default(None)] content_padding: Option<PaddingValues>,
+    #[default(None)] interaction_source: Option<MutableInteractionSource>,
+) {
+    decorated_field(
+        Variant::Filled,
+        FieldInput::State {
+            state,
+            input_transformation,
+            output_transformation: None,
+            on_keyboard_action,
+            line_limits: TextFieldLineLimits::SingleLine,
+            on_text_layout: on_text_layout.map(compose_runtime::callback),
+            scroll_state: None,
+            secure: Some((text_obfuscation_mode, text_obfuscation_character)),
+        },
+        modifier,
+        enabled,
+        false,
+        text_style,
+        label_position,
+        Slots {
+            label: label.map(compose_runtime::callback),
+            placeholder: placeholder.map(compose_runtime::callback),
+            leading_icon: leading_icon.map(compose_runtime::callback),
+            trailing_icon: trailing_icon.map(compose_runtime::callback),
+            prefix: prefix.map(compose_runtime::callback),
+            suffix: suffix.map(compose_runtime::callback),
+            supporting_text: supporting_text.map(compose_runtime::callback),
+        },
+        is_error,
+        keyboard_options,
+        colors,
+        shape,
+        content_padding,
+        interaction_source,
+    );
+}
+
+/// An outlined field for a password over a [`TextFieldState`], as Compose's
+/// `OutlinedSecureTextField`: [`SecureTextField`]'s parameters with the outlined field's
+/// decoration (D1143).
+#[composable]
+#[allow(non_snake_case)]
+pub fn OutlinedSecureTextField(
+    state: TextFieldState,
+    #[default(crate::Modifier)] modifier: Modifier,
+    #[default(true)] enabled: bool,
+    #[default(crate::LOCAL_TEXT_STYLE.current())] text_style: TextStyle,
+    #[default(crate::TextFieldLabelPosition::cutout())] label_position: TextFieldLabelPosition,
+    #[default(None)] label: Option<impl Fn() + 'static>,
+    #[default(None)] placeholder: Option<impl Fn() + 'static>,
+    #[default(None)] leading_icon: Option<impl Fn() + 'static>,
+    #[default(None)] trailing_icon: Option<impl Fn() + 'static>,
+    #[default(None)] prefix: Option<impl Fn() + 'static>,
+    #[default(None)] suffix: Option<impl Fn() + 'static>,
+    #[default(None)] supporting_text: Option<impl Fn() + 'static>,
+    #[default(false)] is_error: bool,
+    #[default(None)] input_transformation: Option<InputTransformation>,
+    #[default(compose_foundation::TextObfuscationMode::System)]
+    text_obfuscation_mode: TextObfuscationMode,
+    #[default(compose_foundation::DEFAULT_OBFUSCATION_CHARACTER)] text_obfuscation_character: char,
+    #[default(crate::KeyboardOptions::SECURE_TEXT_FIELD)] keyboard_options: KeyboardOptions,
+    #[default(None)] on_keyboard_action: Option<KeyboardActionHandler>,
+    #[default(None)] on_text_layout: Option<impl Fn(compose_ui::TextLayoutResult) + 'static>,
+    #[default(crate::OutlinedTextFieldDefaults::shape())] shape: Shape,
+    #[default(crate::OutlinedTextFieldDefaults::colors())] colors: TextFieldColors,
+    #[default(None)] content_padding: Option<PaddingValues>,
+    #[default(None)] interaction_source: Option<MutableInteractionSource>,
+) {
+    decorated_field(
+        Variant::Outlined,
+        FieldInput::State {
+            state,
+            input_transformation,
+            output_transformation: None,
+            on_keyboard_action,
+            line_limits: TextFieldLineLimits::SingleLine,
+            on_text_layout: on_text_layout.map(compose_runtime::callback),
+            scroll_state: None,
+            secure: Some((text_obfuscation_mode, text_obfuscation_character)),
+        },
+        modifier,
+        enabled,
+        false,
         text_style,
         label_position,
         Slots {
@@ -1173,6 +1309,8 @@ enum FieldInput {
         line_limits: TextFieldLineLimits,
         on_text_layout: Option<Callback<dyn Fn(compose_ui::TextLayoutResult)>>,
         scroll_state: Option<crate::ScrollState>,
+        /// A password's: its obfuscation mode and character (`SecureTextField`, D1143).
+        secure: Option<(TextObfuscationMode, char)>,
     },
 }
 
@@ -1695,11 +1833,38 @@ fn decorated_field(
             FieldInput::State {
                 state,
                 input_transformation,
+                output_transformation: _,
+                on_keyboard_action,
+                line_limits: _,
+                on_text_layout,
+                scroll_state,
+                secure: Some((mode, character)),
+            } => BasicSecureTextField(
+                state,
+                modifier,
+                enabled,
+                read_only,
+                input_transformation,
+                style,
+                keyboard_options,
+                on_keyboard_action,
+                on_text_layout,
+                Some(interaction_source),
+                compose_ui::Brush::solid(cursor_color),
+                compose_runtime::callback(decoration),
+                mode,
+                character,
+                scroll_state,
+            ),
+            FieldInput::State {
+                state,
+                input_transformation,
                 output_transformation,
                 on_keyboard_action,
                 line_limits,
                 on_text_layout,
                 scroll_state,
+                secure: None,
             } => BasicTextFieldOfState(
                 state,
                 modifier,

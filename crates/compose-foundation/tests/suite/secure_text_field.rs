@@ -95,6 +95,11 @@ fn a_password_says_so_and_can_be_pasted_into_but_never_copied() {
         assert!(node.config.contains(&P::PASSWORD), "{mode:?}");
         assert_eq!(node.config.get(&P::IS_PASSWORD_OBFUSCATED).copied(), Some(obfuscated));
         assert!(node.config.contains(&A::PASTE_TEXT), "{mode:?}");
+        // The password's own text and selection, as Compose's tells a password field's (D1143).
+        let told = node.config.get(&P::EDITABLE_TEXT).map(|text| text.to_string());
+        assert_eq!(told.as_deref(), Some("Hello"), "{mode:?}");
+        let selection = node.config.get(&P::TEXT_SELECTION_RANGE).copied();
+        assert_eq!(selection, Some(TextRange::new(0, 1)), "{mode:?}");
         assert!(!node.config.contains(&A::COPY_TEXT), "{mode:?}");
         assert!(!node.config.contains(&A::CUT_TEXT), "{mode:?}");
     }

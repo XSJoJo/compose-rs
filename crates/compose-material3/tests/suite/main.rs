@@ -79,6 +79,7 @@ mod review_semantics_material;
 mod ripple;
 mod scrim;
 mod scrollbar;
+mod secure_text_field;
 mod segmented_button;
 mod segments_and_rails;
 mod sheet_state;

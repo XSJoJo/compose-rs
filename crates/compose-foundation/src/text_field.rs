@@ -3400,10 +3400,15 @@ impl SemanticsModifierNode for TextFieldNode {
         // transformation's own mapping, as Compose's; a composition is in the text.
         let text = &self.text;
         if self.state.is_some() {
-            // A state-based field's: what it measured, the selection mapped as a range.
-            let shown: compose_ui::SharedString =
-                self.shown_text.clone().unwrap_or_else(|| text.clone()).into();
-            let range = self.shown_range(self.selection());
+            // A state-based field's: what it measured, the selection mapped as a range; a
+            // password's own text, as Compose's announces it (D1143).
+            let password = self.state.as_ref().is_some_and(|link| link.password.is_some());
+            let shown: compose_ui::SharedString = match &self.shown_text {
+                Some(shown) if !password => shown.clone().into(),
+                _ => text.clone().into(),
+            };
+            let range =
+                if password { self.selection() } else { self.shown_range(self.selection()) };
             let range = if self.anchor > self.cursor { range.end..range.start } else { range };
             config.set_text_selection_range(compose_ui::TextRange::new(
                 floor_char_boundary(shown.as_str(), range.start),

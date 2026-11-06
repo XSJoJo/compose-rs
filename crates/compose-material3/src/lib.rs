@@ -206,11 +206,11 @@ pub use tabs::{
     SecondaryTabRow, Tab, TabIndicatorModifiers, TabIndicatorScope, TabPosition, TabRowDefaults,
 };
 pub use text_field::{
-    LOCAL_TEXT_FIELD_LABEL_SCOPE, OutlinedTextField, OutlinedTextFieldContainer,
-    OutlinedTextFieldDecorationBox, OutlinedTextFieldDecorator, OutlinedTextFieldDefaults,
-    OutlinedTextFieldOfState, TextField, TextFieldContainer, TextFieldDecorationBox,
-    TextFieldDecorator, TextFieldLabelPosition, TextFieldLabelScope, TextFieldModifiers,
-    TextFieldOfState,
+    LOCAL_TEXT_FIELD_LABEL_SCOPE, OutlinedSecureTextField, OutlinedTextField,
+    OutlinedTextFieldContainer, OutlinedTextFieldDecorationBox, OutlinedTextFieldDecorator,
+    OutlinedTextFieldDefaults, OutlinedTextFieldOfState, SecureTextField, TextField,
+    TextFieldContainer, TextFieldDecorationBox, TextFieldDecorator, TextFieldLabelPosition,
+    TextFieldLabelScope, TextFieldModifiers, TextFieldOfState,
 };
 pub use theme::{
     ColorScheme, DEFAULT_LINE_HEIGHT_STYLE, DEFAULT_TEXT_STYLE, LOCAL_COLOR_SCHEME,
