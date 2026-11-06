@@ -1282,3 +1282,46 @@ fn a_lookahead_position_may_leave_a_scroll_out() {
         Offset::new(0.0, 100.0)
     );
 }
+
+/// A list measured with a height ahead and another now: what it says of itself is what's ahead's,
+/// and what's now places what it can in its own.
+#[test]
+fn a_lazy_list_says_what_s_ahead() {
+    let owner = LazyListState::new(0, 0);
+    let state = *owner;
+    let placed: Rc<std::cell::RefCell<Vec<usize>>> = Rc::default();
+    let p = placed.clone();
+    let mut ui = ComposeTestRule::sized(IntSize::new(100, 1000), move || {
+        let p = p.clone();
+        in_a_scope(move |_| {
+            let p = p.clone();
+            let by_pass = Modifier.layout(|scope, measurable, constraints| {
+                let tall = if scope.is_looking_ahead() { 300 } else { 100 };
+                let placeable = scope
+                    .measure(measurable, Constraints::new(0, constraints.max_width, tall, tall));
+                scope.layout_with(placeable.width, placeable.height, move |placement| {
+                    placement.place(&placeable, 0, 0);
+                })
+            });
+            LazyColumn!(state = state, modifier = by_pass, move |items: LazyListScope| {
+                let p = p.clone();
+                items.items(20, move |index| {
+                    let p = p.clone();
+                    Box!(
+                        modifier = Modifier.size(dp(100)).on_placed(move |_: LayoutCoordinates| {
+                            p.borrow_mut().push(index);
+                        }),
+                        {}
+                    );
+                });
+            });
+        });
+    });
+    ui.wait_for_idle();
+    let info = state.layout_info();
+    assert_eq!(info.viewport_end_offset, 300);
+    assert_eq!(info.visible_items_info.len(), 3);
+    // Now, in its 100, only the first one's placed.
+    assert!(placed.borrow().contains(&0));
+    assert!(!placed.borrow().contains(&2));
+}

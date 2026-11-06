@@ -113,6 +113,9 @@ pub struct LazyListState {
 }
 
 struct LazyListInner {
+    /// It's been measured ahead, in a `LookaheadScope`: what it says of where it is is what's
+    /// ahead's, as Compose's `hasLookaheadOccurred` (D1226).
+    measured_ahead: Cell<bool>,
     /// What runs `animate_item`, shared with its items' nodes.
     item_animator: Rc<ItemAnimator>,
     /// What `scroll_indicator_state` gives, one object as Compose's.
@@ -389,6 +392,7 @@ impl LazyListInner {
             dispose_leaving: Cell::new(false),
             core: crate::gestures::ScrollCore::new(),
             laid_out: layout_info::LaidOut::new(),
+            measured_ahead: Cell::new(false),
             density: Cell::new(1.0),
             laid_items: RefCell::new(None),
             scroll_outer: RefCell::new(None),
@@ -2651,6 +2655,13 @@ impl MeasurePolicy for LazyListLayout {
         // Observed: a scroll measures the list again. Nothing else this measurement writes is
         // read here.
         state.remeasure.get();
+        // Ahead, it's where the list's going: it says so, and no item animates for it. Now, after
+        // that, it places what's on the way, telling nothing new of where it is.
+        let looking_ahead = scope.is_looking_ahead();
+        if looking_ahead {
+            state.measured_ahead.set(true);
+        }
+        let tells = looking_ahead || !state.measured_ahead.get();
         let info = &self.info;
         let vertical = info.vertical;
         let density = scope.density();
@@ -2829,8 +2840,10 @@ impl MeasurePolicy for LazyListLayout {
                 )
             };
             // Its items gone, what they drew may fade out, and it holds their room for that.
-            let size = if animator.idle() {
-                animator.note_items(&info.items, 0);
+            let size = if animator.idle() || looking_ahead {
+                if !looking_ahead {
+                    animator.note_items(&info.items, 0);
+                }
                 size
             } else {
                 let pass = item_animator::Pass {
@@ -2852,21 +2865,23 @@ impl MeasurePolicy for LazyListLayout {
             };
             state.laid_out.begin();
             let keys_changed = state.note_laid_items(&info.items);
-            state.laid_out.end(
-                layout_info::LaidViewport {
-                    start: -before,
-                    end: main_max - before,
-                    count: 0,
-                    size,
-                    vertical,
-                    reverse,
-                    before,
-                    after,
-                    spacing,
-                    max_span: 1,
-                },
-                keys_changed,
-            );
+            if tells {
+                state.laid_out.end(
+                    layout_info::LaidViewport {
+                        start: -before,
+                        end: main_max - before,
+                        count: 0,
+                        size,
+                        vertical,
+                        reverse,
+                        before,
+                        after,
+                        spacing,
+                        max_span: 1,
+                    },
+                    keys_changed,
+                );
+            }
             return scope.layout(size.width, size.height);
         }
         state.had_items.set(true);
@@ -3260,19 +3275,22 @@ impl MeasurePolicy for LazyListLayout {
         // request's, or one between frames; a frame with nothing to compose runs none for them
         // (D575).
         prefetch.trim_between_frames(state, self.scheduler.as_ref(), composed);
-        state.position.set((index, offset));
-        if count > 0 {
-            state.first_key.set(Some(info.items.key(index)));
-        }
-        let layout_info = (count, (average + spacing) as f32, spacing, main_max, before + after);
-        if state.layout_info_written.replace(layout_info) != layout_info {
-            state.layout_info.set(layout_info);
-        }
-        let rounded = (index, offset.round() as i32);
-        if state.published.get() != rounded {
-            state.published.set(rounded);
-            state.first_index.set(rounded.0);
-            state.first_offset.set(rounded.1);
+        if tells {
+            state.position.set((index, offset));
+            if count > 0 {
+                state.first_key.set(Some(info.items.key(index)));
+            }
+            let layout_info =
+                (count, (average + spacing) as f32, spacing, main_max, before + after);
+            if state.layout_info_written.replace(layout_info) != layout_info {
+                state.layout_info.set(layout_info);
+            }
+            let rounded = (index, offset.round() as i32);
+            if state.published.get() != rounded {
+                state.published.set(rounded);
+                state.first_index.set(rounded.0);
+                state.first_offset.set(rounded.1);
+            }
         }
         // The items wanted are placed: those in view, and those a focus search asked for beyond
         // them (clipped away), so focus can move to them; those composed beyond the ones wanted
@@ -3368,7 +3386,7 @@ impl MeasurePolicy for LazyListLayout {
         }
         state.sticking_size.set(sticking.map_or(0, |(_, placeable, _)| main_of(&placeable)));
         // Where the items are for `animate_item`, before a sticking header leaves them.
-        let animated_items = (!animator.idle()).then(|| {
+        let animated_items = (!animator.idle() && !looking_ahead).then(|| {
             let at = |base: usize| {
                 move |(position, (placeable, main)): (usize, &(Placeable, i32))| {
                     (base + position, *placeable, *main)
@@ -3540,7 +3558,7 @@ impl MeasurePolicy for LazyListLayout {
                     cross_total = constrain_cross(cross_total.max(cross_min));
                 }
             }
-        } else if !missing && wanted_before == 0 {
+        } else if !missing && wanted_before == 0 && !looking_ahead {
             animator.note_items(&info.items, index);
         }
         // Sizes far from view are forgotten, so the estimates follow the data.
@@ -3606,21 +3624,23 @@ impl MeasurePolicy for LazyListLayout {
         }
         drop(laid);
         let keys_changed = state.note_laid_items(&info.items);
-        state.laid_out.end(
-            layout_info::LaidViewport {
-                start: -before,
-                end: main_max - before,
-                count,
-                size: IntSize::new(width, height),
-                vertical,
-                reverse,
-                before,
-                after,
-                spacing,
-                max_span: 1,
-            },
-            keys_changed,
-        );
+        if tells {
+            state.laid_out.end(
+                layout_info::LaidViewport {
+                    start: -before,
+                    end: main_max - before,
+                    count,
+                    size: IntSize::new(width, height),
+                    vertical,
+                    reverse,
+                    before,
+                    after,
+                    spacing,
+                    max_span: 1,
+                },
+                keys_changed,
+            );
+        }
         if let Some(observer) = state.observer.borrow().clone() {
             compose_runtime::snapshots::Snapshot::without_read_observation(|| {
                 observer.after_measure();
