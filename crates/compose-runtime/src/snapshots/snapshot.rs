@@ -1160,6 +1160,12 @@ pub(crate) struct PassSnapshot {
     framed: bool,
     /// That frame, to drop outside the runtime's borrow: closures have drops of their own.
     _left: Option<Box<ObserverFrame>>,
+    /// A composition observer's frame is on the stack, till `leave` (`tooling`).
+    #[cfg(feature = "composition-observer")]
+    observer_framed: bool,
+    /// That frame, to drop outside the borrow.
+    #[cfg(feature = "composition-observer")]
+    _observer_left: Option<Box<ObserverFrame>>,
 }
 
 /// [`PassSnapshot::commit`] when there may be something to decide, as any snapshot's apply.
@@ -1243,6 +1249,10 @@ impl PassSnapshot {
             observed,
             framed: false,
             _left: None,
+            #[cfg(feature = "composition-observer")]
+            observer_framed: false,
+            #[cfg(feature = "composition-observer")]
+            _observer_left: None,
         }
     }
 
@@ -1274,8 +1284,27 @@ impl PassSnapshot {
         tooling::created(&handle, parent.as_ref(), creating);
     }
 
+    /// `read` hears the pass's reads till it leaves: a composition observer's (`tooling`).
+    #[cfg(feature = "composition-observer")]
+    pub(crate) fn push_read_frame(&mut self, read: StateObserverFn) {
+        self.observer_framed = true;
+        with_runtime(|runtime| {
+            runtime.snapshots.push_frame(ObserverFrame {
+                read: Some(read),
+                write: None,
+                barrier: false,
+                entered: None,
+            })
+        });
+    }
+
     /// What it replaced is current again; composing is over.
     pub(crate) fn leave(&mut self, snapshots: &mut Snapshots) {
+        // Pushed last, popped first.
+        #[cfg(feature = "composition-observer")]
+        if std::mem::take(&mut self.observer_framed) {
+            self._observer_left = snapshots.pop_frame().map(|(frame, _)| Box::new(frame));
+        }
         if self.framed {
             self.framed = false;
             self._left = snapshots.pop_frame().map(|(frame, _)| Box::new(frame));

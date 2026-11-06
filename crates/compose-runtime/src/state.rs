@@ -522,6 +522,29 @@ pub(crate) fn read_is_tracked() -> bool {
     })
 }
 
+/// The scope a read now registers with, if it's one of `composition`'s: what a composition
+/// observer hears read (`tooling`).
+#[cfg(feature = "composition-observer")]
+pub(crate) fn scope_reading_in(composition: crate::runtime::CompositionId) -> Option<ScopeId> {
+    with_runtime(|runtime| {
+        if runtime.active.is_none_or(|active| active.composition != composition) {
+            return None;
+        }
+        let scope = runtime.reading_scope();
+        if scope.is_none() || !runtime.snapshots.composition_reads() {
+            return None;
+        }
+        match runtime.observing {
+            Some(observing)
+                if observing.exclusive || runtime.snapshots.observing_calculation().is_some() =>
+            {
+                None
+            }
+            _ => Some(scope),
+        }
+    })
+}
+
 /// Registers a read of derived state `id`, brought up to date. Read observers heard it already.
 pub(crate) fn register_read_of(id: StateId, at: &'static Location<'static>) {
     if let Read::Stale(error) = with_runtime(|runtime| read_cell_in(runtime, id, at)) {
@@ -746,6 +769,7 @@ pub(crate) fn invalidate_cell(runtime: &mut Runtime, id: StateId, told: Told) {
             PassFrames::of(*active, frames),
             reader.scope,
             None,
+            crate::runtime::cause(Some(id)),
         );
         true
     });
@@ -793,6 +817,7 @@ pub(crate) fn invalidate_cell(runtime: &mut Runtime, id: StateId, told: Told) {
                 PassFrames::of(*active, frames),
                 reader.scope,
                 Some(cell),
+                crate::runtime::cause(Some(cell)),
             );
             true
         });
@@ -832,6 +857,7 @@ pub(crate) fn invalidate_result_readers(id: StateId) {
                     PassFrames::of(*active, frames),
                     reader.scope,
                     None,
+                    crate::runtime::cause(Some(id)),
                 );
                 true
             });

@@ -808,6 +808,7 @@ name = "compose-runtime"
 version = "0.1.0"
 dependencies = [
  "compose-macros",
+ "compose-runtime",
  "futures-core",
  "log",
 ]

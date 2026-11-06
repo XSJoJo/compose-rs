@@ -27,7 +27,7 @@ These are on local branches, so they're not lost, but each still has to finish i
 - **`Modifier.onLayoutRectChanged` and its callbacks** (about 160).
 - **The grid layout** (about 80). `FlexBox` is in (D1367).
 - **Android view interop**, `AndroidView` and hosting (about 280).
-- **Runtime:** composition observers (about 28), error traces (about 33), composition data (about 15).
+- **Runtime:** composition registration observers (`Recomposer.observe`, about 11), error traces (about 33), composition data (about 15).
 
 ### 3. Graphics
 - **`GraphicsLayer` as an object** (about 95), **color spaces** (about 70), offscreen canvas and bitmaps.
