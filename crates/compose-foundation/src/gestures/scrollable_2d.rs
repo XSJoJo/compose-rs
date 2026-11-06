@@ -66,11 +66,9 @@ pub trait Scrollable2DState {
     /// Whether a scroll (a block, a drag, a fling) goes on, as `isScrollInProgress` (a state read).
     fn is_scroll_in_progress(&self) -> bool;
 
-    /// Whether it can scroll by `offset`, as `canScroll`: what an overscroll effect is told of.
-    fn can_scroll(&self, offset: Offset) -> bool {
-        let _ = offset;
-        true
-    }
+    /// Whether it can scroll by `offset`, as `canScroll`: what an overscroll effect and the
+    /// wheel ask.
+    fn can_scroll(&self, offset: Offset) -> bool;
 }
 
 /// `scroll` and the `Scrollable2DState` extensions of `ScrollExtensions.kt`, on every state.
@@ -206,6 +204,11 @@ impl Scrollable2DState for DefaultScrollable2DState {
 
     fn is_scroll_in_progress(&self) -> bool {
         self.inner.scrolling.get()
+    }
+
+    /// Always, as Compose's default state.
+    fn can_scroll(&self, _: Offset) -> bool {
+        true
     }
 }
 
@@ -747,10 +750,16 @@ impl Scrollable2DNode {
             let density = self.logic.borrow().density;
             // The pixels as a scrollable's: a turn down scrolls forward, as a drag up does.
             let pixels = event.wheel_pixels(density, bounds);
-            if pixels == Offset::ZERO {
+            let delta = Offset::ZERO - pixels;
+            // What it can't use is left to what's around (a parent, a Ctrl-wheel zoom), unless a
+            // wheel gesture of its own goes on, as `onScrollingEvent` with `canConsumeDelta`.
+            if pixels == Offset::ZERO || !self.logic.borrow().state.can_scroll(delta) {
+                if scrolling {
+                    event.consume();
+                }
                 return;
             }
-            wheel.send(Offset::ZERO - pixels, (event_time(event) / 1_000_000) as i64);
+            wheel.send(delta, (event_time(event) / 1_000_000) as i64);
             event.consume();
             if let Some((_, job)) = &self.wheel {
                 let job = *job;

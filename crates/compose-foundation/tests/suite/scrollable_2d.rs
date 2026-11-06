@@ -642,3 +642,155 @@ fn a_wheel_scrolls_by_its_turns() {
     // A turn down scrolls as a drag up does.
     assert!((total.get().y + 30.0 * 6.4).abs() < 0.01, "{:?}", total.get());
 }
+
+/// A state that can't scroll any further, as one at its end.
+#[derive(Clone)]
+struct AtTheEnd(DefaultScrollable2DState);
+
+impl Scrollable2DState for AtTheEnd {
+    fn scroll_boxed<'a>(
+        &'a self,
+        priority: MutatePriority,
+        block: compose_foundation::gestures::Scroll2DBlock<'a>,
+    ) -> LocalBoxFuture<'a, Result<(), MutationInterrupted>> {
+        self.0.scroll_boxed(priority, block)
+    }
+
+    fn dispatch_raw_delta(&self, delta: Offset) -> Offset {
+        self.0.dispatch_raw_delta(delta)
+    }
+
+    fn is_scroll_in_progress(&self) -> bool {
+        self.0.is_scroll_in_progress()
+    }
+
+    fn can_scroll(&self, _: Offset) -> bool {
+        false
+    }
+}
+
+impl ComposeArg for AtTheEnd {
+    fn same(&self, other: &Self) -> bool {
+        self.0.same(&other.0)
+    }
+}
+
+// The review's: a wheel turn a 2D scrollable can't use is left to a parent reading the wheel.
+#[test]
+fn a_wheel_turn_it_cannot_use_is_left_to_its_parent() {
+    for at_the_end in [false, true] {
+        let (state, total) = consuming(1.0);
+        let unconsumed = Rc::new(Cell::new(0));
+        let counted = unconsumed.clone();
+        let mut ui = window(move || {
+            let (state, counted) = (state.clone(), counted.clone());
+            let parent = move |scope: compose_ui::PointerInputScope| {
+                let counted = counted.clone();
+                async move {
+                    loop {
+                        let event =
+                            scope.await_pointer_event(compose_ui::PointerEventPass::Main).await;
+                        if event.kind == compose_ui::PointerEventType::Scroll
+                            && !event.changes.iter().any(|change| change.is_consumed())
+                        {
+                            counted.set(counted.get() + 1);
+                        }
+                    }
+                }
+            };
+            Box!(modifier = Modifier.size(300.dp()).pointer_input((), parent), {
+                let child = if at_the_end {
+                    Modifier.scrollable_2d(AtTheEnd(state.clone()), true, None, None, None)
+                } else {
+                    scrolling(&state)
+                };
+                Box!(modifier = Modifier.size(100.dp()).test_tag(TAG).then(child));
+            });
+        });
+        ui.on_node_with_tag(TAG).perform_mouse_input(|mouse| {
+            mouse.move_to(mouse.center());
+            mouse.scroll(1.0, ScrollWheel::Vertical);
+        });
+        if at_the_end {
+            assert_eq!((unconsumed.get(), total.get()), (1, Offset::ZERO));
+        } else {
+            assert_eq!(unconsumed.get(), 0);
+            assert!(total.get().y < 0.0);
+        }
+    }
+}
+
+// The review's: a mouse doesn't drag it, as `CanDragCalculation`.
+#[test]
+fn a_mouse_drag_scrolls_nothing() {
+    let (state, total) = consuming(1.0);
+    let mut ui = show(move || scrolling(&state));
+    ui.on_node_with_tag(TAG).perform_mouse_input(|mouse| {
+        mouse.move_to(mouse.center());
+        mouse.press(MouseButton::Primary);
+        mouse.move_by(Offset::new(50.0, 50.0));
+        mouse.release(MouseButton::Primary);
+    });
+    assert_eq!(total.get(), Offset::ZERO);
+}
+
+/// Takes what a fling leaves after the scrollable, counting the steps.
+struct PostFling {
+    deltas: Rc<Cell<Offset>>,
+    steps: Rc<Cell<u32>>,
+}
+
+impl NestedScrollConnection for PostFling {
+    fn on_post_scroll(&self, _: Offset, available: Offset, source: NestedScrollSource) -> Offset {
+        if source == NestedScrollSource::SideEffect {
+            self.deltas.set(self.deltas.get() + available);
+            self.steps.set(self.steps.get() + 1);
+        }
+        available
+    }
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/Scrollable2DInputTest.kt, scrollable_nestedFling_shouldContinueSendingDeltasWhenHitBounds
+#[test]
+fn a_fling_at_its_end_keeps_going_to_a_parent_taking_the_rest() {
+    let hit = Rc::new(Cell::new(false));
+    let bounded = hit.clone();
+    let state = scrollable_2d_state(move |delta| if bounded.get() { Offset::ZERO } else { delta });
+    let (deltas, steps) = (Rc::new(Cell::new(Offset::ZERO)), Rc::new(Cell::new(0)));
+    let connection: Rc<dyn NestedScrollConnection> =
+        Rc::new(PostFling { deltas: deltas.clone(), steps: steps.clone() });
+    let mut ui = window(move || {
+        let state = state.clone();
+        Box!(modifier = Modifier.nested_scroll(connection.clone()), {
+            Box!(modifier = Modifier.size(200.dp()).test_tag(TAG).then(scrolling(&state)));
+        });
+    });
+    ui.set_auto_advance(false);
+    ui.on_node_with_tag(TAG).perform_touch_input(|touch| {
+        let center = touch.center();
+        touch.swipe(center, Offset::new(center.x, touch.bottom()), 200);
+    });
+    ui.advance_time_by(Duration::from_millis(200));
+    hit.set(true);
+    deltas.set(Offset::ZERO);
+    steps.set(0);
+    ui.set_auto_advance(true);
+    ui.wait_for_idle();
+    assert!(deltas.get().y != 0.0 && steps.get() > 1, "{:?} in {}", deltas.get(), steps.get());
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/MouseWheelScrollable2DTest.kt, scrollable_noMomentum_shouldChangeScrollStateAfterRelease
+#[test]
+fn diagonal_wheel_turns_scroll_by_their_sum() {
+    let (state, total) = consuming(1.0);
+    let mut ui = show(move || scrolling(&state));
+    // A turn of 10 px on each axis, the content's way (a unit is 64 px at density 1).
+    let turn = -10.0 / 64.0;
+    ui.on_node_with_tag(TAG).perform_mouse_input(|mouse| {
+        mouse.move_to(mouse.center());
+        for _ in 0..30 {
+            mouse.scroll_offset(Offset::new(turn, turn));
+        }
+    });
+    assert_eq!(total.get(), Offset::new(300.0, 300.0));
+}
