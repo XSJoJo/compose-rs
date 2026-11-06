@@ -9,7 +9,9 @@ use compose_foundation::lazy::*;
 use compose_foundation::*;
 use compose_runtime::*;
 use compose_test::*;
-use compose_ui::{Constraints, IntRect, IntSize, Layout, UnitExt, measure_policy};
+use compose_ui::{
+    Constraints, GraphicsLayerScope, IntRect, IntSize, Layout, UnitExt, measure_policy,
+};
 
 fn rule(content: impl Fn() + 'static) -> ComposeTestRule {
     ComposeTestRule::sized(IntSize::new(1000, 1000), content)
@@ -497,6 +499,44 @@ fn jumps_back_and_forth_leave_every_item_in_view_its_rects() {
     for index in 8..12 {
         assert_rects_in_item(&mut ui, &format!("Item-{index}"));
     }
+}
+
+/// A layout placing its child, tagged `inner` and 10 by 10, at `(at, at)` with a layer `block`
+/// gives.
+fn placing_inner_with_layer(at: i32, block: fn(&mut GraphicsLayerScope)) -> impl Fn() + 'static {
+    move || {
+        Layout!(
+            measure_policy = measure_policy(move |scope, measurables, constraints: Constraints| {
+                let placeable = scope.measure(measurables[0], constraints);
+                scope.layout_with(constraints.max_width, constraints.max_height, move |placement| {
+                    placement.place_with_layer(&placeable, at, at, block);
+                })
+            }),
+            {
+                Box!(modifier = Modifier.test_tag("inner").size(10.dp()));
+            }
+        );
+    }
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/RectListIntegrationTest.kt, testLayoutPlacingWithOffsetAndScale
+#[test]
+fn a_child_placed_with_an_offset_and_a_scaled_layer() {
+    let mut ui = rule(placing_inner_with_layer(10, |layer| {
+        layer.scale_x = 2.0;
+        layer.scale_y = 2.0;
+    }));
+    assert_rect(&mut ui, "inner", (5, 5, 25, 25));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/RectListIntegrationTest.kt, testLayoutPlacingWithTranslateOnLayer
+#[test]
+fn a_child_placed_with_an_offset_and_a_translated_layer() {
+    let mut ui = rule(placing_inner_with_layer(5, |layer| {
+        layer.translation_x = 10.0;
+        layer.translation_y = 20.0;
+    }));
+    assert_rect(&mut ui, "inner", (15, 25, 25, 35));
 }
 
 // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/RectListIntegrationTest.kt, testUnplacedNodeHasNoRect

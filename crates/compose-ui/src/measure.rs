@@ -738,6 +738,47 @@ impl UiTree {
         run: u64,
         motion: bool,
     ) {
+        // Placed without a layer, it loses one it had (the lookahead pass places none).
+        if !self.node(node).placement_layers.is_empty() && !self.in_lookahead {
+            let old = self.update_placement_layer(node, layer, None);
+            // What the block captured is application code's, dropped with the window open.
+            let open = self.focus_requests.window.open_to_read(self);
+            drop(old);
+            drop(open);
+        }
+        self.place_unchanged_layer(node, layer, position, run, motion);
+    }
+
+    /// `place_in_run` with a layer, as `placeWithLayer` (D1909): the lookahead pass ignores it,
+    /// as Compose's. Returns what it replaced, for the caller to drop outside the tree.
+    #[must_use]
+    pub(crate) fn place_with_layer_in_run(
+        &mut self,
+        node: NodeId,
+        layer: usize,
+        position: IntOffset,
+        run: u64,
+        motion: bool,
+        block: crate::graphics_layer::LayerBlock,
+    ) -> Option<crate::placement_layer::Replaced> {
+        let old = if self.in_lookahead {
+            None
+        } else {
+            self.update_placement_layer(node, layer, Some(block))
+        };
+        self.place_unchanged_layer(node, layer, position, run, motion);
+        old
+    }
+
+    /// `place_in_run`, its layer as it is.
+    fn place_unchanged_layer(
+        &mut self,
+        node: NodeId,
+        layer: usize,
+        position: IntOffset,
+        run: u64,
+        motion: bool,
+    ) {
         let value = self.node_mut(node);
         if (motion | (value.motion_layers != 0)) && value.placed_in_motion(layer) != motion {
             value.note_motion(layer, motion);

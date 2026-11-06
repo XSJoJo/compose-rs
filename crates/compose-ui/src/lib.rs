@@ -83,6 +83,7 @@ mod path_measure;
 mod pinnable;
 mod placeholder;
 mod placement;
+mod placement_layer;
 mod platform_services;
 mod platform_text_style;
 mod pointer_event;
@@ -246,7 +247,7 @@ pub use graphics::{
 };
 pub use graphics_layer::{
     BlurredEdgeTreatment, CompositingStrategy, DEFAULT_SHADOW_COLOR, GraphicsLayerScope,
-    LayerExtras, RenderEffect, TransformOrigin,
+    LayerBlock, LayerExtras, RenderEffect, TransformOrigin,
 };
 pub use graphics_layer_object::{GraphicsLayer, remember_graphics_layer};
 pub use host::LOCAL_DENSITY;

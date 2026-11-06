@@ -198,6 +198,9 @@ struct LayerCell {
     pass_start: RefCell<Option<PassStart>>,
     /// Read where it's drawn and bumped when it changes, so what draws it draws again.
     version: compose_runtime::OwnedState<u64>,
+    /// The block a placement placing with it runs, made once so placing again with it is the
+    /// same block (D1909).
+    placement_block: RefCell<Option<crate::graphics_layer::LayerBlock>>,
 }
 
 /// A graphics layer, as Compose's `GraphicsLayer`: shared as a Kotlin reference is (a clone is
@@ -241,6 +244,7 @@ impl GraphicsLayer {
             released: Cell::new(false),
             pass_start: RefCell::new(None),
             version: compose_runtime::mutable_state_of(0),
+            placement_block: RefCell::new(None),
         }))
     }
 
@@ -428,6 +432,53 @@ impl GraphicsLayer {
     /// Whether `other` is this layer.
     pub fn ptr_eq(&self, other: &GraphicsLayer) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// The block giving its properties to a placement's layer, the same each time.
+    pub(crate) fn placement_block(&self) -> crate::graphics_layer::LayerBlock {
+        let mut block = self.0.placement_block.borrow_mut();
+        block
+            .get_or_insert_with(|| {
+                let cell = Rc::downgrade(&self.0);
+                crate::graphics_layer::LayerBlock::new(move |scope| {
+                    if let Some(cell) = cell.upgrade() {
+                        GraphicsLayer(cell).apply_to_scope(scope);
+                    }
+                })
+            })
+            .clone()
+    }
+
+    /// Gives `scope` its properties, for a placement placing with it (D1909): its transform,
+    /// alpha, shadow, clip (to the bounds) and compositing strategy; its pivot, if set, as a
+    /// fraction of the scope's size. Reads its version, so a change to them runs this again.
+    pub(crate) fn apply_to_scope(&self, scope: &mut crate::graphics_layer::GraphicsLayerScope) {
+        self.0.version.get();
+        let properties = self.0.properties.borrow();
+        scope.alpha = properties.alpha;
+        scope.scale_x = properties.scale_x;
+        scope.scale_y = properties.scale_y;
+        scope.translation_x = properties.translation_x;
+        scope.translation_y = properties.translation_y;
+        scope.rotation_z = properties.rotation_z;
+        scope.shadow_elevation = properties.shadow_elevation;
+        scope.clip = properties.clip;
+        scope.compositing_strategy = properties.compositing_strategy;
+        if properties.ambient_shadow_color != Color::BLACK {
+            scope.set_ambient_shadow_color(properties.ambient_shadow_color);
+        }
+        if properties.spot_shadow_color != Color::BLACK {
+            scope.set_spot_shadow_color(properties.spot_shadow_color);
+        }
+        let pivot = properties.pivot_offset;
+        if !pivot.x.is_nan() && !pivot.y.is_nan() {
+            let (width, height) = (scope.size.width, scope.size.height);
+            let fraction = |at: f32, of: f32| if of == 0.0 { 0.5 } else { at / of };
+            scope.transform_origin = crate::graphics_layer::TransformOrigin {
+                pivot_fraction_x: fraction(pivot.x, width),
+                pivot_fraction_y: fraction(pivot.y, height),
+            };
+        }
     }
 }
 

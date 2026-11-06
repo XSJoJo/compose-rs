@@ -549,18 +549,28 @@ impl UiTree {
     /// From layer `from.0` under the graphics layers before entry `from.1`, out to the same with
     /// `to`, inside one node. The transforms are in the node's first layer's coordinates, so what
     /// they're given is too.
+    ///
+    /// The layers placed with one are met after the chain's in them (D1909): those of layers
+    /// past `to.0`, and with `whole` (out of the node, `to` its top) layer 0's too.
     fn walk_out(
         &self,
         node: NodeId,
         from: (usize, usize),
         to: (usize, usize),
+        whole: bool,
         motion: bool,
         visit: &mut dyn FnMut(Step),
     ) {
         let value = self.node(node);
         visit(Step::Move(crate::layout_callbacks::layer_origin(value, from.0)));
+        if let Some(layer) = self.placed_layer_at(node, from.1, from.0, to.0, whole) {
+            visit(Step::Layer(layer));
+        }
         for index in (to.1..from.1).rev() {
             if let Some(layer) = self.layer_at(node, index) {
+                visit(Step::Layer(layer));
+            }
+            if let Some(layer) = self.placed_layer_at(node, index, from.0, to.0, whole) {
                 visit(Step::Layer(layer));
             }
         }
@@ -582,6 +592,7 @@ impl UiTree {
         node: NodeId,
         from: (usize, usize),
         to: (usize, usize),
+        whole: bool,
         motion: bool,
         visit: &mut dyn FnMut(Step),
     ) {
@@ -597,12 +608,38 @@ impl UiTree {
         }
         visit(Step::Move(origin));
         for index in from.1..to.1 {
+            if let Some(layer) = self.placed_layer_at(node, index, to.0, from.0, whole) {
+                visit(Step::Unlayer(layer));
+            }
             if let Some(layer) = self.layer_at(node, index) {
                 visit(Step::Unlayer(layer));
             }
         }
+        if let Some(layer) = self.placed_layer_at(node, to.1, to.0, from.0, whole) {
+            visit(Step::Unlayer(layer));
+        }
         let back = crate::layout_callbacks::layer_origin(value, to.0);
         visit(Step::Move(Offset::new(0.0 - back.x, 0.0 - back.y)));
+    }
+
+    /// How the layer placed with one starting at chain entry `index` of `node` moves points, if
+    /// it's between a place of layer `inner` and one of layer `outer` (out of the node with
+    /// `whole`): its last run's (D1909).
+    fn placed_layer_at(
+        &self,
+        node: NodeId,
+        index: usize,
+        inner: usize,
+        outer: usize,
+        whole: bool,
+    ) -> Option<LayerMap> {
+        let value = self.node(node);
+        let (graphics, layer) = value.placed_layer_at(index, inner)?;
+        if layer <= outer && !(whole && layer == 0) {
+            return None;
+        }
+        let origin = crate::layout_callbacks::layer_origin(value, layer);
+        Some(graphics.layer_map(origin, value.layers[layer].measured.into()))
     }
 
     /// How chain entry `index` of `node` moves points, if it's a graphics layer: its last run's.
@@ -643,7 +680,7 @@ impl UiTree {
         // Out of `from` to the common node.
         let mut at = (from.layer, from.before);
         for &node in &up[..meeting] {
-            self.walk_out(node, at, (0, 0), motion, visit);
+            self.walk_out(node, at, (0, 0), true, motion, visit);
             if let Some(by) = self.position_step(node, motion) {
                 visit(Step::Move(by));
             }
@@ -652,8 +689,8 @@ impl UiTree {
         let at_end = if common == to.node { (to.layer, to.before) } else { inner(common) };
         // The outer of the two, within it.
         let middle = if at.1 <= at_end.1 { at } else { at_end };
-        self.walk_out(common, at, middle, motion, visit);
-        self.walk_in(common, middle, at_end, motion, visit);
+        self.walk_out(common, at, middle, false, motion, visit);
+        self.walk_in(common, middle, at_end, false, motion, visit);
         // In from the common node to `to`.
         let way_down = down.iter().position(|node| *node == common).expect("the common node");
         for &node in down[..way_down].iter().rev() {
@@ -661,7 +698,7 @@ impl UiTree {
                 visit(Step::Move(Offset::new(0.0 - by.x, 0.0 - by.y)));
             }
             let end = if node == to.node { (to.layer, to.before) } else { inner(node) };
-            self.walk_in(node, (0, 0), end, motion, visit);
+            self.walk_in(node, (0, 0), end, true, motion, visit);
         }
     }
 
@@ -669,7 +706,7 @@ impl UiTree {
     fn walk_to_root(&self, from: Place, visit: &mut dyn FnMut(Step)) {
         let mut at = (from.layer, from.before);
         for &node in &self.path_to_root(from.node) {
-            self.walk_out(node, at, (0, 0), true, visit);
+            self.walk_out(node, at, (0, 0), true, true, visit);
             let value = self.node(node);
             if value.overlay {
                 visit(Step::Move(value.overlay_origin));
@@ -700,7 +737,7 @@ impl UiTree {
             } else {
                 (value.layers.len() - 1, value.chain.len())
             };
-            self.walk_in(node, (0, 0), end, true, visit);
+            self.walk_in(node, (0, 0), end, true, true, visit);
         }
     }
 
@@ -743,8 +780,20 @@ impl UiTree {
 
     /// Visits the clips between `from` and `to`, each as the place and size of what it clips to.
     fn clips_between(&self, from: Place, to: Place, visit: &mut dyn FnMut(Place, IntSize)) {
-        let mut clips = |node: NodeId, entries: std::ops::Range<usize>| {
+        // A node's clips before `entries.end`, after `entries.start` (or from its top, with
+        // `whole`): those of the layers placed with one too (D1909).
+        let mut clips_of = |node: NodeId, entries: std::ops::Range<usize>, whole: bool| {
             let value = self.node(node);
+            for placed in &value.placement_layers {
+                let layer = placed.layer as usize;
+                if layer >= value.layers.len() || !placed.graphics.clips() {
+                    continue;
+                }
+                let start = value.start_of_layer(layer);
+                if (whole || start > entries.start) && start <= entries.end {
+                    visit(Place { node, layer, before: start }, value.layers[layer].measured);
+                }
+            }
             for index in entries {
                 if value.chain[index].clips() {
                     let layer = value.layer_of(index);
@@ -757,25 +806,25 @@ impl UiTree {
         let all = |node: NodeId| self.node(node).chain.len();
         let Some(meeting) = up.iter().position(|node| down.contains(node)) else {
             for &node in &up {
-                clips(node, 0..if node == from.node { from.before } else { all(node) });
+                clips_of(node, 0..if node == from.node { from.before } else { all(node) }, true);
             }
             for &node in &down {
-                clips(node, 0..if node == to.node { to.before } else { all(node) });
+                clips_of(node, 0..if node == to.node { to.before } else { all(node) }, true);
             }
             return;
         };
         let common = up[meeting];
         for &node in &up[..meeting] {
-            clips(node, 0..if node == from.node { from.before } else { all(node) });
+            clips_of(node, 0..if node == from.node { from.before } else { all(node) }, true);
         }
         let at = if common == from.node { from.before } else { all(common) };
         let at_end = if common == to.node { to.before } else { all(common) };
         let middle = at.min(at_end);
-        clips(common, middle..at);
-        clips(common, middle..at_end);
+        clips_of(common, middle..at, false);
+        clips_of(common, middle..at_end, false);
         let way_down = down.iter().position(|node| *node == common).expect("the common node");
         for &node in down[..way_down].iter().rev() {
-            clips(node, 0..if node == to.node { to.before } else { all(node) });
+            clips_of(node, 0..if node == to.node { to.before } else { all(node) }, true);
         }
     }
 

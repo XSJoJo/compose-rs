@@ -437,11 +437,76 @@ struct CachedOutline {
     outline: Outline,
 }
 
+/// A placement's layer block, as `placeWithLayer`'s `layerBlock`: made from any closure, or kept
+/// and given again (a clone) to keep its identity, so placing again with it doesn't run it again,
+/// as Compose compares its blocks by identity (D1909).
+#[derive(Clone)]
+pub struct LayerBlock(Rc<dyn Fn(&mut GraphicsLayerScope)>);
+
+impl LayerBlock {
+    /// The block `block`.
+    pub fn new(block: impl Fn(&mut GraphicsLayerScope) + 'static) -> LayerBlock {
+        LayerBlock(Rc::new(block))
+    }
+
+    /// The block giving `layer`'s properties, as `placeWithLayer(layer)`: its transform, alpha,
+    /// clip to its bounds, shadow and compositing strategy, read where the placement's layer
+    /// computes its properties, so a change to them computes them again. The same block for the
+    /// same layer.
+    pub fn of_graphics_layer(layer: &crate::graphics_layer_object::GraphicsLayer) -> LayerBlock {
+        layer.placement_block()
+    }
+
+    /// Whether two blocks are the same function object.
+    pub fn ptr_eq(&self, other: &LayerBlock) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl<F: Fn(&mut GraphicsLayerScope) + 'static> From<F> for LayerBlock {
+    fn from(block: F) -> LayerBlock {
+        LayerBlock::new(block)
+    }
+}
+
+impl std::fmt::Debug for LayerBlock {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "LayerBlock({:p})", Rc::as_ptr(&self.0).cast::<()>())
+    }
+}
+
 impl GraphicsLayerNode {
     /// `Modifier.clip(shape)`'s layer (a built-in element's node).
     pub(crate) fn clip(shape: Shape) -> GraphicsLayerNode {
+        GraphicsLayerNode::of(Layer::Fixed(GraphicsLayerScope {
+            shape,
+            clip: true,
+            ..Default::default()
+        }))
+    }
+
+    /// A placement's layer, running `block` (D1909).
+    pub(crate) fn placed(block: LayerBlock) -> GraphicsLayerNode {
+        GraphicsLayerNode::of(Layer::Block(block.0))
+    }
+
+    /// Whether it runs `block`.
+    pub(crate) fn runs(&self, block: &LayerBlock) -> bool {
+        matches!(&self.layer, Layer::Block(own) if Rc::ptr_eq(own, &block.0))
+    }
+
+    /// Runs `block` from now on: what it gave last, and what a node under it was told, stay
+    /// until it runs. Returns the block it ran.
+    pub(crate) fn replace_block(&mut self, block: LayerBlock) -> Option<LayerBlock> {
+        match std::mem::replace(&mut self.layer, Layer::Block(block.0)) {
+            Layer::Block(old) => Some(LayerBlock(old)),
+            _ => None,
+        }
+    }
+
+    fn of(layer: Layer) -> GraphicsLayerNode {
         GraphicsLayerNode {
-            layer: Layer::Fixed(GraphicsLayerScope { shape, clip: true, ..Default::default() }),
+            layer,
             outline: Default::default(),
             positional: Cell::new(None),
             transparent: Cell::new(false),
@@ -786,15 +851,7 @@ fn faded(color: Color, alpha: f32) -> Color {
 impl ModifierNodeElement for GraphicsLayerElement {
     type Node = GraphicsLayerNode;
     fn create(&self) -> GraphicsLayerNode {
-        GraphicsLayerNode {
-            layer: self.0.clone(),
-            outline: Default::default(),
-            positional: Cell::new(None),
-            transparent: Cell::new(false),
-            ran: Cell::new(None),
-            ran_shape: std::cell::RefCell::new(Shape::Rectangle),
-            last_outline: Default::default(),
-        }
+        GraphicsLayerNode::of(self.0.clone())
     }
 
     fn update(&self, node: &mut GraphicsLayerNode) {

@@ -418,15 +418,27 @@ impl UiTree {
     ) -> Offset {
         let value = self.node(node);
         let mut point = point + layer_origin(value, layer);
+        // A layer placed with one after the chain's in it (D1909); not layer 0's, which the
+        // outer layer is in.
+        let placed = |index: usize, point: Offset| match value.placed_layer_at(index, layer) {
+            Some((graphics, at)) if at > 0 => {
+                let map =
+                    graphics.layer_map(layer_origin(value, at), value.layers[at].measured.into());
+                graphics.note_transform(&map, self.position_listeners);
+                map.map(point)
+            }
+            _ => point,
+        };
+        point = placed(before_entry, point);
         for index in (0..before_entry).rev() {
-            let Some(graphics) = value.chain[index].node.downcast_ref::<GraphicsLayerNode>() else {
-                continue;
-            };
-            let layer = value.layer_of(index);
-            let map =
-                graphics.layer_map(layer_origin(value, layer), value.layers[layer].measured.into());
-            graphics.note_transform(&map, self.position_listeners);
-            point = map.map(point);
+            if let Some(graphics) = value.chain[index].node.downcast_ref::<GraphicsLayerNode>() {
+                let layer = value.layer_of(index);
+                let map = graphics
+                    .layer_map(layer_origin(value, layer), value.layers[layer].measured.into());
+                graphics.note_transform(&map, self.position_listeners);
+                point = map.map(point);
+            }
+            point = placed(index, point);
         }
         point
     }

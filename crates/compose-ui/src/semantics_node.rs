@@ -1436,7 +1436,25 @@ impl UiTree {
         };
         let (mut layer, mut origin, mut in_clips) = (0, Offset::ZERO, true);
         let mut at_entry = None;
+        // A layer placed with one, from its first entry on (D1909): undone, and clipping to its
+        // bounds if it clips.
+        let placed = |tree: &Self, index: usize, local: &mut Offset, in_clips: &mut bool| {
+            let value = tree.node(node);
+            if let Some((graphics, at)) = value.placed_layer_at(index, usize::MAX) {
+                let origin = crate::layout_callbacks::layer_origin(value, at);
+                let size = value.layers[at].measured;
+                *local = graphics.layer_map(origin, size.into()).unmap(*local);
+                if graphics.clips() {
+                    let inside = *local - origin;
+                    *in_clips &= inside.x >= 0.0
+                        && inside.y >= 0.0
+                        && inside.x < size.width as f32
+                        && inside.y < size.height as f32;
+                }
+            }
+        };
         for index in 0..self.node(node).chain.len() {
+            placed(self, index, &mut local, &mut in_clips);
             if entry == Some(index) {
                 at_entry = Some((local - origin, in_clips));
             }
@@ -1462,6 +1480,8 @@ impl UiTree {
                 origin = origin + Offset::new(offset.x as f32, offset.y as f32);
             }
         }
+        let length = self.node(node).chain.len();
+        placed(self, length, &mut local, &mut in_clips);
         // The chain's walk stops at the content's layer; without it, the layers are added here.
         let value = self.node(node);
         for next in layer + 1..value.layers.len() {

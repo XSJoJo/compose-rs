@@ -29,8 +29,8 @@ use std::rc::{Rc, Weak};
 use compose_animation::{Animatable, AnimationEndReason, AnimationSpec, Spring, spring_with};
 use compose_runtime::{CoroutineScope, Job, Owned, OwnedState, mutable_state_of};
 use compose_ui::{
-    Constraints, Density, DrawCapture, DrawScope, IntOffset, IntSize, Modifier, ModifierNode,
-    ModifierNodeElement, NodeHandle, Offset, Rect,
+    Constraints, Density, DrawCapture, DrawScope, IntOffset, IntSize, LayerBlock, Measurable,
+    MeasureScope, Modifier, ModifierNode, ModifierNodeElement, NodeHandle, Offset, Placeable, Rect,
 };
 
 use super::{ItemLayout, Items, KEY_WINDOW, LazyGridItemScope, LazyItemScope, LazyListInner};
@@ -104,25 +104,16 @@ impl AnimateItemModifier for Modifier {
         }
         let fades_out = fade_out_spec.is_some();
         let capture = DrawCapture::without_own_layer();
-        // The layer's block is made with each modifier and compares as another, so it reaches its
-        // node's lasting data through this, which the element's `create` and `update` fill.
-        let link: Rc<RefCell<Option<Rc<AnimateItemData>>>> = Rc::default();
-        let block_link = link.clone();
-        let modifier = self
-            .then_custom(AnimateItemElement {
-                specs: AnimateItemSpecs {
-                    fade_in: fade_in_spec,
-                    placement: placement_spec,
-                    fade_out: fade_out_spec,
-                },
-                capture: capture.clone(),
-                link,
-            })
-            .graphics_layer(move |layer| {
-                if let Some(data) = &*block_link.borrow() {
-                    data.apply_to_layer(layer);
-                }
-            });
+        // Its item places the child with the animation's layer ([`place_child`]), the whole child
+        // moving and fading, as Compose's (D1910).
+        let modifier = self.then_custom(AnimateItemElement {
+            specs: AnimateItemSpecs {
+                fade_in: fade_in_spec,
+                placement: placement_spec,
+                fade_out: fade_out_spec,
+            },
+            capture: capture.clone(),
+        });
         if fades_out { modifier.then_custom(ItemCaptureElement(capture)) } else { modifier }
     }
 }
@@ -142,6 +133,28 @@ pub(super) struct AnimateItemData {
     /// Read by the layer's block, so another animation taking the child runs it again.
     linked: OwnedState<u32>,
     capture: DrawCapture,
+    /// What the item places the child with: the same block each time, so placing it again
+    /// doesn't run it (D1910).
+    layer_block: LayerBlock,
+}
+
+/// Places `placeable`, a child of an item, at `x`, `y` from the start: with its animation's layer
+/// if it has the modifier, as Compose's item places its placeables with their animations' layers
+/// (`placeWithLayer(offset, animation.layer)`), so what's before the modifier in its chain moves
+/// and fades too (D1910).
+pub(super) fn place_child(
+    scope: &mut MeasureScope<'_>,
+    measurable: Measurable,
+    placeable: &Placeable,
+    x: i32,
+    y: i32,
+) {
+    let data =
+        scope.parent_data_any(measurable).and_then(|data| data.downcast::<AnimateItemData>().ok());
+    match data {
+        Some(data) => scope.place_relative_with_layer(placeable, x, y, data.layer_block.clone()),
+        None => scope.place_relative(placeable, x, y),
+    }
 }
 
 impl AnimateItemData {
@@ -173,7 +186,6 @@ impl AnimateItemData {
 struct AnimateItemElement {
     specs: AnimateItemSpecs,
     capture: DrawCapture,
-    link: Rc<RefCell<Option<Rc<AnimateItemData>>>>,
 }
 
 struct AnimateItemNode {
@@ -184,25 +196,30 @@ impl ModifierNodeElement for AnimateItemElement {
     type Node = AnimateItemNode;
 
     fn create(&self) -> AnimateItemNode {
-        let data = Rc::new(AnimateItemData {
-            specs: RefCell::new(self.specs.clone()),
-            animation: RefCell::new(None),
-            linked: mutable_state_of(0),
-            capture: self.capture.clone(),
+        let data = Rc::new_cyclic(|this: &Weak<AnimateItemData>| {
+            let this = this.clone();
+            AnimateItemData {
+                specs: RefCell::new(self.specs.clone()),
+                animation: RefCell::new(None),
+                linked: mutable_state_of(0),
+                capture: self.capture.clone(),
+                layer_block: LayerBlock::new(move |layer| {
+                    if let Some(data) = this.upgrade() {
+                        data.apply_to_layer(layer);
+                    }
+                }),
+            }
         });
-        *self.link.borrow_mut() = Some(data.clone());
         AnimateItemNode { data }
     }
 
+    /// Its parent data stays the same object, so its parent isn't measured again for this.
     fn update(&self, node: &mut AnimateItemNode) {
         *node.data.specs.borrow_mut() = self.specs.clone();
-        *self.link.borrow_mut() = Some(node.data.clone());
     }
 
-    /// Never the same: `update` is what links the new layer block to the node's data. Its parent
-    /// data stays the same object, so its parent isn't measured again for this.
-    fn same(&self, _other: &Self) -> bool {
-        false
+    fn same(&self, other: &Self) -> bool {
+        self.specs == other.specs
     }
 
     fn name(&self) -> &'static str {

@@ -2672,3 +2672,83 @@ fn a_scroll_while_items_animate_in_a_lookahead_scope_moves_them_by_the_scroll() 
         }
     });
 }
+
+/// A list of `colors`, keyed by color, each item `ITEM` tall with `modifier(scope, color)`: what
+/// the tests of what's before `animate_item` in the chain compose (D1910).
+fn modified_list(
+    colors: Vec<Color>,
+    modifier: fn(&LazyItemScope, Color) -> Modifier,
+) -> (ComposeTestRule, OwnedState<Vec<Color>>) {
+    let list = mutable_state_of(colors);
+    let handle = list.handle();
+    let ui = paused(IntSize::new(1000, 1000), move || {
+        let colors = handle.get();
+        LazyColumn!(
+            modifier = Modifier.width(dp(ITEM)).height(dp(ITEM * 2)),
+            |scope: LazyListScope| {
+                scope.items_list_keyed(
+                    colors.clone(),
+                    |color: &Color| color.argb(),
+                    move |item_scope, color: &Color| {
+                        Box!(modifier = modifier(&item_scope, *color).size(dp(ITEM)));
+                    },
+                );
+            }
+        );
+    });
+    (ui, list)
+}
+
+// What `animate_item` got wrong (D1472, fixed by D1910): a modifier before it in the chain fades
+// with the item, as Compose's item is placed with the animation's layer.
+#[test]
+fn a_background_before_animate_item_fades_in_with_it() {
+    let (mut ui, list) = modified_list(Vec::new(), |scope, color| {
+        Modifier.background(color).animate_item_with(scope, Some(anim_spec()), None, None)
+    });
+    let handle = list.handle();
+    ui.run_on_ui_thread(move |_| handle.set(vec![Color::BLACK]));
+    on_animation_frame(&mut ui, |ui, fraction| {
+        let color = color_at(ui, f(ITEM / 2), f(ITEM / 2));
+        assert!(color.is(Color::BLACK, fraction), "at {fraction}: {color:?}");
+    });
+}
+
+// What `animate_item` got wrong (D1472, fixed by D1910): a modifier before it in the chain moves
+// with the item, from where it was.
+#[test]
+fn a_background_before_animate_item_moves_with_it() {
+    let (mut ui, list) = modified_list(vec![Color::RED, Color::BLUE], |scope, color| {
+        Modifier.background(color).animate_item_with(scope, None, Some(anim_spec()), None)
+    });
+    ui.wait_for_idle();
+    let handle = list.handle();
+    ui.run_on_ui_thread(move |_| handle.set(vec![Color::BLUE, Color::RED]));
+    on_animation_frame(&mut ui, |ui, fraction| {
+        // Red goes from the first slot to the second: its top is `fraction` of an item down.
+        let red_top = fraction * ITEM as f32;
+        let color = color_at(ui, f(ITEM / 2), red_top + 1.0);
+        assert!(color.is(Color::RED, 1.0), "at {fraction}: {color:?}");
+    });
+}
+
+// A clip before `animate_item` doesn't hide a moved item (D1472's second case).
+#[test]
+fn a_clip_before_animate_item_moves_with_it() {
+    let (mut ui, list) = modified_list(vec![Color::RED, Color::BLUE], |scope, color| {
+        Modifier.clip_to_bounds().background(color).animate_item_with(
+            scope,
+            None,
+            Some(anim_spec()),
+            None,
+        )
+    });
+    ui.wait_for_idle();
+    let handle = list.handle();
+    ui.run_on_ui_thread(move |_| handle.set(vec![Color::BLUE, Color::RED]));
+    on_animation_frame(&mut ui, |ui, fraction| {
+        let red_top = fraction * ITEM as f32;
+        let color = color_at(ui, f(ITEM / 2), red_top + 1.0);
+        assert!(color.is(Color::RED, 1.0), "at {fraction}: {color:?}");
+    });
+}

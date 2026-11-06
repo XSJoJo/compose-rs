@@ -37,6 +37,7 @@ mod paragraph_style;
 mod parent_data;
 mod path_geometry;
 mod path_shapes;
+mod place_with_layer;
 mod placeholder;
 mod placement_pass;
 mod pointer_event;

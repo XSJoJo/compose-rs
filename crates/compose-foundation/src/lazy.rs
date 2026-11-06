@@ -2255,11 +2255,15 @@ impl MeasurePolicy for ItemLayout {
                 (constraints.constrain_width(main), constraints.constrain_height(cross))
             };
             let mut offset = 0;
-            for placeable in &placeables {
+            for (measurable, placeable) in measurables.iter().zip(&placeables) {
                 let size = main_of(placeable);
                 let at = if reverse { main - offset - size } else { offset };
                 let (x, y) = if vertical { (0, at) } else { (at, 0) };
-                scope.place_relative(placeable, x, y);
+                if animated {
+                    item_animator::place_child(scope, *measurable, placeable, x, y);
+                } else {
+                    scope.place_relative(placeable, x, y);
+                }
                 offset += size;
             }
             if animated {
@@ -2273,13 +2277,17 @@ impl MeasurePolicy for ItemLayout {
                 IntSize::new(size.width.max(placeable.width), size.height.max(placeable.height))
             },
         );
-        for placeable in &placeables {
+        for (measurable, placeable) in measurables.iter().zip(&placeables) {
             let (x, y) = match self.stacking {
                 ItemStacking::AtTheEnd { vertical: true } => (0, size.height - placeable.height),
                 ItemStacking::AtTheEnd { vertical: false } => (size.width - placeable.width, 0),
                 _ => (0, 0),
             };
-            scope.place_relative(placeable, x, y);
+            if animated {
+                item_animator::place_child(scope, *measurable, placeable, x, y);
+            } else {
+                scope.place_relative(placeable, x, y);
+            }
         }
         if animated {
             self.note_children(scope, measurables, &placeables, size.width, size.height);

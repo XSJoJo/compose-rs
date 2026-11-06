@@ -822,7 +822,7 @@ impl UiTree {
     /// The inner layer entry `index` of `node` draws in: the last before it, if any.
     fn inner_layer_of_entry(&self, node: NodeId, index: usize) -> Option<usize> {
         let value = self.get(node)?;
-        value.inner_layers.iter().rposition(|inner| (inner.entry as usize) < index)
+        value.inner_layers.iter().rposition(|inner| inner.holds(index))
     }
 
     /// Draws again what entry `index` of `node` draws in, as `invalidateDraw`'s coordinator: the
@@ -854,6 +854,17 @@ impl UiTree {
         let layer = value.chain[..=index]
             .iter()
             .rposition(|entry| entry.kinds.any(NodeKinds::GRAPHICS_LAYER));
+        // A layer a layout modifier placed with one, if it's inside that graphics layer (D1909).
+        let placed = value.inner_layers.iter().rposition(|inner| {
+            inner.placement.is_some()
+                && inner.entry as usize <= index
+                && layer.is_none_or(|layer| inner.entry as usize > layer)
+        });
+        if let Some(slot) = placed {
+            self.node_mut(node).inner_layers[slot].dirty = true;
+            self.needs_draw = true;
+            return;
+        }
         // None: the layer around it, as `wrappedBy`'s: what draws the node draws it again.
         let Some(layer) = layer else {
             self.invalidate_draw_before_inner_layers(node);
@@ -871,8 +882,7 @@ impl UiTree {
                 retained.layer_dirty = true;
             }
             self.needs_draw = true;
-        } else if let Some(slot) =
-            value.inner_layers.iter().position(|inner| inner.entry as usize == layer)
+        } else if let Some(slot) = value.inner_layers.iter().position(|inner| inner.is_entry(layer))
         {
             let value = self.node_mut(node);
             value.inner_layers[slot].dirty = true;
