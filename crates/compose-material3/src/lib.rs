@@ -17,6 +17,7 @@ mod animated_shape;
 mod app_bar;
 mod bottom_sheet_scaffold;
 mod button;
+mod button_group;
 #[doc(hidden)]
 pub mod calendar_model;
 mod checkbox;
@@ -48,11 +49,13 @@ mod selection;
 mod sheet;
 mod slider;
 mod snackbar;
+mod split_button;
 mod swipe_to_dismiss;
 mod tabs;
 mod text_field;
 mod theme;
 mod time_picker;
+mod toggle_button;
 mod tooltip;
 
 pub use app_bar::{
@@ -69,6 +72,10 @@ pub use bottom_sheet_scaffold::{
 pub use button::{
     Button, ButtonColors, ButtonDefaults, ButtonElevation, ButtonShapes, ElevatedButton,
     FilledTonalButton, OutlinedButton, TextButton,
+};
+pub use button_group::{
+    ButtonGroup, ButtonGroupDefaults, ButtonGroupMenuState, ButtonGroupModifiers,
+    ButtonGroupOverflowIndicator, ButtonGroupScope,
 };
 pub use checkbox::{Checkbox, CheckboxColors, CheckboxDefaults, TriStateCheckbox};
 pub use chips::{
@@ -182,6 +189,12 @@ pub use snackbar::{
     ContentSnackbar, Snackbar, SnackbarData, SnackbarDefaults, SnackbarDuration, SnackbarHost,
     SnackbarHostState, SnackbarResult, SnackbarVisuals,
 };
+pub use split_button::{
+    SplitButtonDefaults, SplitButtonElevatedLeadingButton, SplitButtonElevatedTrailingButton,
+    SplitButtonLayout, SplitButtonLeadingButton, SplitButtonOutlinedLeadingButton,
+    SplitButtonOutlinedTrailingButton, SplitButtonShapes, SplitButtonToggleableTrailingButton,
+    SplitButtonTonalLeadingButton, SplitButtonTonalTrailingButton, SplitButtonTrailingButton,
+};
 pub use swipe_to_dismiss::{
     SwipeToDismissBox, SwipeToDismissBoxDefaults, SwipeToDismissBoxState, SwipeToDismissBoxValue,
     remember_swipe_to_dismiss_box_state,
@@ -209,6 +222,12 @@ pub use time_picker::{
     ClockFace, TimeInput, TimeInputColors, TimeInputDefaults, TimePicker, TimePickerColors,
     TimePickerDefaults, TimePickerLayoutType, TimePickerSelectionMode, TimePickerState,
     is_24_hour_format, remember_time_picker_state,
+};
+pub use toggle_button::{
+    ElevatedToggleButton, ElevatedToggleButtonDefaults, FilledTonalToggleButton,
+    FilledTonalToggleButtonDefaults, OutlinedToggleButton, OutlinedToggleButtonDefaults,
+    ToggleButton, ToggleButtonColors, ToggleButtonDefaults, ToggleButtonElevation,
+    ToggleButtonShapes, ToggleButtonSize,
 };
 pub use tooltip::{
     DefaultTooltipCaretShape, Label, PlainTooltip, RichTooltip, RichTooltipColors,

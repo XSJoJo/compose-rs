@@ -57,6 +57,20 @@ pub(crate) fn animate_lazily<V: Copy + PartialEq + 'static>(
     })
 }
 
+/// `fraction` of the way from `start` to `stop` in the Oklab color space, as a color's
+/// `animate*AsState` takes it (`Color.VectorConverter`).
+pub(crate) fn lerp_color(
+    start: compose_ui::Color,
+    stop: compose_ui::Color,
+    fraction: f32,
+) -> compose_ui::Color {
+    use compose_animation::Animate;
+    let to = stop.to_vector();
+    let between =
+        start.to_vector().map(|index, from| from + (to.as_slice()[index] - from) * fraction);
+    compose_ui::Color::from_vector(between)
+}
+
 fn between<V: Copy>(run: &Run<V>, fraction: f32, lerp: fn(V, V, f32) -> V) -> V {
     if fraction == 1.0 { run.to.get() } else { lerp(run.from.get(), run.to.get(), fraction) }
 }
