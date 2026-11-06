@@ -27,7 +27,7 @@ These are on local branches, so they're not lost, but each still has to finish i
 - **`Modifier.onLayoutRectChanged` and its callbacks** (about 160).
 - **`FlexBox`** (about 95) and **the grid layout** (about 80).
 - **Android view interop**, `AndroidView` and hosting (about 280).
-- **Runtime:** computed state (about 55), composition observers, error traces, composition data.
+- **Runtime:** composition observers (about 28), error traces (about 33), composition data (about 15).
 
 ### 3. Graphics
 - **`GraphicsLayer` as an object** (about 95), **blend modes and color filters** (about 85), **color spaces** (about 70), **`Painter`** (about 45), offscreen canvas and bitmaps.

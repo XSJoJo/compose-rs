@@ -132,6 +132,8 @@ A derived state is a state object of its own, whose record holds the result with
 - **Layout or drawing reading it** (a `ReadObserver` that isn't a derived state's): it's validated in the send, which tells the observer if it changed.
 - **Nobody reading it:** nothing is computed until its next read.
 
+**Computed state** (D1504). `computed_state_of(|| …)`, as Compose's `computedStateOf`, is a state whose value is its calculation's, without its cache: read where nothing registers the read, the calculation runs at each read (and in a derived state's calculation, what it reads is that calculation's). Read by a composable or under a `SnapshotStateObserver`, it is a derived state, cached and invalidating its readers only if its value changed (`==`, or `computed_state_of_with(policy, …)`). Its calculation can't write state.
+
 ## Snapshots
 
 Compose's snapshot system is being ported in steps (docs/parity/design/snapshots.md, D750). Each thread has its own snapshot world, as it has its own state (D14): no locks. A state object's cell keeps its value in **records**, as Compose's `StateRecord` chain (`crates/compose-runtime/src/snapshots/records.rs`): one inline record, the head, holding the snapshot id that wrote it, a *version* (a per-thread write counter: what derived states validate against) and the value; older records come only while snapshots need them. A state's identity is a `snapshots::StateObjectId`, which all its handles convert into (`state_object_id()`, `From`): what observers are told. `platform::state_records(state)` gives the record count and version, for tests. Isolation is below; writes outside a snapshot are the global snapshot's, and with no snapshot open a read and a write look at nothing but a flag (D774).

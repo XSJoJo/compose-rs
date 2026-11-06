@@ -94,6 +94,8 @@ pub(crate) struct DerivedCell<T: 'static> {
     in_other_snapshots: Cell<bool>,
     /// Meanwhile, the value the global snapshot's readers last saw: what tells them of a change.
     global_value: RefCell<Option<Rc<T>>>,
+    /// A computed state's (`computed_state_of`): only its name differs here.
+    computed: bool,
 }
 
 impl<T: 'static> StateObjectCell for DerivedCell<T> {
@@ -500,6 +502,11 @@ pub(crate) fn display<T: std::fmt::Debug + 'static>(
     (index, generation): (u32, u32),
 ) -> std::fmt::Result {
     let derived = DerivedCell::<T>::of(cell);
+    if derived.computed {
+        // As Compose's `toString`: calculated, unobserved.
+        let value = crate::snapshots::Snapshot::without_read_observation(|| calculate::<T>(cell));
+        return write!(formatter, "ComputedState(value={value:?})@{index}v{generation}");
+    }
     match derived.valid_record() {
         Some(valid) => {
             write!(formatter, "DerivedState(value={:?})@{index}v{generation}", valid.result)
@@ -526,6 +533,17 @@ fn new_derived<T: 'static>(
     equivalent: fn(&T, &T) -> bool,
     calculation: Box<dyn Fn() -> T>,
 ) -> DerivedState<T> {
+    DerivedState { owner: new_cell(policy, equivalent, calculation, false) }
+}
+
+/// A derived state's cell, or a computed state's, and its owner.
+#[track_caller]
+pub(crate) fn new_cell<T: 'static>(
+    policy: Option<fn(&T, &T) -> bool>,
+    equivalent: fn(&T, &T) -> bool,
+    calculation: Box<dyn Fn() -> T>,
+    computed: bool,
+) -> OwnedState<T> {
     let created_at = Location::caller();
     let (snapshot, born, version) = crate::snapshots::birth();
     // Nothing is computed until a read.
@@ -541,13 +559,25 @@ fn new_derived<T: 'static>(
         global_saw: Cell::new(version),
         in_other_snapshots: Cell::new(false),
         global_value: RefCell::new(None),
+        computed,
     });
     let erased: Rc<dyn StateObjectCell> = cell.clone();
     let owner = crate::state::owned_object(erased, created_at);
     let id = owner.handle().id();
     cell.id.set(Some(id));
     cell.observer.set_dirty_cell(id);
-    DerivedState { owner }
+    owner
+}
+
+/// Runs a derived state's calculation as it is, outside its records: a computed state read with
+/// nothing observing it.
+pub(crate) fn calculate<T: 'static>(cell: &Rc<dyn StateObjectCell>) -> T {
+    (DerivedCell::<T>::of(cell).calculation)()
+}
+
+/// The equivalence a policy decides with, for `computed`.
+pub(crate) fn equivalence_of<T, P: MutationPolicy<T>>(policy: &P) -> fn(&T, &T) -> bool {
+    equivalent_of(policy)
 }
 
 /// A state whose value is `calculation`'s, recomputed when the state it read changes, as
