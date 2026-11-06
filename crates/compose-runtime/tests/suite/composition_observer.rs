@@ -686,3 +686,144 @@ fn an_observer_set_during_a_pass_hears_the_next() {
     test.expect_changes();
     assert_eq!(*observer.reads.borrow(), [first.state_object_id(), second.state_object_id()]);
 }
+
+// ---- Beyond the ports ---------------------------------------------------------------------------
+
+/// A composition dropped with its observer set, its handle dropped after: nothing's logged any
+/// more, however much another composition recomposes.
+#[test]
+fn a_composition_dropped_with_its_observer_leaves_no_log() {
+    use compose_runtime::tooling::logged_scope_events;
+    for dispose_first in [true, false] {
+        let observed = Composition::new(ViewApplier::new());
+        observed.set_content(|| Text("observed"));
+        let handle = observed.set_observer(Passes::default());
+        if dispose_first {
+            observed.dispose();
+        }
+        drop(observed);
+        drop(handle);
+        let mut test = composition_test();
+        let data = mutable_state_of(0);
+        let d = data.handle();
+        test.compose(move || Text(&d.get().to_string()));
+        for _ in 0..100 {
+            data.update(|d| d + 1);
+            test.expect_changes();
+        }
+        assert_eq!(logged_scope_events(), None, "dispose first: {dispose_first}");
+    }
+}
+
+/// An observed composition and a busy unobserved one: what the busy one logs is let go at each
+/// pass, so the log stays small.
+#[test]
+fn an_unobserved_composition_doesnt_grow_the_log() {
+    use compose_runtime::tooling::logged_scope_events;
+    let observed = Composition::new(ViewApplier::new());
+    observed.set_content(|| Text("observed"));
+    let _handle = observed.set_observer(Passes::default());
+    let mut test = composition_test();
+    let data = mutable_state_of(0);
+    let d = data.handle();
+    test.compose(move || {
+        Wrap!(move || Text(&d.get().to_string()));
+    });
+    for _ in 0..100 {
+        data.update(|d| d + 1);
+        test.expect_changes();
+    }
+    assert!(logged_scope_events().is_some_and(|logged| logged <= 2), "{:?}", logged_scope_events());
+}
+
+/// What happens in a pass, and in its changes, goes to the observer as the pass began, as
+/// Kotlin's `pin()`: a scope removed in a pass that set another one's disposal is the first's.
+/// An invalidation logged before an observer is replaced goes to the one there was.
+#[test]
+fn a_passs_observer_is_pinned_through_it() {
+    #[derive(Clone, Default)]
+    struct Heard {
+        disposals: Rc<Cell<u32>>,
+        invalidations: Rc<Cell<u32>>,
+    }
+    impl CompositionObserver for Heard {
+        fn on_scope_disposed(&self, _: &RecomposeScope) {
+            self.disposals.set(self.disposals.get() + 1);
+        }
+        fn on_scope_invalidated(&self, _: &RecomposeScope, _: Option<StateObjectId>) {
+            self.invalidations.set(self.invalidations.get() + 1);
+        }
+    }
+    let (first, second) = (Heard::default(), Heard::default());
+    let mut test = composition_test();
+    let (show, replace) = (mutable_state_of(true), Rc::new(Cell::new(false)));
+    let composition: Rc<Cell<Option<ObservableComposition>>> = Rc::default();
+    let handles: Rc<RefCell<Vec<CompositionObserverHandle>>> = Rc::default();
+    let (s, r, c, h, o) =
+        (show.handle(), replace.clone(), composition.clone(), handles.clone(), second.clone());
+    test.compose(move || {
+        if r.get()
+            && let Some(composition) = c.get()
+        {
+            h.borrow_mut().push(composition.set_observer(o.clone()));
+            r.set(false);
+        }
+        if s.get() {
+            Wrap!(|| Text("shown"));
+        }
+    });
+    composition.set(Some(test.composition().observable()));
+    let _first = test.composition().set_observer(first.clone());
+    replace.set(true);
+    show.set(false);
+    test.expect_changes();
+    assert!(first.disposals.get() >= 1, "the removed scope's disposal is the pinned observer's");
+    assert_eq!(second.disposals.get(), 0);
+    // Logged, not told yet; replaced: the old one hears it.
+    let third = Heard::default();
+    show.set(true);
+    compose_runtime::snapshots::Snapshot::send_apply_notifications();
+    let invalidated_before = second.invalidations.get();
+    let _third = test.composition().set_observer(third.clone());
+    assert!(second.invalidations.get() > invalidated_before, "told before the replacement");
+    assert_eq!(third.invalidations.get(), 0);
+    test.expect_changes();
+}
+
+/// A subcomposition's reads in a pass inside its observed parent's are heard once, as the
+/// subcomposition's: the parent's frame tells only its own.
+#[test]
+fn a_subcompositions_reads_are_heard_once() {
+    let observer = Reads::default();
+    let mut test = composition_test();
+    let state = mutable_state_of(0);
+    let s = state.handle();
+    let _handle = test.compose_observed(observer.clone(), move || {
+        TestSubcomposition(Rc::new(move || {
+            s.get();
+        }));
+    });
+    let heard = observer.reads.borrow();
+    assert_eq!(
+        heard.iter().filter(|read| **read == state.state_object_id()).count(),
+        1,
+        "{heard:?}"
+    );
+}
+
+/// The first handle dropped after a replacement leaves the second observer.
+#[test]
+fn an_old_handle_leaves_the_new_observer() {
+    let (first, second) = (Passes::default(), Passes::default());
+    let mut test = composition_test();
+    let data = mutable_state_of(0);
+    let d = data.handle();
+    test.compose(move || Text(&d.get().to_string()));
+    let first_handle = test.composition().set_observer(first.clone());
+    let _second = test.composition().set_observer(second.clone());
+    drop(first_handle);
+    data.update(|d| d + 1);
+    test.expect_changes();
+    assert_eq!(second.counts(), (1, 1));
+    assert_eq!(first.counts(), (0, 0));
+}

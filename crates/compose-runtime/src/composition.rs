@@ -1101,10 +1101,7 @@ impl Pass {
             let data = runtime.compositions.get_mut(self.id).expect("a live composition");
             data.composing = false;
             data.finishing = true;
-            #[cfg(feature = "composition-observer")]
-            if observer.is_some() {
-                data.pass_observer = None;
-            }
+            // Its pass's observer stays pinned through its changes (`tooling::finished`).
             (std::mem::take(&mut data.deferred), freeing, data.table.movable.removed.take())
         });
         #[cfg(feature = "composition-observer")]
@@ -1683,6 +1680,8 @@ impl Drop for Finishing {
                 data.finishing = more;
             }
         });
+        #[cfg(feature = "composition-observer")]
+        crate::tooling::finished(self.id);
     }
 }
 
@@ -1891,10 +1890,19 @@ impl Disposal {
         #[cfg(feature = "composition-observer")]
         let observer = crate::tooling::disposing(runtime, id);
         let data = runtime.compositions.remove(id)?;
+        #[cfg(feature = "composition-observer")]
+        let had_observer = data.observer.is_some();
         let disposal = Disposal::empty(runtime, id, data);
         #[cfg(feature = "composition-observer")]
-        if let Some(observer) = observer {
-            crate::tooling::tag_disposed(runtime, id.index, observer);
+        {
+            if let Some(observer) = observer {
+                crate::tooling::tag_disposed(runtime, id.index, observer);
+            }
+            // Its handle finds no composition now: its observer is no more, once what its scopes
+            // logged is told.
+            if had_observer {
+                runtime.scopes.observer_removed();
+            }
         }
         Some(disposal)
     }
@@ -1905,13 +1913,28 @@ impl Disposal {
         if runtime.compositions.get(id).is_some_and(|data| data.composing) {
             return None;
         }
+        #[cfg(feature = "composition-observer")]
+        let observer = crate::tooling::disposing(runtime, id);
         let data = runtime.compositions.get_mut(id).filter(|data| !data.closed)?;
         data.closed = true;
         let data = std::mem::replace(data, CompositionData::closed(data));
         runtime.compositions.closed += 1;
+        #[cfg(feature = "composition-observer")]
+        let had_observer = data.observer.is_some();
         // The old data (its frame requester, its applier's last references) drops in `run`,
         // outside the runtime's borrow.
-        Some(Disposal::empty(runtime, id, data))
+        let disposal = Disposal::empty(runtime, id, data);
+        // Its scopes' disposals go to its observer, which is no more, as `take` does.
+        #[cfg(feature = "composition-observer")]
+        {
+            if let Some(observer) = observer {
+                crate::tooling::tag_disposed(runtime, id.index, observer);
+            }
+            if had_observer {
+                runtime.scopes.observer_removed();
+            }
+        }
+        Some(disposal)
     }
 
     fn empty(runtime: &mut Runtime, id: CompositionId, mut data: CompositionData) -> Disposal {

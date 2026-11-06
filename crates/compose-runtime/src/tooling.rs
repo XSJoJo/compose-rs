@@ -15,7 +15,9 @@
 use std::marker::PhantomData;
 use std::rc::Rc;
 
-use crate::runtime::{CompositionId, Compositions, Runtime, try_with_runtime, with_runtime};
+use crate::runtime::{
+    CompositionData, CompositionId, Compositions, Runtime, try_with_runtime, with_runtime,
+};
 use crate::scope::{RecomposeScope, ScopeId};
 use crate::snapshots::StateObjectId;
 use crate::state::StateId;
@@ -59,6 +61,8 @@ impl ObservableComposition {
     /// if it's still the one set.
     pub fn set_observer(&self, observer: impl CompositionObserver) -> CompositionObserverHandle {
         let observer: Rc<dyn CompositionObserver> = Rc::new(observer);
+        // What's logged so far goes to the observer there was.
+        flush();
         let (token, replaced) = with_runtime(|runtime| {
             let token = runtime.scopes.observer_set();
             let replaced = match runtime.compositions.get_mut(self.id) {
@@ -150,12 +154,19 @@ fn settle(runtime: &mut Runtime) -> Vec<(Rc<dyn CompositionObserver>, ScopeEvent
     let settled = events
         .into_iter()
         .filter_map(|event| {
-            let observer = match (&event.observer, event.kind) {
-                (Some(observer), _) => Some(observer.clone()),
-                (None, ScopeEventKind::Enter | ScopeEventKind::Exit) => compositions
-                    .data_at(event.composition)
-                    .and_then(|data| data.pass_observer.clone()),
-                (None, _) => observer_of(compositions, event.composition),
+            // During a pass and its changes, its observer as it began, as Kotlin's
+            // `CompositionObserverHolder.pin()`; else the composition's now.
+            let observer = match &event.observer {
+                Some(observer) => Some(observer.clone()),
+                None => match compositions.data_at(event.composition) {
+                    Some(CompositionData { pass_observer: Some(observer), .. }) => {
+                        Some(observer.clone())
+                    }
+                    _ => match event.kind {
+                        ScopeEventKind::Enter | ScopeEventKind::Exit => None,
+                        _ => observer_of(compositions, event.composition),
+                    },
+                },
             };
             observer.map(|observer| (observer, event))
         })
@@ -213,10 +224,13 @@ pub(crate) fn begin_pass(
     id: CompositionId,
     snapshot: &mut Option<crate::snapshots::PassSnapshot>,
 ) -> Option<Rc<dyn CompositionObserver>> {
+    if !with_runtime(|runtime| runtime.scopes.observing()) {
+        return None;
+    }
+    // What's logged so far goes to the observers there were: also what bounds the log, when
+    // observed compositions are few and others many.
+    flush();
     let observer = with_runtime(|runtime| {
-        if !runtime.scopes.observing() {
-            return None;
-        }
         let observer = observer_of(&runtime.compositions, id.index)?;
         if let Some(data) = runtime.compositions.get_mut(id) {
             data.pass_observer = Some(observer.clone());
@@ -226,7 +240,6 @@ pub(crate) fn begin_pass(
         }
         Some(observer)
     })?;
-    flush();
     observer.on_begin_composition(&ObservableComposition { id });
     if let Some(snapshot) = snapshot {
         snapshot.push_read_frame(read_observer(id, observer.clone()));
@@ -252,4 +265,35 @@ pub(crate) fn disposing(
     id: CompositionId,
 ) -> Option<Rc<dyn CompositionObserver>> {
     runtime.scopes.observing().then(|| observer_of(&runtime.compositions, id.index)).flatten()
+}
+
+/// Whether events of the composition at `index` go anywhere: its pass's observer, or its own or
+/// one above it. What keeps the log to them.
+pub(crate) fn observed(compositions: &Compositions, index: u32) -> bool {
+    compositions.data_at(index).is_some_and(|data| data.pass_observer.is_some())
+        || observer_of(compositions, index).is_some()
+}
+
+/// A pass's changes are done: what they logged goes to its observer, which is let go.
+pub(crate) fn finished(id: CompositionId) {
+    if std::thread::panicking() {
+        return;
+    }
+    let pinned = try_with_runtime(|runtime| {
+        runtime.compositions.get(id).is_some_and(|data| data.pass_observer.is_some())
+    });
+    if pinned != Some(true) {
+        return;
+    }
+    flush();
+    let observer = try_with_runtime(|runtime| {
+        runtime.compositions.get_mut(id).and_then(|data| data.pass_observer.take())
+    });
+    drop(observer);
+}
+
+/// How many scope events are logged and not yet told, or `None` if nothing's logged: for tests.
+#[doc(hidden)]
+pub fn logged_scope_events() -> Option<usize> {
+    with_runtime(|runtime| runtime.scopes.log.as_ref().map(Vec::len))
 }

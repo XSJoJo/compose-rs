@@ -417,6 +417,7 @@ pub(crate) fn invalidate_scope_parts(
     #[cfg(feature = "composition-observer")]
     if scopes.log.is_some()
         && let Some(scope) = scopes.get(id)
+        && crate::tooling::observed(compositions, scope.composition)
     {
         let composition = scope.composition;
         scopes.log_observed(composition, id, crate::tooling::ScopeEventKind::Invalidated(cause));
