@@ -247,7 +247,9 @@ impl UiTree {
     /// around them moved.
     pub fn take_layout_callbacks(&mut self) -> Vec<Action> {
         if !self.new_layers.is_empty()
-            && (!self.placed_layers.is_empty() || !self.positioned.is_empty())
+            && (!self.placed_layers.is_empty()
+                || !self.positioned.is_empty()
+                || self.rects.is_some())
         {
             self.run_new_layers();
         }
@@ -290,6 +292,9 @@ impl UiTree {
                 self.forget_layers_no_one_listens_to();
             }
         }
+        if self.rects.is_some() {
+            self.dispatch_rects(laid_out || !self.layers_moved.is_empty());
+        }
         if !self.layers_moved.is_empty() {
             for node in mem::take(&mut self.layers_moved) {
                 if let Some(value) = self.get_mut(node) {
@@ -306,7 +311,8 @@ impl UiTree {
     /// told; with `keep`, a state's change, what it computes for the node's group is what the
     /// frame's drawing uses, observed as there.
     pub(crate) fn note_layer_change(&mut self, node: NodeId, keep: bool) {
-        if self.positioned.is_empty() && self.coordinate_readers.is_empty() {
+        if self.positioned.is_empty() && self.coordinate_readers.is_empty() && self.rects.is_none()
+        {
             return;
         }
         let Some(value) = self.get(node) else { return };
@@ -498,6 +504,7 @@ impl UiTree {
                 self.map_to_root(node, layer, None, Offset::ZERO);
             }
         }
+        self.note_rect_layers();
     }
 
     /// Whether `node` or an ancestor has a graphics layer that moved.
@@ -923,7 +930,7 @@ impl UiTree {
 
     /// The bounding box in the root of a rectangle of `size` at the origin of layer `layer` of
     /// `node` (seen by its chain entry `before_entry`), through the graphics layers around it.
-    fn rect_in_root(
+    pub(crate) fn rect_in_root(
         &self,
         node: NodeId,
         layer: usize,

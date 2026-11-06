@@ -440,6 +440,8 @@ pub struct UiTree {
     /// is good only if they kept it since (`GraphicsLayerNode::note_transform`), so a layer no
     /// one under it listens to any more doesn't run its block for nothing.
     pub(crate) position_listeners: u32,
+    /// The layout-rect callbacks, from the first registration on: `None` costs nothing.
+    pub(crate) rects: Option<std::rc::Rc<std::cell::RefCell<crate::spatial::RectManager>>>,
     /// The nodes whose placing code last asked where they are: it runs again once they aren't
     /// there (D1212).
     pub(crate) coordinate_readers: Vec<crate::placement::CoordinateReader>,
@@ -626,6 +628,7 @@ impl UiTree {
             placed_layers: Vec::new(),
             layers_moved: Vec::new(),
             position_listeners: 0,
+            rects: None,
             coordinate_readers: Vec::new(),
             lookahead_used: false,
             ahead_readers: Vec::new(),

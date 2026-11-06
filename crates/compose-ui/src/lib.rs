@@ -53,6 +53,7 @@ mod intl;
 mod layout;
 mod layout_callbacks;
 mod layout_modifiers;
+mod layout_rect_modifiers;
 mod lifecycle;
 mod logging;
 mod lookahead;
@@ -89,6 +90,7 @@ mod semantics_node;
 mod semantics_properties;
 mod semantics_sort;
 mod span_style;
+mod spatial;
 pub mod subcompose;
 mod text;
 mod text_attributes;
@@ -260,6 +262,7 @@ pub use layout_callbacks::{
 };
 pub use layout_modifiers::LineSpace;
 pub use layout_modifiers::{IntrinsicSize, SizeOrIntrinsic};
+pub use layout_rect_modifiers::DEFAULT_LAYOUT_RECT_DEBOUNCE_MILLIS;
 pub use lookahead::{ApproachMeasureScope, LookaheadCoordinates, LookaheadScope};
 pub use modifier::AlignByScope;
 pub use modifier::{
@@ -329,6 +332,7 @@ pub use semantics_sort::{
     sorted_for_accessibility, traversal_before,
 };
 pub use span_style::SpanStyle;
+pub use spatial::{RegistrationHandle, RelativeLayoutBounds};
 pub use text::{SharedString, TextLayoutResult};
 pub use text_attributes::{
     BaselineShift, Hyphens, LineBreak, LineBreakStrategy, LineBreakStrictness, LineBreakWordBreak,
@@ -356,8 +360,8 @@ pub use text_style::TextStyle;
 pub use traversal::{TraversableNode, TraverseDescendantsAction, TraverseKey};
 pub use tree_access::TreeRef;
 pub use unit::{
-    Density, Dp, DpOffset, DpRect, DpSize, IntOffset, IntSize, Offset, Rect, Size, TextUnit,
-    TextUnitType, UnitExt,
+    Density, Dp, DpOffset, DpRect, DpSize, IntOffset, IntRect, IntSize, Offset, Rect, Size,
+    TextUnit, TextUnitType, UnitExt,
 };
 pub use vector::{
     ImageVector, ImageVectorBuilder, PathBuilder, PathNode, PathParser, VectorGroup, VectorNode,

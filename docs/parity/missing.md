@@ -24,7 +24,7 @@ These are on local branches, so they're not lost, but each still has to finish i
 - **Lazy layouts on subcomposition (C8):** `SubcomposeLayout`, its reuse and paused precomposition are in, and lazy layouts move onto it next, so items compose during measure as in Compose. Today they compose in rounds, the root of several differences.
 - **Place-with-layer** in compose-ui (`placeWithLayer`, what `offset_with` wants too). Until it lands, `animate_item` has a visible bug: modifiers before it in the chain neither move nor fade (D1472), and lookahead scopes aren't told apart; its grid and staggered tests are partly ported.
 - **Shared elements and `animateBounds`** (about 95), which wait on lookahead.
-- **`Modifier.onLayoutRectChanged` and its callbacks** (about 160).
+- **`Modifier.onVisibilityChanged`, `layoutBounds` and the global layout listener's occlusions** (about 90): `Modifier.onLayoutRectChanged`, `register_on_layout_rect_changed`, `register_on_global_layout_listener` and `RelativeLayoutBounds` are in (D1372 to D1374; [design](design/layout-rect-callbacks.md)); seven of their tests wait on place-with-layer.
 - **Android view interop**, `AndroidView` and hosting (about 280).
 - **Runtime:** composition registration observers (`Recomposer.observe`, about 11), error traces of what runs after a pass (11).
 

@@ -28,6 +28,7 @@ mod indication;
 mod interaction_helpers;
 mod interaction_source;
 mod intrinsics;
+mod layout_rect_changed;
 mod layout_reuse;
 mod lazy;
 mod lazy_animate_grid;

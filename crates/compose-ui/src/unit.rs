@@ -683,6 +683,55 @@ impl Rect {
     }
 }
 
+/// A rectangle in whole pixels, as `IntRect`: what the layout-rect callbacks report.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Hash, Debug)]
+pub struct IntRect {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+impl IntRect {
+    pub const ZERO: IntRect = IntRect { left: 0, top: 0, right: 0, bottom: 0 };
+
+    pub const fn new(left: i32, top: i32, right: i32, bottom: i32) -> IntRect {
+        IntRect { left, top, right, bottom }
+    }
+
+    /// The rectangle of `size` at `offset`.
+    pub const fn from_offset_size(offset: IntOffset, size: IntSize) -> IntRect {
+        IntRect::new(offset.x, offset.y, offset.x + size.width, offset.y + size.height)
+    }
+
+    pub const fn width(&self) -> i32 {
+        self.right - self.left
+    }
+
+    pub const fn height(&self) -> i32 {
+        self.bottom - self.top
+    }
+
+    /// Its top left, as `topLeft`.
+    pub const fn top_left(&self) -> IntOffset {
+        IntOffset::new(self.left, self.top)
+    }
+
+    pub const fn size(&self) -> IntSize {
+        IntSize::new(self.width(), self.height())
+    }
+
+    /// Moved by `offset`, as `translate`.
+    pub const fn translate(&self, offset: IntOffset) -> IntRect {
+        IntRect::new(
+            self.left + offset.x,
+            self.top + offset.y,
+            self.right + offset.x,
+            self.bottom + offset.y,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
