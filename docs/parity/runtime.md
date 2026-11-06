@@ -18,13 +18,13 @@ What compose-rs's runtime (`crates/compose-runtime`, `crates/compose-macros`) ha
 | `covered` | 5 | 27 |
 | `ported` | 30 | 538 |
 | `port` | 0 | 0 |
-| `partial` | 17 | 422 |
-| `feature:…` | 8 | 64 |
+| `partial` | 18 | 455 |
+| `feature:…` | 7 | 31 |
 | `n/a` | 91 | 968 |
 
-789 tests are ported so far (each cites its Compose test in a `// Compose:` comment), in `ported` and `partial` files.
+810 tests are ported so far (each cites its Compose test in a `// Compose:` comment), in `ported` and `partial` files.
 
-The `feature:…` files by feature: movable-content 2 (5), error-traces 1 (33), composition-observer 3 (11), composition-data 2 (15). `partial` rows name further features they need for some of their tests (composition-context, composition-api, recomposer, movable-content, host-defaults, snapshot-isolation).
+The `feature:…` files by feature: movable-content 2 (5), composition-observer 3 (11), composition-data 2 (15). `partial` rows name further features they need for some of their tests (composition-context, composition-api, recomposer, movable-content, host-defaults, snapshot-isolation).
 
 Of the 968 `n/a` tests, 142 are Android Lint checks, 122 benchmarks, 513 tests of internal data structures and internal APIs (two slot tables, change lists, collections, snapshot id sets, the opt-in tracing API), 49 hot reload (Live Edit), and 142 platform or language specifics (threads, JVM reflection, `Parcelable`, RxJava, LiveData, Kotlin delegates and autoboxing, the Kotlin compiler's ABI and group sizes, Android tracing).
 
@@ -114,7 +114,7 @@ The core suite alone (`nonEmulatorCommonTest`, 1,099 tests) splits: 17 in `cover
 | `compose/runtime/runtime/src/nonEmulatorJvmTest/kotlin/androidx/compose/runtime/snapshots/SnapshotStateObserverTestsJvm.kt` | 7 | `SnapshotStateObserver` races, and derived/computed state re-read right after changes. | partial: 5 ported in crates/compose-runtime/tests/suite/snapshot_observation.rs (`nestedObservationIsClearingThePreviousScopesBeforeReexecuting`, the 3 derived-state ones, S2, and the computed-state one, D1504); the 2 race tests are n/a (D14). |
 | `compose/runtime/runtime/src/nonEmulatorJvmTest/kotlin/androidx/compose/runtime/snapshots/SnapshotTestsJvm.kt` | 9 | Multithreaded snapshot reads and writes, record regressions, per-thread read-only. | n/a: state is thread-bound (D14). |
 | `compose/runtime/runtime/src/nonEmulatorJvmTest/kotlin/androidx/compose/runtime/snapshots/SnapshotThreadMapTests.kt` | 15 | Internal per-thread snapshot map. | n/a: internal. |
-| `compose/runtime/runtime/src/nonEmulatorJvmTest/kotlin/androidx/compose/runtime/tooling/ErrorTraceTests.kt` | 33 | Compose stack traces attached to exceptions from composition, remember, effects, node updates, movable content. | feature:error-traces |
+| `compose/runtime/runtime/src/nonEmulatorJvmTest/kotlin/androidx/compose/runtime/tooling/ErrorTraceTests.kt` | 33 | Compose stack traces attached to exceptions from composition, remember, effects, node updates, movable content. | partial: 21 ported in crates/compose-runtime/tests/suite/error_traces.rs (D1507: names, no lines; frames are composables, not lambdas); the 11 of what runs after the pass (remember observers and effects, node attach, reuse and deactivate callbacks, moved movable content) wait for traces of deferred work; `setContentNoSourceInformation` is n/a (no source information here). |
 | `compose/runtime/runtime/src/nonEmulatorJvmTest/kotlin/androidx/compose/runtime/tooling/SourceInfoParseTests.kt` | 12 | Parsing the compiler's source-information strings. | n/a: Kotlin compiler format (`@ComposeToolingApi`). |
 | `compose/runtime/runtime/src/wasmJsTest/kotlin/androidx/compose/runtime/internal/IdentityHashCodeTest.kt` | 1 | Wasm identity hash codes. | n/a: platform internals. |
 
@@ -277,7 +277,7 @@ From each module's `api/current.txt` (`restricted_current.txt` only to tell what
 | retain (`runtime.retain`) | `retain(keys…, calculation)`, `RetainObserver` (`onRetained`, `onEnteredComposition`, `onExitedComposition`, `onRetired`, `onUnused`), `RetainedValuesStore`, `ForgetfulRetainedValuesStore`, `ManagedRetainedValuesStore` (+ `retainManagedRetainedValuesStore`), `RetainedValuesStoreRegistry` (+ `retainRetainedValuesStoreRegistry`, `LocalRetainedValuesStoreProvider(key)`, `clearChild`, `clearChildren`, `dispose`), `LocalRetainedValuesStore`, `LocalRetainedValuesStoreProvider`, `withLocalRetainedValuesStore`, `RetainedEffect` (1 to 3 keys, vararg), `RetainedEffectScope.onRetire`, `RetainedEffectResult` | `compose::runtime::retain` (D1306): `retain`, `retain_keyed`, and `retain_observer`(`_keyed`) for values with callbacks; keys as one value, tuples for several; the store's `consume_exited_value` is an `Option` for `defaultValue` |
 | composition-observer | `tooling.CompositionObserver`, `CompositionObserverHandle`, `ObservableComposition`, `Composition.setObserver`, `CompositionRegistrationObserver`, `Recomposer.observe`, `RecomposerInfo.observe` *(all exp)* | `CompositionObserver`, its handle, `ObservableComposition` and `Composition.setObserver` done (D1505: `tooling`, `Composition::set_observer`, behind compose-runtime's `composition-observer` feature); not there: `CompositionRegistrationObserver`, `Recomposer.observe`, `RecomposerInfo.observe` |
 | composition-data | `tooling.CompositionData` (`compositionGroups`, `isEmpty`, `find`), `CompositionGroup` (`key`, `node`, `data`, `identity`, `sourceInfo`, `groupSize`, `slotsSize`), `CompositionInstance`, `findCompositionInstance`, `LocalInspectionTables`, `Composer.compositionData`, `CompositionServices`, `CompositionServiceKey` | `Composition::dump` (a text dump for tests) |
-| error-traces | `tooling.ComposeStackTraceMode` (`None`, `GroupKeys`, `SourceInformation`, `Auto`), `Composer.setDiagnosticStackTraceMode`, `CompositionErrorContext.attachComposeStackTrace`, `LocalCompositionErrorContext` | a panic in a restarted composable names it (crates/compose/tests/suite/review3.rs); no composable stack |
+| error-traces | `tooling.ComposeStackTraceMode` (`None`, `GroupKeys`, `SourceInformation`, `Auto`), `Composer.setDiagnosticStackTraceMode`, `CompositionErrorContext.attachComposeStackTrace`, `LocalCompositionErrorContext` | `ComposeStackTraceMode`, `setDiagnosticStackTraceMode` done (D1507, D1508: `stack_trace`, the trace taken with `take_compose_stack_trace` and matched to its panic by `compose_stack_trace_sequence`), for panics in a pass; not there: traces of deferred work, `CompositionErrorContext`, `LocalCompositionErrorContext` |
 | composition-tracing | `Composer.setTracer`, `CompositionTracer`, `isTraceInProgress`, `traceEventStart`, `traceEventEnd` | `platform::track_recompositions`, `COMPOSE_FRAME_STATS` |
 
 ### Not applicable
@@ -414,10 +414,10 @@ Sizes: S under a day, M a few days, L one to two weeks, XL multi-week. None of t
 - **Tests:** `CompositionObserverTests` (17): ported. Waiting: `AndroidCompositionObserverTests` (1), `CompositionRegistrationObserverTest` (9), `CompositionRegistrationObserverWithUnconfinedDispatcherTest` (1).
 - **Depends on:** recomposer for registration; composition-context and movable-content for 6 of the 17.
 
-### error-traces (M)
+### error-traces (M): partly done (D1507)
 - **APIs:** `ComposeStackTraceMode`, `Composer.setDiagnosticStackTraceMode`, `CompositionErrorContext`, `LocalCompositionErrorContext`.
 - **Does:** a panic from composition, `remember`, an effect or a node update carries the path of composables to it (names and source locations).
-- **Tests:** `ErrorTraceTests` (33).
+- **Tests:** `ErrorTraceTests` (33): 21 ported; 11 wait for traces of what runs after the pass, 1 n/a.
 - **Depends on:** a table from group keys to names and locations (the transform knows them; keys hash the declaration path); movable-content for 5 tests.
 
 ### composition-data (M)

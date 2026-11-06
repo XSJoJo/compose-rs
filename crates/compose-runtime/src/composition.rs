@@ -740,6 +740,10 @@ impl OuterPass {
             state_reads: _,
             recorded_changes: _,
             recomposition_counts: _,
+            stack_trace_mode: _,
+            // Made as a panic unwinds passes, each adding its own.
+            stack_trace: _,
+            stack_trace_sequence: _,
         } = runtime;
         active.is_some().then(|| {
             Box::new(OuterPass {
@@ -1691,8 +1695,18 @@ impl Drop for Pass {
             return;
         }
         // A panic unwound through the pass. Nothing can be trusted to continue it; keep the
-        // slot table for disposal, which frees everything exactly once. Its observer hears its end
-        // still, as Compose's `finally`.
+        // slot table for disposal, which frees everything exactly once. Where it was goes on the
+        // diagnostic trace first, its groups still open: the runtime's frames, while it's the pass
+        // under way.
+        if std::thread::panicking() {
+            let outer = self.outer.as_ref().and_then(|outer| outer.active).map(|a| a.composition);
+            let _ = try_with_runtime(|runtime| {
+                if runtime.active.is_some_and(|active| active.composition == self.id) {
+                    crate::stack_trace::record(runtime, self.id, outer);
+                }
+            });
+        }
+        // Its observer hears its end still, as Compose's `finally`.
         #[cfg(feature = "composition-observer")]
         let observer = {
             let id = self.id;
