@@ -1879,7 +1879,7 @@ impl UiTree {
         }
         if self.is_laid_out(node) {
             match rect {
-                Some((entry, rect)) => self.bring_into_view_from(node, Some(entry), Some(rect)),
+                Some((entry, rect)) => self.bring_entry_rect_into_view(node, entry, rect),
                 None => self.bring_into_view(node),
             }
         } else {

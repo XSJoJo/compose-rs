@@ -289,6 +289,15 @@ impl UiTree {
             compose_runtime::platform::launch(join_all(futures));
         }
     }
+
+    /// The same for `rect` in the layer of chain entry `entry` of `node`, asking the entries
+    /// before it in its chain first.
+    pub(crate) fn bring_entry_rect_into_view(&mut self, node: NodeId, entry: usize, rect: Rect) {
+        let futures = self.bring_into_view_from(node, Some(entry), Some(rect));
+        if !futures.is_empty() {
+            compose_runtime::platform::launch(join_all(futures));
+        }
+    }
 }
 
 impl crate::node_chain::ChainEntry {
