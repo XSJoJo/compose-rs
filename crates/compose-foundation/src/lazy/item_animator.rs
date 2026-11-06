@@ -921,6 +921,11 @@ impl ItemAnimator {
         (item.children.key() == key).then_some(item)
     }
 
+    /// Whether the item of `key` has animations set up.
+    pub(super) fn animates(&self, key: u64) -> bool {
+        self.info.borrow().contains_key(&key)
+    }
+
     fn has_animations(&self, key: u64) -> bool {
         self.children_of(key).is_some_and(|item| item.children.has_animations())
     }

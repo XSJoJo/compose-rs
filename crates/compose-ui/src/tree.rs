@@ -120,6 +120,9 @@ pub(crate) struct Layer {
     pub(crate) measured_in: u64,
 }
 
+/// How many of a node's layers can be placed under a motion frame of reference.
+pub(crate) const MOTION_LAYERS: usize = 32;
+
 /// One UI element, as Compose's `LayoutNode`.
 pub struct LayoutNode {
     /// The node that lays it out, past any virtual node between them.
@@ -178,9 +181,9 @@ pub struct LayoutNode {
     pub(crate) measured_in_block: bool,
     /// Where it is in `UiTree::coordinate_readers`, or `u32::MAX`.
     pub(crate) reader_at: u32,
-    /// Which layers (the first 8) a motion frame of reference placed
-    /// (`with_motion_frame_of_reference_placement`).
-    pub(crate) motion_layers: u8,
+    /// Which layers a motion frame of reference placed
+    /// (`with_motion_frame_of_reference_placement`), the first `MOTION_LAYERS`.
+    pub(crate) motion_layers: u32,
     /// In `UiTree::layers_moved`.
     pub(crate) layer_moved: bool,
     /// The parent measurement that last measured it, to reject measuring it twice.
@@ -310,15 +313,20 @@ impl LayoutNode {
     /// nodes before it.
     #[cold]
     pub(crate) fn note_motion(&mut self, layer: usize, motion: bool) {
-        if layer < 8 {
-            let bit = 1u8 << layer;
+        debug_assert!(
+            !motion || layer < MOTION_LAYERS,
+            "compose-ui: a motion frame of reference past a node's {MOTION_LAYERS}th layout \
+             modifier isn't kept"
+        );
+        if layer < MOTION_LAYERS {
+            let bit = 1u32 << layer;
             self.motion_layers =
                 if motion { self.motion_layers | bit } else { self.motion_layers & !bit };
         }
     }
 
     pub(crate) fn placed_in_motion(&self, layer: usize) -> bool {
-        layer < 8 && self.motion_layers & (1 << layer) != 0
+        layer < MOTION_LAYERS && self.motion_layers & (1 << layer) != 0
     }
 
     pub(crate) fn layer_of(&self, index: usize) -> usize {

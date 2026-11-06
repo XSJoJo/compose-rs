@@ -1240,3 +1240,356 @@ fn a_column_of_intrinsic_width_follows_a_change_with_no_scope() {
 fn a_column_of_intrinsic_width_follows_a_change_all_in_a_scope() {
     assert_eq!(intrinsic_column_width(None), (10, 20));
 }
+
+// Compose: compose/ui/ui/src/commonMain/kotlin/androidx/compose/ui/layout/LookaheadScope.kt, localLookaheadPositionOf (includeMotionFrameOfReference)
+#[test]
+fn a_lookahead_position_may_leave_a_scroll_out() {
+    let owner = LazyListState::new(3, 0);
+    let state = *owner;
+    let (list, item, scope): (Kept, Kept, Rc<Cell<Option<compose_ui::LookaheadScope>>>) =
+        (Rc::default(), Rc::default(), Rc::default());
+    let (l, i, sc) = (list.clone(), item.clone(), scope.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(100, 300), move || {
+        let (l, i, sc) = (l.clone(), i.clone(), sc.clone());
+        in_a_scope(move |scope| {
+            sc.set(Some(scope));
+            let i = i.clone();
+            LazyColumn!(
+                state = state,
+                modifier = Modifier.fill_max_size().then(keeping(&l)),
+                move |items: LazyListScope| {
+                    let i = i.clone();
+                    items.items(20, move |index| {
+                        let noted = if index == 4 { keeping(&i) } else { Modifier };
+                        Box!(modifier = Modifier.size(dp(100)).then(noted), {});
+                    });
+                }
+            );
+        });
+    });
+    ui.wait_for_idle();
+    let (list, item, scope) =
+        (list.get().expect("placed"), item.get().expect("placed"), scope.get().expect("composed"));
+    for include in [true, false] {
+        assert_eq!(
+            scope.local_lookahead_position_of_with(list, item, Offset::ZERO, include),
+            list.local_position_of_with(&item, Offset::ZERO, include),
+            "{include}"
+        );
+    }
+    assert_eq!(
+        scope.local_lookahead_position_of(list, item, Offset::ZERO),
+        Offset::new(0.0, 100.0)
+    );
+}
+
+/// A list measured with a height ahead and another now: what it says of itself is what's ahead's,
+/// and what's now places what it can in its own.
+#[test]
+fn a_lazy_list_says_what_s_ahead() {
+    let owner = LazyListState::new(0, 0);
+    let state = *owner;
+    let placed: Rc<std::cell::RefCell<Vec<usize>>> = Rc::default();
+    let p = placed.clone();
+    let mut ui = ComposeTestRule::sized(IntSize::new(100, 1000), move || {
+        let p = p.clone();
+        in_a_scope(move |_| {
+            let p = p.clone();
+            let by_pass = Modifier.layout(|scope, measurable, constraints| {
+                let tall = if scope.is_looking_ahead() { 300 } else { 100 };
+                let placeable = scope
+                    .measure(measurable, Constraints::new(0, constraints.max_width, tall, tall));
+                scope.layout_with(placeable.width, placeable.height, move |placement| {
+                    placement.place(&placeable, 0, 0);
+                })
+            });
+            LazyColumn!(state = state, modifier = by_pass, move |items: LazyListScope| {
+                let p = p.clone();
+                items.items(20, move |index| {
+                    let p = p.clone();
+                    Box!(
+                        modifier = Modifier.size(dp(100)).on_placed(move |_: LayoutCoordinates| {
+                            p.borrow_mut().push(index);
+                        }),
+                        {}
+                    );
+                });
+            });
+        });
+    });
+    ui.wait_for_idle();
+    let info = state.layout_info();
+    assert_eq!(info.viewport_end_offset, 300);
+    assert_eq!(info.visible_items_info.len(), 3);
+    // Now, in its 100, only the first one's placed.
+    assert!(placed.borrow().contains(&0));
+    assert!(!placed.borrow().contains(&2));
+}
+
+/// A `LazyColumn` of `count` items `item` tall, `ahead` tall ahead and `now` tall now, in a scope.
+fn list_by_pass(ahead: i32, now: i32, count: usize, item: i32) -> (ComposeTestRule, LazyListState) {
+    let owner = LazyListState::new(0, 0);
+    let state = *owner;
+    let ui = ComposeTestRule::sized(IntSize::new(100, 1000), move || {
+        let _ = &owner;
+        in_a_scope(move |_| {
+            let by_pass = Modifier.layout(move |scope, measurable, constraints| {
+                let tall = if scope.is_looking_ahead() { ahead } else { now };
+                let placeable = scope
+                    .measure(measurable, Constraints::new(0, constraints.max_width, tall, tall));
+                scope.layout_with(placeable.width, placeable.height, move |placement| {
+                    placement.place(&placeable, 0, 0);
+                })
+            });
+            LazyColumn!(state = state, modifier = by_pass, move |items: LazyListScope| {
+                items.items(count, move |_| Box!(modifier = Modifier.size(dp(item)), {}));
+            });
+        });
+    });
+    (ui, state)
+}
+
+/// All its items in view ahead, smaller now: it can't scroll, as what's ahead says, and a scroll
+/// takes nothing (the pass that's now telling its own room, it took 30 and nothing moved).
+#[test]
+fn a_lazy_list_all_in_view_ahead_takes_no_scroll_now() {
+    let (mut ui, state) = list_by_pass(200, 50, 10, 20);
+    ui.wait_for_idle();
+    assert_eq!(state.layout_info().visible_items_info.len(), 10);
+    assert!(!state.can_scroll_forward());
+    assert!(!state.can_scroll_backward());
+    let consumed = ui.run_on_ui_thread(move |_| state.dispatch_raw_delta(30.0));
+    ui.wait_for_idle();
+    assert_eq!(consumed, 0.0);
+    assert_eq!(
+        (state.first_visible_item_index(), state.first_visible_item_scroll_offset()),
+        (0, 0)
+    );
+}
+
+/// At its end ahead and larger now: what's now steps back to fill its room but leaves the scroll
+/// it couldn't take to no one, so the list stays where it's ahead.
+#[test]
+fn a_lazy_list_at_its_end_ahead_stays_there_when_larger_now() {
+    let (mut ui, state) = list_by_pass(50, 200, 20, 20);
+    ui.wait_for_idle();
+    ui.run_on_ui_thread(move |_| state.request_scroll_to_item(19, 0));
+    for _ in 0..3 {
+        ui.wait_for_idle();
+        assert_eq!(
+            (state.first_visible_item_index(), state.first_visible_item_scroll_offset()),
+            (17, 10)
+        );
+        assert!(!state.can_scroll_forward());
+        assert!(state.can_scroll_backward());
+        ui.host().frame();
+    }
+}
+
+/// Larger now than ahead, or smaller: the items either pass places stay composed, idle time after
+/// idle time, though the other wants fewer (what's composed is what either wants).
+#[test]
+fn a_lazy_list_keeps_what_either_pass_places_composed() {
+    for (ahead, now) in [(50, 200), (200, 50)] {
+        composed_once(ahead, now);
+    }
+}
+
+fn composed_once(ahead: i32, now: i32) {
+    let owner = LazyListState::new(0, 0);
+    let state = *owner;
+    let composed = Rc::new(Cell::new(0));
+    let c = composed.clone();
+    let mut ui = ComposeTestRule::sized(IntSize::new(100, 1000), move || {
+        let _ = &owner;
+        let c = c.clone();
+        in_a_scope(move |_| {
+            let c = c.clone();
+            let by_pass = Modifier.layout(move |scope, measurable, constraints| {
+                let tall = if scope.is_looking_ahead() { ahead } else { now };
+                let placeable = scope
+                    .measure(measurable, Constraints::new(0, constraints.max_width, tall, tall));
+                scope.layout_with(placeable.width, placeable.height, move |placement| {
+                    placement.place(&placeable, 0, 0);
+                })
+            });
+            LazyColumn!(state = state, modifier = by_pass, move |items: LazyListScope| {
+                let c = c.clone();
+                items.items(40, move |_| {
+                    c.set(c.get() + 1);
+                    Box!(modifier = Modifier.size(dp(20)), {});
+                });
+            });
+        });
+    });
+    ui.wait_for_idle();
+    let settled = composed.get();
+    assert!(settled >= 10, "{settled}");
+    // Idle times between frames, where what's no longer wanted is let go (D575).
+    let later = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    for _ in 0..5 {
+        while ui.host().prefetch(later) {}
+        state.force_remeasure();
+        ui.wait_for_idle();
+    }
+    assert_eq!(composed.get(), settled, "{ahead} ahead, {now} now");
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/LookaheadScopeTest.kt, lookaheadMinWidthIntrinsicsTest
+#[test]
+fn a_column_of_min_intrinsic_width_is_the_same_in_a_scope() {
+    same_with_and_without_a_scope(|modifier| {
+        let m = modifier.clone();
+        let modifier = modifier.clone();
+        Column!(
+            modifier = m.width(compose_ui::IntrinsicSize::Min).wrap_content_height(),
+            move |_| {
+                for width in [20, 30, 10] {
+                    Box!(modifier = modifier.clone().fill_max_width().size((dp(width), dp(10))), {
+                    });
+                }
+            }
+        );
+    });
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/LookaheadScopeTest.kt, lookaheadMaxWidthIntrinsicsTest
+#[test]
+fn a_column_of_max_intrinsic_width_is_the_same_in_a_scope() {
+    same_with_and_without_a_scope(|modifier| {
+        let modifier = modifier.clone();
+        Box!({
+            let m = modifier.clone();
+            let modifier = modifier.clone();
+            Column!(
+                modifier = m.width(compose_ui::IntrinsicSize::Max).wrap_content_height(),
+                move |_| {
+                    for text in [
+                        "Short text",
+                        "Extremely long text giving the width of its siblings",
+                        "Medium length text",
+                    ] {
+                        Box!(modifier = modifier.clone().fill_max_width(), {
+                            BasicText!(text);
+                        });
+                    }
+                }
+            );
+        });
+    });
+}
+
+/// An approach of `fraction` tenths of the size ahead along one axis.
+fn approaching_tenths(tenths: compose_runtime::MutableState<i32>, horizontal: bool) -> Modifier {
+    Modifier.approach_layout(
+        |_| true,
+        |_, _| false,
+        move |measure, content, constraints| {
+            let placeable = measure.measure(content, constraints);
+            let ahead = measure.lookahead_size();
+            let part = |of: i32| (of as f32 * tenths.get() as f32 / 10.0).round() as i32;
+            let (w, h) = if horizontal {
+                (part(ahead.width), ahead.height)
+            } else {
+                (ahead.width, part(ahead.height))
+            };
+            measure.layout_with(w, h, move |placement| placement.place(&placeable, 0, 0))
+        },
+    )
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/LookaheadScopeTest.kt, intermediateLayoutMinHeightIntrinsicsTest
+#[test]
+fn an_approach_in_a_min_intrinsic_row_counts_as_it_is_now() {
+    let tenths = mutable_state_of(0);
+    let height = Rc::new(Cell::new(-1));
+    let (t, h) = (tenths.handle(), height.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(600, 800), move || {
+        let h = h.clone();
+        in_a_scope(move |_| {
+            let h = h.clone();
+            let row = Modifier
+                .height(compose_ui::IntrinsicSize::Min)
+                .on_globally_positioned(move |it: LayoutCoordinates| h.set(it.size().height))
+                .fill_max_width();
+            Row!(modifier = row, move |scope| {
+                Box!(
+                    modifier = approaching_tenths(t, false).width(dp(5)).required_height(dp(300)),
+                    {}
+                );
+                Box!(modifier = Modifier.required_height(dp(20)).weight(scope, 1.0), {});
+            });
+        });
+    });
+    for at in 0..11 {
+        tenths.set(at);
+        ui.wait_for_idle();
+        assert_eq!(height.get(), (300 * at / 10).max(20), "{at}");
+    }
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/LookaheadScopeTest.kt, intermediateLayoutMinWidthIntrinsicsTest
+#[test]
+fn an_approach_in_a_min_intrinsic_column_counts_as_it_is_now() {
+    let tenths = mutable_state_of(0);
+    let width = Rc::new(Cell::new(-1));
+    let (t, w) = (tenths.handle(), width.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(600, 800), move || {
+        let w = w.clone();
+        in_a_scope(move |_| {
+            let w = w.clone();
+            let column = Modifier
+                .width(compose_ui::IntrinsicSize::Min)
+                .on_globally_positioned(move |it: LayoutCoordinates| w.set(it.size().width))
+                .height(dp(50));
+            Column!(modifier = column, move |_| {
+                Box!(modifier = approaching_tenths(t, true).required_width(dp(300)), {});
+                Box!(modifier = Modifier.required_width(dp(120)).height(dp(10)), {});
+                BasicText!(
+                    "Lorem ipsum dolor sit amet, a text long enough to wrap in its column.",
+                    modifier = Modifier.fill_max_width()
+                );
+            });
+        });
+    });
+    for at in 0..11 {
+        tenths.set(at);
+        ui.wait_for_idle();
+        assert_eq!(width.get(), (300 * at / 10).max(120), "{at}");
+    }
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/LookaheadScopeTest.kt, intermediateLayoutMaxWidthIntrinsicsTest
+#[test]
+fn an_approach_in_a_max_intrinsic_box_counts_as_it_is_now() {
+    let tenths = mutable_state_of(0);
+    let (outer, inner) = (Rc::new(Cell::new(IntSize::ZERO)), Rc::new(Cell::new(IntSize::ZERO)));
+    let (t, o, i) = (tenths.handle(), outer.clone(), inner.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(600, 800), move || {
+        let (o, i) = (o.clone(), i.clone());
+        in_a_scope(move |_| {
+            let (o, i) = (o.clone(), i.clone());
+            let boxed = Modifier
+                .height(dp(50))
+                .width(compose_ui::IntrinsicSize::Max)
+                .on_globally_positioned(move |it: LayoutCoordinates| o.set(it.size()));
+            Box!(modifier = boxed, {
+                Box!(modifier = approaching_tenths(t, true).required_width(dp(100)), {});
+                let i = i.clone();
+                Box!(
+                    modifier = Modifier
+                        .fill_max_width()
+                        .height(dp(10))
+                        .on_globally_positioned(move |it: LayoutCoordinates| i.set(it.size())),
+                    {}
+                );
+            });
+        });
+    });
+    for at in 0..11 {
+        tenths.set(at);
+        ui.wait_for_idle();
+        assert_eq!(outer.get(), IntSize::new(100 * at / 10, 50), "{at}");
+        assert_eq!(inner.get(), IntSize::new(100 * at / 10, 10), "{at}");
+    }
+}
