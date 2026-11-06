@@ -752,6 +752,8 @@ pub(crate) struct ScrollableNode {
     bring_into_view_spec: Option<Rc<dyn BringIntoViewSpec>>,
     /// Its bring-into-view requests and their animation, from the first request on (D1376).
     content_in_view: Option<Rc<ContentInView>>,
+    /// Its size as last measured, to see it shrink (`onRemeasured`).
+    measured: compose_ui::IntSize,
 }
 
 impl<S: ScrollableState + ComposeArg + Clone + 'static> ModifierNodeElement
@@ -772,6 +774,7 @@ impl<S: ScrollableState + ComposeArg + Clone + 'static> ModifierNodeElement
             drag: crate::scroll::DragScroller::along(self.orientation == Orientation::Vertical),
             bring_into_view_spec: self.bring_into_view_spec.clone(),
             content_in_view: None,
+            measured: compose_ui::IntSize::ZERO,
         }
     }
 
@@ -884,7 +887,33 @@ impl compose_ui::TraversableNode for ScrollableNode {
     }
 }
 
+impl compose_ui::MeasuredSizeAwareModifierNode for ScrollableNode {
+    /// A viewport shrinking that clips the focused child scrolls to keep it in view.
+    fn on_remeasured(
+        &mut self,
+        size: compose_ui::IntSize,
+        context: &mut compose_ui::NodeContext<'_>,
+    ) {
+        let Some(previous) = content_in_view::shrunk(&mut self.measured, size, self.vertical)
+        else {
+            return;
+        };
+        let config = self.content_in_view_config();
+        content_in_view::with_config(&mut self.content_in_view, config).on_viewport_shrunk(
+            previous,
+            size,
+            context.handle(),
+            context.composition_locals(),
+        );
+    }
+}
+
 impl ModifierNode for ScrollableNode {
+    fn as_measured_size_aware(
+        &mut self,
+    ) -> Option<&mut dyn compose_ui::MeasuredSizeAwareModifierNode> {
+        Some(self)
+    }
     fn as_key_input(&mut self) -> Option<&mut dyn compose_ui::KeyInputModifierNode> {
         Some(self)
     }
@@ -942,14 +971,8 @@ impl compose_ui::BringIntoViewResponderNode for ScrollableNode {
             return None;
         }
         let config = self.content_in_view_config();
-        let content_in_view = match &self.content_in_view {
-            Some(content_in_view) => {
-                content_in_view.set_config(config);
-                content_in_view.clone()
-            }
-            None => self.content_in_view.insert(ContentInView::new(config)).clone(),
-        };
-        Some(content_in_view.bring_child_into_view(bounds, scope))
+        let content_in_view = content_in_view::with_config(&mut self.content_in_view, config);
+        Some(content_in_view.bring_child_into_view(rect, bounds, scope))
     }
 }
 

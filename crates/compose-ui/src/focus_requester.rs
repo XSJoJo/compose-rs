@@ -822,6 +822,14 @@ impl NodeHandle {
         .flatten()
     }
 
+    /// The focused rectangle in the coordinates of this node's layer, if the focused target is
+    /// inside it (after it in its chain, or in a node inside), whether or not it's a target
+    /// itself: what a scrolling container keeps in view. `None` if the tree is busy.
+    pub fn focused_rect_inside(&self) -> Option<Rect> {
+        let (node, entry) = self.place();
+        read_free_tree(self.tree_key(), |tree| tree.focused_rect_inside(node, entry)).flatten()
+    }
+
     /// The target's own rectangle in its coordinates, as `fetchFocusRect()`: what its focus
     /// properties say, else its bounds. For tests.
     #[doc(hidden)]

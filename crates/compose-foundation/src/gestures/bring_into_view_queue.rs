@@ -2,6 +2,10 @@
 //! `BringIntoViewRequestPriorityQueue`: sorted so each request's bounds contain the next one's,
 //! the largest first. A request that neither contains nor is contained by those already there
 //! interrupts them: they're cancelled.
+//!
+//! Each request's bounds are read with [`Request::refresh`], outside the queue (reading them
+//! runs a responder's `calculate_rect_for_parent`, which may be application code), and the queue
+//! decides from the bounds last read.
 
 use std::cell::{Cell, RefCell};
 use std::future::Future;
@@ -85,16 +89,39 @@ impl Drop for Wait {
     }
 }
 
-/// A request: what to show now (`None` once detached), and its requester's side.
+/// How a request's bounds are read: what to show now, `Some(None)` once detached, `None` when it
+/// can't be told now (the tree is busy).
+pub(crate) type ReadBounds = Rc<dyn Fn() -> Option<Option<Rect>>>;
+
+/// A request: how to read what to show, what it last read, and its requester's side.
 #[derive(Clone)]
 pub(crate) struct Request {
-    pub(crate) current_bounds: Rc<dyn Fn() -> Option<Rect>>,
+    read: ReadBounds,
+    bounds: Rc<Cell<Option<Rect>>>,
     pub(crate) continuation: Rc<Continuation>,
 }
 
 impl Request {
-    pub(crate) fn new(current_bounds: Rc<dyn Fn() -> Option<Rect>>) -> Request {
-        Request { current_bounds, continuation: Rc::default() }
+    /// A request reading its bounds with `read`, `bounds` until it's first read.
+    pub(crate) fn new(read: ReadBounds, bounds: Option<Rect>) -> Request {
+        Request { read, bounds: Rc::new(Cell::new(bounds)), continuation: Rc::default() }
+    }
+
+    /// Reads its bounds again; when they can't be told now, they stay what they were.
+    pub(crate) fn refresh(&self) {
+        if let Some(bounds) = (self.read)() {
+            self.bounds.set(bounds);
+        }
+    }
+
+    /// Its bounds as last read: `None` once detached.
+    pub(crate) fn bounds(&self) -> Option<Rect> {
+        self.bounds.get()
+    }
+
+    /// Whether it's `other` (clones are).
+    pub(crate) fn is(&self, other: &Request) -> bool {
+        Rc::ptr_eq(&self.continuation, &other.continuation)
     }
 }
 
@@ -117,6 +144,12 @@ impl BringIntoViewRequestPriorityQueue {
         self.requests.retain(|request| request.continuation.is_active());
     }
 
+    /// The requests, the largest first, to read their bounds outside the queue.
+    pub(crate) fn snapshot(&mut self) -> Vec<Request> {
+        self.forget_cancelled();
+        self.requests.clone()
+    }
+
     #[cfg(test)]
     pub(crate) fn size(&mut self) -> usize {
         self.forget_cancelled();
@@ -129,18 +162,19 @@ impl BringIntoViewRequestPriorityQueue {
     }
 
     /// Adds `request` where it keeps the order, cancelling the requests it neither contains nor
-    /// is contained by, as `enqueue`. A request with no bounds is resumed at once and not added:
-    /// returns whether it was. Once added, it's resumed or cancelled before it leaves.
+    /// is contained by, as `enqueue`, all by the bounds last read. A request with no bounds is
+    /// resumed at once and not added: returns whether it was. Once added, it's resumed or
+    /// cancelled before it leaves.
     pub(crate) fn enqueue(&mut self, request: Request) -> bool {
         self.forget_cancelled();
-        let Some(bounds) = (request.current_bounds)() else {
+        let Some(bounds) = request.bounds() else {
             request.continuation.resume();
             return false;
         };
         let mut index = self.requests.len();
         while index > 0 {
             index -= 1;
-            let Some(other) = (self.requests[index].current_bounds)() else { continue };
+            let Some(other) = self.requests[index].bounds() else { continue };
             let overlap = intersect(bounds, other);
             if overlap == bounds {
                 // It contains the new one: after it.
@@ -161,11 +195,12 @@ impl BringIntoViewRequestPriorityQueue {
         true
     }
 
-    /// Calls `block` with each request's bounds, the smallest first, as `forEachFromSmallest`.
+    /// Calls `block` with each request's bounds as last read, the smallest first, as
+    /// `forEachFromSmallest`.
     pub(crate) fn for_each_from_smallest(&mut self, mut block: impl FnMut(Option<Rect>) -> bool) {
         self.forget_cancelled();
         for request in self.requests.iter().rev() {
-            if !block((request.current_bounds)()) {
+            if !block(request.bounds()) {
                 return;
             }
         }
@@ -178,12 +213,12 @@ impl BringIntoViewRequestPriorityQueue {
         }
     }
 
-    /// Resumes and removes the smallest request while `block` says so of its bounds, as
+    /// Resumes and removes the smallest request while `block` says so of it, as
     /// `resumeAndRemoveWhile`.
-    pub(crate) fn resume_and_remove_while(&mut self, mut block: impl FnMut(Option<Rect>) -> bool) {
+    pub(crate) fn resume_and_remove_while(&mut self, mut block: impl FnMut(&Request) -> bool) {
         self.forget_cancelled();
         while let Some(request) = self.requests.last() {
-            if !block((request.current_bounds)()) {
+            if !block(request) {
                 return;
             }
             if let Some(request) = self.requests.pop() {
@@ -207,8 +242,15 @@ mod tests {
 
     use super::*;
 
+    /// A request whose bounds are `bounds`, read.
+    fn at(bounds: Option<Rect>) -> Request {
+        let request = Request::new(Rc::new(move || Some(bounds)), None);
+        request.refresh();
+        request
+    }
+
     fn request(left: f32, top: f32, size: f32) -> Request {
-        Request::new(Rc::new(move || Some(Rect::new(left, top, left + size, top + size))))
+        at(Some(Rect::new(left, top, left + size, top + size)))
     }
 
     fn large() -> Request {
@@ -239,7 +281,7 @@ mod tests {
     }
 
     fn of(requests: &[&Request]) -> Vec<Option<Rect>> {
-        requests.iter().map(|request| (request.current_bounds)()).collect()
+        requests.iter().map(|request| request.bounds()).collect()
     }
 
     fn outcomes(requests: &[&Request]) -> Vec<Outcome> {
@@ -257,7 +299,7 @@ mod tests {
     #[test]
     fn a_request_without_bounds_is_resumed_and_not_kept() {
         let mut queue = BringIntoViewRequestPriorityQueue::default();
-        let request = Request::new(Rc::new(|| None));
+        let request = at(None);
         assert!(!queue.enqueue(request.clone()));
         assert!(queue.is_empty());
         assert_eq!(request.continuation.outcome(), Outcome::Resumed);
@@ -310,7 +352,7 @@ mod tests {
     fn a_request_beside_one_keeps_those_inside_it_that_it_contains() {
         let (large, medium, small) = (large(), medium(), small());
         // Contains `small`, beside `medium`, inside `large`.
-        let between = Request::new(Rc::new(|| Some(Rect::new(0.0, 0.0, 6.0, 1.0))));
+        let between = at(Some(Rect::new(0.0, 0.0, 6.0, 1.0)));
         let mut queue = BringIntoViewRequestPriorityQueue::default();
         for request in [&large, &medium, &small, &between] {
             queue.enqueue(request.clone());
@@ -319,11 +361,30 @@ mod tests {
         assert_eq!(medium.continuation.outcome(), Outcome::Cancelled);
     }
 
+    // compose-rs's own: a read that can't tell (the tree busy, read from inside a read of it)
+    // keeps the bounds read before: the request isn't taken for one whose requester went.
+    #[test]
+    fn a_read_that_cant_tell_keeps_the_bounds_read_before() {
+        let busy = Rc::new(Cell::new(false));
+        let reads = busy.clone();
+        let rect = Rect::new(0.0, 0.0, 1.0, 1.0);
+        let request =
+            Request::new(Rc::new(move || if reads.get() { None } else { Some(Some(rect)) }), None);
+        request.refresh();
+        busy.set(true);
+        request.refresh();
+        assert_eq!(request.bounds(), Some(rect));
+        let mut queue = BringIntoViewRequestPriorityQueue::default();
+        assert!(queue.enqueue(request.clone()));
+        queue.resume_and_remove_while(|request| request.bounds().is_none());
+        assert!(request.continuation.is_active());
+    }
+
     // Compose: compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/gestures/BringIntoViewRequestPriorityQueueTest.kt, enqueuedRequest_isRemoved_whenCancelled
     #[test]
     fn a_request_cancelled_by_its_requester_leaves() {
         let mut queue = BringIntoViewRequestPriorityQueue::default();
-        let request = Request::new(Rc::new(|| Some(Rect::new(0.0, 0.0, 0.0, 0.0))));
+        let request = at(Some(Rect::new(0.0, 0.0, 0.0, 0.0)));
         queue.enqueue(request.clone());
         // Its requester's wait, dropped.
         drop(request.continuation.clone().wait());
@@ -377,8 +438,7 @@ mod tests {
         for request in [&small, &medium, &large] {
             queue.enqueue(request.clone());
         }
-        let smallest = (small.current_bounds)();
-        queue.resume_and_remove_while(|bounds| bounds == smallest);
+        queue.resume_and_remove_while(|request| request.is(&small));
         assert_eq!(bounds(&mut queue), of(&[&large, &medium]));
         assert_eq!(small.continuation.outcome(), Outcome::Resumed);
         assert_eq!(outcomes(&[&large, &medium]), [Outcome::Active; 2]);

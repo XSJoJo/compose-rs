@@ -449,6 +449,7 @@ impl ModifierNodeElement for ScrollElement {
             laid_out: Rc::default(),
             rtl: false,
             content_in_view: None,
+            measured: compose_ui::IntSize::ZERO,
         }
     }
 
@@ -584,6 +585,8 @@ pub(crate) struct ScrollNode {
     rtl: bool,
     /// Its bring-into-view requests and their animation, from the first request on (D1376).
     content_in_view: Option<Rc<ContentInView>>,
+    /// Its size as last measured, to see it shrink (`onRemeasured`).
+    measured: compose_ui::IntSize,
 }
 
 impl ScrollNode {
@@ -805,14 +808,8 @@ impl compose_ui::BringIntoViewResponderNode for ScrollNode {
             return None;
         }
         let config = self.content_in_view_config();
-        let content_in_view = match &self.content_in_view {
-            Some(content_in_view) => {
-                content_in_view.set_config(config);
-                content_in_view.clone()
-            }
-            None => self.content_in_view.insert(ContentInView::new(config)).clone(),
-        };
-        Some(content_in_view.bring_child_into_view(bounds, scope))
+        let content_in_view = content_in_view::with_config(&mut self.content_in_view, config);
+        Some(content_in_view.bring_child_into_view(rect, bounds, scope))
     }
 }
 
@@ -946,6 +943,18 @@ impl LayoutModifierNode for ScrollNode {
                 }
             }
         });
+        // A viewport shrinking may clip the focused child, as `onRemeasured`: seen here, where it's
+        // measured, rather than told of every measurement (a dispatch for each scroll).
+        let size = compose_ui::IntSize::new(width, height);
+        if !scope.is_looking_ahead()
+            && let Some(previous) = content_in_view::shrunk(&mut self.measured, size, self.vertical)
+            && let Some(handle) = scope.handle()
+        {
+            let locals = scope.composition_locals();
+            let config = self.content_in_view_config();
+            content_in_view::with_config(&mut self.content_in_view, config)
+                .on_viewport_shrunk(previous, size, handle, locals);
+        }
         let (state, laid_out) = (self.state, self.laid_out.clone());
         let (vertical, reverse_scrolling) = (self.vertical, self.reverse_scrolling);
         // Read while placing: a scroll places the content again and measures nothing, as Compose's

@@ -328,7 +328,9 @@ pub use prefetch::{
     LOCAL_PREFETCH_SCHEDULER, PrefetchClock, PrefetchRequest, PrefetchRequestScope,
     PrefetchScheduler, prefetch_now,
 };
-pub use relocation::{BringIntoViewBounds, BringIntoViewResponderNode, BringIntoViewScope};
+pub use relocation::{
+    BoundsRead, BringIntoViewBounds, BringIntoViewResponderNode, BringIntoViewScope,
+};
 pub use remeasurement::{Remeasurement, RemeasurementModifier};
 pub use ruler::{HorizontalRuler, RectRulers, Ruler, RulerScope, VerticalRuler};
 pub use semantics::{

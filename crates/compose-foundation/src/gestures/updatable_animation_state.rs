@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
 use compose_animation::{AnimationSpec, AnimationVector, VectorizedAnimationSpec};
-use compose_runtime::{Recomposer, RecomposerState};
+use compose_runtime::CompositionLocalAnchor;
 
 /// Where the frames come from: one is awaited (its time in nanoseconds), then its end, after the
 /// frame's composition and layout.
@@ -22,8 +22,18 @@ pub(crate) trait AnimationFrames {
 }
 
 /// The executor's frames, as the host runs them: a frame's tasks run before it composes and lays
-/// out, its end after it drew.
-pub(crate) struct ExecutorFrames;
+/// out, its end after it drew. The end is that of a frame of the tree of the composition `owner`
+/// names (another host's frame isn't it), any frame's without one.
+pub(crate) struct ExecutorFrames {
+    owner: Option<CompositionLocalAnchor>,
+}
+
+impl ExecutorFrames {
+    /// The frames of the tree where `owner` (a node's composition locals) is.
+    pub(crate) fn of(owner: Option<CompositionLocalAnchor>) -> ExecutorFrames {
+        ExecutorFrames { owner }
+    }
+}
 
 impl AnimationFrames for ExecutorFrames {
     fn frame(&self) -> impl Future<Output = u64> {
@@ -31,12 +41,13 @@ impl AnimationFrames for ExecutorFrames {
     }
 
     fn frame_end(&self) -> impl Future<Output = ()> {
-        FrameEnd { shared: None, handle: None }
+        FrameEnd { owner: self.owner, shared: None, handle: None }
     }
 }
 
-/// The end of the frame, as a frame-end callback of the thread's recomposer wakes it.
+/// The end of the frame, as a frame-end callback of the owner's recomposer wakes it.
 struct FrameEnd {
+    owner: Option<CompositionLocalAnchor>,
     shared: Option<Rc<FrameEndShared>>,
     handle: Option<compose_runtime::CancellationHandle>,
 }
@@ -59,23 +70,21 @@ impl Future for FrameEnd {
             shared.waker.set(Some(context.waker().clone()));
             return Poll::Pending;
         }
-        let recomposer = Recomposer::current_thread();
-        // One that's over runs no callback: nothing to wait for.
-        if matches!(
-            recomposer.current_state().get(),
-            RecomposerState::ShutDown | RecomposerState::ShuttingDown
-        ) {
-            return Poll::Ready(());
-        }
         let shared = Rc::new(FrameEndShared::default());
         shared.waker.set(Some(context.waker().clone()));
         let told = shared.clone();
-        self.handle = Some(recomposer.schedule_frame_end_callback(move || {
+        let at_end = move || {
             told.done.set(true);
             if let Some(waker) = told.waker.take() {
                 waker.wake();
             }
-        }));
+        };
+        let owner = self.owner.unwrap_or(CompositionLocalAnchor::NONE);
+        // None: no frame of it will end (its composition or recomposer is gone, or over).
+        let Some(handle) = owner.schedule_frame_end_callback(at_end) else {
+            return Poll::Ready(());
+        };
+        self.handle = Some(handle);
         self.shared = Some(shared);
         Poll::Pending
     }
