@@ -199,8 +199,7 @@ impl FixedTextMeasurer {
 
     /// How many times as tall as the font's `character` is (`with_tall_scripts`).
     fn height_of(&self, character: char) -> f32 {
-        if self.tall_scripts != 1.0 && matches!(character as u32, 0x0600..=0x06FF | 0x0E00..=0x0E7F)
-        {
+        if matches!(character as u32, 0x0600..=0x06FF | 0x0E00..=0x0E7F) {
             self.tall_scripts
         } else {
             1.0
@@ -449,6 +448,7 @@ impl FixedTextMeasurer {
             let spacing =
                 resolve_text_unit_px(run_style.letter_spacing, font_px * scale_x, density)
                     .unwrap_or(0.0);
+            let (ascent, descent) = (font_px * metrics.ascent, font_px * metrics.descent);
             for (index, character) in string[range.clone()].char_indices() {
                 glyphs.push(Glyph {
                     offset: range.start + index,
@@ -458,9 +458,18 @@ impl FixedTextMeasurer {
                     } else {
                         font_px * metrics.advance * scale_x + spacing
                     },
-                    ascent: font_px * metrics.ascent * self.height_of(character),
-                    descent: font_px * metrics.descent * self.height_of(character),
+                    ascent,
+                    descent,
                 });
+            }
+        }
+        // The tall scripts' characters taller, in a pass of its own: the others' layouts, nearly
+        // all, pay nothing per character for it (D2006).
+        if self.tall_scripts != 1.0 {
+            for glyph in glyphs.iter_mut() {
+                let height = self.height_of(glyph.character);
+                glyph.ascent *= height;
+                glyph.descent *= height;
             }
         }
         // A placeholder is its first character's advance and leaves its line the height it needs;
@@ -1025,6 +1034,14 @@ impl TextMeasurer for FixedTextMeasurer {
             return Rect::new(0.0, 0.0, 0.0, 0.0);
         }
         layout.get_cursor_rect(offset.min(layout.text.len()))
+    }
+
+    fn line_bottom(&self, handle: ParagraphHandle, line: usize) -> f32 {
+        let layout = self.layout_of(handle);
+        match layout.lines.get(line) {
+            Some(line) => line.bottom,
+            None => layout.height,
+        }
     }
 
     fn paragraph(&self, handle: ParagraphHandle) -> Rc<dyn Paragraph> {

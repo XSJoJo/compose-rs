@@ -828,21 +828,25 @@ impl UiTree {
             return;
         }
         if let Some(own_semantics) = self.own_semantics(node) {
-            let mut semantics = own_semantics.config.clone();
+            // Read where it's kept: copied only for a part's properties without its marker (a
+            // host's part, which the host took in, not at all: D2005).
+            let semantics = &own_semantics.config;
             if semantics.is_merging_semantics_of_descendants {
                 self.semantics_of(node, true, config, children);
                 return;
             }
+            let part = semantics.contains(&PART_OF_PARENT);
             match own.as_deref_mut() {
                 // A host's part: the host took it in (D2003).
-                _ if semantics.contains(&PART_OF_PARENT) && self.host_of_part(node).is_some() => {}
-                Some(own) if semantics.contains(&PART_OF_PARENT) => {
-                    semantics.remove(&PART_OF_PARENT);
-                    own.apply(&semantics);
-                    config.apply(&semantics);
+                _ if part && self.host_of_part(node).is_some() => {}
+                Some(own) if part => {
+                    let mut part = semantics.clone();
+                    part.remove(&PART_OF_PARENT);
+                    own.apply(&part);
+                    config.apply(&part);
                 }
                 _ => {
-                    config.merge_child(&semantics);
+                    config.merge_child(semantics);
                     own = None;
                 }
             }

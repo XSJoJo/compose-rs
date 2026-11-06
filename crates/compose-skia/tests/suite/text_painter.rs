@@ -789,7 +789,7 @@ fn drawing_a_layout_twice_in_another_color_keeps_one_repainted_paragraph() {
 // ---- Fonts on the real stack -------------------------------------------------------------------
 
 /// A monospaced font file: the sample font's (D1124), in the target directory.
-fn monospaced_font_file() -> &'static str {
+pub(crate) fn monospaced_font_file() -> &'static str {
     static FILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     FILE.get_or_init(|| {
         let path = format!("{}/sample_font.ttf", env!("CARGO_TARGET_TMPDIR"));
@@ -1010,9 +1010,9 @@ fn a_paragraph_outlives_the_typefaces_being_registered_anew() {
 }
 
 /// A font that arrives when asked, from `path`.
-struct Arriving {
-    path: &'static str,
-    now: Rc<std::cell::Cell<bool>>,
+pub(crate) struct Arriving {
+    pub(crate) path: &'static str,
+    pub(crate) now: Rc<std::cell::Cell<bool>>,
 }
 
 impl TypefaceLoader for Arriving {
@@ -1039,7 +1039,7 @@ impl TypefaceLoader for Arriving {
     }
 }
 
-fn run_until(host: &mut UiHost, done: impl Fn(&UiHost) -> bool) {
+pub(crate) fn run_until(host: &mut UiHost, done: impl Fn(&UiHost) -> bool) {
     for _ in 0..200 {
         if done(host) {
             return;

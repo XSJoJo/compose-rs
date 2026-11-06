@@ -1631,6 +1631,28 @@ impl TextFieldNode {
         self.constraints = None;
     }
 
+    /// Whether a font the field's text asked for arrived since `paragraph` was laid out, as
+    /// `BasicText`'s (Compose's `hasStaleResolvedFonts`, D2007): the read of a state, so what
+    /// measures is told when one does. Asked only of a style with fonts of its own: the field
+    /// lays its text out in its style alone.
+    fn is_stale(
+        &self,
+        measurer: &dyn compose_ui::platform::TextMeasurer,
+        paragraph: ParagraphHandle,
+    ) -> bool {
+        matches!(self.style.font_family, Some(compose_ui::FontFamily::FontList(_)))
+            && measurer.has_stale_resolved_fonts(paragraph)
+    }
+
+    /// Forgets what was measured in the fonts that were: the lines of "H" its least and most
+    /// lines are, and the ten "H" a state-based field is at least as wide as.
+    fn forget_font_measures(&mut self) {
+        self.line_bounds = None;
+        if let Some(link) = self.state.as_mut() {
+            link.default_width = None;
+        }
+    }
+
     /// Records the state before an edit for undo: typing on from the last typed text joins its
     /// step.
     fn record_undo(&mut self, typing: bool) {
@@ -2373,6 +2395,13 @@ impl LayoutModifierNode for TextFieldNode {
         if self.state.is_some() {
             self.adopt_state_to_measure(scope);
         }
+        // A font arrived: laid out anew (D2007).
+        if let Some(paragraph) = self.paragraph
+            && self.is_stale(&*scope.text_measurer(), paragraph)
+        {
+            self.invalidate_paragraph();
+            self.forget_font_measures();
+        }
         // At least ten "H" wide, as Compose's `textFieldMinSize`.
         let constraints = match self.state.is_some().then(|| self.default_width(scope)).flatten() {
             Some(width) => Constraints {
@@ -2469,11 +2498,17 @@ impl LayoutModifierNode for TextFieldNode {
         }
         let metrics = scope.text_measurer().metrics(paragraph);
         // A multi-line field between `min_lines` and `max_lines` lines high, as Compose's
-        // `heightInLines`; a value-based field of one line at most as high as its first line, as
-        // the legacy field's `heightForSingleLineField` for `maxLines == 1`: a tall script isn't
-        // cut.
-        let (min_height, max_height) = if self.max_lines == 1 && self.state.is_none() {
-            let line = scope.text_measurer().cursor_rect(paragraph, 0).bottom.ceil() as i32;
+        // `heightInLines`; a field of one line as high as its first line's bottom, as Compose's
+        // `heightForSingleLineField` (`getLineBottom(0)`, not the cursor's, D2004): a tall script
+        // isn't cut. The legacy field's for `maxLines == 1` (a single line's too), the state's
+        // for a single line.
+        let one_line = if self.state.is_none() {
+            self.max_lines == 1 || self.single_line
+        } else {
+            self.single_line
+        };
+        let (min_height, max_height) = if one_line {
+            let line = scope.text_measurer().line_bottom(paragraph, 0).ceil() as i32;
             (line, line)
         } else {
             self.line_bounds(scope)
@@ -2622,8 +2657,16 @@ impl TextFieldNode {
             None => self.text.clone(),
         };
         let mut measurer = scope.text_measurer();
+        // A font arrived: laid out anew, and what was measured in the old font forgotten
+        // (D2007).
+        let stale =
+            self.intrinsics.as_ref().is_some_and(|kept| self.is_stale(&*measurer, kept.paragraph));
+        if stale {
+            self.forget_font_measures();
+        }
         let kept = self.intrinsics.as_ref().filter(|kept| {
-            kept.text == text
+            !stale
+                && kept.text == text
                 && kept.style == self.style
                 && kept.options == options
                 && kept.density == density
@@ -4042,5 +4085,95 @@ mod tests {
         assert_eq!(cursor_to_reveal(cursor, false, true), cursor);
         let wide = Rect::new(10.0, 0.0, 12.0, 20.0);
         assert_eq!(cursor_to_reveal(wide, true, true), wide);
+    }
+
+    /// A focus target telling the decoration around it of its gains only, as the field's node
+    /// does of both: what a field that never told of its loss would leave the decoration with.
+    struct TellsGains;
+    struct TellsGainsNode;
+
+    impl ModifierNodeElement for TellsGains {
+        type Node = TellsGainsNode;
+        fn create(&self) -> TellsGainsNode {
+            TellsGainsNode
+        }
+        fn update(&self, _node: &mut TellsGainsNode) {}
+        fn same(&self, _other: &Self) -> bool {
+            true
+        }
+    }
+
+    impl ModifierNode for TellsGainsNode {
+        fn as_focus_event(&mut self) -> Option<&mut dyn compose_ui::FocusEventModifierNode> {
+            Some(self)
+        }
+    }
+
+    impl compose_ui::FocusEventModifierNode for TellsGainsNode {
+        fn on_focus_event(
+            &mut self,
+            state: compose_ui::FocusState,
+            context: &mut EventContext<'_>,
+        ) {
+            if state.is_focused() {
+                tell_decoration(true, context);
+            }
+        }
+    }
+
+    /// The decoration forgets the field's focus when nothing below it is focused any more, though
+    /// the field didn't tell it (D2000's backstop): focused again, it's shown whole again.
+    // Compose: compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/text/input/internal/TextFieldDecoratorModifier.kt, onFocusEvent (no test of its own)
+    #[test]
+    fn the_decoration_forgets_a_focus_lost_below_it_untold() {
+        use crate::gestures::ScrollableState;
+        use crate::layout::{Arrangement, Box, Column};
+        use crate::{Alignment, ScrollModifiers};
+        use compose_runtime::callback;
+        use compose_test::*;
+        use compose_ui::UnitExt;
+        fn spacer(height: i32) {
+            let none = callback(|_| {});
+            Box(Modifier.height(height.dp()), Alignment::TOP_START, false, none);
+        }
+
+        let scroll_state =
+            **std::boxed::Box::leak(std::boxed::Box::new(crate::ScrollState::new(0)));
+        let mut ui = compose_test(move || {
+            let column = Modifier.height(100.dp()).vertical_scroll(scroll_state);
+            Column(
+                column,
+                Arrangement::TOP,
+                Alignment::START,
+                callback(move |_| {
+                    spacer(70);
+                    // The decoration: the target, then 30 dp more, so it's 20 dp past the view.
+                    let decoration = Modifier.then_custom(FocusOnTap { interaction_source: None });
+                    let content = callback(move |_| {
+                        let target = Modifier
+                            .height(20.dp())
+                            .then_custom(TellsGains)
+                            .focus_target()
+                            .test_tag("target");
+                        Box(target, Alignment::TOP_START, false, callback(|_| {}));
+                        spacer(30);
+                    });
+                    Column(decoration, Arrangement::TOP, Alignment::START, content);
+                    spacer(300);
+                }),
+            );
+        });
+        ui.on_node_with_tag("target").request_focus();
+        ui.wait_for_idle();
+        assert!(scroll_state.value() > 0, "shown whole the first time");
+        // The focus goes, untold; the view back at the top.
+        ui.host().clear_focus();
+        ui.wait_for_idle();
+        scroll_state.dispatch_raw_delta(-(scroll_state.value() as f32));
+        ui.wait_for_idle();
+        assert_eq!(scroll_state.value(), 0);
+        ui.on_node_with_tag("target").request_focus();
+        ui.wait_for_idle();
+        assert!(scroll_state.value() > 0, "shown whole again");
     }
 }

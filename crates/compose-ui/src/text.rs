@@ -473,6 +473,18 @@ pub trait TextMeasurer: std::any::Any {
     /// The cursor before byte `offset`: its top and bottom in the paragraph, as
     /// `TextLayoutResult.getCursorRect` (zero width).
     fn cursor_rect(&self, paragraph: ParagraphHandle, offset: usize) -> crate::unit::Rect;
+    /// The bottom of line `line` in the paragraph, as `Paragraph.getLineBottom`: where the line
+    /// ends as the text lays it out (a trimmed line height's last line at its font's bottom),
+    /// which a cursor's rect needn't be. The paragraph's height past its last line. The default
+    /// asks the paragraph's queries ([`paragraph`](Self::paragraph)).
+    fn line_bottom(&self, paragraph: ParagraphHandle, line: usize) -> f32 {
+        let queries = self.paragraph(paragraph);
+        if line < queries.line_count() {
+            queries.get_line_bottom(line)
+        } else {
+            self.metrics(paragraph).size.height as f32
+        }
+    }
     /// The rectangles covering bytes `range` of the paragraph, one per line at most: for a
     /// selection's highlight. The default joins the cursors at both ends, right for one line.
     fn selection_rects(

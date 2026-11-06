@@ -19,7 +19,7 @@ The log is split by area into the files below, one table each, rows in number or
 |---|---|---|
 | [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 182 |
 | [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 412 |
-| [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 92 |
+| [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 96 |
 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md) | Lazy lists and grids, item reuse, the policy of composing only what is in view, prefetch. | 109 |
 | [android-drawing](decisions/android-drawing.md) | The display list and its replayer, render nodes and repaint boundaries, paths, shadows, layers. | 32 |
 | [android-host-and-performance](decisions/android-host-and-performance.md) | The view and activity glue, the frame loop, the hint session, jank, startup, memory, and the optimization flags. | 31 |
@@ -998,6 +998,10 @@ The log is split by area into the files below, one table each, rows in number or
 | D1950 | [runtime](decisions/runtime.md#d1950) | current |
 | D1951 | [runtime](decisions/runtime.md#d1951) | current |
 | D2000 | [text](decisions/text.md#d2000) | current |
-| D2001 | [text](decisions/text.md#d2001) | current |
+| D2001 | [text](decisions/text.md#d2001) | revised by [D2004](decisions/text.md#d2004), [D2006](decisions/text.md#d2006), [D2007](decisions/text.md#d2007) |
 | D2002 | [text](decisions/text.md#d2002) | current |
-| D2003 | [text](decisions/text.md#d2003) | current |
+| D2003 | [text](decisions/text.md#d2003) | revised by [D2005](decisions/text.md#d2005) |
+| D2004 | [text](decisions/text.md#d2004) | current |
+| D2005 | [text](decisions/text.md#d2005) | current |
+| D2006 | [text](decisions/text.md#d2006) | current |
+| D2007 | [text](decisions/text.md#d2007) | current |
