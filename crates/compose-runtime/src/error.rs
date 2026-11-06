@@ -57,6 +57,9 @@ pub enum ComposeError {
     /// or resumed, applied or cancelled out of order (applied before it was complete, resumed
     /// after it was applied or cancelled).
     PausedCompositionState,
+    /// A composition's data was read while a pass of it was under way, or through what was read of
+    /// it before a pass since (`tooling::CompositionData`).
+    ConcurrentModification,
 }
 
 impl fmt::Display for ComposeError {
@@ -120,6 +123,10 @@ impl fmt::Display for ComposeError {
             ComposeError::PausedCompositionState => {
                 "a paused composition was used out of order: one at a time per composition, \
                  applied once complete, neither resumed nor applied once applied or cancelled"
+            }
+            ComposeError::ConcurrentModification => {
+                "a composition's data was read during a pass of it, or the table was modified \
+                 since it was read: read it again after the pass"
             }
         };
         formatter.write_str(message)
