@@ -31,10 +31,14 @@ pub(crate) struct Parked {
     nodes: Vec<NodeRef>,
     /// The nearest provider where it was.
     provider: u32,
-    /// It came from another composition's table, with what was provided where it was: where it
-    /// goes provides the same, or all of it composes (D1511).
-    transplanted: Option<crate::local::CompositionLocalMap>,
+    /// It came from another composition's table, with what was provided where it last composed,
+    /// if that's known: where it goes provides the same, or all of it composes (D1511).
+    transplanted: Option<ComposedUnder>,
 }
+
+/// What was provided where content last composed: `None` if that's not known now (its provider
+/// moved on, a static value changing), which composes it again wherever it goes.
+type ComposedUnder = Option<crate::local::CompositionLocalMap>;
 
 /// What a table holds of the movable content in the pass under way.
 #[derive(Default)]
@@ -136,9 +140,15 @@ where
     }))
 }
 
-/// What a call of it keeps: its content, its parameter and the nearest provider, with what that
-/// provided, when it last ran.
-type MovableKept<P> = (Rc<MovableInner<P>>, P, Cell<(u32, u32)>);
+/// What a call of it keeps: its content and parameter, a `MovableCall<P>`, and the nearest
+/// provider when it last ran, of any composition: what it composed under, which goes with it when
+/// it moves to another composition (D1511), as Compose's movable group's `groupAux`.
+struct MovableKept {
+    call: Box<dyn std::any::Any>,
+    composed_under: Cell<crate::local::CompositionLocalAnchor>,
+}
+
+type MovableCall<P> = (Rc<MovableInner<P>>, P);
 
 fn compose_movable<P: ComposeArg + Clone + 'static>(inner: Rc<MovableInner<P>>, param: P) {
     let composer = current();
@@ -147,21 +157,27 @@ fn compose_movable<P: ComposeArg + Clone + 'static>(inner: Rc<MovableInner<P>>, 
     // What's provided here, which no state tells of a move or a static value's change, whose
     // forcing ended with the provider's frame by the time a late walk gets here: as Compose
     // compares its group's locals (`reader.groupAux != locals`).
-    let locals = with_runtime(|runtime| runtime.locals_here());
-    let mut last_locals = locals;
+    let (composition, here) = with_runtime(|runtime| {
+        (runtime.active.expect("composing").composition, crate::local::anchor_here(runtime))
+    });
+    let mut last = here;
     let changed = composer.update_kept(
-        |kept: &MovableKept<P>| {
-            last_locals = kept.2.replace(locals);
-            !kept.1.same(&param)
+        |kept: &MovableKept| {
+            last = kept.composed_under.replace(here);
+            let (_, kept) = kept.call.downcast_ref::<MovableCall<P>>().expect("its own call");
+            !kept.same(&param)
         },
-        || (inner.clone(), param.clone(), Cell::new(locals)),
+        || MovableKept {
+            call: Box::new((inner.clone(), param.clone())),
+            composed_under: Cell::new(here),
+        },
     );
     // Content from another table was compared there: what it kept names that table's providers.
     let locals_moved = match start {
         Start::Composing(Adopted::Transplanted { forced }) => forced,
         _ => {
-            last_locals != locals
-                && with_runtime(|runtime| runtime.force_if_moved(last_locals, locals))
+            let (last, now) = (last.provider_in(composition), here.provider_in(composition));
+            last != now && with_runtime(|runtime| runtime.force_if_moved(last, now))
         }
     };
     let changed = changed || locals_moved;
@@ -173,8 +189,8 @@ fn compose_movable<P: ComposeArg + Clone + 'static>(inner: Rc<MovableInner<P>>, 
         }
     }
     composer.end_restart_group(|kept| {
-        let (inner, param, _) =
-            kept.downcast_ref::<MovableKept<P>>().expect("the kept arguments of its group");
+        let kept = kept.downcast_ref::<MovableKept>().expect("the kept arguments of its group");
+        let (inner, param) = kept.call.downcast_ref::<MovableCall<P>>().expect("its own call");
         compose_movable(inner.clone(), param.clone());
     });
 }
@@ -642,8 +658,10 @@ impl Runtime {
             let mut adopted = Adopted::Here;
             if let Some(there) = &parked.transplanted {
                 let data = compositions.data(composition);
-                let here = crate::local::map_at(compositions, data, provider);
-                let forced = !crate::local::same_entries(there, &here);
+                let forced = there.as_ref().is_none_or(|there| {
+                    let here = crate::local::map_at(compositions, data, provider);
+                    !crate::local::same_entries(there, &here)
+                });
                 if forced {
                     let frame = frames.last_mut().expect("just started");
                     frame.forced = true;
@@ -707,18 +725,6 @@ impl Runtime {
         (op, Start::Placeholder, None)
     }
 
-    /// The nearest provider of the group composing now, with what it provides as a number.
-    fn locals_here(&self) -> (u32, u32) {
-        let composition = self.active.expect("composing").composition.index;
-        let frame = self.frames.last().expect("composing");
-        let table = &self.compositions.data(composition).table;
-        let provider = table[frame.group].enclosing_provider;
-        if provider == NONE {
-            return (NONE, 0);
-        }
-        (provider, table[provider].provider_version())
-    }
-
     /// The group composing now last composed under `last`, and is under `now`: if what's provided
     /// isn't the same, all of it composes. Returns whether it does.
     fn force_if_moved(&mut self, last: (u32, u32), now: (u32, u32)) -> bool {
@@ -756,10 +762,10 @@ impl Runtime {
         })?;
         let source = &mut self.compositions.data_mut(from.index).table;
         let mut parked = take_parked(source, identity)?;
-        // What it last ran under: where it was parked, or where it came from before that.
+        // What it last ran under, found before it leaves, or found when it left another before.
         let there = match parked.transplanted.take() {
             Some(there) => there,
-            None => self.locals_where_parked(from, parked.provider),
+            None => self.composed_under(from, parked.group),
         };
         let source = &mut self.compositions.data_mut(from.index).table;
         // What a nested one's taking out of what's around it is done by this pass.
@@ -774,14 +780,13 @@ impl Runtime {
         Some(Parked { group, nodes: parked.nodes, provider: NONE, transplanted: Some(there) })
     }
 
-    /// What was provided where content parked in `from` was, under `provider`.
-    fn locals_where_parked(
-        &self,
-        from: CompositionId,
-        provider: u32,
-    ) -> crate::local::CompositionLocalMap {
-        let data = self.compositions.get(from).expect("a live composition");
-        crate::local::map_at(&self.compositions, data, provider)
+    /// What was provided where `group`, content parked in `from`, last composed, if that's still
+    /// known: not if a provider changed what it provides since, as a static value's change in the
+    /// frame it moves (Compose's `groupAux`, the locals it composed under).
+    fn composed_under(&self, from: CompositionId, group: u32) -> ComposedUnder {
+        let data = self.compositions.get(from)?;
+        let kept = data.table[group].kept.as_ref()?.downcast_ref::<MovableKept>()?;
+        kept.composed_under.get().map_if_known(self)
     }
 
     /// Moves `group`, in no tree, from `from`'s table to `to`'s: what's under its contexts is under
@@ -832,10 +837,10 @@ impl Runtime {
         let source = &mut self.compositions.data_mut(id.index).table;
         let parked = std::mem::take(&mut source.movable.parked);
         for one in parked {
-            // What it last ran under: where it was parked, or where it came from before.
+            // What it last ran under, found as it leaves or when it left another before.
             let there = match one.transplanted {
                 Some(there) => there,
-                None => self.locals_where_parked(id, one.provider),
+                None => self.composed_under(id, one.group),
             };
             let group = self.transplant(id, parent, one.group);
             let target = &mut self.compositions.data_mut(parent.index).table;
@@ -1042,20 +1047,35 @@ fn retire_placeholder(
 /// wasn't made again (a node's `CompositionLocalAnchor` and `CompositeKeyToken`): consulted only
 /// when such a handle finds its place no longer what it named (D1511).
 pub(crate) struct MovedGroups {
-    /// A composition's index and a group of it, to where that group went; made at the first move.
+    /// A composition's index and a group of it, to where that group is now; made at the first move.
     map: Option<Box<MovedMap>>,
+    /// Past this many entries, a move drops those whose group is gone.
+    sweep_at: usize,
 }
 
-type MovedMap = std::collections::HashMap<(u32, u32), (CompositionId, u32)>;
+type MovedMap = std::collections::HashMap<(u32, u32), Moved>;
+
+/// Where a group that moved across compositions is now.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Moved {
+    /// The generation of the composition it left, whose index is the entry's: another
+    /// composition at that index since isn't taken for it.
+    pub from_generation: u32,
+    pub to: CompositionId,
+    pub group: u32,
+}
 
 impl MovedGroups {
     pub(crate) const fn new() -> MovedGroups {
-        MovedGroups { map: None }
+        MovedGroups { map: None, sweep_at: Self::SWEEP }
     }
 
-    /// Above this, a move first drops what leads nowhere live.
+    /// The fewest entries a sweep waits for.
     const SWEEP: usize = 1024;
 
+    /// `moved`, groups of `from` as `(old, new)`, went to `to`. Every entry says where its group is
+    /// now, so one moved again is followed in one step, and a group gone is one an entry can drop:
+    /// what led to a group of `moved` leads where it went.
     fn record(
         &mut self,
         compositions: &crate::runtime::Compositions,
@@ -1064,39 +1084,42 @@ impl MovedGroups {
         moved: &[(u32, u32)],
     ) {
         let map = self.map.get_or_insert_with(Default::default);
-        if map.len() > Self::SWEEP {
-            map.retain(|_, (id, group)| {
-                compositions.get(*id).is_some_and(|data| {
-                    data.table
-                        .groups
-                        .get(*group as usize)
-                        .is_some_and(|g| g.kind != GroupKind::Free)
-                })
-            });
+        if map.values().any(|entry| entry.to == from) {
+            let went: std::collections::HashMap<u32, u32> = moved.iter().copied().collect();
+            for entry in map.values_mut() {
+                if entry.to == from
+                    && let Some(&new) = went.get(&entry.group)
+                {
+                    (entry.to, entry.group) = (to, new);
+                }
+            }
         }
         for &(old, new) in moved {
-            map.insert((from.index, old), (to, new));
+            let entry = Moved { from_generation: from.generation, to, group: new };
+            map.insert((from.index, old), entry);
+        }
+        if map.len() > self.sweep_at {
+            map.retain(|_, entry| {
+                compositions.get(entry.to).is_some_and(|data| {
+                    data.table
+                        .groups
+                        .get(entry.group as usize)
+                        .is_some_and(|group| group.kind != GroupKind::Free)
+                })
+            });
+            self.sweep_at = (map.len() * 2).max(Self::SWEEP);
         }
     }
 
-    /// Where `group` of the composition at `index` went, following moves on, the first place `ok`
-    /// takes.
+    /// Where `group` of the composition at `index` is now, if it moved across compositions and
+    /// `ok` takes that place.
     pub(crate) fn follow(
         &self,
         index: u32,
         group: u32,
-        mut ok: impl FnMut(CompositionId, u32) -> bool,
-    ) -> Option<(CompositionId, u32)> {
-        let map = self.map.as_ref()?;
-        let mut at = (index, group);
-        // A chain of moves is short; a cycle of stale entries isn't followed for ever.
-        for _ in 0..32 {
-            let &(id, group) = map.get(&at)?;
-            if ok(id, group) {
-                return Some((id, group));
-            }
-            at = (id.index, group);
-        }
-        None
+        ok: impl FnOnce(&Moved) -> bool,
+    ) -> Option<Moved> {
+        let entry = *self.map.as_ref()?.get(&(index, group))?;
+        ok(&entry).then_some(entry)
     }
 }

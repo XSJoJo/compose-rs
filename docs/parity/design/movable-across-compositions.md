@@ -35,7 +35,7 @@ Scopes and contexts already follow the move (`move_group`).
 2. **Forward stale handles.**
    - `move_group` records `(from, old group) → (to, new group)` in a runtime map, for provider groups and for every group of the moved content.
    - An anchor whose check fails looks its version up there. A provider's version is unique, so a hit is certain.
-   - A token gets the group's `key` (16 bytes instead of 8). It's checked: not `Free`, same key. When the check fails, it follows the map.
+   - A token gets the group's `key` (16 bytes instead of 8; 12 as built, D1511 on review). It's checked: not `Free`, same key. When the check fails, it follows the map.
    - A source index given to a new group with the same key would still be taken for the old one. That's rare (a token inside moved content whose old index is reused by the same composable), and its only effect is a wrong `rememberSaveable` key.
    - **Map lifetime:** stale entries are pruned when a lookup finds the target gone, and in a sweep at a frame's end when the map passed 1,024 entries.
    - **Cost:** nothing on a frame without a transplant. The map is consulted only after a check fails, which is on a cold path.
@@ -57,4 +57,10 @@ Moving state into another applier needs a second node path. The moved groups kee
 
 ## As built
 
-Parts 1 to 3, with the tests: `content_moved_across_compositions_under_the_same_locals_isnt_composed_again`, `..._under_other_locals_composes_again` and `anchors_and_key_tokens_in_moved_content_follow_it` in `crates/compose-runtime/tests/suite/movable_content.rs`. A token whose place is gone hashes as 0, where it had panicked. The token's key is read at each node's emission, the one cost outside moves, within the benchmarks' spread.
+Parts 1 to 3, with the tests: `content_moved_across_compositions_under_the_same_locals_isnt_composed_again`, `..._under_other_locals_composes_again` and `anchors_and_key_tokens_in_moved_content_follow_it` in `crates/compose-runtime/tests/suite/movable_content.rs`. A token whose place is gone hashes as nothing (`None`), where it had panicked.
+
+On review (D1511):
+- **What's compared** is what the content last composed under: its nearest provider of any composition, kept in its movable group and read when it leaves the table it last composed in. The map where it was parked, which part 1 proposed, already holds a static value changed in the frame it moves.
+- **The map** keeps where each group is now, rewritten when it moves again, so no chain is followed and the sweep drops only what's gone. Entries keep the generation of the composition left.
+- **The token** is 12 bytes, not 16: a composition index, a group, and a 32-bit check folding the group's key with the composition's generation.
+- **Cost:** the token's key and generation are read at each node's emission, the one cost outside moves. D1511 as first built had `list_scroll` at +0.40 % (spread 0.27 %) against d0eef2b6, not within the spread as this said; at 12 bytes it's −0.04 % (spread 0.48 %), the other three scenarios within theirs (D1511).

@@ -710,12 +710,12 @@ impl CompositionLocalAnchor {
         if let Some(data) = self.data(runtime) {
             return Some((data, self.provider));
         }
-        let (id, provider) = runtime.moved_groups.follow(
-            self.composition.index,
-            self.provider,
-            |id, provider| provider_at(runtime, id, provider, self.version).is_some(),
-        )?;
-        Some((provider_at(runtime, id, provider, self.version)?, provider))
+        let moved =
+            runtime.moved_groups.follow(self.composition.index, self.provider, |moved| {
+                moved.from_generation == self.composition.generation
+                    && provider_at(runtime, moved.to, moved.group, self.version).is_some()
+            })?;
+        Some((provider_at(runtime, moved.to, moved.group, self.version)?, moved.group))
     }
 
     fn table<'a>(&self, runtime: &'a Runtime) -> Option<&'a crate::slot_table::SlotTable> {
@@ -826,27 +826,48 @@ fn provider_at(
 /// The anchor of the composable composing now. Costs a look at its group: what every layout
 /// node's emission asks.
 pub fn current_composition_local_anchor() -> CompositionLocalAnchor {
-    with_runtime(|runtime| {
-        let composition = runtime.check_composing();
-        let mut id = runtime.active.expect("composing").composition;
-        let compositions = &runtime.compositions;
-        let mut data = compositions.data(composition);
-        let composing = runtime.frames.last().map_or(NONE, |frame| frame.group);
-        let mut provider = data.table.provider_at_or_above(composing);
-        // In a child composition with none of its own: what's above its root is what it reads, so
-        // no provider here says there's none at all.
-        while provider == NONE {
-            let Some((above, above_data, place)) =
-                data.parent.and_then(|place| compositions.context_at(place))
-            else {
-                break;
-            };
-            (id, data) = (above, above_data);
-            provider = data.table.provider_at_or_above(place);
-        }
-        let version = if provider == NONE { 0 } else { data.table[provider].provider_version() };
-        CompositionLocalAnchor { composition: id, provider, version }
-    })
+    with_runtime(|runtime| anchor_here(runtime))
+}
+
+/// [`current_composition_local_anchor`] of a runtime composing.
+pub(crate) fn anchor_here(runtime: &Runtime) -> CompositionLocalAnchor {
+    let composition = runtime.check_composing();
+    let mut id = runtime.active.expect("composing").composition;
+    let compositions = &runtime.compositions;
+    let mut data = compositions.data(composition);
+    let composing = runtime.frames.last().map_or(NONE, |frame| frame.group);
+    let mut provider = data.table.provider_at_or_above(composing);
+    // In a child composition with none of its own: what's above its root is what it reads, so
+    // no provider here says there's none at all.
+    while provider == NONE {
+        let Some((above, above_data, place)) =
+            data.parent.and_then(|place| compositions.context_at(place))
+        else {
+            break;
+        };
+        (id, data) = (above, above_data);
+        provider = data.table.provider_at_or_above(place);
+    }
+    let version = if provider == NONE { 0 } else { data.table[provider].provider_version() };
+    CompositionLocalAnchor { composition: id, provider, version }
+}
+
+impl CompositionLocalAnchor {
+    /// Its provider and version if it's of `composition`, as a group's nearest provider there is;
+    /// none, for a child composition reading above its root.
+    pub(crate) fn provider_in(&self, composition: CompositionId) -> (u32, u32) {
+        if self.composition == composition { (self.provider, self.version) } else { (NONE, 0) }
+    }
+
+    /// What was provided here, if it's still known: its provider as it was (where it is, or moved
+    /// with content), or no provider in a composition still there (D1511).
+    pub(crate) fn map_if_known(&self, runtime: &Runtime) -> Option<CompositionLocalMap> {
+        let (data, provider) = match self.provider {
+            NONE => (runtime.compositions.get(self.composition)?, NONE),
+            _ => self.resolve(runtime)?,
+        };
+        Some(map_at(&runtime.compositions, data, provider))
+    }
 }
 
 /// Every local provided at a point, to provide elsewhere (another composition, a dialog), as

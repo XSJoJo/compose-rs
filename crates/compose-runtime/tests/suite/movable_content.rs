@@ -3676,6 +3676,63 @@ fn what_moves_composes_before_what_is_new() {
     assert_eq!(*log.borrow(), ["moved", "new"]);
 }
 
+/// [`what_moves_composes_before_what_is_new`] under the same locals: what moves doesn't compose at
+/// all, its body and its effects not running again, and what's new composes and runs its effect.
+#[test]
+fn what_moves_under_the_same_locals_doesnt_compose_and_what_is_new_does() {
+    let mut test = composition_test();
+    let there = mutable_state_of(false);
+    let log: Rc<RefCell<Vec<&str>>> = Rc::default();
+    let (l1, l2) = (log.clone(), log.clone());
+    let new_one = movable_content_of(move || {
+        l1.borrow_mut().push("new");
+        let l1 = l1.clone();
+        SideEffect(move || l1.borrow_mut().push("new effect"));
+    });
+    let moved = movable_content_of(move || {
+        l2.borrow_mut().push("moved");
+        let (kept, effect) = (l2.clone(), l2.clone());
+        remember_observer(move || Logged("moved remembered", "moved forgotten", kept.clone()));
+        SideEffect(move || effect.borrow_mut().push("moved effect"));
+    });
+    let t = there.handle();
+    test.compose(move || {
+        let (main, new_one, other) = (moved.clone(), new_one.clone(), moved.clone());
+        key(t.get(), move || {
+            if !t.get() {
+                main();
+            }
+        });
+        Subcompose!(move || {
+            let (new_one, other) = (new_one.clone(), other.clone());
+            key(t.get(), move || {
+                if t.get() {
+                    new_one();
+                    other();
+                }
+            });
+        });
+    });
+    assert_eq!(*log.borrow(), ["moved", "moved remembered", "moved effect"]);
+    log.borrow_mut().clear();
+    there.set(true);
+    test.advance();
+    assert_eq!(*log.borrow(), ["new", "new effect"]);
+}
+
+/// A remember observer that logs what it's told: what it says when remembered, and forgotten.
+struct Logged(&'static str, &'static str, Rc<RefCell<Vec<&'static str>>>);
+
+impl RememberObserver for Logged {
+    fn on_remembered(&self) {
+        self.2.borrow_mut().push(self.0);
+    }
+    fn on_forgotten(&self) {
+        self.2.borrow_mut().push(self.1);
+    }
+    fn on_abandoned(&self) {}
+}
+
 /// What the last frame left, with nothing having run to discard it: the next frame does first.
 #[test]
 fn a_frame_discards_what_the_last_left_if_nothing_has() {
@@ -4505,6 +4562,78 @@ fn a_parents_effect_runs_a_childs_late_work_before_setting_its_content() {
     composition.dispose();
 }
 
+/// [`a_parents_effect_runs_a_childs_late_work_before_setting_its_content`] under the same locals:
+/// the move is done before the parent's effect, the content's body not running again, and the
+/// content set then lets go of it, before its own effect.
+#[test]
+fn a_parents_effect_runs_a_childs_late_work_of_a_move_under_the_same_locals_first() {
+    let composition = Composition::new(ViewApplier::new());
+    let log: Rc<RefCell<Vec<&str>>> = Rc::default();
+    let (moved, tick) = (mutable_state_of(false), mutable_state_of(0));
+    let (bodies, l) = (Rc::new(Cell::new(0)), log.clone());
+    let b = bodies.clone();
+    let content = movable_content_of(move || {
+        b.set(b.get() + 1);
+        let (kept, effect) = (l.clone(), l.clone());
+        remember_observer(move || Logged("remembered", "forgotten", kept.clone()));
+        SideEffect(move || effect.borrow_mut().push("moved"));
+    });
+    let (m, t, l) = (moved.handle(), tick.handle(), log.clone());
+    composition.set_content(move || {
+        let (home, away) = (content.clone(), content.clone());
+        let is_moved = m.get();
+        key(is_moved, move || {
+            if !is_moved {
+                home();
+            }
+        });
+        let parent = remember_composition_context();
+        let child = remember(|| {
+            let child = Rc::new(platform::subcomposition(parent, ViewApplier::new().root()));
+            let away = away.clone();
+            child.set_content(move || {
+                t.get();
+                let away = away.clone();
+                key(m.get(), move || {
+                    if m.get() {
+                        away();
+                    }
+                });
+            });
+            child
+        });
+        let l = l.clone();
+        SideEffect(move || {
+            if is_moved {
+                l.borrow_mut().push("parent");
+                let l = l.clone();
+                child.set_content(move || {
+                    SideEffect({
+                        let l = l.clone();
+                        move || l.borrow_mut().push("new content")
+                    })
+                });
+            }
+        });
+    });
+    assert_eq!(*log.borrow(), ["remembered", "moved"]);
+    log.borrow_mut().clear();
+    moved.set(true);
+    tick.set(1);
+    Snapshot::send_apply_notifications();
+    composition.recompose();
+    // Moved, not composed: what it remembered kept, its effect not run again.
+    assert_eq!(*log.borrow(), ["parent", "new content"]);
+    assert_eq!(bodies.get(), 1);
+    // What the new content let go of, parked for anyone to take, goes with the next frame.
+    tick.set(2);
+    Snapshot::send_apply_notifications();
+    composition.recompose();
+    assert_eq!(*log.borrow(), ["parent", "new content", "forgotten"]);
+    assert_eq!(bodies.get(), 1);
+    composition.dispose();
+}
+
 // ---- Across compositions without composing again (D1511) -------------------------------------------
 
 /// Where the content of [`across`] is called: the main composition, or one of two subcompositions,
@@ -4631,12 +4760,248 @@ fn anchors_and_key_tokens_in_moved_content_follow_it() {
     let position = mutable_state_of(0);
     let mut test = across(content, position.handle(), false);
     let (anchor, token, hash) = kept.borrow().expect("composed");
-    assert_eq!((anchor.get(&MOVED_STATIC), composite_key_hash_of(token)), (7, hash));
+    assert_eq!((anchor.get(&MOVED_STATIC), composite_key_hash_of(token)), (7, Some(hash)));
     for to in [1, 2, 0, 2] {
         position.set(to);
         test.expect_changes();
         assert_eq!(anchor.get(&MOVED_STATIC), 7, "the anchor at {to}");
-        assert_eq!(composite_key_hash_of(token), hash, "the token at {to}");
+        assert_eq!(composite_key_hash_of(token), Some(hash), "the token at {to}");
     }
     test.dispose();
+}
+
+/// Content moving across compositions past the 1,024 moves where the runtime sweeps what it knows of
+/// them: an anchor and a token still follow it, two moves on and more.
+#[test]
+fn anchors_and_key_tokens_follow_content_of_many_groups_moved_twice() {
+    type Kept = Rc<RefCell<Option<(CompositionLocalAnchor, CompositeKeyToken, u64)>>>;
+    let kept: Kept = Rc::default();
+    let k = kept.clone();
+    let content = movable_content_of(move || {
+        for index in 0..1100 {
+            key(index, || {});
+        }
+        let k = k.clone();
+        CompositionLocalProvider(MOVED_STATIC.provides(7), move || {
+            let k = k.clone();
+            remember(move || {
+                *k.borrow_mut() = Some((
+                    current_composition_local_anchor(),
+                    current_composite_key_token(),
+                    current_composite_key_hash_code(),
+                ));
+            });
+            Marker();
+        });
+    });
+    let position = mutable_state_of(0);
+    let mut test = across(content, position.handle(), false);
+    let (anchor, token, hash) = kept.borrow().expect("composed");
+    for to in [1, 2, 0, 1, 2] {
+        position.set(to);
+        test.expect_changes();
+        assert_eq!(anchor.get(&MOVED_STATIC), 7, "the anchor at {to}");
+        assert_eq!(composite_key_hash_of(token), Some(hash), "the token at {to}");
+    }
+    test.dispose();
+}
+
+/// How [`two_providers`] provides at its two places.
+#[derive(Clone, Copy, Debug)]
+enum TwoProviders {
+    /// The dynamic local, 5 at both: two holders of the same value.
+    Dynamic,
+    /// The static local, 5 in the main composition and 6 in the subcomposition.
+    Static,
+    /// The subcomposition provides the main one's locals, as a context: the same holders.
+    Context,
+}
+
+/// Content of [`reading`] moved from a place in the main composition under a provider to one in a
+/// subcomposition under another, which provides as `how` says, and back: its bodies, and what it
+/// read, each time.
+fn two_providers(how: TwoProviders) -> Vec<(u32, i32)> {
+    let runs = Runs::default();
+    let content = reading(&runs, matches!(how, TwoProviders::Static));
+    let position = mutable_state_of(0);
+    let p = position.handle();
+    let mut test = composition_test();
+    test.compose(move || {
+        let content = content.clone();
+        let provided = (MOVED_STATIC.provides(5), MOVED_DYNAMIC.provides(5));
+        CompositionLocalProvider(provided, move || {
+            let (main, sub) = (content.clone(), content.clone());
+            let context = current_composition_local_context();
+            key(p.get() == 0, move || {
+                if p.get() == 0 {
+                    main();
+                }
+            });
+            Subcompose!(move || {
+                let sub = sub.clone();
+                let place = move || {
+                    let sub = sub.clone();
+                    key(p.get() == 1, move || {
+                        if p.get() == 1 {
+                            sub();
+                        }
+                    });
+                };
+                match how {
+                    TwoProviders::Dynamic => {
+                        CompositionLocalProvider(MOVED_DYNAMIC.provides(5), place)
+                    }
+                    TwoProviders::Static => {
+                        CompositionLocalProvider(MOVED_STATIC.provides(6), place)
+                    }
+                    TwoProviders::Context => CompositionLocalProvider(context.clone(), place),
+                }
+            });
+        });
+    });
+    let mut seen = vec![(runs.bodies.get(), runs.read.get())];
+    for to in [1, 0] {
+        position.set(to);
+        test.expect_changes();
+        seen.push((runs.bodies.get(), runs.read.get()));
+    }
+    test.dispose();
+    seen
+}
+
+/// Both places provide the local, through other holders: it composes again at each move, as
+/// Compose's maps differ by their holders (a dynamic one's state, a static one's value); through
+/// the same holders, it doesn't.
+#[test]
+fn content_moved_across_compositions_between_two_providers_of_a_local() {
+    assert_eq!(two_providers(TwoProviders::Dynamic), [(1, 5), (2, 5), (3, 5)]);
+    assert_eq!(two_providers(TwoProviders::Static), [(1, 5), (2, 6), (3, 5)]);
+    assert_eq!(two_providers(TwoProviders::Context), [(1, 5), (1, 5), (1, 5)]);
+}
+
+/// A key token of a composition gone names nothing, though another composition took its index
+/// since, with the same groups: it isn't taken for a place of that one.
+#[test]
+fn a_key_token_of_a_composition_gone_names_none_at_its_index() {
+    let tokens: Rc<RefCell<Vec<(CompositeKeyToken, u64)>>> = Rc::default();
+    let slot = mutable_state_of(0);
+    let mut test = composition_test();
+    let (t, s) = (tokens.clone(), slot.handle());
+    test.compose(move || {
+        let t = t.clone();
+        key(s.get(), move || {
+            let t = t.clone();
+            Subcompose!(move || {
+                let t = t.clone();
+                remember(move || {
+                    let made = (current_composite_key_token(), current_composite_key_hash_code());
+                    t.borrow_mut().push(made);
+                });
+                Marker();
+            });
+        });
+    });
+    for next in 1..5 {
+        slot.set(next);
+        test.expect_changes();
+        let tokens = tokens.borrow();
+        let ((token, hash), gone) = tokens.split_last().expect("made");
+        assert_eq!(composite_key_hash_of(*token), Some(*hash));
+        for (token, _) in gone {
+            assert_eq!(composite_key_hash_of(*token), None, "a token of one gone, at {next}");
+        }
+    }
+    test.dispose();
+}
+
+static MOVED_DYNAMIC: CompositionLocal<i32> = CompositionLocal::new("moved.dynamic", || 0);
+
+/// Content of [`same_frame`]: counts its bodies, and reads `MOVED_STATIC`, or `MOVED_DYNAMIC` if
+/// not `statics`.
+fn reading(runs: &Runs, statics: bool) -> Callback {
+    let runs = runs.clone();
+    movable_content_of(move || {
+        runs.bodies.set(runs.bodies.get() + 1);
+        runs.read.set(if statics { MOVED_STATIC.current() } else { MOVED_DYNAMIC.current() });
+        Marker();
+    })
+}
+
+/// A provider of `value`, static and dynamic, above a row holding a place in the main composition
+/// (`position` 0) and one in a subcomposition (1).
+fn same_frame(
+    content: Callback,
+    position: MutableState<i32>,
+    value: MutableState<i32>,
+) -> CompositionTest {
+    let mut test = composition_test();
+    test.compose(move || {
+        let content = content.clone();
+        CompositionLocalProvider(
+            (MOVED_STATIC.provides(value.get()), MOVED_DYNAMIC.provides(value.get())),
+            move || {
+                let content = content.clone();
+                Row!(move || {
+                    let (main, sub) = (content.clone(), content.clone());
+                    key(position.get() == 0, move || {
+                        if position.get() == 0 {
+                            main();
+                        }
+                    });
+                    Subcompose!(move || {
+                        let sub = sub.clone();
+                        key(position.get() == 1, move || {
+                            if position.get() == 1 {
+                                sub();
+                            }
+                        });
+                    });
+                });
+            },
+        );
+    });
+    test
+}
+
+/// Content of [`reading`] at `from`, a place of [`same_frame`], moves to the other while the
+/// provider's value goes from 1 to 9 if `change`: how many times its body ran, and what it read.
+fn move_from(from: i32, statics: bool, change: bool) -> (u32, i32) {
+    let runs = Runs::default();
+    let (position, value) = (mutable_state_of(from), mutable_state_of(1));
+    let mut test = same_frame(reading(&runs, statics), position.handle(), value.handle());
+    let marker = find_view(&test, "Marker").expect("composed");
+    assert_eq!((runs.bodies.get(), runs.read.get()), (1, 1));
+    if change {
+        value.set(9);
+    }
+    position.set(1 - from);
+    test.expect_changes();
+    assert_eq!(find_view(&test, "Marker"), Some(marker), "the node moved");
+    let seen = (runs.bodies.get(), runs.read.get());
+    test.dispose();
+    seen
+}
+
+/// A static value changing in the frame content moves across compositions: it composed under the
+/// old one, so it composes again, as Compose's compares the locals it last composed under
+/// (`reader.groupAux`), not those of the place it left.
+#[test]
+fn same_frame_static_main_to_sub() {
+    assert_eq!(move_from(0, true, true), (2, 9));
+}
+
+#[test]
+fn same_frame_static_sub_to_main() {
+    assert_eq!(move_from(1, true, true), (2, 9));
+}
+
+/// The controls: a dynamic value reaches its reader through its state, either way, and a move with
+/// nothing changing doesn't compose it again.
+#[test]
+fn same_frame_static_controls() {
+    for from in [0, 1] {
+        assert_eq!(move_from(from, false, true), (2, 9), "dynamic, from {from}");
+        assert_eq!(move_from(from, true, false), (1, 1), "static unchanged, from {from}");
+        assert_eq!(move_from(from, false, false), (1, 1), "dynamic unchanged, from {from}");
+    }
 }
