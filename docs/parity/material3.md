@@ -293,7 +293,7 @@ Done (D1005): the four rows, `LeadingIconTab`, `Tab`'s content overload (`Conten
 
 ### Text fields
 
-- **`TextField`, `OutlinedTextField`**: the `TextFieldState` overloads are `TextFieldOfState` and `OutlinedTextFieldOfState` (D1136) with `input_transformation`, `output_transformation`, `on_keyboard_action`, `line_limits`, `on_text_layout`; missing: `scroll_state`, and `TextFieldDefaults.decorator` (`TextFieldDecorationBox` stands for it, D1555). Done: `label_position`, `TextFieldLabelScope` as `LOCAL_TEXT_FIELD_LABEL_SCOPE` (D1554), `shape`, `content_padding`, `interaction_source` (D1555, D1557), `TextFieldColors`' 41 colors and methods as Compose's (D1558).
+- **`TextField`, `OutlinedTextField`**: the `TextFieldState` overloads are `TextFieldOfState` and `OutlinedTextFieldOfState` (D1136) with `input_transformation`, `output_transformation`, `on_keyboard_action`, `line_limits`, `on_text_layout`, `scroll_state`; `TextFieldDefaults.decorator` and `OutlinedTextFieldDefaults.decorator` are `TextFieldDecorator` and `OutlinedTextFieldDecorator` (D1139). Done: `label_position`, `TextFieldLabelScope` as `LOCAL_TEXT_FIELD_LABEL_SCOPE` (D1554), `shape`, `content_padding`, `interaction_source` (D1555, D1557), `TextFieldColors`' 41 colors and methods as Compose's (D1558).
 - **`TextFieldDefaults`/`OutlinedTextFieldDefaults`**: `decorator(…)`, `Container`, `indicatorLine`, `contentPaddingWithLabel`, `contentPaddingWithoutLabel`, `tonalColors`, `roundedShape`, `FocusedIndicatorThickness`, `UnfocusedIndicatorThickness`.
 - **`SecureTextField`**, **`OutlinedSecureTextField`**.
 
