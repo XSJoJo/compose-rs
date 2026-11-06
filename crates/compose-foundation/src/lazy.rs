@@ -2916,8 +2916,13 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
         // draws or hits them until they're wanted. A focused one among those is placed, next to the others: focus
         // scrolls it in.
         let (mut placed_start, mut placed_end) = (wanted_start, wanted_end);
+        // What was composed and what stays (a prefetched item next to those wanted).
+        let (composed_start, composed_end) =
+            (composed_start.min(composed.0), composed_end.max(composed.1));
+        let mut pinned_items: Vec<usize> = Vec::new();
         for key in state.pinned.get() {
             if let Some(pinned) = info.items.index_of(key, state.pinned_near.get()) {
+                pinned_items.push(pinned);
                 if (placed_end..composed_end).contains(&pinned) {
                     placed_end = pinned + 1;
                 } else if (composed_start..placed_start).contains(&pinned) {
@@ -2929,7 +2934,7 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
         let mut main =
             placed.last().map_or(before, |(placeable, main)| main + main_of(placeable) + spacing);
         for next in end_index..placed_end.min(count) {
-            only_composed.set(next >= wanted_end);
+            only_composed.set(next >= wanted_end && !pinned_items.contains(&next));
             if let Some(placeable) = measure(next, &mut sizes) {
                 beyond.push((placeable, main));
                 main += (main_of(&placeable) + spacing).max(0);
@@ -2942,7 +2947,7 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
         let mut ahead: Vec<(Placeable, i32)> = Vec::new();
         let mut main = placed.first().map_or(before, |(_, main)| *main);
         for previous in (placed_start.min(lead)..lead).rev() {
-            only_composed.set(previous < wanted_start);
+            only_composed.set(previous < wanted_start && !pinned_items.contains(&previous));
             if let Some(placeable) = measure(previous, &mut sizes) {
                 main -= (main_of(&placeable) + spacing).max(0);
                 ahead.push((placeable, main));

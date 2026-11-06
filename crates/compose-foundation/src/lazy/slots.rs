@@ -148,11 +148,19 @@ pub(super) struct ItemComposer {
     factory: Rc<ItemFactory>,
     composed: HashMap<usize, Option<Measurable>>,
     order: Vec<usize>,
+    #[cfg(debug_assertions)]
+    keys: HashMap<u64, usize>,
 }
 
 impl ItemComposer {
     fn new(factory: Rc<ItemFactory>) -> ItemComposer {
-        ItemComposer { factory, composed: HashMap::new(), order: Vec::new() }
+        ItemComposer {
+            factory,
+            composed: HashMap::new(),
+            order: Vec::new(),
+            #[cfg(debug_assertions)]
+            keys: HashMap::new(),
+        }
     }
 
     /// Item `index`'s layout, composed if this measurement hasn't yet. `None` past the items.
@@ -166,6 +174,15 @@ impl ItemComposer {
         }
         if index >= self.factory.count() {
             return None;
+        }
+        // Two items of one key would share a slot: Compose's lazy layouts panic, and so does this.
+        #[cfg(debug_assertions)]
+        {
+            let key = self.factory.items.0.key(index);
+            if let Some(&other) = self.keys.get(&key) {
+                self.factory.items.0.check_keys(&[other, index]);
+            }
+            self.keys.insert(key, index);
         }
         let measurables = scope.subcompose(self.factory.slot(index), self.factory.content(index));
         let measurable = measurables.first().copied();
