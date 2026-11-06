@@ -11,7 +11,6 @@ These are on local branches, so they're not lost, but each still has to finish i
 | Work | Branch | State |
 |---|---|---|
 | Stretch and glow overscroll | `worktree-agent-ad25708f190fdec81` | Being built, not reviewed. Design: [stretch-overscroll.md](design/stretch-overscroll.md). |
-| The grid layout, `Grid` (D1368) | `foundation-grid` | Built, with all 79 of `GridTest` ported; not reviewed. |
 
 ## The big missing things
 
@@ -38,7 +37,7 @@ These are on local branches, so they're not lost, but each still has to finish i
 
 ### 4. Foundation
 - **Style API** (about 160), **border parity** (about 80).
-- **Gestures and scrolling:** `transformable` (about 40), 2D scrolling (about 45), `bringIntoView` (about 90 across two rows), public lazy layout API (about 40), `BeyondBoundsLayout` (about 35).
+- **Gestures and scrolling:** `transformable`'s trackpad pans and scales (7, with pointer-input-types; the rest is in, D1369), 2D scrolling (about 45), `bringIntoView` (about 90 across two rows), public lazy layout API (about 40), `BeyondBoundsLayout` (about 35).
 
 ### 5. Material 3
 - **Whole components missing:** carousel (about 100), floating toolbar (about 80), search bar (about 65), wide navigation rail (about 45), wavy progress (about 45), short navigation bar (about 35), loading indicator (about 20), FAB menu (about 15).
