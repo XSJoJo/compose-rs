@@ -13,6 +13,7 @@ use compose_runtime::{
 use compose_ui::{SharedString, TextRange};
 
 use crate::text_field_buffer::{TextFieldBuffer, TextFieldCharSequence};
+use crate::text_undo::{TextFieldEditUndoBehavior, TextUndoManager, UndoState};
 
 /// Told of each new value, as Compose's `NotifyImeListener`: the value before, the value now, and
 /// whether the input method must start over.
@@ -27,6 +28,8 @@ struct TextFieldStates {
     is_editing: OwnedState<bool>,
     listeners: RefCell<Vec<(u64, NotifyImeListener)>>,
     next_listener: Cell<u64>,
+    /// Its history, as Compose's `textUndoManager`.
+    undo: TextUndoManager,
 }
 
 /// The text, selection and composition of a text field, as Compose's `TextFieldState`: what
@@ -60,13 +63,24 @@ impl TextFieldState {
         initial_text: impl Into<String>,
         initial_selection: TextRange,
     ) -> Owned<TextFieldState> {
-        let text: Rc<str> = Rc::from(initial_text.into());
+        TextFieldState::restored(initial_text.into(), initial_selection, TextUndoManager::default())
+    }
+
+    /// A state with a history, as Compose's internal constructor.
+    #[track_caller]
+    fn restored(
+        initial_text: String,
+        initial_selection: TextRange,
+        undo: TextUndoManager,
+    ) -> Owned<TextFieldState> {
+        let text: Rc<str> = Rc::from(initial_text);
         let value = TextFieldCharSequence::new(text, initial_selection, None);
         let states = TextFieldStates {
             value: mutable_state_of(value),
             is_editing: mutable_state_of(false),
             listeners: RefCell::default(),
             next_listener: Cell::new(0),
+            undo,
         };
         let (value, is_editing) = (states.value.handle(), states.is_editing.handle());
         Owned::new(states, move |object| TextFieldState { value, is_editing, object })
@@ -125,7 +139,7 @@ impl TextFieldState {
 
     /// Takes in what an `edit`'s buffer changed, as Compose's `commitEdit` and
     /// `syncMainBufferToTemporaryBuffer`.
-    fn commit_edit(&self, buffer: &TextFieldBuffer) {
+    pub(crate) fn commit_edit(&self, buffer: &TextFieldBuffer) {
         let Some(old) = self.current_untracked() else { return };
         let text_changed = buffer.changes().change_count() > 0;
         let selection_changed = buffer.selection() != old.selection;
@@ -140,17 +154,44 @@ impl TextFieldState {
                 old.composition
             };
         let new = TextFieldCharSequence::new(text, selection, composition);
+        if text_changed {
+            // A programmatic edit enters the history, never merging (Compose's `NeverMerge`).
+            let post = buffer.to_text_field_char_sequence();
+            self.with_undo(|undo| undo.record_changes(&old, &post, buffer.changes(), false));
+        }
         self.update_value_and_notify(&old, new, true);
+    }
+
+    /// Runs `block` with the history; `None` once the owner went.
+    pub(crate) fn with_undo<R>(&self, block: impl FnOnce(&TextUndoManager) -> R) -> Option<R> {
+        let states = self.object.get()?;
+        Some(block(&states.undo))
+    }
+
+    /// The undo and redo of this state, as Compose's `undoState`.
+    pub fn undo_state(&self) -> UndoState {
+        UndoState { state: *self }
+    }
+
+    /// Edits outside the history and any transformation, as Compose's `editWithNoSideEffects`:
+    /// undo and redo. The input method hears of it.
+    pub(crate) fn edit_with_no_side_effects(&self, block: impl FnOnce(&mut TextFieldBuffer)) {
+        let Some(before) = self.current_untracked() else { return };
+        let mut buffer = TextFieldBuffer::new(before.clone());
+        block(&mut buffer);
+        let after = buffer.to_text_field_char_sequence();
+        self.update_value_and_notify(&before, after, true);
     }
 
     /// Edits for the user (keys, the pointer, an input method, semantics), as Compose's
     /// `editAsUser` without an input transformation: `block` edits a buffer of the value, whose
     /// change, composition included, is taken as it is. The input method starts over only if the
     /// text changed under a composition and `restart_ime_if_content_changes` (false for its own
-    /// edits).
+    /// edits). The edit enters the history by `undo_behavior`.
     pub(crate) fn edit_as_user(
         &self,
         restart_ime_if_content_changes: bool,
+        undo_behavior: TextFieldEditUndoBehavior,
         block: impl FnOnce(&mut TextFieldBuffer),
     ) {
         let Some(before) = self.current_untracked() else { return };
@@ -170,7 +211,19 @@ impl TextFieldState {
         }
         let text = if changes > 0 { Rc::from(buffer.as_str()) } else { before.text.clone() };
         let after = TextFieldCharSequence::new(text, buffer.selection(), buffer.composition());
-        self.update_value_and_notify(&before, after, changes > 0 && restart_ime_if_content_changes);
+        self.update_value_and_notify(
+            &before,
+            after.clone(),
+            changes > 0 && restart_ime_if_content_changes,
+        );
+        self.with_undo(|undo| match undo_behavior {
+            TextFieldEditUndoBehavior::MergeIfPossible => {
+                undo.record_changes(&before, &after, buffer.changes(), true)
+            }
+            TextFieldEditUndoBehavior::NeverMerge => {
+                undo.record_changes(&before, &after, buffer.changes(), false)
+            }
+        });
     }
 
     /// Sets the value and tells the listeners, as Compose's `updateValueAndNotifyListeners`.
@@ -248,8 +301,8 @@ impl TextFieldState {
         TextFieldBuffer::new(value)
     }
 
-    /// Saves the text and selection, as Compose's `TextFieldState.Saver` (its undo history and
-    /// styles come with them in Compose; they're not here yet).
+    /// Saves the text, selection and history, as Compose's `TextFieldState.Saver` (its styles
+    /// come with them in Compose; they're not here yet).
     pub fn saver() -> impl Saver<Owned<TextFieldState>> {
         compose_runtime::saver(
             |state: &Owned<TextFieldState>| {
@@ -258,15 +311,17 @@ impl TextFieldState {
                     SavedValue::Text(value.text.to_string()),
                     value.selection.start.save(),
                     value.selection.end.save(),
+                    state.with_undo(TextUndoManager::save)?,
                 ]))
             },
             |saved| {
                 let SavedValue::List(items) = saved else { return None };
-                let [SavedValue::Text(text), start, end, ..] = items.as_slice() else {
+                let [SavedValue::Text(text), start, end, undo, ..] = items.as_slice() else {
                     return None;
                 };
                 let selection = TextRange::new(usize::restore(start)?, usize::restore(end)?);
-                Some(TextFieldState::with_selection(text.clone(), selection))
+                let undo = TextUndoManager::restore(undo)?;
+                Some(TextFieldState::restored(text.clone(), selection, undo))
             },
         )
     }
@@ -399,7 +454,7 @@ mod tests {
 
     /// An input method composing `text` at the cursor, as `setComposingText(text, 1)`.
     fn compose_text(state: &TextFieldState, text: &str) {
-        state.edit_as_user(false, |buffer| {
+        state.edit_as_user(false, TextFieldEditUndoBehavior::MergeIfPossible, |buffer| {
             let at = buffer.selection().min();
             buffer.replace(at, buffer.selection().max(), text);
             buffer.set_composition(at, at + text.len());
@@ -450,7 +505,9 @@ mod tests {
         for composing in [false, true] {
             let state = TextFieldState::new("Hello");
             if composing {
-                state.edit_as_user(true, |buffer| buffer.set_composition(0, 5));
+                state.edit_as_user(true, TextFieldEditUndoBehavior::MergeIfPossible, |buffer| {
+                    buffer.set_composition(0, 5)
+                });
             }
             let heard = listen(&state);
             state.edit(|buffer| buffer.append(" World"));
@@ -465,7 +522,9 @@ mod tests {
     #[test]
     fn a_programmatic_edit_leaving_the_text_restarts_nothing() {
         let state = TextFieldState::new("Hello");
-        state.edit_as_user(true, |buffer| buffer.set_composition(0, 5));
+        state.edit_as_user(true, TextFieldEditUndoBehavior::MergeIfPossible, |buffer| {
+            buffer.set_composition(0, 5)
+        });
         let heard = listen(&state);
         state.edit(|buffer| {
             buffer.append(" World");
@@ -479,9 +538,11 @@ mod tests {
     #[test]
     fn an_input_methods_own_edit_restarts_nothing() {
         let state = TextFieldState::new("Hello");
-        state.edit_as_user(true, |buffer| buffer.set_composition(0, 5));
+        state.edit_as_user(true, TextFieldEditUndoBehavior::MergeIfPossible, |buffer| {
+            buffer.set_composition(0, 5)
+        });
         let heard = listen(&state);
-        state.edit_as_user(false, |buffer| {
+        state.edit_as_user(false, TextFieldEditUndoBehavior::MergeIfPossible, |buffer| {
             buffer.replace(0, 5, "World");
             buffer.set_composition(0, 5);
         });
@@ -497,14 +558,20 @@ mod tests {
         compose_text(&composing, "ab");
         assert_eq!(composing.composition(), Some(TextRange::new(6, 8)));
         let committed = TextFieldState::new("Hello");
-        committed.edit_as_user(false, |buffer| buffer.append(" World"));
-        committed.edit_as_user(false, |buffer| buffer.place_cursor_at_end());
+        committed.edit_as_user(false, TextFieldEditUndoBehavior::MergeIfPossible, |buffer| {
+            buffer.append(" World")
+        });
+        committed.edit_as_user(false, TextFieldEditUndoBehavior::MergeIfPossible, |buffer| {
+            buffer.place_cursor_at_end()
+        });
         let programmatic = TextFieldState::new("Hello");
         programmatic.edit(|buffer| buffer.replace(5, 5, " World"));
         for (state, cursor) in [(&composing, 8), (&committed, 11), (&programmatic, 11)] {
             let before = state.current_untracked();
             let heard = listen(state);
-            state.edit_as_user(true, |buffer| buffer.set_selection(TextRange::at(cursor)));
+            state.edit_as_user(true, TextFieldEditUndoBehavior::MergeIfPossible, |buffer| {
+                buffer.set_selection(TextRange::at(cursor))
+            });
             assert!(heard.borrow().is_empty(), "{}", **state);
             assert_eq!(state.current_untracked(), before);
         }
@@ -515,7 +582,9 @@ mod tests {
     fn a_new_selection_alone_restarts_nothing() {
         let state = TextFieldState::with_selection("Hello", TextRange::at(3));
         let heard = listen(&state);
-        state.edit_as_user(true, |buffer| buffer.set_selection(TextRange::ZERO));
+        state.edit_as_user(true, TextFieldEditUndoBehavior::MergeIfPossible, |buffer| {
+            buffer.set_selection(TextRange::ZERO)
+        });
         assert_eq!(*heard.borrow(), [("Hello".to_string(), "Hello".to_string(), false)]);
         assert_eq!(state.selection(), TextRange::ZERO);
     }

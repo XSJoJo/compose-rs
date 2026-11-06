@@ -14,6 +14,7 @@ use compose_runtime::snapshots::Snapshot as RuntimeSnapshot;
 use compose_runtime::{Callback, ComposeArg, composable};
 
 use crate::text_field_buffer::TextFieldCharSequence;
+use crate::text_undo::TextFieldEditUndoBehavior;
 use crate::{TextFieldLineLimits, TextFieldState};
 
 use crate::text_input::{
@@ -130,7 +131,7 @@ pub fn inner_text_field_only(inner_text_field: Callback) {
 ///
 /// Not yet Compose's (docs/parity/design/text-field-state.md): `input_transformation`,
 /// `on_keyboard_action`, `on_text_layout`, `output_transformation`, `scroll_state`; a single line
-/// draws a new line as it is; undo is the field's own history (D118), not the state's (D1131).
+/// draws a new line as it is (D1131). Undo and redo are the state's history (D1132).
 #[composable]
 pub fn BasicTextFieldOfState(
     state: TextFieldState,
@@ -259,7 +260,7 @@ impl ModifierNodeElement for StateTextFieldElement {
         // and the state hears of it now.
         if !node.enabled || node.read_only {
             node.end_composition();
-            node.publish_state(true);
+            node.publish_state(EditSource::InputMethod);
         }
         node.cursor_color = cursor_color;
         node.selection_color = self.selection_color;
@@ -287,6 +288,20 @@ impl ModifierNodeElement for StateTextFieldElement {
     }
 }
 
+/// What made an edit of a state-based field, for its state: whether the input method restarts
+/// and whether the change is a hardware keyboard's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum EditSource {
+    /// The input method's own commands: it doesn't restart.
+    InputMethod,
+    /// An on-screen keyboard's key: its own edit, so it doesn't restart either.
+    SoftKey,
+    /// A hardware keyboard's key.
+    HardwareKey,
+    /// The pointer, semantics, a focus change, a measurement.
+    Other,
+}
+
 /// What ties a state-based field's node to its [`TextFieldState`] (D1130): the node edits a copy
 /// of the state's value, as the value-based field does, takes in the state's value when it
 /// changed elsewhere (`adopt_state`) and writes its own edits back after each event
@@ -296,11 +311,21 @@ pub(crate) struct StateLink {
     /// The state's value as the node last took it in or wrote it: a value that differs was
     /// written elsewhere.
     seen: Option<TextFieldCharSequence>,
-    /// The node's text changed since it last wrote it.
-    text_changed: bool,
-    /// The last key down came from an on-screen keyboard: the text it types is its own edit,
-    /// which doesn't restart it (Compose's `isFromSoftKeyboard`).
-    soft_key: bool,
+    /// What the node replaced in its text since it last wrote it, in order, each range in the
+    /// text as it was then: the edits' own ranges, which the state's changes and history are of
+    /// (D1132).
+    edits: Vec<(std::ops::Range<usize>, String)>,
+    /// The ranges the input method's commands just replaced, for the text change they make.
+    command_edits: Option<Vec<(std::ops::Range<usize>, String)>>,
+    /// What sent the last key down: the text it types is that key's edit (Compose's
+    /// `isFromSoftKeyboard`).
+    typed_by: Option<EditSource>,
+    /// The commands being applied are the input method's: what they replace is kept as what they
+    /// changed, as Compose's `imeReplace` (D1132).
+    input_method_edit: bool,
+    /// The edit being made is one of its own in the state's history (a cut, a paste, a selection
+    /// deleted), as Compose's `NeverMerge`.
+    never_merge: bool,
     /// Set by the state's listener: the input method must start over (Compose's `restartIme`).
     restart: Rc<Cell<bool>>,
     listener: u64,
@@ -315,8 +340,11 @@ impl StateLink {
         StateLink {
             state,
             seen: None,
-            text_changed: false,
-            soft_key: false,
+            edits: Vec::new(),
+            command_edits: None,
+            typed_by: None,
+            input_method_edit: false,
+            never_merge: false,
             restart,
             listener,
             cursor_brush,
@@ -668,8 +696,8 @@ pub(crate) struct TextFieldNode {
 impl TextFieldNode {
     /// A state-based field's: takes in the state's value if it was changed elsewhere since the
     /// node last saw it (a programmatic `edit`, another field over the state). Returns whether it
-    /// did. A new text is the history's end, as an application's new value is (D1131), and what
-    /// the state no longer composes isn't composed.
+    /// did. The history is the state's (D1132); what the state no longer composes isn't
+    /// composed.
     #[inline]
     fn adopt_state(&mut self) -> bool {
         self.state.is_some() && self.adopt_state_now()
@@ -683,7 +711,8 @@ impl TextFieldNode {
         if link.seen.as_ref() == Some(&value) {
             return false;
         }
-        link.text_changed = false;
+        link.edits.clear();
+        link.never_merge = false;
         let text_changed = *value.text != *self.text;
         let composition = value.composition.map(TextRange::range);
         let selection = value.selection;
@@ -693,9 +722,6 @@ impl TextFieldNode {
         link.seen = Some(value);
         if text_changed {
             self.invalidate_paragraph();
-            self.undo.clear();
-            self.redo.clear();
-            self.last_typing = None;
         }
         if composition != self.composition {
             self.end_composition();
@@ -723,14 +749,14 @@ impl TextFieldNode {
     /// the state, at an event's end, as Compose's field edits it as the user
     /// (`editAsUser`); an input method's own edits don't restart it.
     #[inline]
-    fn publish_state(&mut self, from_input_method: bool) {
+    fn publish_state(&mut self, source: EditSource) {
         if self.state.is_some() {
-            self.publish_state_now(from_input_method);
+            self.publish_state_now(source);
         }
     }
 
     #[inline(never)]
-    fn publish_state_now(&mut self, from_input_method: bool) {
+    fn publish_state_now(&mut self, source: EditSource) {
         let Some(link) = self.state.as_mut() else { return };
         let selection = TextRange::new(self.anchor, self.cursor);
         let composition =
@@ -739,13 +765,29 @@ impl TextFieldNode {
             .seen
             .as_ref()
             .is_some_and(|seen| seen.selection == selection && seen.composition == composition);
-        if !link.text_changed && unchanged {
+        if link.edits.is_empty() && unchanged {
+            // A cut or paste that changed nothing leaves the next edit to merge.
+            link.never_merge = false;
             return;
         }
-        let text_changed = std::mem::take(&mut link.text_changed);
+        let edits = std::mem::take(&mut link.edits);
+        let undo_behavior = if std::mem::take(&mut link.never_merge) {
+            TextFieldEditUndoBehavior::NeverMerge
+        } else {
+            TextFieldEditUndoBehavior::MergeIfPossible
+        };
         let text = &self.text;
-        link.state.edit_as_user(!from_input_method, |buffer| {
-            if text_changed {
+        let restart = matches!(source, EditSource::HardwareKey | EditSource::Other);
+        let hardware = source == EditSource::HardwareKey;
+        link.state.edit_as_user(restart, undo_behavior, |buffer| {
+            // Each edit where it was made, as Compose's field edits its state's buffer.
+            for (range, inserted) in &edits {
+                buffer.replace_part(range.start, range.end, inserted, 0, inserted.len(), hardware);
+            }
+            // The state holds what the node started from, so its edits make the node's text; if
+            // not (nothing known breaks it), the difference.
+            if buffer.as_str() != text.as_str() {
+                debug_assert!(false, "a field's edits didn't make its text");
                 buffer.set_text_if_changed(text);
             }
             buffer.set_selection_coerced(selection);
@@ -760,11 +802,13 @@ impl TextFieldNode {
         link.seen = link.state.current_untracked();
     }
 
-    /// An edit the input method didn't make (a cut, a paste, an undo) restarts it, as Compose's
-    /// value-based field (D1664); a state-based field's restarts by its state's rule.
+    /// An edit the input method didn't make (a cut, a paste) restarts it, as Compose's
+    /// value-based field (D1664); a state-based field's restarts by its state's rule, and the
+    /// edit is a step of the state's history of its own (D1132).
     fn restart_after_outside_edit(&mut self) {
-        if self.state.is_none() {
-            self.restart_input = true;
+        match self.state.as_mut() {
+            Some(link) => link.never_merge = true,
+            None => self.restart_input = true,
         }
     }
 
@@ -841,7 +885,13 @@ impl TextFieldNode {
             selection,
             composition,
         ));
+        if let Some(link) = &self.state {
+            processor.track_edits(link.input_method_edit);
+        }
         let value = processor.apply(commands);
+        if let Some(link) = self.state.as_mut() {
+            link.command_edits = Some(processor.take_edits());
+        }
         let selection = value.selection();
         let was_composing = self.composition.is_some();
         self.composition = value.composition().map(TextRange::range);
@@ -855,6 +905,9 @@ impl TextFieldNode {
             self.composing_over_text &= self.composition.is_some();
             self.cursor = selection.end;
             self.anchor = selection.start;
+            if let Some(link) = self.state.as_mut() {
+                link.command_edits = None;
+            }
             context.invalidate_measure();
             return;
         }
@@ -873,6 +926,22 @@ impl TextFieldNode {
             return;
         }
         self.edit(value.text().to_string(), selection.end, selection.start, typing, context);
+    }
+
+    /// `apply_commands` of an input method's commands, typing: a state-based field keeps what
+    /// they replace as what they changed, as Compose's `imeReplace`.
+    fn apply_input_method_commands(
+        &mut self,
+        commands: &[&dyn EditCommand],
+        context: &mut EventContext<'_>,
+    ) {
+        if let Some(link) = self.state.as_mut() {
+            link.input_method_edit = true;
+        }
+        self.apply_commands(commands, true, context);
+        if let Some(link) = self.state.as_mut() {
+            link.input_method_edit = false;
+        }
     }
 
     /// The text changed other than by the input method's edits or typing: the composition is over
@@ -933,7 +1002,10 @@ impl TextFieldNode {
         typing: bool,
         context: &mut EventContext<'_>,
     ) {
-        self.record_undo(typing);
+        // A state-based field's history is its state's.
+        if self.state.is_none() {
+            self.record_undo(typing);
+        }
         if let Some((at, _)) = self.last_typing {
             self.last_typing = Some((at, cursor));
         }
@@ -949,7 +1021,11 @@ impl TextFieldNode {
     ) {
         // A state-based field's edit is written to its state at the event's end.
         if let Some(link) = self.state.as_mut() {
-            link.text_changed = true;
+            // The commands' own ranges, or the whole text replaced (a semantics action's).
+            match link.command_edits.take() {
+                Some(edits) => link.edits.extend(edits),
+                None => link.edits.push((0..self.text.len(), text.clone())),
+            }
             self.text = text;
             self.cursor = cursor;
             self.anchor = anchor;
@@ -975,6 +1051,17 @@ impl TextFieldNode {
 
     /// Goes back to the state before the last edit (`redo`: forward again).
     fn undo(&mut self, redo: bool, context: &mut EventContext<'_>) {
+        // A state-based field's history is its state's (D1132).
+        if let Some(link) = &self.state {
+            let undo = link.state.undo_state();
+            if redo {
+                undo.redo();
+            } else {
+                undo.undo();
+            }
+            self.adopt_state_in(context);
+            return;
+        }
         let (from, to) =
             if redo { (&mut self.redo, &mut self.undo) } else { (&mut self.undo, &mut self.redo) };
         let Some(snapshot) = from.pop() else { return };
@@ -1202,7 +1289,7 @@ impl ModifierNode for TextFieldNode {
         if let Some(link) = self.state.as_mut() {
             // As a new field's: what the state holds, taken in at the next measurement.
             link.seen = None;
-            link.text_changed = false;
+            link.edits.clear();
             context.invalidate_measurement();
         } else if self.text != self.value {
             // As a new field's: the text is the value (an edit not taken yet is dropped).
@@ -1409,7 +1496,7 @@ impl LayoutModifierNode for TextFieldNode {
         let placeable = scope.measure(content, Constraints::fixed(size.width, size.height));
         scope.place(&placeable, 0, 0);
         // A tap resolved here moved the cursor.
-        self.publish_state(false);
+        self.publish_state(EditSource::Other);
         scope.layout(size.width, size.height)
     }
 
@@ -1765,7 +1852,7 @@ impl PointerInputModifierNode for TextFieldNode {
         if selection != (self.anchor, self.cursor) {
             context.invalidate_semantics();
         }
-        self.publish_state(false);
+        self.publish_state(EditSource::Other);
     }
 
     fn on_cancel_pointer_input(&mut self) {
@@ -1800,7 +1887,7 @@ impl FocusTargetModifierNode for TextFieldNode {
             None => self.pending_tap = Some(position),
         }
         context.invalidate_measure();
-        self.publish_state(false);
+        self.publish_state(EditSource::Other);
     }
 
     fn on_focus_changed(
@@ -1848,7 +1935,7 @@ impl FocusTargetModifierNode for TextFieldNode {
             context.invalidate_semantics();
         }
         context.invalidate_draw();
-        self.publish_state(false);
+        self.publish_state(EditSource::Other);
     }
 }
 
@@ -1968,6 +2055,10 @@ impl TextFieldNode {
                 true
             }
             Key::Backspace | Key::Delete if editable && !self.selection().is_empty() => {
+                if let Some(link) = self.state.as_mut() {
+                    // As Compose's `deleteSelectedText`: a step of its own.
+                    link.never_merge = true;
+                }
                 self.replace_selection("", false, context);
                 true
             }
@@ -2057,8 +2148,10 @@ impl TextFieldNode {
 impl KeyInputModifierNode for TextFieldNode {
     fn on_key_event(&mut self, event: &KeyEvent, context: &mut EventContext<'_>) -> bool {
         self.adopt_state_in(context);
+        let source =
+            if event.from_soft_keyboard { EditSource::SoftKey } else { EditSource::HardwareKey };
         if let Some(link) = self.state.as_mut() {
-            link.soft_key = event.from_soft_keyboard && event.kind == KeyEventType::KeyDown;
+            link.typed_by = (event.kind == KeyEventType::KeyDown).then_some(source);
         }
         let selection = (self.anchor, self.cursor);
         let consumed = self.on_key_event_here(event, context);
@@ -2067,7 +2160,7 @@ impl KeyInputModifierNode for TextFieldNode {
         }
         // An on-screen keyboard's key is its own edit: it doesn't restart it, as Compose's key
         // handler (`restartImeIfContentChanges = !isFromSoftKeyboard`).
-        self.publish_state(event.from_soft_keyboard);
+        self.publish_state(source);
         consumed
     }
 
@@ -2083,8 +2176,9 @@ impl KeyInputModifierNode for TextFieldNode {
         }
         self.insert(text, true, context);
         // The text of an on-screen keyboard's key is its own edit, as the key is.
-        let soft = self.state.as_mut().is_some_and(|link| std::mem::take(&mut link.soft_key));
-        self.publish_state(soft);
+        let source = self.state.as_mut().and_then(|link| link.typed_by.take());
+        // Without a key, the platform's input method committed it.
+        self.publish_state(source.unwrap_or(EditSource::InputMethod));
         true
     }
 
@@ -2099,7 +2193,7 @@ impl KeyInputModifierNode for TextFieldNode {
             context.invalidate_draw();
             context.reset_input_method();
         }
-        self.publish_state(true);
+        self.publish_state(EditSource::InputMethod);
     }
 
     fn on_preedit(
@@ -2122,12 +2216,12 @@ impl KeyInputModifierNode for TextFieldNode {
             Some((from, to)) => {
                 let select =
                     SetSelectionCommand::new((start + from) as isize, (start + to) as isize);
-                self.apply_commands(&[&composing, &select], true, context);
+                self.apply_input_method_commands(&[&composing, &select], context);
             }
-            None => self.apply_commands(&[&composing], true, context),
+            None => self.apply_input_method_commands(&[&composing], context),
         }
         self.preedit = self.composition.is_some();
-        self.publish_state(true);
+        self.publish_state(EditSource::InputMethod);
         true
     }
 
@@ -2158,8 +2252,8 @@ impl KeyInputModifierNode for TextFieldNode {
         self.adopt_state_in(context);
         self.preferred_x = None;
         self.preedit = false;
-        self.apply_commands(commands, true, context);
-        self.publish_state(true);
+        self.apply_input_method_commands(commands, context);
+        self.publish_state(EditSource::InputMethod);
         true
     }
 
@@ -2304,7 +2398,7 @@ impl KeyInputModifierNode for TextFieldNode {
             action => action,
         };
         let performed = self.perform_ime_action(action, context);
-        self.publish_state(true);
+        self.publish_state(EditSource::InputMethod);
         performed
     }
 
@@ -2388,7 +2482,7 @@ impl SemanticsModifierNode for TextFieldNode {
     ) -> bool {
         self.adopt_state_in(context);
         let performed = self.perform_text_action_here(action, context);
-        self.publish_state(false);
+        self.publish_state(EditSource::Other);
         performed
     }
 

@@ -945,18 +945,22 @@ fn shortcut(ui: &mut ComposeTestRule, c: char) {
     ui.wait_for_idle();
 }
 
-/// An edit of the state ends the field's history there: undo doesn't go back past it, and the
-/// edit stays (D1131).
+/// An edit of the state is a step of the history of its own, between the typing around it
+/// (D1132): Cmd+Z goes back over it as over the rest.
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/undo/BasicTextFieldUndoTest.kt, programmaticEdits_contributeToUndoHistoryUnmerged
 #[test]
-fn undo_stops_at_an_edit_of_the_state() {
+fn an_edit_of_the_state_is_a_step_of_the_history() {
     let (mut ui, state) = focused("");
     ui.type_text("abc");
     state.edit(|buffer| buffer.append("X"));
     ui.wait_for_idle();
     ui.type_text("d");
-    shortcut(&mut ui, 'z');
-    shortcut(&mut ui, 'z');
-    assert_eq!(state.text().as_str(), "abcX");
+    let mut undone = Vec::new();
+    for _ in 0..3 {
+        shortcut(&mut ui, 'z');
+        undone.push(state.text().to_string());
+    }
+    assert_eq!(undone, ["abcX", "abc", ""]);
 }
 
 /// Cut and paste without a composition don't restart the input method: the state's rule
