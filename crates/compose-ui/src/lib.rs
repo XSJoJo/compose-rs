@@ -81,6 +81,7 @@ mod platform_text_style;
 mod pointer_event;
 mod pointer_input;
 mod prefetch;
+mod relocation;
 mod remeasurement;
 mod render;
 pub mod retained_values;
@@ -315,6 +316,7 @@ pub use prefetch::{
     LOCAL_PREFETCH_SCHEDULER, PrefetchClock, PrefetchRequest, PrefetchRequestScope,
     PrefetchScheduler, prefetch_now,
 };
+pub use relocation::{BringIntoViewBounds, BringIntoViewResponderNode, BringIntoViewScope};
 pub use remeasurement::{Remeasurement, RemeasurementModifier};
 pub use ruler::{HorizontalRuler, RectRulers, Ruler, RulerScope, VerticalRuler};
 pub use semantics::{

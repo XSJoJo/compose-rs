@@ -524,7 +524,28 @@ pub(crate) fn peek_tree(key: u32, read: &mut dyn FnMut(&mut UiTree)) -> bool {
     peek(read)
 }
 
+/// A handle on chain entry `index` of `node`, registered as [`NodeContext::handle`] registers
+/// one (it's told when the entry is detached, and its coroutine scope cancelled then).
+pub(crate) fn entry_handle(tree: &mut UiTree, node: NodeId, index: usize) -> NodeHandle {
+    let key = tree.key;
+    let entry = &mut tree.node_mut(node).chain[index];
+    let id = entry.id;
+    if entry.state & entry_state::HAS_HANDLE == 0 {
+        entry.state |= entry_state::HAS_HANDLE;
+        if entry.state & entry_state::ATTACHED != 0 {
+            tree.focus_requests.attached_entries.borrow_mut().insert(id.0);
+        }
+    }
+    NodeHandle { tree: key, node, entry: id, owner: id, _not_send: PhantomData }
+}
+
 impl NodeHandle {
+    /// A handle on chain entry `entry` of `node` in tree `tree`, not registered: it's attached
+    /// only once [`entry_handle`] registered it.
+    pub(crate) fn of_entry(tree: u32, node: NodeId, entry: EntryId) -> NodeHandle {
+        NodeHandle { tree, node, entry, owner: entry, _not_send: PhantomData }
+    }
+
     /// The layout node and the entry or delegate it names.
     pub(crate) fn place(&self) -> (NodeId, EntryId) {
         (self.node, self.entry)
@@ -590,13 +611,17 @@ impl NodeHandle {
 
     /// Asks the scrolling and responding nodes around this one (those before it in its chain,
     /// then its ancestors') to show `rect`, in the coordinates of the layout it's in (`None`: all
-    /// of it), at once, as `DelegatableNode.bringIntoView`: `false` if the node isn't attached
-    /// and placed, or its tree is busy (a frame later may do).
-    pub fn bring_into_view(&self, rect: Option<crate::unit::Rect>) -> bool {
+    /// of it), as `DelegatableNode.bringIntoView`: the future ends once they all have shown it or
+    /// were interrupted (a container animates to it). `None` if the node isn't attached and
+    /// placed, or its tree is busy (a frame later may do).
+    pub fn bring_into_view(
+        &self,
+        rect: Option<crate::unit::Rect>,
+    ) -> Option<crate::nested_scroll::LocalBoxFuture<'static, ()>> {
         if !self.is_attached() {
-            return false;
+            return None;
         }
-        let mut shown = false;
+        let mut asked = None;
         let (node, owner) = (self.node, self.owner);
         with_free_tree(self.tree, &mut |tree| {
             let Some(index) = tree.node(node).chain.iter().position(|entry| entry.id == owner)
@@ -604,11 +629,13 @@ impl NodeHandle {
                 return;
             };
             if tree.is_laid_out(node) {
-                tree.bring_into_view_from(node, Some(index), rect);
-                shown = true;
+                asked = Some(tree.bring_into_view_from(node, Some(index), rect));
             }
         });
-        shown
+        asked.map(|futures| {
+            Box::pin(crate::relocation::join_all(futures))
+                as crate::nested_scroll::LocalBoxFuture<'static, ()>
+        })
     }
 
     /// As `DrawModifierNode.invalidateDraw`.

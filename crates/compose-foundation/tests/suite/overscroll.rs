@@ -148,6 +148,7 @@ impl<S: ScrollableState + ComposeArg + Clone + 'static> Setup<S> {
                             reverse,
                             fling.clone(),
                             None,
+                            None,
                         )
                 );
             });
@@ -832,6 +833,7 @@ fn a_scrollable_takes_a_new_effect() {
                 false,
                 None,
                 None,
+                None,
             )
         );
     });
@@ -918,6 +920,7 @@ fn a_press_while_it_shows_doesnt_click_inside() {
                 Some(given.clone()),
                 true,
                 false,
+                None,
                 None,
                 None,
             ),
