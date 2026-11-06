@@ -200,7 +200,7 @@ impl ItemComposer {
         ItemComposer {
             factory,
             composed,
-            order: Vec::new(),
+            order: Vec::with_capacity(expected),
             #[cfg(debug_assertions)]
             keys: IndexMap::default(),
         }
