@@ -25,7 +25,7 @@ The cost is 4 more bytes in each `Color` and in what holds one (a `Paint`, a tex
 
 **Android's wire format** keeps its bytes for sRGB colors. A paint's flags byte gets a fifth bit: 16, *a color long follows*, written after what's there now (the blur radius). The ARGB slot still holds the color in sRGB, what a replayer ignoring the bit would draw. The long is Android's `@ColorLong`, made as Compose's `toSupportedColorLong`: Compose's ids 0 to 15 are Android's; the spaces Android's paints don't take (unspecified, Oklab, CIE XYZ and Lab) are converted to sRGB first, so they don't set the bit; BT.2020 HLG and PQ (Compose's 17 and 18) become Android's 16 and 17. The replayer sets the color with `Paint.setColor(long)` (API 29, the apps' minimum), except HLG and PQ below API 34, where it keeps the ARGB, as Compose's `toColorLong` does.
 
-Gradient stops, shadow colors and color filters stay ARGB on the wire for now: a wide color there is drawn as its sRGB conversion on Android. They're left in missing.md.
+Gradient stops, shadow colors and color filters stay ARGB on the wire for now: a wide color there is drawn as its sRGB conversion on Android. They're left in missing.md. (Later, D1915: a gradient with a wide color carries its colors' longs, as Compose's gradients take them; shadow colors and color filters can't, as Android's render nodes and filters take ARGB only, and Compose sends them as `toArgb()` too.)
 
 ## Android's replayer
 

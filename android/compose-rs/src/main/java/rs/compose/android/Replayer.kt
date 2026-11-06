@@ -1392,7 +1392,10 @@ internal class Replayer(
         val colorCount = getInt(colorsAt)
         val stopsAt = colorsAt + 4 + 4 * colorCount
         val stopCount = getInt(stopsAt)
-        val end = stopsAt + 4 + 4 * stopCount
+        val tileByte = get(start + 1).toInt() and 0xff
+        val longsAt = stopsAt + 4 + 4 * stopCount
+        val wide = tileByte and WIDE_GRADIENT != 0
+        val end = longsAt + if (wide) 8 * colorCount else 0
         position(end)
         // A NaN transform matches no key (NaN isn't equal to itself): built, never kept.
         val cacheable = !x.isNaN() && !y.isNaN() && !scaleX.isNaN() && !scaleY.isNaN()
@@ -1403,14 +1406,31 @@ internal class Replayer(
         }
         val colors = IntArray(colorCount) { getInt(colorsAt + 4 + it * 4) }
         val stops = if (stopCount == 0) null else FloatArray(stopCount) { floatAt(stopsAt + 4 + it * 4) }
-        val tileMode = when (get(start + 1).toInt()) {
+        // Android's color longs, of one space, as Compose's gradients take (API 29); BT.2020 HLG
+        // and PQ (Android's 16 and 17) only from API 34, else the ARGB colors.
+        val longs = if (!wide) null else LongArray(colorCount) { getLong(longsAt + it * 8) }
+            .takeIf { Build.VERSION.SDK_INT >= 34 || (it[0] and 0x3fL).toInt() !in 16..17 }
+        val tileMode = when (tileByte and WIDE_GRADIENT.inv()) {
             1 -> Shader.TileMode.REPEAT
             2 -> Shader.TileMode.MIRROR
             // Transparent past the ends: API 31+, clamped below.
             3 -> if (Build.VERSION.SDK_INT >= 31) Shader.TileMode.DECAL else Shader.TileMode.CLAMP
             else -> Shader.TileMode.CLAMP
         }
-        val shader = when (kind) {
+        val shader = if (longs != null) when (kind) {
+            SHADER_LINEAR -> LinearGradient(
+                floatAt(start + 2),
+                floatAt(start + 6),
+                floatAt(start + 10),
+                floatAt(start + 14),
+                longs,
+                stops,
+                tileMode,
+            )
+            SHADER_RADIAL ->
+                RadialGradient(floatAt(start + 2), floatAt(start + 6), floatAt(start + 10), longs, stops, tileMode)
+            else -> SweepGradient(floatAt(start + 2), floatAt(start + 6), longs, stops)
+        } else when (kind) {
             SHADER_LINEAR -> LinearGradient(
                 floatAt(start + 2),
                 floatAt(start + 6),
@@ -1837,6 +1857,8 @@ internal class Replayer(
         const val SHADER_LINEAR = 1
         const val SHADER_RADIAL = 2
         const val SHADER_SWEEP = 3
+        /** In a gradient's tile mode byte: its colors' color longs follow its stops. */
+        const val WIDE_GRADIENT = 128
 
         /** The largest path (scaled, in pixels each way) drawn from a mask (D190). */
         const val MAX_MASK_SIZE = 256

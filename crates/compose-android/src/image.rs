@@ -29,8 +29,104 @@ pub(crate) fn install(env: &mut Env) {
     ) else {
         return;
     };
+    let Ok(rasterize) = env.get_static_method_id(
+        &class,
+        jni_str!("rasterize"),
+        jni_sig!("(Ljava/nio/ByteBuffer;IILjava/nio/ByteBuffer;)V"),
+    ) else {
+        return;
+    };
+    let Ok(rasterizer_class) = env.new_global_ref(&class) else { return };
     let Ok(class) = env.new_global_ref(class) else { return };
+    let rasterizer = AndroidBitmapRasterizer { class: rasterizer_class, rasterize };
     compose_ui::platform::set_image_decoder(Arc::new(AndroidImageDecoder { class, decode }));
+    compose_ui::platform::set_bitmap_rasterizer(Arc::new(rasterizer));
+}
+
+/// The platform's bitmap rasterizer on Android (`compose_ui::platform::set_bitmap_rasterizer`):
+/// a bitmap's drawings written as a frame is (`serialize.rs`, its paths and images defined
+/// first) and replayed by `ComposeRsImages.rasterize` with a software `Canvas` over an
+/// `android.graphics.Bitmap` of its pixels, copied in and back (D1915).
+struct AndroidBitmapRasterizer {
+    class: Global<JClass<'static>>,
+    rasterize: JStaticMethodID,
+}
+
+impl compose_ui::platform::BitmapRasterizer for AndroidBitmapRasterizer {
+    fn draw(
+        &self,
+        list: &compose_ui::platform::DisplayList,
+        width: u32,
+        height: u32,
+        pixels: &mut [u8],
+    ) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        let drawing = bitmap_drawing(list);
+        // Any thread: attached for good if it isn't, in a local frame of its own.
+        let _ = crate::bridge::vm().attach_current_thread(|env| -> jni::errors::Result<()> {
+            let drawn = (|| -> jni::errors::Result<()> {
+                // SAFETY: Kotlin reads and writes the buffers during the call only; both outlive
+                // it, and nothing else touches them meanwhile (`pixels` is borrowed mutably).
+                let pixels =
+                    unsafe { env.new_direct_byte_buffer(pixels.as_mut_ptr(), pixels.len()) }?;
+                // SAFETY: as above; Kotlin only reads it.
+                let drawing = unsafe {
+                    env.new_direct_byte_buffer(drawing.as_ptr().cast_mut(), drawing.len())
+                }?;
+                // SAFETY: `rasterize` is `(Ljava/nio/ByteBuffer;IILjava/nio/ByteBuffer;)V`, static,
+                // of `class`.
+                unsafe {
+                    env.call_static_method_unchecked(
+                        &self.class,
+                        self.rasterize,
+                        ReturnType::Primitive(jni::signature::Primitive::Void),
+                        &[
+                            JValue::Object(&pixels).as_jni(),
+                            JValue::Int(width as i32).as_jni(),
+                            JValue::Int(height as i32).as_jni(),
+                            JValue::Object(&drawing).as_jni(),
+                        ],
+                    )
+                }?;
+                Ok(())
+            })();
+            crate::bridge::check(env, "ComposeRsImages.rasterize");
+            drawn
+        });
+    }
+}
+
+/// `list` in the replayer's format: its paths and images defined, then its operations, as a
+/// frame's (`takeDrawing`). Its paragraphs are left out: a bitmap's canvas has no text measurer.
+pub(crate) fn bitmap_drawing(list: &compose_ui::platform::DisplayList) -> Vec<u8> {
+    use compose_ui::platform::{DrawOp, Optimizations};
+
+    use crate::serialize::{GroupCache, Resources, Writer, write_display_list};
+    let paragraphs = list.ops.iter().any(|op| matches!(op, DrawOp::DrawParagraph(..)));
+    let without;
+    let list = if paragraphs {
+        let mut copy = compose_ui::platform::DisplayList::default();
+        copy.ops = list
+            .ops
+            .iter()
+            .filter(|op| !matches!(op, DrawOp::DrawParagraph(..)))
+            .cloned()
+            .collect();
+        copy.shaders = list.shaders.clone();
+        copy.color_filters = list.color_filters.clone();
+        without = copy;
+        &without
+    } else {
+        list
+    };
+    let (mut resources, mut ops, mut drawing) =
+        (Resources::default(), Writer::default(), Writer::default());
+    write_display_list(list, &mut resources, &mut GroupCache::new(Optimizations::NONE), &mut ops);
+    resources.write_pending(&mut drawing);
+    drawing.bytes.extend_from_slice(&ops.bytes);
+    drawing.bytes
 }
 
 /// The largest image decoded, in pixels: a gigabyte of pixels, as the desktop decoder's.
@@ -107,4 +203,44 @@ fn copy_pixels(env: &mut Env, bitmap: &JObject) -> Option<ImageBitmap> {
     // Its pixels freed now rather than at a garbage collection.
     let _ = env.call_method(bitmap, jni_str!("recycle"), jni_sig!("()V"), &[]);
     image
+}
+
+#[cfg(test)]
+mod tests {
+    use compose_ui::platform::{DisplayList, DrawOp};
+    use compose_ui::{Color, Offset, Paint, Path, Rect};
+
+    use super::bitmap_drawing;
+    use crate::serialize::{operand_bytes, tag};
+
+    // Compose: compose/ui/ui-graphics/src/androidMain/kotlin/androidx/compose/ui/graphics/AndroidCanvas.android.kt, Canvas(imageBitmap) (no Compose test)
+    /// A bitmap's drawing defines its paths and images before the operations naming them, as a
+    /// frame's: the replayer of `ComposeRsImages.rasterize` starts with none.
+    #[test]
+    fn a_bitmaps_drawing_defines_its_resources_first() {
+        let image = compose_ui::ImageBitmap::from_rgba_premultiplied(1, 1, vec![255; 4]);
+        let mut list = DisplayList::default();
+        let rect = Rect::new(0.0, 0.0, 1.0, 1.0);
+        let draw =
+            DrawOp::DrawImage { image, src: rect, dst: rect, alpha: 1.0, color_filter: None };
+        list.push(draw);
+        let bytes = bitmap_drawing(&list);
+        assert_eq!(bytes[0], tag::DEFINE_IMAGE);
+        // Its id, size and length, its four bytes of pixels, then the drawing.
+        let ops_at = 1 + 4 * 4 + 4;
+        assert_eq!(&bytes[17..ops_at], &[255; 4]);
+        assert_eq!(bytes[ops_at], tag::DRAW_IMAGE);
+        assert_eq!(ops_at + 1 + operand_bytes(&bytes, ops_at), bytes.len());
+
+        let path = Path::new();
+        path.add_rect(Rect::new(0.0, 0.0, 2.0, 2.0));
+        let mut list = DisplayList::default();
+        list.push(DrawOp::DrawPath {
+            path: path.data(),
+            offset: Offset::ZERO,
+            scale: (1.0, 1.0),
+            paint: Paint::fill(Color::RED),
+        });
+        assert_eq!(bitmap_drawing(&list)[0], tag::DEFINE_PATH);
+    }
 }
