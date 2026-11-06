@@ -265,18 +265,19 @@ impl Recomposer {
         crate::tooling::observe_registrations(*self, Rc::new(observer))
     }
 
-    /// Its registration observers, in order.
+    /// Its registration observers, in order, with their tokens.
     #[cfg(feature = "composition-observer")]
-    pub(crate) fn registration_observers(
-        &self,
-    ) -> Vec<Rc<dyn crate::tooling::CompositionRegistrationObserver>> {
-        self.inner.try_get().map_or_else(Vec::new, |inner| {
-            inner
-                .registration_observers
-                .borrow()
-                .iter()
-                .map(|(_, observer)| observer.clone())
-                .collect()
+    pub(crate) fn registration_observers(&self) -> Vec<RegistrationObserver> {
+        self.inner
+            .try_get()
+            .map_or_else(Vec::new, |inner| inner.registration_observers.borrow().clone())
+    }
+
+    /// Whether the observer of `token` is still there: its handle wasn't disposed.
+    #[cfg(feature = "composition-observer")]
+    pub(crate) fn has_registration_observer(&self, token: u64) -> bool {
+        self.inner.try_get().is_some_and(|inner| {
+            inner.registration_observers.borrow().iter().any(|(other, _)| *other == token)
         })
     }
 
@@ -964,7 +965,10 @@ pub fn perform_frame(recomposer: Recomposer, frame_time_nanos: u64) -> bool {
         return false;
     }
     Snapshot::send_apply_notifications();
-    let before = with_runtime(|runtime| runtime.changes_made());
+    // Run from inside a pass, the compositions composing are left for a frame after: a round that
+    // composes nothing else is the last, their invalidations kept.
+    let (before, inside_a_pass) =
+        with_runtime(|runtime| (runtime.changes_made(), runtime.active.is_some()));
     let frame = begin_tree_frame();
     let mut panic = None;
     loop {
@@ -972,6 +976,7 @@ pub fn perform_frame(recomposer: Recomposer, frame_time_nanos: u64) -> bool {
         if invalid.is_empty() {
             break;
         }
+        let passes = inside_a_pass.then(|| with_runtime(|runtime| runtime.unapplied.len()));
         for id in invalid {
             // What's composed is applied before a panic goes on.
             if let Err(caught) = compose_tree_of(id, frame) {
@@ -984,6 +989,9 @@ pub fn perform_frame(recomposer: Recomposer, frame_time_nanos: u64) -> bool {
             panic.get_or_insert(caught);
         }
         if panic.is_some() {
+            break;
+        }
+        if passes.is_some_and(|passes| with_runtime(|runtime| runtime.unapplied.len()) == passes) {
             break;
         }
         Snapshot::send_apply_notifications();

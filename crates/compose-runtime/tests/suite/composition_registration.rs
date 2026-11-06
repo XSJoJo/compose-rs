@@ -275,8 +275,12 @@ fn a_frame_forced_during_the_first_composition_keeps_registration_whole() {
         Text(&value.to_string());
     });
     assert_eq!(received.set(), HashSet::from([root.observable()]));
+    assert_eq!(shown_text(&root), "true");
     while perform_frame(r, 0) {}
     assert_eq!(received.set(), HashSet::from([root.observable()]), "registered once");
+    // Compose's recomposer drops the invalidation (`performRecompose` returns early on a composing
+    // composition, having cleared it): its text stays "true". Here it's kept for the next frame.
+    assert_eq!(shown_text(&root), "false");
     root.dispose();
     assert!(received.set().is_empty());
     received.disposed.set(true);
@@ -358,4 +362,105 @@ fn a_dropped_handle_stops_the_observer() {
     second.set_content(|| {});
     first.dispose();
     second.dispose();
+}
+
+/// The text of the one view `composition` shows.
+fn shown_text(composition: &Composition) -> String {
+    composition.with_applier(|views: &mut ViewApplier| {
+        let roots = views.roots();
+        let view = views.tree.get(roots[0]).expect("a view");
+        view.attribute("text").expect("a text").to_string()
+    })
+}
+
+/// A subcomposition sharing its parent's applier, made after the parent's pass, whose content runs
+/// a frame: the frame leaves the child, composing, and keeps what it invalidated for a frame after.
+#[test]
+fn a_frame_forced_inside_a_subcompositions_pass_leaves_it_for_later() {
+    let recomposer = Recomposer::new();
+    let state = mutable_state_of(true);
+    let (s, r) = (state.handle(), *recomposer);
+    let runs = Rc::new(Cell::new(0));
+    let n = runs.clone();
+    let root = Composition::with_parent(ViewApplier::new(), recomposer.as_context());
+    root.set_content(move || {
+        let place = remember_composition_context();
+        let n = n.clone();
+        DisposableEffect((), move |scope| {
+            let child = subcomposition(place, ViewApplier::new().root());
+            child.set_content(move || {
+                n.set(n.get() + 1);
+                if s.get() {
+                    s.set(false);
+                    perform_frame(r, 0);
+                }
+            });
+            scope.on_dispose(move || child.dispose())
+        });
+    });
+    while perform_frame(r, 0) {}
+    assert!(!state.get());
+    assert_eq!(runs.get(), 2, "composed again in a frame after its pass");
+    root.dispose();
+}
+
+/// Its content set again, a composition is registered once.
+#[test]
+fn content_set_twice_registers_once() {
+    let recomposer = Recomposer::new();
+    let received = Received::default();
+    let handle = recomposer.observe(received.clone());
+    let root = Composition::with_parent(ViewApplier::new(), recomposer.as_context());
+    root.set_content(|| Text("first"));
+    root.set_content(|| Text("second"));
+    assert_eq!(received.set(), HashSet::from([root.observable()]));
+    root.dispose();
+    received.disposed.set(true);
+    handle.dispose();
+}
+
+/// An observer whose handle a composition's `on_dispose` disposes isn't told of that composition
+/// going.
+#[test]
+fn a_handle_disposed_by_the_disposal_stops_its_observer_first() {
+    let recomposer = Recomposer::new();
+    let received = Received::default();
+    let (o, r) = (received.clone(), *recomposer);
+    let root = Composition::with_parent(ViewApplier::new(), recomposer.as_context());
+    root.set_content(move || {
+        let o = o.clone();
+        DisposableEffect((), move |scope| {
+            let handle = r.observe(o.clone());
+            scope.on_dispose(move || {
+                o.disposed.set(true);
+                handle.dispose();
+            })
+        });
+    });
+    assert_eq!(received.set().len(), 1, "told of the root when it observed");
+    root.dispose();
+    assert!(received.disposed.get());
+}
+
+/// An observer that disposes another's handle in a call: the other isn't told of that one.
+#[test]
+fn a_handle_disposed_in_another_observers_call_isnt_told() {
+    struct Stopper(Rc<RefCell<Option<CompositionObserverHandle>>>, Received);
+    impl CompositionRegistrationObserver for Stopper {
+        fn on_composition_registered(&self, _: &ObservableComposition) {
+            self.1.disposed.set(true);
+            drop(self.0.borrow_mut().take());
+        }
+        fn on_composition_unregistered(&self, _: &ObservableComposition) {}
+    }
+    let recomposer = Recomposer::new();
+    let second = Received::default();
+    let held: Rc<RefCell<Option<CompositionObserverHandle>>> = Rc::default();
+    let first = recomposer.observe(Stopper(held.clone(), second.clone()));
+    *held.borrow_mut() = Some(recomposer.observe(second.clone()));
+    let root = Composition::with_parent(ViewApplier::new(), recomposer.as_context());
+    root.set_content(|| {});
+    assert!(second.set().is_empty(), "stopped before its turn");
+    root.dispose();
+    first.dispose();
 }

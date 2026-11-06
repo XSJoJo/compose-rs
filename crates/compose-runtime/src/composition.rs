@@ -1216,10 +1216,11 @@ fn compose_tree(id: CompositionId, frame: u64) -> std::thread::Result<()> {
         }
         let mut queued = queued.into_iter();
         while let Some(child) = queued.next() {
-            // What holds it may have just gone, in the parent's pass.
+            // What holds it may have just gone, in the parent's pass; or it's composing, a frame run
+            // from inside its pass: its invalidations are for a frame after it.
             let going = with_runtime(|runtime| {
                 let compositions = &runtime.compositions;
-                compositions.get(child).map(|data| compositions.is_going(data))
+                compositions.get(child).map(|data| compositions.is_going(data) || data.composing)
             });
             match going {
                 None => {}

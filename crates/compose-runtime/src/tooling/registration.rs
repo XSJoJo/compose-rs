@@ -67,13 +67,17 @@ fn registered_with(recomposer: Recomposer) -> Vec<CompositionId> {
     })
 }
 
-fn tell(
-    observers: &[Rc<dyn CompositionRegistrationObserver>],
-    id: CompositionId,
-    registered: bool,
-) {
+/// The observers of a recomposer, each with its handle's token.
+type Observers = Vec<(u64, Rc<dyn CompositionRegistrationObserver>)>;
+
+/// Tells `observers` of `recomposer`, each only while its handle is there: one an earlier one's
+/// call, or what ran since the list was taken, disposed isn't told.
+fn tell(recomposer: Recomposer, observers: &Observers, id: CompositionId, registered: bool) {
     let composition = ObservableComposition::of(id);
-    for observer in observers {
+    for (token, observer) in observers {
+        if !recomposer.has_registration_observer(*token) {
+            continue;
+        }
         if registered {
             observer.on_composition_registered(&composition);
         } else {
@@ -99,7 +103,7 @@ pub(crate) fn observe_registrations(
     };
     if recomposer.takes_registrations() {
         for id in registered_with(recomposer) {
-            tell(std::slice::from_ref(&observer), id, true);
+            tell(recomposer, &vec![(token, observer.clone())], id, true);
         }
     }
     handle
@@ -131,7 +135,7 @@ pub(crate) fn registering(id: CompositionId) {
     }
     let Some(recomposer) = recomposer_of(id) else { return };
     if recomposer.takes_registrations() {
-        tell(&recomposer.registration_observers(), id, true);
+        tell(recomposer, &recomposer.registration_observers(), id, true);
     }
 }
 
@@ -149,18 +153,21 @@ pub(crate) fn unregistering(id: CompositionId) -> Option<Unregistering> {
     if !recomposer.takes_registrations() {
         return None;
     }
-    Some(Unregistering { id, observers: recomposer.registration_observers() })
+    Some(Unregistering { id, recomposer, observers: recomposer.registration_observers() })
 }
 
-/// What [`unregistering`] found, told once the composition is disposed or poisoned.
+/// What [`unregistering`] found, told once the composition is disposed or poisoned: those of its
+/// observers whose handles are still there then (a disposal runs `on_dispose`s, which may drop
+/// one).
 pub(crate) struct Unregistering {
     id: CompositionId,
-    observers: Vec<Rc<dyn CompositionRegistrationObserver>>,
+    recomposer: Recomposer,
+    observers: Observers,
 }
 
 impl Unregistering {
     pub(crate) fn tell(self) {
-        tell(&self.observers, self.id, false);
+        tell(self.recomposer, &self.observers, self.id, false);
     }
 }
 
@@ -174,6 +181,6 @@ pub(crate) fn recomposer_shut_down(recomposer: Recomposer) {
         return;
     }
     for id in registered_with(recomposer) {
-        tell(&observers, id, false);
+        tell(recomposer, &observers, id, false);
     }
 }
