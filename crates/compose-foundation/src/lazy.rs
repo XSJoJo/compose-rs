@@ -1978,9 +1978,10 @@ pub(super) fn LazyItem(
                     } else {
                         now.0.index_of(item_key, index)
                     };
+                    // Gone from the items: nothing, as Compose's `getIndex(key) == -1`.
                     match found {
                         Some(found) => (now, found),
-                        None => (items.clone(), index),
+                        None => return,
                     }
                 }
                 _ => (items.clone(), index),
