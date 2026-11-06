@@ -99,5 +99,7 @@ mod text_field_layout;
 mod text_selection_colors;
 mod theme;
 mod time_picker;
+mod toggle_button;
+mod toggle_button_screenshots;
 mod tooltip;
 mod window_insets;

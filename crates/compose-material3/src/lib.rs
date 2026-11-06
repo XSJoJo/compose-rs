@@ -53,6 +53,7 @@ mod tabs;
 mod text_field;
 mod theme;
 mod time_picker;
+mod toggle_button;
 mod tooltip;
 
 pub use app_bar::{
@@ -208,6 +209,12 @@ pub use time_picker::{
     ClockFace, TimeInput, TimeInputColors, TimeInputDefaults, TimePicker, TimePickerColors,
     TimePickerDefaults, TimePickerLayoutType, TimePickerSelectionMode, TimePickerState,
     is_24_hour_format, remember_time_picker_state,
+};
+pub use toggle_button::{
+    ElevatedToggleButton, ElevatedToggleButtonDefaults, FilledTonalToggleButton,
+    FilledTonalToggleButtonDefaults, OutlinedToggleButton, OutlinedToggleButtonDefaults,
+    ToggleButton, ToggleButtonColors, ToggleButtonDefaults, ToggleButtonElevation,
+    ToggleButtonShapes, ToggleButtonSize,
 };
 pub use tooltip::{
     DefaultTooltipCaretShape, Label, PlainTooltip, RichTooltip, RichTooltipColors,

@@ -39,7 +39,7 @@ These are on local branches, so they're not lost, but each still has to finish i
 - **Gestures and scrolling:** `transformable` (about 40), 2D scrolling (about 45), `bringIntoView` (about 90 across two rows), public lazy layout API (about 40), `BeyondBoundsLayout` (about 35).
 
 ### 5. Material 3
-- **Whole components missing:** carousel (about 100), floating toolbar (about 80), search bar (about 65), toggle button (about 50), wide navigation rail (about 45), button group (about 45), wavy progress (about 45), short navigation bar (about 35), split button (about 35), loading indicator (about 20), FAB menu (about 15).
+- **Whole components missing:** carousel (about 100), floating toolbar (about 80), search bar (about 65), wide navigation rail (about 45), button group (about 45), wavy progress (about 45), short navigation bar (about 35), split button (about 35), loading indicator (about 20), FAB menu (about 15).
 - **Dynamic color** (about 25), `TimeScroll` and time picker dialogs, Material transitions.
 - **Adaptive libraries,** window size classes and the navigation suite, planned last.
 - Many existing components are `partial`: they exist, with tests or details left.
