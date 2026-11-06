@@ -41,6 +41,7 @@ mod focus_search;
 mod font;
 mod font_resolver;
 mod font_variation;
+mod geometry;
 mod graphics;
 mod graphics_layer;
 mod host;
@@ -53,9 +54,12 @@ mod intl;
 mod layout;
 mod layout_callbacks;
 mod layout_modifiers;
+mod layout_rect_modifiers;
 mod lifecycle;
 mod logging;
 mod lookahead;
+mod math;
+mod matrix;
 mod measure;
 mod modifier;
 mod modifier_local;
@@ -72,6 +76,8 @@ mod paragraph;
 mod paragraph_style;
 mod parent_data;
 mod path;
+mod path_geometry;
+mod path_measure;
 mod pinnable;
 mod placeholder;
 mod placement;
@@ -80,6 +86,7 @@ mod platform_text_style;
 mod pointer_event;
 mod pointer_input;
 mod prefetch;
+mod relocation;
 mod remeasurement;
 mod render;
 pub mod retained_values;
@@ -89,6 +96,7 @@ mod semantics_node;
 mod semantics_properties;
 mod semantics_sort;
 mod span_style;
+mod spatial;
 pub mod subcompose;
 mod text;
 mod text_attributes;
@@ -227,6 +235,7 @@ pub use font::{
 };
 pub use font_resolver::{AsyncFontListLoader, TypefaceResult};
 pub use font_variation::{FontVariation, FontVariationSetting, FontVariationSettings};
+pub use geometry::{CornerRadius, MutableRect, Offset, Rect, RoundRect, Size};
 pub use graphics::{
     Color, CornerSize, CornerSizes, CustomShape, DrawStyle, Outline, Paint, PaintStyle,
     RECTANGLE_SHAPE, Shadow, Shape, Stroke, StrokeCap, StrokeJoin,
@@ -260,7 +269,13 @@ pub use layout_callbacks::{
 };
 pub use layout_modifiers::LineSpace;
 pub use layout_modifiers::{IntrinsicSize, SizeOrIntrinsic};
+pub use layout_rect_modifiers::{
+    DEFAULT_LAYOUT_RECT_DEBOUNCE_MILLIS, LayoutBoundsHolder, OnVisibilityChangedNode,
+    on_visibility_changed_node,
+};
 pub use lookahead::{ApproachMeasureScope, LookaheadCoordinates, LookaheadScope};
+pub use math::{Lerp, lerp};
+pub use matrix::Matrix;
 pub use modifier::AlignByScope;
 pub use modifier::{
     AlignScope, AnyModifierNodeElement, BoxScope, ClickableOptions, ColumnScope, DrawModifierNode,
@@ -288,9 +303,12 @@ pub use paragraph::{Paragraph, TextLayoutInput};
 pub use paragraph_style::ParagraphStyle;
 pub use parent_data::{LayoutIdParentData, ParentDataModifierNode};
 pub use path::{
-    CornerRadius, Matrix, Path, PathCommand, PathData, PathDirection, PathError, PathFillType,
-    PathOperation, PathStep, RoundRect,
+    Path, PathCommand, PathData, PathDirection, PathError, PathFillType, PathOperation, PathStep,
 };
+pub use path_geometry::{
+    ConicEvaluation, PathHitTester, PathIterator, PathSegment, PathSegmentType,
+};
+pub use path_measure::PathMeasure;
 pub use pinnable::{FocusPin, LOCAL_PINNABLE_CONTAINER, PinnableContainer, PinnedHandle};
 pub use placeholder::{Placeholder, PlaceholderVerticalAlign, Placeholders};
 pub use placement::PlacementScope;
@@ -309,6 +327,7 @@ pub use prefetch::{
     LOCAL_PREFETCH_SCHEDULER, PrefetchClock, PrefetchRequest, PrefetchRequestScope,
     PrefetchScheduler, prefetch_now,
 };
+pub use relocation::{BringIntoViewBounds, BringIntoViewResponderNode, BringIntoViewScope};
 pub use remeasurement::{Remeasurement, RemeasurementModifier};
 pub use ruler::{HorizontalRuler, RectRulers, Ruler, RulerScope, VerticalRuler};
 pub use semantics::{
@@ -329,6 +348,7 @@ pub use semantics_sort::{
     sorted_for_accessibility, traversal_before,
 };
 pub use span_style::SpanStyle;
+pub use spatial::{RegistrationHandle, RelativeLayoutBounds};
 pub use text::{SharedString, TextLayoutResult};
 pub use text_attributes::{
     BaselineShift, Hyphens, LineBreak, LineBreakStrategy, LineBreakStrictness, LineBreakWordBreak,
@@ -356,8 +376,8 @@ pub use text_style::TextStyle;
 pub use traversal::{TraversableNode, TraverseDescendantsAction, TraverseKey};
 pub use tree_access::TreeRef;
 pub use unit::{
-    Density, Dp, DpOffset, DpRect, DpSize, IntOffset, IntSize, Offset, Rect, Size, TextUnit,
-    TextUnitType, UnitExt,
+    Density, Dp, DpOffset, DpRect, DpSize, IntOffset, IntRect, IntSize, TextUnit, TextUnitType,
+    UnitExt,
 };
 pub use vector::{
     ImageVector, ImageVectorBuilder, PathBuilder, PathNode, PathParser, VectorGroup, VectorNode,

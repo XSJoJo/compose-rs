@@ -27,6 +27,7 @@ pub mod relocation;
 mod scroll;
 mod scroll_indicator;
 pub mod scrollbar;
+mod secure_text_field;
 pub mod shape;
 mod text;
 mod text_field;
@@ -107,6 +108,10 @@ pub use scroll_indicator::ScrollIndicatorState;
 pub use scrollbar::{
     HorizontalScrollbar, LOCAL_SCROLLBAR_STYLE, ScrollbarAdapter, ScrollbarStyle,
     VerticalScrollbar, remember_lazy_list_scrollbar_adapter, remember_scrollbar_adapter,
+};
+pub use secure_text_field::{
+    BasicSecureTextField, DEFAULT_OBFUSCATION_CHARACTER, LOCAL_PASSWORD_VISIBILITY,
+    PasswordInputTransformation, PasswordVisibility, PerGlyph, TextObfuscationMode,
 };
 pub use shape::{
     AbsoluteCutCornerShape, AbsoluteRoundedCornerShape, CIRCLE_SHAPE, CornerSize, CornerSizes,

@@ -82,23 +82,27 @@ fn a_long_text_is_wider_and_a_value_field_has_none() {
     assert!(width_of(&mut ui, "value") < ten);
 }
 
-/// Its intrinsic widths hold the default width too: a column as wide as its narrowest or
-/// widest content is ten "H" wide around an empty field.
+/// Its intrinsic widths are its text's and the cursor's, as Compose's (`textFieldMinSize` sets
+/// the least width when measured, its intrinsics are the default ones: D1140): a column as wide
+/// as its narrowest or widest content is as wide as "ab" and the cursor around a field over "ab".
 #[test]
-fn the_intrinsic_widths_are_at_least_ten_hs() {
+fn the_intrinsic_widths_are_the_texts() {
     for (tag, size) in
         [("min", compose_ui::IntrinsicSize::Min), ("max", compose_ui::IntrinsicSize::Max)]
     {
         let mut ui = compose_test(move || {
-            let state = remember_text_field_state("", None);
+            let state = remember_text_field_state("ab", None);
             Column!({
                 Column!(modifier = Modifier.width(size).test_tag("column"), {
                     BasicTextFieldOfState!(state);
                 });
+                BasicText!("ab", modifier = Modifier.test_tag("ab"));
                 BasicText!("HHHHHHHHHH", modifier = Modifier.test_tag("ten"));
             });
         });
-        let ten = width_of(&mut ui, "ten");
-        assert_eq!(width_of(&mut ui, "column"), ten, "{tag}");
+        let cursor = (2.0 * ui.density().density).round();
+        let ab = width_of(&mut ui, "ab");
+        assert_eq!(width_of(&mut ui, "column"), ab + cursor, "{tag}");
+        assert!(ab + cursor < width_of(&mut ui, "ten"), "{tag}");
     }
 }

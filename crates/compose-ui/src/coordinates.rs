@@ -780,7 +780,7 @@ impl UiTree {
     }
 
     /// Where a popup's root is in the window, for what's in one.
-    fn popup_origin(&self, node: NodeId) -> Offset {
+    pub(crate) fn popup_origin(&self, node: NodeId) -> Offset {
         let top = *self.path_to_root(node).last().expect("a node");
         let value = self.node(top);
         if value.overlay { value.overlay_origin } else { Offset::ZERO }

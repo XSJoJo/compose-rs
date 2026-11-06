@@ -92,6 +92,37 @@ fn a_vector_is_tinted_by_its_filter_or_its_own_tint() {
     capture(&mut ui).assert_pixel_color(Color::CYAN, 430, 430);
 }
 
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/vector/VectorTest.kt, testVectorTrimPath
+#[test]
+fn a_trimmed_stroke_wraps_past_its_end() {
+    let size = 200.0;
+    let vector = ImageVector::builder(Dp(size), Dp(size), size, size)
+        .add_path(VectorPath {
+            path_data: rectangle(size, size),
+            fill: Some(Brush::solid(Color::BLUE)),
+            ..Default::default()
+        })
+        .add_path(VectorPath {
+            // A thick stroke, its middle half trimmed away: offset by half, it starts at three
+            // quarters and wraps to a quarter.
+            path_data: path_data(|path| {
+                path.move_to(0.0, size / 2.0).line_to(size, size / 2.0);
+            }),
+            stroke: Some(Brush::solid(Color::YELLOW)),
+            stroke_line_width: size / 2.0,
+            trim_path_start: 0.25,
+            trim_path_end: 0.75,
+            trim_path_offset: 0.5,
+            ..Default::default()
+        })
+        .build();
+    let mut ui = painted(200, move || Painted(vector.clone(), size, Alignment::CENTER, None));
+    let image = capture(&mut ui);
+    image.assert_pixel_color(Color::YELLOW, 25, 100);
+    image.assert_pixel_color(Color::BLUE, 100, 100);
+    image.assert_pixel_color(Color::YELLOW, 175, 100);
+}
+
 // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/vector/VectorTest.kt, testVectorClipPath
 #[test]
 fn a_group_is_clipped_then_rotated() {

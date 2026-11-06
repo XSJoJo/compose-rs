@@ -511,6 +511,8 @@ pub(crate) struct Requests {
     pub(crate) software_keyboard: Option<bool>,
     /// The handling node asks to be shown (`EventContext::bring_into_view`).
     pub(crate) bring_into_view: Option<NodeId>,
+    /// What of it: a rect in its chain entry's layer (`EventContext::bring_rect_into_view`).
+    pub(crate) bring_into_view_rect: Option<(usize, crate::unit::Rect)>,
 }
 
 impl EventContext<'_> {
@@ -554,6 +556,15 @@ impl EventContext<'_> {
     /// (`FocusableNode`'s `bringIntoView`): once it's placed, if it isn't yet.
     pub fn bring_into_view(&mut self) {
         self.requests.bring_into_view = Some(self.context.node);
+        self.requests.bring_into_view_rect = None;
+    }
+
+    /// Asks the scrolling containers around this node to show `rect`, in the coordinates of the
+    /// layout this node is in, as a focused text field shows its cursor (Compose's
+    /// `bringSelectionEndIntoView`): once it's placed, if it isn't yet (all of it, then).
+    pub fn bring_rect_into_view(&mut self, rect: crate::unit::Rect) {
+        self.requests.bring_into_view = Some(self.context.node);
+        self.requests.bring_into_view_rect = self.context.index.map(|index| (index, rect));
     }
 
     /// Queues a focus event for application code (`on_focus_event`, `on_focus_changed`), as

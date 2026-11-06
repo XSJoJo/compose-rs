@@ -15,41 +15,7 @@ const MIN_SAMPLE_SIZE: usize = 2;
 /// How far back samples count, as Compose's `HorizonMilliseconds`.
 const HORIZON_MILLISECONDS: i64 = 100;
 
-/// A two-dimensional velocity, in pixels per second, as Compose's `Velocity`.
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
-pub struct Velocity {
-    pub x: f32,
-    pub y: f32,
-}
-
-impl Velocity {
-    pub const ZERO: Velocity = Velocity { x: 0.0, y: 0.0 };
-
-    pub const fn new(x: f32, y: f32) -> Velocity {
-        Velocity { x, y }
-    }
-}
-
-impl std::ops::Add for Velocity {
-    type Output = Velocity;
-    fn add(self, other: Velocity) -> Velocity {
-        Velocity::new(self.x + other.x, self.y + other.y)
-    }
-}
-
-impl std::ops::Sub for Velocity {
-    type Output = Velocity;
-    fn sub(self, other: Velocity) -> Velocity {
-        Velocity::new(self.x - other.x, self.y - other.y)
-    }
-}
-
-impl std::ops::Neg for Velocity {
-    type Output = Velocity;
-    fn neg(self) -> Velocity {
-        Velocity::new(-self.x, -self.y)
-    }
-}
+pub use crate::unit::Velocity;
 
 /// How a one-dimensional tracker fits its samples, as Compose's internal
 /// `VelocityTracker1D.Strategy`.
