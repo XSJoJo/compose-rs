@@ -113,10 +113,8 @@ fn a_handles_tap_shows_the_toolbar_again() {
 #[test]
 #[ignore = "review: a selected text changed in place (same size) leaves the container's toolbar shown"]
 fn the_toolbar_hides_when_the_selected_text_changes() {
-    let text = Box::leak(Box::new(compose_runtime::mutable_state_of(
-        "Text Text Text".to_string(),
-    )))
-    .handle();
+    let text = Box::leak(Box::new(compose_runtime::mutable_state_of("Text Text Text".to_string())))
+        .handle();
     let mut ui = rule_with(move || {
         SelectionContainer!({
             BasicText!(text.get(), modifier = Modifier.test_tag(TEXT_TAG));
