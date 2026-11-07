@@ -299,3 +299,64 @@ fn test_offset_positioning_right_bottom() {
         .assert_left_position_in_root_is_equal_to(70.dp())
         .assert_top_position_in_root_is_equal_to(50.dp());
 }
+
+/// `testText_simple_text`: a column's content color, font weight and size reach the styled
+/// boxes inside as locals (D1586), the second box's own size winning; the texts compose.
+#[test]
+fn test_text_simple_text() {
+    use compose_foundation::style::properties::*;
+    use compose_ui::{FontWeight, TextUnit};
+    let read: std::rc::Rc<std::cell::RefCell<Vec<(Color, FontWeight, TextUnit)>>> =
+        std::rc::Rc::default();
+    let out = read.clone();
+    let mut ui = ComposeTestRule::sized(IntSize::new(500, 500), move || {
+        let column = compose_runtime::remember_observer(|| {
+            StyleResolver::of(CommonStyle::new(|s| {
+                s.background(Color::BLUE);
+                s.content_padding(5.dp());
+                s.provide(&CONTENT_FILL, Fill::Color(Color::YELLOW));
+                s.provide(&FONT_WEIGHT, FontWeight::EXTRA_BOLD);
+                s.provide(&FONT_SIZE, 50.sp());
+            }))
+        });
+        let out = out.clone();
+        Column!(modifier = crate::style_support::styleable(Modifier, &column), move |_| {
+            let boxes: [fn(&mut dyn CommonStyleScope); 2] = [
+                |s| {
+                    s.background(Color::RED);
+                    s.content_padding(5.dp());
+                },
+                |s| {
+                    s.provide(&FONT_SIZE, 25.sp());
+                    s.background(Color::GREEN);
+                },
+            ];
+            for (index, style) in boxes.into_iter().enumerate() {
+                let resolver = compose_runtime::remember_observer(move || {
+                    StyleResolver::of(CommonStyle::new(style))
+                });
+                let reader = (*resolver).clone();
+                let out = out.clone();
+                let reading = Modifier.draw_behind(move |_| {
+                    let value = reader.resolve(|s| {
+                        (s.content_color(), s.value(&FONT_WEIGHT), s.value(&FONT_SIZE))
+                    });
+                    let mut read = out.borrow_mut();
+                    read.truncate(index);
+                    read.push(value);
+                });
+                Box!(modifier = crate::style_support::styleable(reading, &resolver), |_| {
+                    BasicText!("Some text");
+                });
+            }
+        });
+    });
+    ui.wait_for_idle();
+    assert_eq!(
+        *read.borrow(),
+        vec![
+            (Color::YELLOW, FontWeight::EXTRA_BOLD, 50.sp()),
+            (Color::YELLOW, FontWeight::EXTRA_BOLD, 25.sp()),
+        ]
+    );
+}

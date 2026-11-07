@@ -34,7 +34,9 @@ Resolved values are a list of slots, each a snapshot state holding the value and
 
 **Animation (D1585, step 2).** The collector records specs as Compose's; entries run on the resolver node's coroutine scope (an `Animatable<f32>` to 1); a slot's state holds its entry, so starting one notifies that property's readers only, and the animatable's value is a state its readers observe.
 
-**Locals for content (D1586, step 3).** The content fill and text properties are style locals in `style::properties`, with `content_color`, `content_brush`, `content_fill` accessors.
+**Locals for content (D1586, step 3).** The content fill and text properties are style locals in `style::properties`, with `content_color`, `content_brush`, `content_fill` accessors; Compose's unspecified text align, direction, hyphens and line break are `None`.
+
+**Status.** Steps 1 to 3 are in. Left: the `StyleUxTaskTests` tasks built on styled buttons, switches and texts; the style layer's rotations about X and Y, camera distance and color filter (compose-rs's layers lack them); the appearance node's shape semantics; shape interpolation (`shapes`).
 
 **Cost.** Nothing outside the new module changes: a node that doesn't use styles runs no new code.
 

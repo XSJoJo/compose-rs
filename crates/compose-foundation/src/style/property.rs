@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use compose_runtime::{KeyHasher, key_of};
 use compose_ui::shadow::Shadow;
-use compose_ui::{Brush, Color, ColorFilter, Dp, FontStyle, FontWeight, Shape, TextUnit};
+use compose_ui::{Brush, Color, Dp, FontStyle, FontWeight, Shape, TextUnit};
 
 /// A property's value, type-erased: the resolver's maps hold any property's.
 pub(crate) type Value = Rc<dyn Any>;
@@ -308,7 +308,13 @@ impl StyleInterpolate for Shape {}
 impl StyleInterpolate for Brush {}
 impl StyleInterpolate for FontWeight {}
 impl StyleInterpolate for FontStyle {}
-impl StyleInterpolate for Option<ColorFilter> {}
+/// A jump, as Compose's for a value it doesn't know how to interpolate (a `null` included).
+impl<T: Clone + PartialEq + 'static> StyleInterpolate for Option<T> {}
+impl StyleInterpolate for compose_ui::FontFamily {}
+impl StyleInterpolate for compose_ui::BaselineShift {}
+impl StyleInterpolate for compose_ui::TextDecoration {}
+impl StyleInterpolate for compose_ui::FontSynthesis {}
+impl StyleInterpolate for compose_ui::TextMotion {}
 
 /// `Dp`s between, as the style package's `lerp(Dp, Dp, Float)`: an unspecified or negative end
 /// counts as 0.

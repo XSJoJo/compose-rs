@@ -392,3 +392,42 @@ fn an_interrupted_animation_draws_on_from_where_it_was() {
         assert!((pair[1] - pair[0]).abs() < 0.2, "jumped: {drawn:?}");
     }
 }
+
+/// `animating_font_weight`: the font weight and content color locals animate on press, as
+/// Compose's font weight `lerp` and colors; the text motion is animated while they differ.
+#[test]
+fn animating_font_weight() {
+    use compose_ui::{FontWeight, TextMotion};
+    let state = MutableStyleState::new(None);
+    let style = CommonStyle::new(|s| {
+        s.content_padding(12.dp());
+        s.provide(&CONTENT_FILL, Fill::Color(Color::new(0.68, 0.78, 1.0, 1.0)));
+        s.provide(&FONT_WEIGHT, FontWeight::MEDIUM);
+        s.provide(&FONT_SIZE, 14.sp());
+        s.pressed(|s| {
+            s.animate_with(tween(300), |s| {
+                s.provide(&CONTENT_FILL, Fill::Color(Color::new(0.13, 0.48, 1.0, 1.0)));
+                s.background(Color::new(0.78, 0.89, 1.0, 1.0));
+                s.provide(&FONT_WEIGHT, FontWeight::BOLD);
+            });
+        });
+    });
+    let resolver = StyleResolver::new(style, state.clone());
+    let mut ui = animated(resolver.clone(), Rc::new(Cell::new(0)));
+    state.set_pressed(true);
+    let mut weights = Vec::new();
+    for _ in 0..30 {
+        ui.advance_time_by_frame();
+        weights.push(resolver.resolve(|s| s.value(&FONT_WEIGHT)));
+    }
+    assert!(
+        weights.iter().any(|weight| *weight > FontWeight::MEDIUM && *weight < FontWeight::BOLD)
+    );
+    assert_eq!(*weights.last().unwrap(), FontWeight::BOLD);
+    assert_eq!(resolver.resolve(|s| s.content_color()), Color::new(0.13, 0.48, 1.0, 1.0));
+    assert_eq!(TEXT_MOTION.lerp(&TextMotion::Static, &TextMotion::Static, 0.5), TextMotion::Static);
+    assert_eq!(
+        TEXT_MOTION.lerp(&TextMotion::Static, &TextMotion::Animated, 0.1),
+        TextMotion::Animated
+    );
+}

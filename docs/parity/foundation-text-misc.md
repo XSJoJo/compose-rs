@@ -12,10 +12,10 @@ What Compose's `compose/foundation/foundation` tests and public API in this area
 
 | Status | Files | @Test |
 |---|---:|---:|
-| `ported` | 82 | 1,071 |
+| `ported` | 83 | 1,100 |
 | `covered` | 11 | 59 |
 | `port` | 18 | 146 |
-| `partial` | 53 | 1,582 |
+| `partial` | 52 | 1,553 |
 | `feature:<name>` | 83 | 1,049 |
 | `n/a` | 83 | 1,030 |
 | **Total** | **330** | **4,937** |
@@ -128,9 +128,9 @@ Paths are relative to `frameworks/support`. A status cites the compose-rs tests 
 | File (relative to `frameworks/support`) | @Test | Covers | Status |
 |---|---:|---|---|
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/style/StyleEquivalenceTests.kt` | 18 | styles draw the same as the equivalent modifiers (background, border, padding, shape, alpha, size, color filter) | partial — `compose-skia/tests/suite/style_equivalence.rs`: 17, pixel by pixel, through the resolver chain and the predefined properties (D1580); left: `colorFilter` (compose-rs's layers have no color filter) |
-| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/style/StyleLayoutTest.kt` | 29 | style layout properties (padding, sizes, min/max, fill, fractions) | partial — `style_layout.rs`, `style_animation.rs`: 28, through the resolver chain (D1580); left: `testText_simple_text` (text locals, step 3) |
+| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/style/StyleLayoutTest.kt` | 29 | style layout properties (padding, sizes, min/max, fill, fractions) | ported: 29 (`style_layout.rs`, `style_animation.rs`; through the resolver chain, D1580; `testText_simple_text` checks the locals reach the boxes, D1586) |
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/style/StyleResolverNodeTest.kt` | 8 | style resolver node reuse and resolver swaps | ported: 8 (`style_resolver_node.rs`, D1583) |
-| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/style/StyleUxTaskTests.kt` | 45 | end-to-end style tasks (states, animation, nesting) | partial — 20, each with a check Compose's smoke tasks don't make: `style_ux.rs` (`task1` to `task5`, `task8` and their `_n`, `animating_background_press`, `style_color_brush_animations`), `style_animation.rs` (`animation_state_nestingOrder`, `translation_in_animation_block`), `compose-skia/tests/suite/style_equivalence.rs` (the 4 `style_modifier_equivalence_*`, pixel by pixel); left: `task6`, `task7`, `task7_a`, `task9` to `task12`, `task15` to `task17`, `task21` and their `_n` (buttons, switches and texts styled by `StyledButton`/`StyledSwitch`/`Text`, reading the content color: step 3), `animating_font_weight` (text locals), `rounded_corner_shape_border_and_background`, `button_from_io_talk`, `clip_path_animation` |
+| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/style/StyleUxTaskTests.kt` | 45 | end-to-end style tasks (states, animation, nesting) | partial — 21, each with a check Compose's smoke tasks don't make: `style_ux.rs` (`task1` to `task5`, `task8` and their `_n`, `animating_background_press`, `style_color_brush_animations`), `style_animation.rs` (`animation_state_nestingOrder`, `translation_in_animation_block`, `animating_font_weight`), `compose-skia/tests/suite/style_equivalence.rs` (the 4 `style_modifier_equivalence_*`, pixel by pixel); left: `task6`, `task7`, `task7_a`, `task9` to `task12`, `task15` to `task17`, `task21` and their `_n` (buttons, switches and texts styled by the test's `StyledButton`/`StyledSwitch`/`Text` helpers), `rounded_corner_shape_border_and_background`, `button_from_io_talk`, `clip_path_animation` |
 
 ### text (BasicText, legacy field internals, keyboard): 49 files, 322 tests
 
@@ -725,7 +725,7 @@ Sizes: S under a day, M a few days, L a week or two, XL multi-week. "Other area"
 - **What:** declarative, state-aware, animatable styles applied through a `StyleResolver` (`Modifier.appearance`, `placement`, `styleAppearance`, …), equivalent to background, border, padding, size, shape, alpha, text style modifiers.
 - **Tests:** `style/*` (device and host).
 - **Depends on:** `shapes`, `border-parity`, `interactions` (style states such as pressed and hovered).
-- **Done (step 1 of [the design](design/style-api.md), D1580 to D1584):** properties (`StyleProperty`, `style_property_of`, `style_local_of`, `Fill`, `Breadth`, `Shadows`, the predefined ones public in `style::properties`), `CommonStyle` and its scope (states, layers, nested styles, composition locals), `StyleState`/`MutableStyleState`/`StyleStateKey` with the interaction source, `StyleResolver` and `Modifier::style_resolver` (eager collection, per-property states: a drawing change draws, a layout change measures, a layer change updates the layer), `appearance`/`placement`/`graphics_layer_when` and their `style_*` forms, the style paddings. Animation between states (step 2, D1585): `animate`, `animate_with`, `animate_both`, interruptions from where they are, exits with the from spec, an animated property telling its readers only. **Left:** the text locals and content color (3), and `StyleUxTaskTests`' remaining tasks.
+- **Done (steps 1 to 3 of [the design](design/style-api.md), D1580 to D1586):** properties (`StyleProperty`, `style_property_of`, `style_local_of`, `Fill`, `Breadth`, `Shadows`, the predefined ones public in `style::properties`), `CommonStyle` and its scope (states, layers, nested styles, composition locals), `StyleState`/`MutableStyleState`/`StyleStateKey` with the interaction source, `StyleResolver` and `Modifier::style_resolver` (eager collection, per-property states: a drawing change draws, a layout change measures, a layer change updates the layer), `appearance`/`placement`/`graphics_layer_when` and their `style_*` forms, the style paddings. Animation between states (step 2, D1585): `animate`, `animate_with`, `animate_both`, interruptions from where they are, exits with the from spec, an animated property telling its readers only. The content fill and text locals (step 3, D1586). **Left:** `StyleUxTaskTests`' remaining tasks (styled buttons, switches and texts), the style layer's rotations about X and Y, camera distance and color filter, the appearance node's shape semantics, shape interpolation (`shapes`).
 - **Size:** XL. **Experimental:** yes (`ExperimentalFoundationStyleApi`).
 
 ### text-field-state

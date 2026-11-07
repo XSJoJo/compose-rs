@@ -2,13 +2,18 @@
 //! `style_placement`, `style_graphics_layer` and the style paddings read. Compose keeps them
 //! internal while it moves to properties a design system defines (they're set through its
 //! deprecated `StyleScope`); compose-rs makes them public so those modifiers have something to
-//! read without the deprecated scope (D1580).
+//! read without the deprecated scope (D1580). The content fill and the text properties are
+//! locals, inherited by the resolvers below (D1586).
 
-use compose_ui::{ColorFilter, Dp, Shape, TransformOrigin};
+use compose_ui::{
+    BaselineShift, ColorFilter, Dp, FontFamily, FontStyle, FontSynthesis, FontWeight, Hyphens,
+    LineBreak, Shape, TextAlign, TextDecoration, TextDirection, TextMotion, TextUnit,
+    TransformOrigin,
+};
 
 use super::property::{
-    Breadth, Fill, ProvidableStyleProperty, Shadows, lerp_dp, style_local_of, style_property_of,
-    style_property_of_with,
+    Breadth, Fill, ProvidableStyleProperty, Shadows, lerp_dp, lerp_text_unit, style_local_of,
+    style_local_of_with, style_property_of, style_property_of_with,
 };
 
 fn zero_dp() -> Dp {
@@ -119,3 +124,58 @@ pub static COLOR_FILTER: ProvidableStyleProperty<Option<ColorFilter>> =
 /// `content_brush`.
 pub static CONTENT_FILL: ProvidableStyleProperty<Fill> =
     style_local_of("contentFill", || Fill::None);
+
+fn lerp_text(a: &TextUnit, b: &TextUnit, t: f32) -> TextUnit {
+    lerp_text_unit(*a, *b, t)
+}
+
+/// The text's font family, a local, as `fontFamily`.
+pub static FONT_FAMILY: ProvidableStyleProperty<FontFamily> =
+    style_local_of("fontFamily", || FontFamily::Default);
+/// The first line's indent, a local, as `textIndentFirstLine`.
+pub static TEXT_INDENT_FIRST_LINE: ProvidableStyleProperty<TextUnit> =
+    style_local_of_with("textIndentFirstLine", lerp_text, || TextUnit::UNSPECIFIED);
+/// The other lines' indent, a local, as `textIndentRestLine`.
+pub static TEXT_INDENT_REST_LINE: ProvidableStyleProperty<TextUnit> =
+    style_local_of_with("textIndentRestLine", lerp_text, || TextUnit::UNSPECIFIED);
+/// As `fontSize`, a local.
+pub static FONT_SIZE: ProvidableStyleProperty<TextUnit> =
+    style_local_of_with("fontSize", lerp_text, || TextUnit::UNSPECIFIED);
+/// As `lineHeight`, a local.
+pub static LINE_HEIGHT: ProvidableStyleProperty<TextUnit> =
+    style_local_of_with("lineHeight", lerp_text, || TextUnit::UNSPECIFIED);
+/// As `baselineShift`, a local.
+pub static BASELINE_SHIFT: ProvidableStyleProperty<BaselineShift> =
+    style_local_of("baselineShift", || BaselineShift::NONE);
+/// As `lineBreak`, a local: none for Compose's `LineBreak.Unspecified`.
+pub static LINE_BREAK: ProvidableStyleProperty<Option<LineBreak>> =
+    style_local_of("lineBreak", || None);
+/// As `textDecoration`, a local.
+pub static TEXT_DECORATION: ProvidableStyleProperty<TextDecoration> =
+    style_local_of("textDecoration", || TextDecoration::NONE);
+/// As `letterSpacing`, a local.
+pub static LETTER_SPACING: ProvidableStyleProperty<TextUnit> =
+    style_local_of_with("letterSpacing", lerp_text, || TextUnit::UNSPECIFIED);
+/// As `fontStyle`, a local.
+pub static FONT_STYLE: ProvidableStyleProperty<FontStyle> =
+    style_local_of("fontStyle", || FontStyle::Normal);
+/// As `textAlign`, a local: none for Compose's `TextAlign.Unspecified`.
+pub static TEXT_ALIGN: ProvidableStyleProperty<Option<TextAlign>> =
+    style_local_of("textAlign", || None);
+/// As `textDirection`, a local: none for Compose's `TextDirection.Unspecified`.
+pub static TEXT_DIRECTION: ProvidableStyleProperty<Option<TextDirection>> =
+    style_local_of("textDirection", || None);
+/// As `hyphens`, a local: none for Compose's `Hyphens.Unspecified`.
+pub static HYPHENS: ProvidableStyleProperty<Option<Hyphens>> = style_local_of("hyphens", || None);
+/// As `fontSynthesis`, a local.
+pub static FONT_SYNTHESIS: ProvidableStyleProperty<FontSynthesis> =
+    style_local_of("fontSynthesis", || FontSynthesis::None);
+/// As `fontWeight`, a local, animating as Compose's font weight `lerp`.
+pub static FONT_WEIGHT: ProvidableStyleProperty<FontWeight> =
+    style_local_of_with("fontWeight", |a, b, t| FontWeight::lerp(*a, *b, t), || FontWeight::NORMAL);
+/// As `textMotion`, a local: animated while two motions differ, as Compose's.
+pub static TEXT_MOTION: ProvidableStyleProperty<TextMotion> = style_local_of_with(
+    "textMotion",
+    |a, b, _| if a == b { *a } else { TextMotion::Animated },
+    || TextMotion::Static,
+);
