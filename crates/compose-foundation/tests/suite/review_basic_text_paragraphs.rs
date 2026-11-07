@@ -126,8 +126,6 @@ fn highlights(ui: &mut ComposeTestRule) -> Vec<Rect> {
 /// doesn't clip the text keeps the size, and nothing is heard: the last result heard keeps the old
 /// constraints (the plain path does the same).
 #[test]
-#[ignore = "review: a kept layout at new constraints isn't heard, where Compose's \
-            layoutWithConstraints returns true and calls onTextLayout with the new input"]
 fn a_kept_layout_at_new_constraints_is_heard_with_them() {
     let first = Constraints::new(0, 200, 0, 100);
     let second = Constraints::new(0, 200, 0, 150);
@@ -156,6 +154,81 @@ fn a_kept_layout_at_new_constraints_is_heard_with_them() {
     assert!(Rc::ptr_eq(&before.multi_paragraph, &heard.last().multi_paragraph));
     assert_eq!(heard.count(), 2, "heard again, as Compose's");
     assert_eq!(heard.last().layout_input.constraints, second);
+    // The same constraints again: nothing new.
+    constraints.set(Constraints::new(0, 200, 0, 150));
+    ui.wait_for_idle();
+    assert_eq!(heard.count(), 2);
+}
+
+/// The plain path's control: a text in one platform paragraph, its layout kept at new
+/// constraints, is heard with them too.
+#[test]
+fn a_plain_texts_kept_layout_at_new_constraints_is_heard_with_them() {
+    let first = Constraints::new(0, 200, 0, 100);
+    let second = Constraints::new(0, 200, 0, 150);
+    let constraints = mutable_state_of(first);
+    let heard = Heard::default();
+    let callback = Rc::new(heard.callback());
+    let handle = constraints.handle();
+    let mut ui = rule(move || {
+        let callback = callback.clone();
+        BasicText!(
+            "Hi",
+            modifier = Modifier.layout(move |scope, measurable, _| {
+                let placeable = scope.measure(measurable, handle.get());
+                scope.place(&placeable, 0, 0);
+                scope.layout(placeable.width, placeable.height)
+            }),
+            style = style(),
+            on_text_layout = Some(move |result| callback(result))
+        );
+    });
+    assert_eq!(heard.count(), 1);
+    assert_eq!(heard.last().layout_input.constraints, first);
+    constraints.set(second);
+    ui.wait_for_idle();
+    assert_eq!(heard.count(), 2, "heard again, as Compose's");
+    assert_eq!(heard.last().layout_input.constraints, second);
+    assert_eq!(heard.last().size, IntSize::new(40, 20));
+}
+
+/// Compose's `layoutWithConstraints` lays out and reports the constraints with the minimum
+/// lines' height as their minimum height (`MinLinesConstrainer.coerceMinLines`): `on_text_layout`
+/// and the semantics hear them, and the result's size is at least that high.
+#[test]
+fn the_heard_constraints_hold_the_minimum_lines_height() {
+    for styled in [true, false] {
+        let heard = Heard::default();
+        let callback = Rc::new(heard.callback());
+        let mut ui = rule(move || {
+            let callback = callback.clone();
+            let text = if styled { paragraphs(&["Hi"]) } else { AnnotatedString::new("Hi") };
+            BasicAnnotatedText!(
+                text,
+                modifier = Modifier.test_tag(TAG).layout(move |scope, measurable, _| {
+                    let placeable = scope.measure(measurable, Constraints::new(0, 200, 0, 500));
+                    scope.place(&placeable, 0, 0);
+                    scope.layout(placeable.width, placeable.height)
+                }),
+                style = style(),
+                on_text_layout = Some(move |result| callback(result)),
+                min_lines = 3
+            );
+        });
+        let result = heard.last();
+        assert_eq!(result.layout_input.constraints, Constraints::new(0, 200, 60, 500), "{styled}");
+        assert_eq!(result.size, IntSize::new(40, 60), "{styled}");
+        let mut layouts = Vec::new();
+        ui.on_node_with_tag(TAG).perform_semantics_action_with(
+            &compose_ui::SemanticsActions::GET_TEXT_LAYOUT_RESULT,
+            |get| {
+                get(&mut layouts);
+            },
+        );
+        let semantics = layouts.pop().expect("a layout");
+        assert_eq!(semantics.layout_input.constraints, Constraints::new(0, 200, 60, 500));
+        assert_eq!(semantics.size, IntSize::new(40, 60), "{styled}");
+    }
 }
 
 /// A text of paragraphs in an async font is laid out again once the font arrives, as Compose's
@@ -345,11 +418,11 @@ fn painted_copies_are_bounded_and_go_with_the_layout() {
     assert_eq!(live(&mut ui), base, "the copies went with the old layout");
 }
 
-/// After a paint change, the paragraphs are drawn from their painted copies frame after frame
-/// (the layout made in the old paint kept): both stay alive for as long as the text shows, where
-/// a plain text's restyle replaces its one paragraph.
+/// After a paint change, the next measurement swaps the paragraphs for their painted copies (the
+/// layout made in the old paint goes), as a plain text's restyle replaces its one paragraph:
+/// a text whose paint changed for good keeps one platform paragraph each.
 #[test]
-fn a_paint_change_keeps_both_the_layout_and_its_copies_alive() {
+fn a_paint_change_swaps_the_layout_for_its_copies() {
     let color = mutable_state_of(Color::BLACK);
     let c = color.handle();
     let mut ui = rule(move || {
@@ -364,8 +437,32 @@ fn a_paint_change_keeps_both_the_layout_and_its_copies_alive() {
     ui.wait_for_idle();
     ui.wait_for_idle();
     let after = live(&mut ui);
-    // Each paragraph and its red copy.
-    assert_eq!(after, before + 2, "{before} then {after}");
+    // Each paragraph's red copy, the paragraphs laid out in black gone.
+    assert_eq!(after, before, "{before} then {after}");
+    ui.wait_for_idle();
+    assert_eq!(live(&mut ui), before);
+}
+
+/// A gradient spanning the paragraphs: each is swapped for its copy in its own part of the
+/// gradient, what drawing finds, so nothing more is made.
+#[test]
+fn a_gradient_swaps_each_paragraph_for_its_part_of_it() {
+    let brush = mutable_state_of(None);
+    let b = brush.handle();
+    let mut ui = rule(move || {
+        BasicAnnotatedText!(
+            paragraphs(&["Hello", "World"]),
+            style = TextStyle { brush: b.get(), ..style() }
+        );
+    });
+    ui.wait_for_idle();
+    let before = live(&mut ui);
+    brush.set(Some(compose_ui::Brush::vertical_gradient(vec![Color::RED, Color::BLUE])));
+    ui.wait_for_idle();
+    ui.wait_for_idle();
+    assert_eq!(live(&mut ui), before);
+    ui.wait_for_idle();
+    assert_eq!(live(&mut ui), before);
 }
 
 // ---- Selection at and past paragraph boundaries ------------------------------------------------
@@ -420,7 +517,6 @@ fn cut() -> ComposeTestRule {
 }
 
 #[test]
-#[ignore = "review: word_at panics at an offset in a paragraph the maximum lines cut"]
 fn word_at_in_a_cut_paragraph_does_not_panic() {
     let mut ui = cut();
     let _ = ask(&mut ui, |text, _| text.word_at(12));
@@ -435,24 +531,66 @@ fn bounding_box_in_a_cut_paragraph_is_the_end_of_the_last_shown() {
 }
 
 #[test]
-#[ignore = "review: cursor_rect panics at an offset in a paragraph the maximum lines cut"]
 fn cursor_rect_in_a_cut_paragraph_does_not_panic() {
     let mut ui = cut();
     let _ = ask(&mut ui, |text, measurer| text.cursor_rect(12, measurer));
 }
 
 #[test]
-#[ignore = "review: direction_at panics at an offset in a paragraph the maximum lines cut"]
 fn direction_at_in_a_cut_paragraph_does_not_panic() {
     let mut ui = cut();
     let _ = ask(&mut ui, |text, measurer| text.direction_at(12, measurer));
 }
 
 #[test]
-#[ignore = "review: line_height panics at an offset in a paragraph the maximum lines cut"]
 fn line_height_in_a_cut_paragraph_does_not_panic() {
     let mut ui = cut();
     let _ = ask(&mut ui, |text, measurer| text.line_height(12, measurer));
+}
+
+/// Past the paragraphs the maximum lines laid out, the queries answer at the end of the last one
+/// laid out (Compose's own `MultiParagraph` throws there): its last word, its direction, the
+/// cursor at its end; a line height of none past the last line's end, as the plain path's.
+#[test]
+fn queries_in_a_cut_paragraph_answer_at_the_end_of_the_last_shown() {
+    let mut ui = cut();
+    let text_len = "HelloWorldAgain".len();
+    for offset in [12, 14, text_len] {
+        assert_eq!(ask(&mut ui, |text, _| text.word_at(offset)), 5..10, "{offset}");
+        let direction = ask(&mut ui, |text, measurer| text.direction_at(offset, measurer));
+        assert_eq!(direction, ResolvedTextDirection::Ltr);
+        let cursor = ask(&mut ui, |text, measurer| text.cursor_rect(offset, measurer));
+        assert_eq!((cursor.left, cursor.top, cursor.bottom), (100.0, 20.0, 40.0), "{offset}");
+    }
+    assert_eq!(ask(&mut ui, |text, measurer| text.line_height(12, measurer)), 0.0);
+    assert_eq!(ask(&mut ui, |text, measurer| text.line_height(7, measurer)), 20.0);
+    assert_eq!(ask(&mut ui, |text, measurer| text.line_height(10, measurer)), 20.0);
+    // Within what's shown, the offset's own paragraph.
+    assert_eq!(ask(&mut ui, |text, _| text.word_at(2)), 0..5);
+    let cursor = ask(&mut ui, |text, measurer| text.cursor_rect(7, measurer));
+    assert_eq!((cursor.left, cursor.top), (40.0, 20.0));
+}
+
+/// A right-to-left paragraph shown, a left-to-right one cut: a direction past what's shown is
+/// the one at the last shown paragraph's end.
+#[test]
+fn a_direction_in_a_cut_paragraph_is_the_last_shown_paragraphs_at_its_end() {
+    let rtl = ParagraphStyle { text_direction: Some(TextDirection::Rtl), ..Default::default() };
+    let text = AnnotatedString::build(|text| {
+        text.append("Hello");
+        text.with_paragraph_style(rtl, |text| {
+            text.append("!!");
+        });
+        text.with_paragraph_style(ParagraphStyle::DEFAULT, |text| {
+            text.append("Again");
+        });
+    });
+    let mut ui = selectable(text, 2);
+    let past = ask(&mut ui, |text, measurer| text.direction_at(9, measurer));
+    let end = ask(&mut ui, |text, measurer| text.direction_at(7, measurer));
+    assert_eq!(past, end);
+    let inside = ask(&mut ui, |text, measurer| text.direction_at(2, measurer));
+    assert_eq!(inside, ResolvedTextDirection::Ltr);
 }
 
 #[test]
@@ -498,8 +636,6 @@ fn selecting_all_of_a_cut_text_of_paragraphs_does_not_panic() {
 /// its ends are, past what's laid out now. A plain text answers; a text of paragraphs panics in
 /// `direction_at` (the handle's direction), where the plain path never did.
 #[test]
-#[ignore = "review: a touch selection past the lines a text of paragraphs now shows panics \
-            (direction_at for the handles, at an offset the maximum lines cut)"]
 fn a_touch_selection_in_lines_that_collapse_does_not_panic() {
     let max_lines = mutable_state_of(u32::MAX);
     let handle = max_lines.handle();

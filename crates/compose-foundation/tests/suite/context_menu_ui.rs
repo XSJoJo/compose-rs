@@ -226,7 +226,7 @@ fn a_long_label_doesnt_wrap() {
 fn assert_text_style(enabled: bool, color: Color) {
     let mut ui =
         rule(move || test_item_ui(Modifier.test_tag(TAG), &long_text(), enabled, None, || {}));
-    let style = layout_of(&mut ui, &long_text()).layout_input.style;
+    let style = layout_of(&mut ui, &long_text()).layout_input.style.clone();
     assert_eq!(style.color, color);
     assert_eq!(style.text_align, Some(ContextMenuSpec::LABEL_HORIZONTAL_TEXT_ALIGNMENT));
     assert_eq!(style.font_size, ContextMenuSpec::FONT_SIZE);

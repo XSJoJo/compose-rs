@@ -573,6 +573,21 @@ impl StackedParagraph {
         }
     }
 
+    /// The same paragraph, `measured` its layout (the same layout in another paint).
+    pub(crate) fn with_measured(&self, measured: LaidOutParagraph) -> StackedParagraph {
+        StackedParagraph {
+            top: self.top,
+            measured,
+            style: self.style.clone(),
+            text: self.text.clone(),
+            placeholders: self.placeholders.clone(),
+            options: self.options,
+            constraints: self.constraints,
+            density: self.density,
+            elsewhere: RefCell::new(None),
+        }
+    }
+
     /// What it was laid out from, to lay it out again.
     pub(crate) fn source(&self) -> ParagraphSource<'_> {
         ParagraphSource {
@@ -610,7 +625,7 @@ struct SingleParagraph {
     info: OnceCell<ParagraphInfo>,
     /// What it was laid out from, when `paragraph` only answers queries (a text node's own,
     /// whose node keeps its layout): laid out again from it, once, when first painted (D2053).
-    source: Option<Box<crate::paragraph::TextLayoutInput>>,
+    source: Option<Rc<crate::paragraph::TextLayoutInput>>,
     drawable: OnceCell<Rc<StackedParagraph>>,
 }
 
@@ -817,17 +832,18 @@ impl MultiParagraph {
     /// that only answers queries (a text node's, `BasicText`'s or a field's `on_text_layout`
     /// result, whose node keeps the platform paragraph) painted all the same, `input` laid out
     /// again on the platform when first painted, once, as `draw_text_layout` draws such a result.
-    /// Nothing more is asked until it's painted (D2053).
+    /// Nothing more is asked until it's painted (D2053); `input` is shared with the result that
+    /// holds it, not copied (D2054).
     #[doc(hidden)]
     pub fn of_paragraph_of(
-        input: &crate::paragraph::TextLayoutInput,
+        input: &Rc<crate::paragraph::TextLayoutInput>,
         paragraph: Rc<dyn Paragraph>,
         max_lines: u32,
     ) -> MultiParagraph {
         let mut multi_paragraph =
             MultiParagraph::of_paragraph(input.text.clone(), paragraph, max_lines);
         if let Some(single) = &mut multi_paragraph.single {
-            single.source = Some(Box::new(input.clone()));
+            single.source = Some(input.clone());
         }
         multi_paragraph
     }
@@ -871,6 +887,33 @@ impl MultiParagraph {
     /// The platform's paragraphs, for drawing (none for a single paragraph wrapped).
     pub(crate) fn parts(&self) -> &[Rc<StackedParagraph>] {
         &self.parts
+    }
+
+    /// The same layout with `parts` for its paragraphs (each the same layout as the one it
+    /// replaces, in another paint): its queries are theirs.
+    pub(crate) fn with_parts(&self, parts: Vec<Rc<StackedParagraph>>) -> MultiParagraph {
+        debug_assert_eq!(parts.len(), self.parts.len());
+        let infos = self
+            .infos
+            .iter()
+            .zip(&parts)
+            .map(|(info, part)| ParagraphInfo {
+                paragraph: Rc::new(MeasuredParagraph::drawn(part.clone())),
+                ..info.clone()
+            })
+            .collect();
+        MultiParagraph {
+            intrinsics: self.intrinsics.clone(),
+            text: self.text.clone(),
+            max_lines: self.max_lines,
+            infos,
+            parts,
+            width: self.width,
+            height: self.height,
+            line_count: self.line_count,
+            did_exceed_max_lines: self.did_exceed_max_lines,
+            single: None,
+        }
     }
 
     /// A font one of its paragraphs asked for arrived since it was laid out.

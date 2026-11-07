@@ -272,7 +272,7 @@ impl TextLayoutResult {
     /// The result of `measured`, as `TextLayoutResult::new` from a paragraph, with what the
     /// layout told: no query is asked of the platform.
     pub(crate) fn of_measured(
-        layout_input: TextLayoutInput,
+        layout_input: impl Into<Rc<TextLayoutInput>>,
         measured: &LaidOutParagraph,
         multi_paragraph: Rc<MultiParagraph>,
         drawable: Rc<DrawableParagraphs>,
@@ -287,7 +287,7 @@ impl TextLayoutResult {
             // the paragraph.
             did_overflow_width: size.width < metrics.size.width,
             did_overflow_height: did_exceed_max_lines || size.height < metrics.size.height,
-            layout_input,
+            layout_input: layout_input.into(),
             multi_paragraph,
             size,
             drawable,
@@ -1070,7 +1070,36 @@ impl DrawScope<'_> {
             self.draw_paragraph(paragraph.handle(), Offset::new(0.0, part.top));
         }
     }
+}
 
+impl MultiParagraph {
+    /// It in `style`'s paint, as [`DrawScope::draw_multi_paragraph`] draws it: each paragraph its
+    /// copy in that paint (one it keeps, else made as a drawing makes one), `None` when each one
+    /// already is. A text node swaps its layout for it after a paint-only change, so the
+    /// paragraphs laid out in the old paint go with it (D2054).
+    #[doc(hidden)]
+    pub fn in_paint_of(&self, style: &TextStyle) -> Option<MultiParagraph> {
+        let parts = self.parts();
+        let whole = Size::new(self.width(), self.height());
+        let paint = TextPaint::of(style);
+        let mut repainted = false;
+        let painted = parts
+            .iter()
+            .map(|part| {
+                let paint = spanning(&paint, parts.len(), whole, part.top);
+                if *part.measured.paint() == *paint {
+                    return part.clone();
+                }
+                repainted = true;
+                let copy = part.measured.in_paint(&paint, &part.style, part.source());
+                Rc::new(part.with_measured(copy))
+            })
+            .collect();
+        repainted.then(|| self.with_parts(painted))
+    }
+}
+
+impl DrawScope<'_> {
     /// The paragraph of a multi-paragraph text this drawing's renderer can draw, as
     /// [`drawable_of`](Self::drawable_of) a text's.
     fn drawable_of_part(&self, part: &StackedParagraph) -> LaidOutParagraph {

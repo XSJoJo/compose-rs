@@ -1154,7 +1154,8 @@ impl TextFieldNode {
             constraints.constrain(text).width
         };
         let size = IntSize::new(width, height);
-        // Painted, it lays its input out again (D2053).
+        // Painted, it lays its input out again (D2053), the result's input shared (D2054).
+        let input = std::rc::Rc::new(input);
         let multi_paragraph = compose_ui::MultiParagraph::of_paragraph_of(
             &input,
             measurer.paragraph(paragraph),

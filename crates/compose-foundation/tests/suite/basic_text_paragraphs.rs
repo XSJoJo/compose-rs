@@ -399,10 +399,14 @@ fn a_new_paint_keeps_the_layout_and_draws_it_in_the_paint() {
     assert_eq!(after.len(), 2);
     assert_ne!(after[0].0, before[0].0);
     assert_ne!(after[1].0, before[1].0);
-    // Back to its first paint: the paragraphs it was laid out in.
+    // Back to its first paint: drawn in it, from copies of the red paragraphs it swapped to
+    // (the paragraphs it was laid out in went with their paint, D2054).
     color.set(compose_ui::Color::BLACK);
     ui.wait_for_idle();
-    assert_eq!(drawn(&mut ui), before);
+    let back = drawn(&mut ui);
+    assert_eq!(back.len(), 2);
+    assert_ne!(back[0].0, after[0].0);
+    assert_eq!(heard.count(), 1, "laid out again");
 }
 
 #[test]

@@ -414,10 +414,28 @@ impl ModifierNodeElement for TextElement {
     }
 }
 
+/// The constraints a text is laid out at and its result reports, as Compose's
+/// `layoutWithConstraints`' final ones: with more than one minimum line, their minimum height that
+/// many lines' (`MinLinesConstrainer.coerceMinLines`), at most the maximum height (D2054).
+fn final_constraints(constraints: Constraints, min_lines: u32, min_height: i32) -> Constraints {
+    if min_lines <= 1 {
+        return constraints;
+    }
+    let min_height = min_height.clamp(0, constraints.max_height);
+    Constraints::new(
+        constraints.min_width,
+        constraints.max_width,
+        min_height,
+        constraints.max_height,
+    )
+}
+
 /// What `on_text_layout` last heard of a layout: a measurement with the same paragraph and
-/// these is no new layout.
+/// these is no new layout. New constraints are, as Compose's `layoutWithConstraints` makes a new
+/// result for them even when it keeps the layout (D2054).
 #[derive(Clone, Copy, PartialEq)]
 struct HeardLayout {
+    constraints: Constraints,
     size: compose_ui::IntSize,
     metrics: compose_ui::platform::ParagraphMetrics,
     did_exceed_max_lines: bool,
@@ -842,8 +860,13 @@ impl TextNode {
         let density = scope.density();
         let direction = scope.layout_direction();
         let min_height = self.min_lines_height(scope, density);
+        // Laid out, kept and reported at Compose's final constraints (D2054).
+        let incoming = constraints;
+        let constraints = final_constraints(incoming, self.min_lines, min_height);
         let reuse = reuses_at_same_width(scope);
         let options = self.options;
+        // A new paint only since the last measurement.
+        let restyle = std::mem::take(&mut self.restyle);
         // Its layout kept as Compose's cache keeps it: in the same setting, where the new
         // constraints wouldn't change it.
         let kept = self.paragraphs_layout().is_some_and(|layout| {
@@ -865,20 +888,30 @@ impl TextNode {
         let relaid = !kept;
         let paragraphs = self.paragraphs.as_mut().expect("a text of paragraphs");
         let layout = paragraphs.layout.as_mut().expect("laid out");
+        if kept
+            && restyle
+            && let Some(painted) = layout.multi_paragraph.in_paint_of(&self.style)
+        {
+            // The kept layout in the new paint: its paragraphs swapped for their copies in it,
+            // so the ones laid out in the old paint go (D2054), as a plain text's restyle
+            // replaces its paragraph. The same layout: nothing new is heard.
+            layout.multi_paragraph = Rc::new(painted);
+        }
         let multi_paragraph = layout.multi_paragraph.clone();
         // As Compose's: as wide as its widest paragraph, within the width it's laid out at.
         let own_width = layout.from.intrinsics.max_intrinsic_width();
         let width = own_width.min(multi_paragraph.width());
         let natural =
             compose_ui::IntSize::new(width.ceil() as i32, multi_paragraph.height().ceil() as i32);
-        let size = constraints
-            .constrain(compose_ui::IntSize::new(natural.width, natural.height.max(min_height)));
+        // The result's size, as Compose's (in the final constraints); the node's in its own.
+        let size = constraints.constrain(natural);
+        let node_size = incoming.constrain(size);
         layout.constraints = constraints;
         layout.size = size;
         // Compose's `hasVisualOverflow`: clipped where it's larger than the node, or cut by its
         // maximum lines.
-        self.overflows = (size.width as f32) < multi_paragraph.width()
-            || (size.height as f32) < multi_paragraph.height()
+        self.overflows = (node_size.width as f32) < multi_paragraph.width()
+            || (node_size.height as f32) < multi_paragraph.height()
             || multi_paragraph.did_exceed_max_lines();
         if relaid {
             // The highlight follows the new layout.
@@ -897,7 +930,7 @@ impl TextNode {
                 line_count: multi_paragraph.line_count() as u32,
             };
             let did_exceed_max_lines = multi_paragraph.did_exceed_max_lines();
-            let heard = HeardLayout { size, metrics, did_exceed_max_lines };
+            let heard = HeardLayout { constraints, size, metrics, did_exceed_max_lines };
             if relaid || self.last_layout != Some(heard) {
                 self.last_layout = Some(heard);
                 let input = self.layout_input(
@@ -912,14 +945,15 @@ impl TextNode {
                 scope.run_after_layout(move || callback(result));
             }
         }
-        let placeable = scope.measure(content, Constraints::fixed(size.width, size.height));
+        let placeable =
+            scope.measure(content, Constraints::fixed(node_size.width, node_size.height));
         scope.place(&placeable, 0, 0);
         let baselines = (first_baseline.round() as i32, last_baseline.round() as i32);
         if self.baselines != Some(baselines) {
             self.baselines = Some(baselines);
             scope.baselines_changed();
         }
-        scope.layout(size.width, size.height)
+        scope.layout(node_size.width, node_size.height)
     }
 
     /// A text with paragraph styles' height laid out at `width`, at least `min_lines` high, as
@@ -965,6 +999,22 @@ impl TextNode {
     fn paragraphs_layout(&self) -> Option<&ParagraphsLayout> {
         self.paragraphs.as_ref()?.layout.as_ref()
     }
+
+    /// `offset` (at most the text's length) kept to what its layout holds, for a query that
+    /// takes an offset: past the paragraphs the maximum lines laid out, the end of the last one
+    /// laid out (D2054). Compose's `MultiParagraph` throws there (`findParagraphByIndex`), as
+    /// ours panics; its selection asks only where the text shows, ours for a selection kept
+    /// through a text that shows fewer lines. One platform paragraph holds the whole text.
+    fn laid_out_offset(&self, offset: usize) -> usize {
+        let offset = offset.min(self.text.len());
+        match self.paragraphs_layout() {
+            Some(layout) if offset < self.text.len() => {
+                let infos = layout.multi_paragraph.paragraph_info_list();
+                offset.min(infos.last().map_or(0, |last| last.end_index))
+            }
+            _ => offset,
+        }
+    }
 }
 
 impl LayoutModifierNode for TextNode {
@@ -1000,14 +1050,17 @@ impl LayoutModifierNode for TextNode {
         let metrics = scope.text_measurer().metrics(paragraph);
         let natural = metrics.size;
         let min_height = self.min_lines_height(scope, density);
-        let size = constraints
-            .constrain(compose_ui::IntSize::new(natural.width, natural.height.max(min_height)));
+        // The result's constraints and size, as Compose's (D2054); the node's size in its own.
+        let reported = final_constraints(constraints, self.min_lines, min_height);
+        let size = reported.constrain(natural);
+        let node_size = constraints.constrain(size);
         // Text larger than its bounds is clipped, as Compose's `TextOverflow.Clip`.
-        self.overflows = natural.width > size.width || natural.height > size.height;
+        self.overflows = natural.width > node_size.width || natural.height > node_size.height;
         // Each new layout is heard, as Compose's `onTextLayout`: a paragraph laid out again
-        // (a new text, style or width), or a new size.
+        // (a new text, style or width), new constraints, or a new size.
         if let Some(callback) = &self.on_text_layout {
             let heard = HeardLayout {
+                constraints: reported,
                 size,
                 metrics,
                 did_exceed_max_lines: scope.text_measurer().did_exceed_max_lines(paragraph),
@@ -1015,24 +1068,25 @@ impl LayoutModifierNode for TextNode {
             if relaid || self.last_layout != Some(heard) {
                 self.last_layout = Some(heard);
                 // The paragraph's queries, asked for only when there's a callback to hear them.
-                let input = self.layout_input(
-                    constraints,
+                let input = Rc::new(self.layout_input(
+                    reported,
                     density,
                     direction,
                     scope.current_value_of(&compose_ui::LOCAL_FONT_FAMILY_RESOLVER),
                     scope.current_value_of(&compose_ui::LOCAL_LOCALE_LIST),
-                );
+                ));
                 let paragraph = scope.text_measurer().paragraph(paragraph);
-                // Painted, it lays its input out again (D2053).
+                // Painted, it lays its input out again (D2053), the result's input shared.
                 let max_lines = final_max_lines(&input);
                 let multi_paragraph =
                     compose_ui::MultiParagraph::of_paragraph_of(&input, paragraph, max_lines);
-                let result = TextLayoutResult::new(input, std::rc::Rc::new(multi_paragraph), size);
+                let result = TextLayoutResult::new(input, Rc::new(multi_paragraph), size);
                 let callback = callback.clone();
                 scope.run_after_layout(move || callback(result));
             }
         }
-        let placeable = scope.measure(content, Constraints::fixed(size.width, size.height));
+        let placeable =
+            scope.measure(content, Constraints::fixed(node_size.width, node_size.height));
         scope.place(&placeable, 0, 0);
         let baselines =
             (metrics.first_baseline.round() as i32, metrics.last_baseline.round() as i32);
@@ -1040,7 +1094,7 @@ impl LayoutModifierNode for TextNode {
             self.baselines = Some(baselines);
             scope.baselines_changed();
         }
-        scope.layout(size.width, size.height)
+        scope.layout(node_size.width, node_size.height)
     }
 
     /// The width with every soft line break taken (its longest word), as Compose's text
@@ -1217,16 +1271,34 @@ impl SemanticsModifierNode for TextNode {
                 self.layout_input(layout.constraints, density, direction, resolver, locales);
             return Some(TextLayoutResult::new(input, layout.multi_paragraph.clone(), layout.size));
         }
-        let (paragraph, constraints) = (self.paragraph?, self.constraints?);
-        let input =
-            self.layout_input(constraints, self.density?, self.direction, resolver, locales);
+        let (paragraph, constraints) = (self.paragraph?, self.reported_constraints()?);
+        let input = Rc::new(self.layout_input(
+            constraints,
+            self.density?,
+            self.direction,
+            resolver,
+            locales,
+        ));
         let measurer = context.text_measurer();
         let size = constraints.constrain(measurer.metrics(paragraph).size);
         let max_lines = final_max_lines(&input);
         let paragraph = measurer.paragraph(paragraph);
         let multi_paragraph =
             compose_ui::MultiParagraph::of_paragraph_of(&input, paragraph, max_lines);
-        Some(TextLayoutResult::new(input, std::rc::Rc::new(multi_paragraph), size))
+        Some(TextLayoutResult::new(input, Rc::new(multi_paragraph), size))
+    }
+}
+
+impl TextNode {
+    /// The constraints a plain text's result reports: those it was measured at, with the
+    /// minimum lines' height (D2054).
+    fn reported_constraints(&self) -> Option<Constraints> {
+        let constraints = self.constraints?;
+        let min_height = match self.min_height {
+            Some((_, height)) => height,
+            None => 0,
+        };
+        Some(final_constraints(constraints, self.min_lines, min_height))
     }
 }
 
@@ -1243,7 +1315,7 @@ impl TextNode {
             let size = compose_ui::Size::new(layout.size.width as f32, layout.size.height as f32);
             return Some(ask(&*layout.multi_paragraph, size));
         }
-        let (paragraph, constraints) = (self.paragraph?, self.constraints?);
+        let (paragraph, constraints) = (self.paragraph?, self.reported_constraints()?);
         let measurer = measurer.borrow();
         let size = constraints.constrain(measurer.metrics(paragraph).size);
         let layout = measurer.paragraph(paragraph);
@@ -1300,7 +1372,7 @@ impl compose_ui::Selectable for TextNode {
     fn word_at(&self, offset: usize) -> std::ops::Range<usize> {
         if let Some(layout) = self.paragraphs_layout() {
             // Within its paragraph, as Compose's `MultiParagraph.getWordBoundary`.
-            let offset = offset.min(self.text.len());
+            let offset = self.laid_out_offset(offset);
             return layout.multi_paragraph.get_word_boundary(offset).range();
         }
         compose_ui::platform::word_boundary(self.text.as_str(), offset).range()
@@ -1373,7 +1445,7 @@ impl compose_ui::Selectable for TextNode {
         measurer: &compose_ui::platform::SharedTextMeasurer,
     ) -> compose_ui::Rect {
         let text = self.text.as_str();
-        let mut offset = offset.min(text.len());
+        let mut offset = self.laid_out_offset(offset);
         while !text.is_char_boundary(offset) {
             offset -= 1;
         }
@@ -1410,12 +1482,14 @@ impl compose_ui::Selectable for TextNode {
             return 0.0;
         }
         let max_lines = self.options.max_lines.max(1) as usize;
+        // The line of what's laid out; an offset past its end has none.
+        let laid_out = self.laid_out_offset(offset);
         self.laid_out(measurer, |layout, _| {
             let lines = layout.line_count();
             if lines == 0 {
                 return 0.0;
             }
-            let line = layout.get_line_for_offset(offset).min(max_lines - 1).min(lines - 1);
+            let line = layout.get_line_for_offset(laid_out).min(max_lines - 1).min(lines - 1);
             if offset > layout.get_line_end(line, false) {
                 return 0.0;
             }
@@ -1430,7 +1504,7 @@ impl compose_ui::Selectable for TextNode {
         measurer: &compose_ui::platform::SharedTextMeasurer,
     ) -> compose_ui::ResolvedTextDirection {
         if let Some(layout) = self.paragraphs_layout() {
-            let offset = offset.min(self.text.len());
+            let offset = self.laid_out_offset(offset);
             return layout.multi_paragraph.get_bidi_run_direction(offset);
         }
         match self.paragraph {
