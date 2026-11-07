@@ -85,4 +85,5 @@ mod util_math_helpers;
 mod vector_model;
 mod velocity_data;
 mod velocity_tracker;
+mod vertices;
 mod word_boundary;

@@ -236,6 +236,24 @@ impl DrawScope<'_> {
         self.list.push(DrawOp::DrawLine(from, to, paint));
     }
 
+    /// `points` drawn as `point_mode` says with `paint`'s stroke width and cap, as
+    /// `drawPoints(points, pointMode, …)`: each a dot (round if the cap is, else square), each
+    /// pair a line, or a line through them all.
+    pub fn draw_points(
+        &mut self,
+        points: &[Offset],
+        point_mode: crate::canvas::PointMode,
+        paint: Paint,
+    ) {
+        if draws_nothing(&paint) {
+            return;
+        }
+        let moved: Vec<Offset> = points.iter().map(|point| *point + self.origin).collect();
+        for op in crate::canvas::points_ops(point_mode, &moved, paint) {
+            self.list.push(op);
+        }
+    }
+
     pub fn draw_paragraph(&mut self, paragraph: ParagraphHandle, position: Offset) {
         let position = position + self.origin;
         self.list.push(DrawOp::DrawParagraph(paragraph, position));

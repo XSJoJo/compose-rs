@@ -5,10 +5,10 @@
 use std::sync::{Arc, RwLock};
 
 use crate::alignment::LayoutDirection;
-use crate::color_filter::ColorFilter;
+use crate::color_filter::{BlendMode, ColorFilter};
 use crate::display_list::{DisplayList, DrawOp};
 use crate::draw::DrawScope;
-use crate::graphics::Paint;
+use crate::graphics::{Color, Paint, PaintStyle, StrokeCap};
 use crate::image::ImageBitmap;
 use crate::path::Path;
 use crate::unit::{Density, IntOffset, IntSize, Offset, Rect, Size};
@@ -29,31 +29,59 @@ pub fn set_bitmap_rasterizer(rasterizer: Arc<dyn BitmapRasterizer>) {
     *RASTERIZER.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(rasterizer);
 }
 
-/// Draws `list` into `image`'s pixels with the platform's rasterizer: nothing, and a warning,
-/// where no platform set one (headless tests; Android, for now).
-pub(crate) fn rasterize(image: &ImageBitmap, list: &DisplayList) {
-    let rasterizer = RASTERIZER.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
-    let Some(rasterizer) = rasterizer else {
-        log::warn!("compose-ui: no bitmap rasterizer: drawing into a bitmap draws nothing here");
-        return;
-    };
-    let (width, height) = (image.width(), image.height());
-    image.update_pixels(|pixels| rasterizer.draw(list, width, height, pixels));
+/// The platform's rasterizer: `None` where no platform set one (headless tests).
+pub(crate) fn rasterizer() -> Option<Arc<dyn BitmapRasterizer>> {
+    RASTERIZER.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
 }
 
+/// The shaders and color filters a list of operations names.
+type Tables<'a> = (&'a [crate::brush::Shader], &'a [ColorFilter]);
+
+/// Gives `op` the shaders and color filters it names in `from`, as entries of `into`'s tables;
+/// and a drawing of a bitmap drawn into, a snapshot of its pixels now (what it reads, drawn
+/// now: what waits for a bitmap never names one that waits too).
+fn adopt(op: &mut DrawOp, from: Tables<'_>, into: &mut DisplayList) {
+    if let Some(paint) = op.paint_mut()
+        && let Some(shader) = paint.shader
+    {
+        paint.shader = Some(into.push_shader(from.0[shader.index()].clone()));
+    }
+    if let Some(filter) = op.color_filter_mut()
+        && let Some(index) = *filter
+    {
+        *filter = Some(into.push_color_filter(from.1[index.index()]));
+    }
+    if let DrawOp::DrawImage { image, .. } = op {
+        *image = image.snapshot();
+    }
+}
+
+/// Each canvas's identity, for a bitmap to tell whose drawings it holds.
+static NEXT_CANVAS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Immediate drawing into a bitmap, as Compose's `Canvas(imageBitmap)`: each drawing is in the
-/// bitmap's pixels when the call returns, but what's drawn into a layer (`save_layer`), drawn
-/// when the layer is restored. Its transforms and clips last until the `restore` of the save
-/// before them, as a canvas's. Paints name the shaders and color filters of the canvas
+/// bitmap's pixels when they're next read, but what's drawn into a layer (`save_layer`), which
+/// is drawn when the layer is restored. Its transforms and clips last until the `restore` of
+/// the save before them, as a canvas's. Paints name the shaders and color filters of the canvas
 /// ([`paint_with_color_filter`](Canvas::paint_with_color_filter)), as a `DrawScope`'s name its
 /// list's.
 ///
-/// Each drawing copies the bitmap's pixels once (a renderer may hold the ones it drew):
-/// [`CanvasDrawScope::draw`] draws a whole recording with one copy.
+/// Drawings wait in the bitmap, drawn by the platform's rasterizer when its pixels are read
+/// (`pixels`, `read_pixels`, a renderer drawing it): one pass and at most one copy of its pixels
+/// for any number of drawings. A drawing of a bitmap drawn into reads its pixels when it's
+/// made. Two canvases (on two threads too) drawing into one bitmap take turns: each drawing is
+/// kept, in the order made.
 pub struct Canvas {
     image: ImageBitmap,
+    /// Its identity, and its transforms' and clips' version: a bitmap adds a drawing to the
+    /// last ones while both are the same.
+    id: u64,
+    version: u64,
     /// The shaders and color filters its paints name.
     tables: DisplayList,
+    /// The shaders and color filters what's in its open layers names: emptied when the last is
+    /// restored and drawn.
+    layer_tables: DisplayList,
     /// The state before any save (transforms and clips), then each open save: its `Save` or
     /// layer, and what followed it (only transforms and clips outside a layer, everything in
     /// one).
@@ -70,7 +98,10 @@ impl Canvas {
     pub fn new(image: &ImageBitmap) -> Canvas {
         Canvas {
             image: image.clone(),
+            id: NEXT_CANVAS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            version: 0,
             tables: DisplayList::default(),
+            layer_tables: DisplayList::default(),
             frames: vec![Frame { ops: Vec::new(), layer: false }],
         }
     }
@@ -87,6 +118,7 @@ impl Canvas {
 
     /// Saves the transform and clip, as `save`.
     pub fn save(&mut self) {
+        self.version += 1;
         self.frames.push(Frame { ops: vec![DrawOp::Save], layer: false });
     }
 
@@ -94,12 +126,14 @@ impl Canvas {
     /// matching restore with `paint`'s alpha, color filter and blend mode, as
     /// `saveLayer(bounds, paint)`.
     pub fn save_layer(&mut self, bounds: Rect, paint: Paint) {
-        let op = DrawOp::SaveLayer {
+        let mut op = DrawOp::SaveLayer {
             bounds,
             alpha: paint.color.alpha(),
             color_filter: paint.color_filter(),
             blend_mode: paint.blend_mode,
         };
+        adopt(&mut op, (&self.tables.shaders, &self.tables.color_filters), &mut self.layer_tables);
+        self.version += 1;
         self.frames.push(Frame { ops: vec![op], layer: true });
     }
 
@@ -110,14 +144,20 @@ impl Canvas {
             return;
         }
         let Some(mut frame) = self.frames.pop() else { return };
-        let in_layer = self.frames.iter().any(|frame| frame.layer);
-        if in_layer {
+        self.version += 1;
+        if self.in_layer() {
             frame.ops.push(DrawOp::Restore);
             self.frames.last_mut().expect("the root frame").ops.extend(frame.ops);
         } else if frame.layer {
             frame.ops.push(DrawOp::Restore);
-            self.rasterize(frame.ops);
+            let tables = std::mem::take(&mut self.layer_tables);
+            self.submit(frame.ops, (&tables.shaders, &tables.color_filters));
         }
+    }
+
+    /// Whether a layer is open: what's drawn waits for its restore.
+    fn in_layer(&self) -> bool {
+        self.frames.iter().any(|frame| frame.layer)
     }
 
     /// Runs `block` between a save and its restore, as `withSave`.
@@ -135,6 +175,7 @@ impl Canvas {
     }
 
     fn state(&mut self, op: DrawOp) {
+        self.version += 1;
         self.frames.last_mut().expect("the root frame").ops.push(op);
     }
 
@@ -186,6 +227,71 @@ impl Canvas {
     /// Clips what follows to `path`, as `clipPath(path)`.
     pub fn clip_path(&mut self, path: &Path) {
         self.state(DrawOp::ClipPath { path: path.data(), offset: Offset::ZERO });
+    }
+
+    /// Clips what follows to `rect` or out of it, as `clipRect(rect, clipOp)`.
+    pub fn clip_rect_with(&mut self, rect: Rect, clip_op: ClipOp) {
+        match clip_op {
+            ClipOp::Intersect => self.clip_rect(rect),
+            ClipOp::Difference => {
+                let path = Path::new();
+                path.add_rect(rect);
+                self.clip_path_with(&path, ClipOp::Difference);
+            }
+        }
+    }
+
+    /// Clips what follows to `path` or out of it, as `clipPath(path, clipOp)`.
+    pub fn clip_path_with(&mut self, path: &Path, clip_op: ClipOp) {
+        match clip_op {
+            ClipOp::Intersect => self.clip_path(path),
+            ClipOp::Difference => {
+                self.state(DrawOp::ClipOutPath { path: path.data(), offset: Offset::ZERO });
+            }
+        }
+    }
+
+    /// Skews what follows by `sx` horizontally and `sy` vertically (tangents of the angles),
+    /// as `skew(sx, sy)`.
+    pub fn skew(&mut self, sx: f32, sy: f32) {
+        self.state(DrawOp::Concat(Box::new([1.0, sx, 0.0, sy, 1.0, 0.0, 0.0, 0.0, 1.0])));
+    }
+
+    /// Skews what follows by angles in radians, as `skewRad(sxRad, syRad)`.
+    pub fn skew_rad(&mut self, sx_rad: f32, sy_rad: f32) {
+        self.skew(sx_rad.tan(), sy_rad.tan());
+    }
+
+    /// Transforms what follows by `matrix`, as `concat(matrix)`: its 2D part (the z row and
+    /// column left out), as Android's canvas takes it.
+    pub fn concat(&mut self, matrix: &crate::matrix::Matrix) {
+        let m = &matrix.values;
+        self.state(DrawOp::Concat(Box::new([
+            m[0], m[4], m[12], m[1], m[5], m[13], m[3], m[7], m[15],
+        ])));
+    }
+
+    /// `points` drawn as `point_mode` says, with `paint`'s stroke width and cap, as
+    /// `drawPoints(pointMode, points, paint)`: each a dot (round if the cap is, else square, a
+    /// pixel wide for a fill or a hairline), each pair a line, or a line through them all.
+    pub fn draw_points(&mut self, point_mode: PointMode, points: &[Offset], paint: Paint) {
+        for op in points_ops(point_mode, points, paint) {
+            self.draw(op);
+        }
+    }
+
+    /// [`draw_points`](Canvas::draw_points) of points given as x, y pairs, as
+    /// `drawRawPoints(pointMode, points, paint)`: a last odd value is left out.
+    pub fn draw_raw_points(&mut self, point_mode: PointMode, points: &[f32], paint: Paint) {
+        let points: Vec<Offset> =
+            points.as_chunks::<2>().0.iter().map(|[x, y]| Offset::new(*x, *y)).collect();
+        self.draw_points(point_mode, &points, paint);
+    }
+
+    /// `vertices`' triangles, each vertex's color blended with `paint`'s by `blend_mode`, as
+    /// `drawVertices(vertices, blendMode, paint)`.
+    pub fn draw_vertices(&mut self, vertices: &Arc<Vertices>, blend_mode: BlendMode, paint: Paint) {
+        self.draw(DrawOp::DrawVertices { vertices: vertices.clone(), blend_mode, paint });
     }
 
     pub fn draw_line(&mut self, from: Offset, to: Offset, paint: Paint) {
@@ -279,54 +385,56 @@ impl Canvas {
 
     /// Draws `op` now, or keeps it for the layer it's in.
     fn draw(&mut self, op: DrawOp) {
-        if self.frames.iter().any(|frame| frame.layer) {
-            self.frames.last_mut().expect("the root frame").ops.push(op);
-        } else {
-            self.rasterize(vec![op]);
-        }
+        let tables = std::mem::take(&mut self.tables);
+        self.draw_ops(vec![op], (&tables.shaders, &tables.color_filters));
+        self.tables = tables;
     }
 
-    /// Draws `ops` into the bitmap after the open saves' transforms and clips.
-    fn rasterize(&mut self, ops: Vec<DrawOp>) {
-        let mut list = DisplayList {
-            shaders: self.tables.shaders.clone(),
-            color_filters: self.tables.color_filters.clone(),
-            ..DisplayList::default()
-        };
-        for frame in &self.frames {
-            list.ops.extend(frame.ops.iter().cloned());
-        }
-        list.ops.extend(ops);
-        rasterize(&self.image, &list);
-    }
-
-    /// Draws `recording` (a `DrawScope`'s), its shaders and filters taken into the canvas's.
-    pub(crate) fn draw_recording(&mut self, recording: DisplayList) {
-        let (shaders, filters) =
-            (self.tables.shaders.len() as u32, self.tables.color_filters.len() as u32);
-        let mut ops = recording.ops;
-        for op in &mut ops {
-            if let Some(paint) = op.paint_mut()
-                && let Some(shader) = paint.shader
-            {
-                paint.shader =
-                    Some(crate::brush::ShaderIndex::new(shader.index() as u32 + shaders));
+    /// Draws `ops`, naming `from`'s shaders and filters, now; or keeps them for the layer
+    /// they're in, their shaders and filters in the layers' tables.
+    fn draw_ops(&mut self, mut ops: Vec<DrawOp>, from: Tables<'_>) {
+        if self.in_layer() {
+            for op in &mut ops {
+                adopt(op, from, &mut self.layer_tables);
             }
-            if let Some(filter) = op.color_filter_mut()
-                && let Some(index) = *filter
-            {
-                *filter = Some(crate::color_filter::ColorFilterIndex::new(
-                    index.index() as u32 + filters,
-                ));
-            }
-        }
-        self.tables.shaders.extend(recording.shaders);
-        self.tables.color_filters.extend(recording.color_filters);
-        if self.frames.iter().any(|frame| frame.layer) {
             self.frames.last_mut().expect("the root frame").ops.extend(ops);
         } else {
-            self.rasterize(ops);
+            self.submit(ops, from);
         }
+    }
+
+    /// Gives `ops` to the bitmap, drawn after the open saves' transforms and clips at its next
+    /// read: after its last ones, in their save, if they're this canvas's in the same state;
+    /// else in a save of their own after the state.
+    fn submit(&mut self, mut ops: Vec<DrawOp>, from: Tables<'_>) {
+        // A drawn bitmap's pixels are read (this one's too) before its lock is taken.
+        for op in &mut ops {
+            if let DrawOp::DrawImage { image, .. } = op {
+                *image = image.snapshot();
+            }
+        }
+        let key = (self.id, self.version);
+        let frames = &self.frames;
+        self.image.with_drawing(|drawing| {
+            if drawing.open.is_none_or(|(id, version, _)| (id, version) != key) {
+                drawing.close();
+                drawing.pending.ops.push(DrawOp::Save);
+                for frame in frames {
+                    drawing.pending.ops.extend(frame.ops.iter().cloned());
+                }
+                // Its own save and each open one.
+                drawing.open = Some((key.0, key.1, frames.len()));
+            }
+            for mut op in ops {
+                adopt(&mut op, from, &mut drawing.pending);
+                drawing.pending.ops.push(op);
+            }
+        });
+    }
+
+    /// Draws `recording` (a `DrawScope`'s), naming its own shaders and filters.
+    pub(crate) fn draw_recording(&mut self, recording: DisplayList) {
+        self.draw_ops(recording.ops, (&recording.shaders, &recording.color_filters));
     }
 }
 
@@ -355,5 +463,156 @@ impl CanvasDrawScope {
         };
         block(&mut scope);
         canvas.draw_recording(recording);
+    }
+}
+
+/// Whether a clip keeps what's inside its shape or what's outside, as Compose's `ClipOp`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum ClipOp {
+    #[default]
+    Intersect,
+    Difference,
+}
+
+/// How `draw_points` draws its points, as Compose's `PointMode`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum PointMode {
+    /// Each point a dot.
+    Points,
+    /// Each pair of points a line (a last odd one left out).
+    Lines,
+    /// A line from each point to the next.
+    Polygon,
+}
+
+/// The operations `points` drawn as `point_mode` says are (no operation of their own: dots are
+/// lines of no length with a square or round cap, as Skia draws points).
+pub(crate) fn points_ops(point_mode: PointMode, points: &[Offset], paint: Paint) -> Vec<DrawOp> {
+    let width = match paint.style {
+        PaintStyle::Stroke(width) => width,
+        PaintStyle::Fill => 0.0,
+    };
+    let mut stroke = paint;
+    stroke.style = PaintStyle::Stroke(width);
+    match point_mode {
+        PointMode::Points => {
+            stroke.style = PaintStyle::Stroke(if width > 0.0 { width } else { 1.0 });
+            if stroke.cap != StrokeCap::Round {
+                stroke.cap = StrokeCap::Square;
+            }
+            points.iter().map(|point| DrawOp::DrawLine(*point, *point, stroke)).collect()
+        }
+        PointMode::Lines => points
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|[from, to]| DrawOp::DrawLine(*from, *to, stroke))
+            .collect(),
+        PointMode::Polygon => {
+            points.windows(2).map(|pair| DrawOp::DrawLine(pair[0], pair[1], stroke)).collect()
+        }
+    }
+}
+
+/// How `Vertices`' points make triangles, as Compose's `VertexMode`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum VertexMode {
+    /// Each three points a triangle.
+    Triangles,
+    /// Each point a triangle with the two before it.
+    TriangleStrip,
+    /// Each point a triangle with the one before it and the first.
+    TriangleFan,
+}
+
+/// Triangles to draw with `Canvas::draw_vertices`, as Compose's `Vertices`: positions, the
+/// texture coordinates a paint's shader is sampled at, a color per vertex, and the indices of
+/// the vertices drawn in order (all of them in order if none).
+#[derive(Clone, PartialEq, Debug)]
+pub struct Vertices {
+    vertex_mode: VertexMode,
+    positions: Vec<Offset>,
+    texture_coordinates: Vec<Offset>,
+    colors: Vec<Color>,
+    indices: Vec<u16>,
+}
+
+impl Vertices {
+    /// As `Vertices(vertexMode, positions, textureCoordinates, colors, indices)`.
+    ///
+    /// # Panics
+    ///
+    /// As Compose's throws: if `texture_coordinates` or `colors` aren't one per position, or an
+    /// index names no position.
+    pub fn new(
+        vertex_mode: VertexMode,
+        positions: &[Offset],
+        texture_coordinates: &[Offset],
+        colors: &[Color],
+        indices: &[u16],
+    ) -> Vertices {
+        assert!(
+            texture_coordinates.len() == positions.len(),
+            "positions and textureCoordinates lengths must match."
+        );
+        assert!(colors.len() == positions.len(), "positions and colors lengths must match.");
+        assert!(
+            indices.iter().all(|index| usize::from(*index) < positions.len()),
+            "indices values must be valid indices in the positions list."
+        );
+        Vertices {
+            vertex_mode,
+            positions: positions.to_vec(),
+            texture_coordinates: texture_coordinates.to_vec(),
+            colors: colors.to_vec(),
+            indices: indices.to_vec(),
+        }
+    }
+
+    /// From flat arrays, as the array constructor: positions and texture coordinates as x, y
+    /// pairs, colors as ARGB.
+    ///
+    /// # Panics
+    ///
+    /// As Compose's throws: if `positions` has an odd length, `texture_coordinates` isn't as
+    /// long, `colors` isn't one per position, or an index names no position.
+    pub fn from_raw(
+        vertex_mode: VertexMode,
+        positions: &[f32],
+        texture_coordinates: &[f32],
+        colors: &[u32],
+        indices: &[u16],
+    ) -> Vertices {
+        assert!(positions.len().is_multiple_of(2), "positions length must be even");
+        assert!(
+            texture_coordinates.len() == positions.len(),
+            "positions and textureCoordinates lengths must match."
+        );
+        assert!(colors.len() == positions.len() / 2, "positions and colors lengths must match.");
+        let pairs = |values: &[f32]| -> Vec<Offset> {
+            values.as_chunks::<2>().0.iter().map(|[x, y]| Offset::new(*x, *y)).collect()
+        };
+        let colors: Vec<Color> = colors.iter().map(|argb| Color::from_argb(*argb)).collect();
+        Vertices::new(vertex_mode, &pairs(positions), &pairs(texture_coordinates), &colors, indices)
+    }
+
+    pub fn vertex_mode(&self) -> VertexMode {
+        self.vertex_mode
+    }
+
+    pub fn positions(&self) -> &[Offset] {
+        &self.positions
+    }
+
+    pub fn texture_coordinates(&self) -> &[Offset] {
+        &self.texture_coordinates
+    }
+
+    pub fn colors(&self) -> &[Color] {
+        &self.colors
+    }
+
+    pub fn indices(&self) -> &[u16] {
+        &self.indices
     }
 }

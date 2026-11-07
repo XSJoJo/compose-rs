@@ -2,7 +2,9 @@ package rs.compose.android
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.ColorSpace
+import java.nio.ByteBuffer
 
 /**
  * The platform's image decoder for compose-rs (`compose_ui::decode_image_bytes`,
@@ -25,5 +27,32 @@ object ComposeRsImages {
         val converted = bitmap.copy(Bitmap.Config.ARGB_8888, false)
         bitmap.recycle()
         return converted
+    }
+
+    /**
+     * The platform's bitmap rasterizer (`compose_ui::platform::BitmapRasterizer`,
+     * `crates/compose-android/src/image.rs`): draws [drawing] (a display list in the replayer's
+     * format, its paths and images defined first) over [pixels] (premultiplied RGBA, [width] ×
+     * [height], Rust's), in place, with a software `Canvas` over a bitmap, as Compose's
+     * `Canvas(imageBitmap)`. Any thread; one drawing at a time.
+     */
+    @JvmStatic
+    @Synchronized
+    fun rasterize(pixels: ByteBuffer, width: Int, height: Int, drawing: ByteBuffer) {
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        try {
+            bitmap.copyPixelsFromBuffer(pixels)
+            // A replayer of its own: the paths and images it defines are freed after.
+            val replayer = Replayer(TextMeasurer(), null)
+            try {
+                replayer.replay(Canvas(bitmap), drawing)
+            } finally {
+                replayer.clear()
+            }
+            pixels.position(0)
+            bitmap.copyPixelsToBuffer(pixels)
+        } finally {
+            bitmap.recycle()
+        }
     }
 }

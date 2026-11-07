@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use compose::ui::{
     BlendMode, Color, ColorFilter, ColorMatrix, Density, GraphicsLayer, ImageBitmap,
-    ImageBitmapConfig, IntSize, LayoutDirection, Paint, Rect, Size,
+    ImageBitmapConfig, IntSize, LayoutDirection, Offset, Paint, Rect, Size,
     canvas::{Canvas, CanvasDrawScope},
     colorspace::ColorSpaces,
 };
@@ -299,4 +299,211 @@ fn a_bitmap_drawn_into_again_is_drawn_anew() {
     canvas.draw_rect(Rect::new(0.0, 0.0, 4.0, 4.0), Paint::fill(Color::BLUE));
     renderer.render(&list, Color::WHITE, 1.0, &FixedTextMeasurer::default());
     assert_eq!(renderer.pixel(1, 1), Color::BLUE);
+}
+
+// Compose: compose/ui/ui-graphics/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/AndroidCanvasTest.kt, testDrawVerticesDoesNotCrashBelowAPI29
+#[test]
+fn vertices_draw_their_colors() {
+    use compose::ui::canvas::{VertexMode, Vertices};
+    install();
+    let image = ImageBitmap::new(200, 200);
+    let mut canvas = Canvas::new(&image);
+    let corners = [
+        Offset::new(0.0, 0.0),
+        Offset::new(200.0, 0.0),
+        Offset::new(0.0, 200.0),
+        Offset::new(200.0, 200.0),
+    ];
+    let vertices = Vertices::new(
+        VertexMode::Triangles,
+        &corners,
+        &corners,
+        &[Color::RED; 4],
+        &[0, 1, 2, 1, 2, 3],
+    );
+    canvas.draw_vertices(&Arc::new(vertices), BlendMode::SrcOver, Paint::fill(Color::BLACK));
+    let map = image.to_pixel_map();
+    for (x, y) in [(0, 0), (199, 0), (0, 199), (199, 199), (100, 100), (150, 20)] {
+        assert_eq!(map.get(x, y), Color::RED, "at {x}, {y}");
+    }
+}
+
+// Compose: compose/ui/ui-graphics/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/drawscope/DrawScopeTest.kt, testDrawPointStrokeParametersAreApplied
+/// Points drawn by a `DrawScope` and by a canvas are the same: squares of the stroke's width
+/// for a butt cap, as Skia's points.
+#[test]
+fn points_draw_alike_in_a_scope_and_on_a_canvas() {
+    use compose::ui::canvas::PointMode;
+    install();
+    let points = [
+        Offset::ZERO,
+        Offset::new(10.0, 10.0),
+        Offset::new(25.0, 25.0),
+        Offset::new(40.0, 40.0),
+        Offset::new(50.0, 50.0),
+        Offset::new(75.0, 75.0),
+        Offset::new(150.0, 150.0),
+    ];
+    let mut paint = Paint::stroke(Color::MAGENTA, 15.0);
+    paint.cap = compose::ui::StrokeCap::Butt;
+    let scoped = ImageBitmap::new(200, 200);
+    CanvasDrawScope::draw(
+        &mut Canvas::new(&scoped),
+        Density::new(1.0),
+        LayoutDirection::Ltr,
+        Size::new(200.0, 200.0),
+        |scope| scope.draw_points(&points, PointMode::Points, paint),
+    );
+    let direct = ImageBitmap::new(200, 200);
+    Canvas::new(&direct).draw_points(PointMode::Points, &points, paint);
+    assert_eq!(scoped.to_pixel_map(), direct.to_pixel_map());
+    let map = direct.to_pixel_map();
+    // A 15-pixel square about each point.
+    assert_eq!(map.get(81, 81), Color::MAGENTA);
+    assert_eq!(map.get(68, 68), Color::MAGENTA);
+    assert_eq!(map.get(84, 75), Color::TRANSPARENT);
+    assert_eq!(map.get(100, 100), Color::TRANSPARENT);
+}
+
+// Compose: compose/ui/ui-graphics/src/commonMain/kotlin/androidx/compose/ui/graphics/Canvas.kt, drawPoints with PointMode.Lines and Polygon (no Compose test)
+#[test]
+fn points_draw_as_pairs_of_lines_or_a_polygon() {
+    use compose::ui::canvas::PointMode;
+    install();
+    let points = [Offset::new(0.0, 5.0), Offset::new(10.0, 5.0), Offset::new(10.0, 15.0)];
+    let draw = |mode: PointMode| {
+        let image = ImageBitmap::new(20, 20);
+        Canvas::new(&image).draw_points(mode, &points, Paint::stroke(Color::RED, 2.0));
+        image.to_pixel_map()
+    };
+    let lines = draw(PointMode::Lines);
+    assert_eq!(lines.get(5, 5), Color::RED);
+    // The last point has no pair.
+    assert_eq!(lines.get(10, 12), Color::TRANSPARENT);
+    let polygon = draw(PointMode::Polygon);
+    assert_eq!((polygon.get(5, 5), polygon.get(10, 12)), (Color::RED, Color::RED));
+}
+
+// Compose: compose/ui/ui-graphics/src/commonMain/kotlin/androidx/compose/ui/graphics/Canvas.kt, skew, concat (no Compose test)
+#[test]
+fn a_canvas_skews_and_concatenates_matrices() {
+    install();
+    let skewed = ImageBitmap::new(40, 20);
+    let mut canvas = Canvas::new(&skewed);
+    // x' = x + y: the 10 × 10 square becomes a parallelogram leaning right.
+    canvas.skew(1.0, 0.0);
+    canvas.draw_rect(Rect::new(0.0, 0.0, 10.0, 10.0), Paint::fill(Color::RED));
+    let map = skewed.to_pixel_map();
+    assert_eq!(
+        (map.get(2, 1), map.get(15, 8), map.get(2, 8)),
+        (Color::RED, Color::RED, Color::TRANSPARENT)
+    );
+
+    let moved = ImageBitmap::new(40, 20);
+    let mut canvas = Canvas::new(&moved);
+    let mut matrix = compose::ui::Matrix::default();
+    matrix.translate(20.0, 5.0, 0.0);
+    canvas.concat(&matrix);
+    canvas.draw_rect(Rect::new(0.0, 0.0, 10.0, 10.0), Paint::fill(Color::BLUE));
+    let map = moved.to_pixel_map();
+    assert_eq!(
+        (map.get(21, 6), map.get(29, 14), map.get(19, 6)),
+        (Color::BLUE, Color::BLUE, Color::TRANSPARENT)
+    );
+}
+
+// Compose: compose/ui/ui-graphics/src/commonMain/kotlin/androidx/compose/ui/graphics/Canvas.kt, clipRect and clipPath with ClipOp.Difference (no Compose test)
+#[test]
+fn a_canvas_clips_out_a_rectangle() {
+    use compose::ui::canvas::ClipOp;
+    install();
+    let image = ImageBitmap::new(30, 30);
+    let mut canvas = Canvas::new(&image);
+    canvas.clip_rect_with(Rect::new(10.0, 10.0, 20.0, 20.0), ClipOp::Difference);
+    canvas.draw_rect(Rect::new(0.0, 0.0, 30.0, 30.0), Paint::fill(Color::GREEN));
+    let map = image.to_pixel_map();
+    assert_eq!((map.get(5, 5), map.get(25, 15)), (Color::GREEN, Color::GREEN));
+    assert_eq!(map.get(15, 15), Color::TRANSPARENT);
+}
+
+// Compose: compose/ui/ui-graphics/src/androidMain/kotlin/androidx/compose/ui/graphics/AndroidImageBitmap.android.kt, readPixels (Android's Bitmap.getPixels unpremultiplies, rounding; no Compose test)
+/// Read pixels are unpremultiplied to the nearest value, not down.
+#[test]
+fn read_pixels_round_to_the_nearest_value() {
+    // Premultiplied: red 1 at alpha 2 is 127.5 unpremultiplied; green 50 at alpha 200, 63.75.
+    let image = ImageBitmap::from_rgba_premultiplied(2, 1, vec![1, 0, 0, 2, 0, 50, 0, 200]);
+    let mut pixels = [0u32; 2];
+    image.read_pixels(&mut pixels, 0, 0, 2, 1, 0, 2);
+    assert_eq!(pixels, [0x0280_0000, 0xC800_4000]);
+}
+
+// Compose: compose/ui/ui-graphics/src/commonMain/kotlin/androidx/compose/ui/graphics/Canvas.kt, a canvas over a bitmap (no Compose test)
+/// A thousand drawings into a large bitmap are drawn in one pass when it's read, each kept.
+#[test]
+fn a_thousand_drawings_into_a_large_bitmap_are_drawn_at_once() {
+    install();
+    let image = ImageBitmap::new(1000, 1000);
+    let mut canvas = Canvas::new(&image);
+    let start = std::time::Instant::now();
+    for index in 0..1000 {
+        let (x, y) = ((index % 40) as f32 * 25.0, (index / 40) as f32 * 25.0);
+        let color = if index % 2 == 0 { Color::RED } else { Color::BLUE };
+        canvas.draw_rect(Rect::new(x, y, x + 25.0, y + 25.0), Paint::fill(color));
+    }
+    let map = image.to_pixel_map();
+    eprintln!("1,000 drawings into 1000 × 1000 and a read: {:?}", start.elapsed());
+    assert_eq!(map.get(12, 12), Color::RED);
+    assert_eq!(map.get(37, 12), Color::BLUE);
+    // The last: index 999 at column 39, row 24.
+    assert_eq!(map.get(39 * 25 + 12, 24 * 25 + 12), Color::BLUE);
+    assert_eq!(map.get(500, 900), Color::TRANSPARENT);
+}
+
+// Compose: compose/ui/ui-graphics/src/commonMain/kotlin/androidx/compose/ui/graphics/Canvas.kt, a canvas over a bitmap (no Compose test)
+/// Two threads drawing into one bitmap lose nothing: each drawing is kept.
+#[test]
+fn two_threads_drawing_into_one_bitmap_keep_every_drawing() {
+    install();
+    let image = ImageBitmap::new(200, 2);
+    std::thread::scope(|scope| {
+        for row in 0..2 {
+            let image = image.clone();
+            scope.spawn(move || {
+                let mut canvas = Canvas::new(&image);
+                canvas.translate(0.0, row as f32);
+                for x in 0..200 {
+                    let rect = Rect::new(x as f32, 0.0, x as f32 + 1.0, 1.0);
+                    canvas.draw_rect(rect, Paint::fill(Color::RED));
+                    if x % 50 == 0 {
+                        // A read in between draws what waits.
+                        let _ = image.pixels();
+                    }
+                }
+            });
+        }
+    });
+    let map = image.to_pixel_map();
+    for x in 0..200 {
+        assert_eq!((map.get(x, 0), map.get(x, 1)), (Color::RED, Color::RED), "at {x}");
+    }
+}
+
+// Compose: compose/ui/ui-graphics/src/commonMain/kotlin/androidx/compose/ui/graphics/Canvas.kt, drawImage (no Compose test)
+/// A bitmap drawn into itself draws its pixels as they were when it was drawn; two canvases'
+/// transforms stay their own.
+#[test]
+fn a_bitmap_drawn_into_itself_reads_its_pixels_then() {
+    install();
+    let image = ImageBitmap::new(4, 2);
+    let mut canvas = Canvas::new(&image);
+    let mut moved = Canvas::new(&image);
+    moved.translate(2.0, 0.0);
+    canvas.draw_rect(Rect::new(0.0, 0.0, 2.0, 2.0), Paint::fill(Color::RED));
+    // Copies the red half to the right, through the moved canvas.
+    moved.draw_image(&image, compose::ui::Offset::ZERO, Paint::fill(Color::BLACK));
+    // Then the left half turns blue, after the copy.
+    canvas.draw_rect(Rect::new(0.0, 0.0, 2.0, 2.0), Paint::fill(Color::BLUE));
+    let map = image.to_pixel_map();
+    let colors = (map.get(1, 1), map.get(2, 1), map.get(3, 0));
+    assert_eq!(colors, (Color::BLUE, Color::RED, Color::RED));
 }

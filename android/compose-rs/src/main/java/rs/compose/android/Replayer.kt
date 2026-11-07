@@ -95,7 +95,11 @@ internal inline fun ByteBuffer.floatAt(index: Int): Float = Float.fromBits(getIn
  * node at alpha 0, which the render thread skips: the frame placing one again finds its version
  * recorded, and records nothing.
  */
-internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEdgeEffects) {
+internal class Replayer(
+    var text: TextMeasurer,
+    /** The view's edge effects: none for a bitmap's canvas, whose drawings have none. */
+    private val effects: ComposeRsEdgeEffects?,
+) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     /**
      * Gradients by their bytes (kind to stops) and local transform (x, y, scale x, scale y
@@ -121,6 +125,9 @@ internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEd
     /** The filter being read, as its key. */
     private val filterKey = IntArray(FILTER_KEY_INTS)
     private val rect = RectF()
+    /** A `CONCAT`'s matrix and its values, row-major. */
+    private val concatMatrix = Matrix()
+    private val matrixValues = FloatArray(9)
     private val source = Rect()
     private val clip = Path()
     private val radii = FloatArray(8)
@@ -198,7 +205,7 @@ internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEd
     private fun ByteBuffer.readPaint(x: Float = 0f, y: Float = 0f, scaleX: Float = 1f, scaleY: Float = 1f): Paint {
         var color = getInt()
         val flags = get().toInt()
-        val stroke = flags and 1 != 0
+        val stroke = flags and PAINT_STROKE != 0
         val width = float()
         val cap = get().toInt()
         val kind = get().toInt()
@@ -207,11 +214,11 @@ internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEd
             // The shader paints; the paint's alpha is the gradient's, as compose-skia's.
             color = (float().coerceIn(0f, 1f) * 255f + 0.5f).toInt() shl 24
         }
-        val blendMode = if (flags and 2 != 0) get().toInt() else BLEND_SRC_OVER
-        val filter = if (flags and 4 != 0) readColorFilter() else null
-        val blur = if (flags and 8 != 0) float() else 0f
-        val colorLong = if (flags and 16 != 0) getLong() else 0L
-        val wide = flags and 16 != 0 && shader == null &&
+        val blendMode = if (flags and PAINT_BLEND_MODE != 0) get().toInt() else BLEND_SRC_OVER
+        val filter = if (flags and PAINT_COLOR_FILTER != 0) readColorFilter() else null
+        val blur = if (flags and PAINT_BLUR != 0) float() else 0f
+        val colorLong = if (flags and PAINT_COLOR_LONG != 0) getLong() else 0L
+        val wide = flags and PAINT_COLOR_LONG != 0 && shader == null &&
             (Build.VERSION.SDK_INT >= 34 || (colorLong and 0x3fL).toInt() !in 16..17)
         if (blur != paintBlur) {
             paintBlur = blur
@@ -589,6 +596,40 @@ internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEd
                         }
                     }
                 }
+                CLIP_OUT_PATH -> {
+                    val kept = paths.get(buffer.getInt())
+                    val x = buffer.float()
+                    val y = buffer.float()
+                    // An unknown path clips nothing out.
+                    if (kept != null) {
+                        kept.drawnAsPath = true
+                        kept.path.offset(x, y, clip)
+                        canvas.clipOutPath(clip)
+                    }
+                }
+                CONCAT -> {
+                    for (index in 0 until 9) matrixValues[index] = buffer.float()
+                    concatMatrix.setValues(matrixValues)
+                    canvas.concat(concatMatrix)
+                }
+                DRAW_VERTICES -> {
+                    val mode = when (buffer.get().toInt()) {
+                        1 -> Canvas.VertexMode.TRIANGLE_STRIP
+                        2 -> Canvas.VertexMode.TRIANGLE_FAN
+                        else -> Canvas.VertexMode.TRIANGLES
+                    }
+                    val count = buffer.getInt()
+                    val positions = FloatArray(count * 2) { buffer.float() }
+                    val textures = FloatArray(count * 2) { buffer.float() }
+                    val colors = IntArray(count) { buffer.getInt() }
+                    val indices = ShortArray(buffer.getInt()) { buffer.getShort() }
+                    // Its blend mode isn't Android's to take, as Compose's `drawVertices`.
+                    buffer.get()
+                    canvas.drawVertices(
+                        mode, positions.size, positions, 0, textures, 0, colors, 0,
+                        if (indices.isEmpty()) null else indices, 0, indices.size, buffer.readPaint(),
+                    )
+                }
                 DRAW_RECT -> {
                     buffer.readRect(rect)
                     canvas.drawRect(rect, buffer.readPaint())
@@ -732,8 +773,9 @@ internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEd
         val end = buffer.position() + length
         val width = (right - left + 0.5f).toInt()
         val height = (bottom - top + 0.5f).toInt()
-        val kept = effects.owner(owner)
-        if (kept == null || recordingAhead || width <= 0 || height <= 0) {
+        val effects = effects
+        val kept = effects?.owner(owner)
+        if (effects == null || kept == null || recordingAhead || width <= 0 || height <= 0) {
             replay(canvas, buffer, end)
             return
         }
@@ -1387,7 +1429,10 @@ internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEd
         val colorCount = getInt(colorsAt)
         val stopsAt = colorsAt + 4 + 4 * colorCount
         val stopCount = getInt(stopsAt)
-        val end = stopsAt + 4 + 4 * stopCount
+        val tileByte = get(start + 1).toInt() and 0xff
+        val longsAt = stopsAt + 4 + 4 * stopCount
+        val wide = tileByte and WIDE_GRADIENT != 0
+        val end = longsAt + if (wide) 8 * colorCount else 0
         position(end)
         // A NaN transform matches no key (NaN isn't equal to itself): built, never kept.
         val cacheable = !x.isNaN() && !y.isNaN() && !scaleX.isNaN() && !scaleY.isNaN()
@@ -1398,14 +1443,31 @@ internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEd
         }
         val colors = IntArray(colorCount) { getInt(colorsAt + 4 + it * 4) }
         val stops = if (stopCount == 0) null else FloatArray(stopCount) { floatAt(stopsAt + 4 + it * 4) }
-        val tileMode = when (get(start + 1).toInt()) {
+        // Android's color longs, of one space, as Compose's gradients take (API 29); BT.2020 HLG
+        // and PQ (Android's 16 and 17) only from API 34, else the ARGB colors.
+        val longs = if (!wide) null else LongArray(colorCount) { getLong(longsAt + it * 8) }
+            .takeIf { Build.VERSION.SDK_INT >= 34 || (it[0] and 0x3fL).toInt() !in 16..17 }
+        val tileMode = when (tileByte and WIDE_GRADIENT.inv()) {
             1 -> Shader.TileMode.REPEAT
             2 -> Shader.TileMode.MIRROR
             // Transparent past the ends: API 31+, clamped below.
             3 -> if (Build.VERSION.SDK_INT >= 31) Shader.TileMode.DECAL else Shader.TileMode.CLAMP
             else -> Shader.TileMode.CLAMP
         }
-        val shader = when (kind) {
+        val shader = if (longs != null) when (kind) {
+            SHADER_LINEAR -> LinearGradient(
+                floatAt(start + 2),
+                floatAt(start + 6),
+                floatAt(start + 10),
+                floatAt(start + 14),
+                longs,
+                stops,
+                tileMode,
+            )
+            SHADER_RADIAL ->
+                RadialGradient(floatAt(start + 2), floatAt(start + 6), floatAt(start + 10), longs, stops, tileMode)
+            else -> SweepGradient(floatAt(start + 2), floatAt(start + 6), longs, stops)
+        } else when (kind) {
             SHADER_LINEAR -> LinearGradient(
                 floatAt(start + 2),
                 floatAt(start + 6),
@@ -1712,7 +1774,7 @@ internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEd
     }
 
     fun clear() {
-        effects.discardNodes()
+        effects?.discardNodes()
         keptNode.discardDisplayList()
         flushNode.discardDisplayList()
         flushLayers = false
@@ -1794,6 +1856,16 @@ internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEd
         const val DROP_IMAGE = 23
         const val SAVE_LAYER = 24
         const val BEGIN_EDGE_EFFECTS = 25
+        const val CONCAT = 26
+        const val CLIP_OUT_PATH = 27
+        const val DRAW_VERTICES = 28
+
+        // A paint's style flags: what follows its color and stroke width.
+        const val PAINT_STROKE = 1
+        const val PAINT_BLEND_MODE = 2
+        const val PAINT_COLOR_FILTER = 4
+        const val PAINT_BLUR = 8
+        const val PAINT_COLOR_LONG = 16
 
         const val FILTER_NONE = 0
         const val FILTER_BLEND_MODE = 1
@@ -1825,6 +1897,8 @@ internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEd
         const val SHADER_LINEAR = 1
         const val SHADER_RADIAL = 2
         const val SHADER_SWEEP = 3
+        /** In a gradient's tile mode byte: its colors' color longs follow its stops. */
+        const val WIDE_GRADIENT = 128
 
         /** The largest path (scaled, in pixels each way) drawn from a mask (D190). */
         const val MAX_MASK_SIZE = 256

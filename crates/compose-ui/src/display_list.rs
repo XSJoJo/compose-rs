@@ -116,6 +116,24 @@ pub enum DrawOp {
         glow_padding: [f32; 4],
     },
     EndEdgeEffects,
+    /// Transforms what follows (until the matching restore of an earlier save) by a 3 × 3
+    /// matrix, row-major as Android's and Skia's (scale x, skew x, translate x, skew y, scale
+    /// y, translate y, the perspective row), as `Canvas.concat`: a bitmap's canvas's `skew` and
+    /// `concat` (D1916). Boxed: rare, and the operation stays its size.
+    Concat(Box<[f32; 9]>),
+    /// Clips out `path` moved by `offset` from what follows, as `clipPath(path,
+    /// ClipOp.Difference)` (a rectangle's too).
+    ClipOutPath {
+        path: std::sync::Arc<crate::path::PathData>,
+        offset: Offset,
+    },
+    /// Triangles, each vertex's color blended with `paint`'s by `blend_mode`, as
+    /// `drawVertices(vertices, blendMode, paint)`.
+    DrawVertices {
+        vertices: std::sync::Arc<crate::canvas::Vertices>,
+        blend_mode: BlendMode,
+        paint: Paint,
+    },
 }
 
 impl DrawOp {
@@ -126,7 +144,8 @@ impl DrawOp {
             | DrawOp::DrawRoundRect(_, _, paint)
             | DrawOp::DrawLine(_, _, paint)
             | DrawOp::DrawArc { paint, .. }
-            | DrawOp::DrawPath { paint, .. } => Some(paint),
+            | DrawOp::DrawPath { paint, .. }
+            | DrawOp::DrawVertices { paint, .. } => Some(paint),
             _ => None,
         }
     }
@@ -307,9 +326,15 @@ impl Same for DrawOp {
                 D::DrawPath { path: a, offset: oa, scale: sa, paint: pa },
                 D::DrawPath { path: b, offset: ob, scale: sb, paint: pb },
             ) => a.same(b) && oa.same(ob) && sa.same(sb) && pa.same(pb),
-            (D::ClipPath { path: a, offset: oa }, D::ClipPath { path: b, offset: ob }) => {
+            (D::ClipPath { path: a, offset: oa }, D::ClipPath { path: b, offset: ob })
+            | (D::ClipOutPath { path: a, offset: oa }, D::ClipOutPath { path: b, offset: ob }) => {
                 a.same(b) && oa.same(ob)
             }
+            (D::Concat(a), D::Concat(b)) => a.iter().zip(b.iter()).all(|(a, b)| a.same(b)),
+            (
+                D::DrawVertices { vertices: va, blend_mode: ma, paint: pa },
+                D::DrawVertices { vertices: vb, blend_mode: mb, paint: pb },
+            ) => Arc::ptr_eq(va, vb) && ma == mb && pa.same(pb),
             (
                 D::BeginEdgeEffects {
                     owner: wa,
@@ -646,6 +671,20 @@ impl FlatDisplayList {
                     offset.x,
                     offset.y
                 ),
+                DrawOp::Concat(matrix) => writeln!(out, "concat {matrix:?}"),
+                DrawOp::ClipOutPath { path, offset } => writeln!(
+                    out,
+                    "clip out path of {} commands at {},{}",
+                    path.commands().len(),
+                    offset.x,
+                    offset.y
+                ),
+                DrawOp::DrawVertices { vertices, blend_mode, paint } => writeln!(
+                    out,
+                    "vertices {:?} of {} {blend_mode:?} {paint:?}",
+                    vertices.vertex_mode(),
+                    vertices.positions().len()
+                ),
             };
             if matches!(
                 op,
@@ -684,6 +723,8 @@ pub fn single_drawing(ops: &[DrawOp]) -> Option<usize> {
             | DrawOp::ClipRect(_)
             | DrawOp::ClipRoundRect(..)
             | DrawOp::ClipPath { .. }
+            | DrawOp::ClipOutPath { .. }
+            | DrawOp::Concat(_)
             | DrawOp::Transform { .. } => {}
             DrawOp::DrawRect(..)
             | DrawOp::DrawRoundRect(..)
@@ -695,8 +736,11 @@ pub fn single_drawing(ops: &[DrawOp]) -> Option<usize> {
                     return None;
                 }
             }
-            // Text, images and shadows draw what a paint's alpha doesn't reach.
-            DrawOp::DrawParagraph(..) | DrawOp::DrawImage { .. } | DrawOp::DrawShadow { .. } => {
+            // Text, images, shadows and vertices' colors draw what a paint's alpha doesn't reach.
+            DrawOp::DrawParagraph(..)
+            | DrawOp::DrawImage { .. }
+            | DrawOp::DrawShadow { .. }
+            | DrawOp::DrawVertices { .. } => {
                 return None;
             }
         }
@@ -727,8 +771,11 @@ pub fn single_drawing_extent(ops: &[DrawOp]) -> Option<Rect> {
                 offsets.pop();
             }
             DrawOp::Translate(by) => *offsets.last_mut().expect("balanced") = offset + *by,
-            DrawOp::Transform { .. } => return None,
-            DrawOp::ClipRect(_) | DrawOp::ClipRoundRect(..) | DrawOp::ClipPath { .. } => {}
+            DrawOp::Transform { .. } | DrawOp::Concat(_) => return None,
+            DrawOp::ClipRect(_)
+            | DrawOp::ClipRoundRect(..)
+            | DrawOp::ClipPath { .. }
+            | DrawOp::ClipOutPath { .. } => {}
             drawing => {
                 let own = fill_extent(drawing)?;
                 extent = Some(Rect::new(

@@ -93,6 +93,14 @@ pub mod tag {
     /// stretch's axis, the padding in from its bounds of a glow (left, top, right, bottom) (f32s),
     /// then the length in bytes of what it holds (u32), which follows.
     pub const BEGIN_EDGE_EFFECTS: u8 = 25;
+    /// A 3 × 3 matrix the canvas is transformed by (`DrawOp::Concat`): nine f32s, row-major.
+    pub const CONCAT: u8 = 26;
+    /// A path clipped out (`DrawOp::ClipOutPath`): its id (u32), its offset.
+    pub const CLIP_OUT_PATH: u8 = 27;
+    /// Triangles (`DrawOp::DrawVertices`): their mode (u8: 0 triangles, 1 strip, 2 fan), the
+    /// vertex count (u32), positions and texture coordinates (an x, y pair each), colors
+    /// (ARGB), the index count (u32) and indices (u16 each), the blend mode (u8), a paint.
+    pub const DRAW_VERTICES: u8 = 28;
 }
 
 /// What follows a `BEGIN_EDGE_EFFECTS` tag up to what it holds: its operands and that length.
@@ -123,6 +131,22 @@ pub mod color_filter {
     pub const LIGHTING: u8 = 2;
     pub const COLOR_MATRIX: u8 = 3;
 }
+
+/// A paint's style flags, as `Replayer.kt` reads them: each says what follows the paint's color,
+/// stroke width and shader (a stroke has none: its width is the stroke's).
+pub mod paint_flag {
+    pub const STROKE: u8 = 1;
+    /// Its blend mode's index follows.
+    pub const BLEND_MODE: u8 = 2;
+    /// Its color filter follows.
+    pub const COLOR_FILTER: u8 = 4;
+    /// Its blur radius follows.
+    pub const BLUR: u8 = 8;
+    /// Android's `@ColorLong` of its color follows ([`color_long`](super::color_long)).
+    pub const COLOR_LONG: u8 = 16;
+}
+
+pub use paint_flag::COLOR_LONG;
 
 /// A recording's shaders and color filters, which its paints, images and layers name by index.
 type Tables<'a> = (&'a [Shader], &'a [ColorFilter]);
@@ -201,8 +225,10 @@ impl Writer {
             let filter = paint.color_filter().and_then(|index| filters.get(index.index()));
             let blended = paint.blend_mode != BlendMode::SrcOver;
             let blurred = paint.blur_radius() > 0.0;
-            let flags =
-                u8::from(blended) << 1 | u8::from(filter.is_some()) << 2 | u8::from(blurred) << 3;
+            let flag = |set: bool, flag: u8| if set { flag } else { 0 };
+            let flags = flag(blended, paint_flag::BLEND_MODE)
+                | flag(filter.is_some(), paint_flag::COLOR_FILTER)
+                | flag(blurred, paint_flag::BLUR);
             (filter, blended, blurred, flags)
         };
         // An sRGB color is its ARGB: one test of its space's bits.
@@ -220,7 +246,7 @@ impl Writer {
                 self.f32(0.0);
             }
             PaintStyle::Stroke(width) => {
-                self.u8(flags | 1);
+                self.u8(flags | paint_flag::STROKE);
                 self.f32(width);
             }
         }
@@ -280,7 +306,17 @@ impl Writer {
     /// is what `Replayer.kt` keeps its `Shader` objects by.
     fn shader(&mut self, shader: &Shader, alpha: f32) {
         let gradient = shader.gradient();
-        let tile_mode = tile_mode_byte(gradient.tile_mode);
+        let colors = &gradient.colors;
+        // A gradient needs two colors: one is a solid color, as compose-skia draws it.
+        let count = colors.len().max(2);
+        let color = |index: usize| colors[index.min(colors.len() - 1)];
+        // Only a gradient with a color of another space than sRGB: one test of each's bits.
+        let longs = colors
+            .iter()
+            .any(|color| color.value() & 0x3F != 0)
+            .then(|| gradient_color_longs((0..count).map(color)));
+        let tile_mode =
+            tile_mode_byte(gradient.tile_mode) | if longs.is_some() { WIDE_GRADIENT } else { 0 };
         match shader {
             Shader::LinearGradient { from, to, .. } => {
                 self.u8(shader::LINEAR);
@@ -300,12 +336,9 @@ impl Writer {
                 self.offset(*center);
             }
         }
-        let colors = &gradient.colors;
-        // A gradient needs two colors: one is a solid color, as compose-skia draws it.
-        let count = colors.len().max(2);
         self.u32(count as u32);
         for index in 0..count {
-            self.color(colors[index.min(colors.len() - 1)]);
+            self.color(color(index));
         }
         // Stops not matching the colors are left out (evenly spread), as compose-skia does.
         match gradient.stops.as_deref().filter(|stops| stops.len() == count) {
@@ -316,6 +349,9 @@ impl Writer {
                 }
             }
             None => self.u32(0),
+        }
+        for long in longs.into_iter().flatten() {
+            self.u64(long);
         }
         self.f32(alpha.clamp(0.0, 1.0));
     }
@@ -606,21 +642,24 @@ impl Resources {
         if image.width() == 0 || image.height() == 0 {
             return 0;
         }
-        let key = image.id();
+        // Read once: a bitmap drawn into on another thread may have new pixels at a second read.
+        let pixels = image.pixels();
+        let key = pixels.as_ptr() as usize;
         if let Some((weak, id)) = self.images.get(&key)
             && weak.strong_count() > 0
         {
             return *id;
         }
         let id = self.next();
-        if let Some((_, old)) = self.images.insert(key, (image.downgrade(), id)) {
+        let weak = std::sync::Arc::downgrade(&pixels);
+        if let Some((_, old)) = self.images.insert(key, (weak.clone(), id)) {
             self.drop_image(old);
         }
         self.pending.push(Pending::Image {
             id,
             width: image.width(),
             height: image.height(),
-            pixels: image.downgrade(),
+            pixels: weak,
         });
         id
     }
@@ -700,7 +739,15 @@ pub fn operand_bytes(bytes: &[u8], at: usize) -> usize {
         tag::TRANSLATE => 8,
         tag::CLIP_RECT => 16,
         tag::CLIP_ROUND_RECT => 32,
-        tag::CLIP_PATH => 4 + 8,
+        tag::CLIP_PATH | tag::CLIP_OUT_PATH => 4 + 8,
+        tag::CONCAT => 9 * 4,
+        tag::DRAW_VERTICES => {
+            let count = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+            let vertices = count(at + 2) as usize;
+            let indices_at = at + 2 + 4 + vertices * (8 + 8 + 4);
+            let paint_at = indices_at + 4 + 2 * count(indices_at) as usize + 1;
+            paint_at - at - 1 + paint_bytes(bytes, paint_at)
+        }
         tag::GROUP_REF => 8,
         // What it holds comes after, and reads as what it is.
         tag::BEGIN_EDGE_EFFECTS => EDGE_EFFECTS_HEADER_BYTES,
@@ -738,15 +785,17 @@ fn paint_bytes(bytes: &[u8], at: usize) -> usize {
     if bytes[kind_at] != shader::NONE {
         let colors_at = kind_at + 2 + geometry;
         let stops_at = colors_at + 4 + 4 * count_at(colors_at);
-        end = stops_at + 4 + 4 * count_at(stops_at) + 4;
+        let longs =
+            if bytes[kind_at + 1] & WIDE_GRADIENT != 0 { 8 * count_at(colors_at) } else { 0 };
+        end = stops_at + 4 + 4 * count_at(stops_at) + longs + 4;
     }
-    if flags & 2 != 0 {
+    if flags & paint_flag::BLEND_MODE != 0 {
         end += 1;
     }
-    if flags & 4 != 0 {
+    if flags & paint_flag::COLOR_FILTER != 0 {
         end += color_filter_bytes(bytes, end);
     }
-    if flags & 8 != 0 {
+    if flags & paint_flag::BLUR != 0 {
         end += 4;
     }
     if flags & COLOR_LONG != 0 {
@@ -864,9 +913,6 @@ fn foldable_layer(ops: &[DrawOp], start: usize, bounds: Rect) -> Option<usize> {
     single_drawing_extent(layer).is_some_and(|extent| fits_in(extent, bounds)).then_some(end)
 }
 
-/// A paint's style flag: Android's `@ColorLong` of its color follows ([`color_long`]).
-pub const COLOR_LONG: u8 = 16;
-
 /// The `@ColorLong` an Android paint takes for `color`, as Compose's `toSupportedColorLong`
 /// (docs/parity/design/color-spaces.md): `None` for an sRGB color, which its ARGB says, and for
 /// a space Android's paints don't take (unspecified, Oklab, CIE XYZ and Lab), drawn as its sRGB
@@ -880,6 +926,25 @@ pub fn color_long(color: Color) -> Option<u64> {
         17 | 18 => Some(value - 1),
         _ => Some(value),
     }
+}
+
+/// In a gradient's tile mode byte: Android's `@ColorLong`s of its colors follow its stops,
+/// one per color ([`gradient_color_longs`]).
+pub const WIDE_GRADIENT: u8 = 0x80;
+
+/// The `@ColorLong`s of a gradient's `colors`, as Compose's `toPlatformLongArray`
+/// ([`color_long`] of each, an sRGB one its ARGB shifted up), for Android's gradients taking
+/// longs (API 29): of one space, as Android's gradients want them. Colors of two spaces (where
+/// Compose's gradient throws) are converted to extended sRGB, which holds both.
+pub fn gradient_color_longs(colors: impl Iterator<Item = Color> + Clone) -> Vec<u64> {
+    let long = |color: Color| color_long(color).unwrap_or_else(|| u64::from(color.to_argb()) << 32);
+    let longs: Vec<u64> = colors.clone().map(long).collect();
+    if longs.iter().all(|value| value & 0x3F == longs[0] & 0x3F) {
+        return longs;
+    }
+    colors
+        .map(|color| color.convert(&compose_ui::colorspace::ColorSpaces::EXTENDED_SRGB).value())
+        .collect()
 }
 
 /// A color of another space than sRGB with its alpha multiplied by `alpha`.
@@ -1686,6 +1751,40 @@ fn write_op(
             out.u32(id);
             out.offset(*offset);
         }
+        DrawOp::ClipOutPath { path, offset } => {
+            let id = resources.path_id(path);
+            out.u8(tag::CLIP_OUT_PATH);
+            out.u32(id);
+            out.offset(*offset);
+        }
+        DrawOp::Concat(matrix) => {
+            out.u8(tag::CONCAT);
+            for value in matrix.iter() {
+                out.f32(*value);
+            }
+        }
+        DrawOp::DrawVertices { vertices, blend_mode, paint } => {
+            use compose_ui::canvas::VertexMode;
+            out.u8(tag::DRAW_VERTICES);
+            out.u8(match vertices.vertex_mode() {
+                VertexMode::Triangles => 0,
+                VertexMode::TriangleStrip => 1,
+                VertexMode::TriangleFan => 2,
+            });
+            out.u32(vertices.positions().len() as u32);
+            for point in vertices.positions().iter().chain(vertices.texture_coordinates()) {
+                out.offset(*point);
+            }
+            for color in vertices.colors() {
+                out.u32(color.to_argb());
+            }
+            out.u32(vertices.indices().len() as u32);
+            for index in vertices.indices() {
+                out.bytes.extend_from_slice(&index.to_le_bytes());
+            }
+            out.u8(*blend_mode as u8);
+            out.paint(paint, tables, alpha);
+        }
     }
 }
 
@@ -1951,6 +2050,17 @@ mod tests {
         assert_eq!(constant("FILTER_LIGHTING"), color_filter::LIGHTING);
         assert_eq!(constant("FILTER_COLOR_MATRIX"), color_filter::COLOR_MATRIX);
         assert_eq!(constant("BLEND_SRC_OVER"), BlendMode::SrcOver as u8);
+        assert_eq!(constant("PAINT_STROKE"), paint_flag::STROKE);
+        assert_eq!(constant("PAINT_BLEND_MODE"), paint_flag::BLEND_MODE);
+        assert_eq!(constant("PAINT_COLOR_FILTER"), paint_flag::COLOR_FILTER);
+        assert_eq!(constant("PAINT_BLUR"), paint_flag::BLUR);
+        assert_eq!(constant("PAINT_COLOR_LONG"), COLOR_LONG);
+        assert_eq!(constant("WIDE_GRADIENT"), WIDE_GRADIENT);
+        assert_eq!(constant("CONCAT"), tag::CONCAT);
+        assert_eq!(constant("CLIP_OUT_PATH"), tag::CLIP_OUT_PATH);
+        assert_eq!(constant("DRAW_VERTICES"), tag::DRAW_VERTICES);
+        // The flags are read through these names only, never as bare numbers.
+        assert!(!kotlin.contains("flags and 1 ") && !kotlin.contains("flags and 16 "));
         let table = kotlin.split("BLEND_MODES = arrayOf(").nth(1).expect("the modes").split(')');
         let android: Vec<String> = table
             .into_iter()
@@ -2521,6 +2631,112 @@ mod tests {
         assert_eq!(stops, [0.0, 0.25, 1.0]);
         assert_eq!(read_f32(bytes, at + 16), 0.5, "the shader's alpha");
         assert_eq!(bytes.len(), at + 20);
+    }
+
+    // Compose: compose/ui/ui-graphics/src/androidMain/kotlin/androidx/compose/ui/graphics/AndroidCanvas.android.kt, concat, clipPath(ClipOp.Difference), drawVertices (no Compose test)
+    /// A bitmap canvas's matrix, clip out and vertices are written as `Replayer.kt` reads them.
+    #[test]
+    fn a_matrix_a_clip_out_and_vertices_are_written() {
+        use compose_ui::canvas::{VertexMode, Vertices};
+        let path = Path::new();
+        path.add_rect(Rect::new(0.0, 0.0, 2.0, 2.0));
+        let corners = [Offset::new(0.0, 0.0), Offset::new(4.0, 0.0), Offset::new(0.0, 4.0)];
+        let vertices = Vertices::new(
+            VertexMode::TriangleFan,
+            &corners,
+            &corners,
+            &[Color::RED; 3],
+            &[0, 2, 1],
+        );
+        let mut list = DisplayList::default();
+        list.push(DrawOp::Concat(Box::new([1.0, 0.5, 2.0, 0.0, 1.0, 3.0, 0.0, 0.0, 1.0])));
+        list.push(DrawOp::ClipOutPath { path: path.data(), offset: Offset::new(1.0, 1.0) });
+        let paint = Paint::fill(Color::BLACK).with_blend_mode(BlendMode::Xor);
+        let draw = DrawOp::DrawVertices {
+            vertices: Arc::new(vertices),
+            blend_mode: BlendMode::Dst,
+            paint,
+        };
+        list.push(draw);
+        list.push(DrawOp::Restore);
+        let (mut resources, mut out) = (Resources::default(), Writer::default());
+        write_display_list(&list, &mut resources, &mut GroupCache::default(), &mut out);
+        let bytes = &out.bytes;
+        assert_eq!(bytes[0], tag::CONCAT);
+        assert_eq!(read_f32(bytes, 1 + 4), 0.5);
+        assert_eq!(read_f32(bytes, 1 + 5 * 4), 3.0);
+        let clip = 1 + operand_bytes(bytes, 0);
+        assert_eq!(bytes[clip], tag::CLIP_OUT_PATH);
+        assert_eq!(read_f32(bytes, clip + 1 + 4), 1.0);
+        let at = clip + 1 + operand_bytes(bytes, clip);
+        assert_eq!((bytes[at], bytes[at + 1]), (tag::DRAW_VERTICES, 2), "a fan");
+        assert_eq!(read_u32(bytes, at + 2), 3);
+        let colors_at = at + 2 + 4 + 3 * 16;
+        assert_eq!(read_u32(bytes, colors_at), Color::RED.to_argb());
+        let indices_at = colors_at + 3 * 4;
+        assert_eq!(read_u32(bytes, indices_at), 3);
+        assert_eq!(&bytes[indices_at + 4..indices_at + 10], &[0, 0, 2, 0, 1, 0]);
+        assert_eq!(bytes[indices_at + 10], BlendMode::Dst as u8);
+        assert_eq!(bytes[indices_at + 11 + 4], paint_flag::BLEND_MODE, "the paint follows");
+        let end = at + 1 + operand_bytes(bytes, at);
+        assert_eq!((bytes[end], end + 1), (tag::RESTORE, bytes.len()));
+        assert_eq!(
+            resources.pending.len() + resources.pending_paths.len(),
+            1,
+            "the path's definition"
+        );
+    }
+
+    /// A sweep gradient of `colors`' bytes: its tile mode byte, ARGB colors and longs if any.
+    fn sweep_bytes(colors: &[Color]) -> (u8, Vec<u32>, Vec<u64>) {
+        let mut list = DisplayList::default();
+        let gradient = gradient(colors, None, TileMode::Clamp);
+        gradient_rect(
+            &mut list,
+            Shader::SweepGradient { gradient, center: Offset::ZERO, alpha: 1.0 },
+        );
+        let (mut resources, mut out) = (Resources::default(), Writer::default());
+        write_display_list(&list, &mut resources, &mut GroupCache::default(), &mut out);
+        let bytes = &out.bytes;
+        let at = RECT_BEFORE_SHADER;
+        assert_eq!(bytes[at], shader::SWEEP);
+        let count = read_u32(bytes, at + 2 + 8) as usize;
+        let argb = (0..count).map(|index| read_u32(bytes, at + 2 + 8 + 4 + index * 4)).collect();
+        let longs_at = at + 2 + 8 + 4 + count * 4 + 4;
+        let wide = bytes[at + 1] & WIDE_GRADIENT != 0;
+        let long = |index: usize| {
+            u64::from_le_bytes(
+                bytes[longs_at + index * 8..longs_at + index * 8 + 8].try_into().unwrap(),
+            )
+        };
+        let longs = if wide { (0..count).map(long).collect() } else { Vec::new() };
+        assert_eq!(1 + operand_bytes(bytes, 0), bytes.len(), "the paint's length");
+        (bytes[at + 1], argb, longs)
+    }
+
+    // Compose: compose/ui/ui-graphics/src/androidMain/kotlin/androidx/compose/ui/graphics/AndroidShader.android.kt, ActualSweepGradientShader (colors.toPlatformLongArray(); no Compose test)
+    /// A gradient with a wide color carries its colors' longs after its stops, as Compose's
+    /// gradients take longs (API 29); an sRGB one's bytes are what they were.
+    #[test]
+    fn a_wide_gradient_carries_its_color_longs() {
+        use compose_ui::colorspace::ColorSpaces;
+        assert_eq!(
+            sweep_bytes(&[Color::RED, Color::BLUE]),
+            (0, vec![0xFFFF_0000, 0xFF00_00FF], vec![])
+        );
+        let p3 = Color::new_with(0.9, 0.2, 0.1, 1.0, &ColorSpaces::DISPLAY_P3);
+        let blue = Color::new_with(0.1, 0.2, 0.9, 1.0, &ColorSpaces::DISPLAY_P3);
+        let (tile, argb, longs) = sweep_bytes(&[p3, blue]);
+        assert_eq!(tile, WIDE_GRADIENT);
+        assert_eq!(argb, [p3.to_argb(), blue.to_argb()], "their sRGB conversions");
+        assert_eq!(longs, [p3.value(), blue.value()]);
+        // Two spaces, which Android's gradients don't take: both in extended sRGB.
+        let (_, _, longs) = sweep_bytes(&[p3, Color::BLUE]);
+        let extended = |color: Color| color.convert(&ColorSpaces::EXTENDED_SRGB).value();
+        assert_eq!(longs, [extended(p3), extended(Color::BLUE)]);
+        assert_eq!(longs[0] & 0x3F, 2, "Android's EXTENDED_SRGB");
+        // One color, written twice.
+        assert_eq!(sweep_bytes(&[p3]).2, [p3.value(), p3.value()]);
     }
 
     /// One color is a solid color (written twice, its stop left out).

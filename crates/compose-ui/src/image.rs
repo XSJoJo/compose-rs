@@ -23,7 +23,8 @@ pub enum ImageBitmapConfig {
 /// A bitmap, as Compose's `ImageBitmap`: its size in pixels and its pixels, premultiplied RGBA,
 /// a row after another. Shared (`Arc`): a clone copies nothing, and two clones are the same
 /// image. A decoded or given bitmap's pixels never change; one made to draw into
-/// ([`ImageBitmap::new`]) has pixels that each drawing into it replaces, which every clone sees.
+/// ([`ImageBitmap::new`]) keeps what's drawn into it until its pixels are read, then draws it
+/// all in one pass, into a copy if a renderer holds the pixels it drew; every clone sees it.
 #[derive(Clone)]
 pub struct ImageBitmap {
     width: u32,
@@ -38,11 +39,37 @@ enum Pixels {
 }
 
 struct Drawable {
-    /// The pixels now: a drawing replaces them (a renderer may hold the ones it drew).
-    pixels: Mutex<Arc<[u8]>>,
+    /// Its pixels and the drawings not in them yet, behind one lock: a drawing waits there,
+    /// drawn with the others at the next read, one canvas or thread at a time.
+    drawing: Mutex<Drawing>,
     config: ImageBitmapConfig,
     has_alpha: bool,
     color_space: ColorSpace,
+}
+
+/// A drawable bitmap's pixels and what's to be drawn into them.
+pub(crate) struct Drawing {
+    /// The pixels, as last drawn: replaced by a changed copy when a renderer may hold them.
+    pixels: Arc<[u8]>,
+    /// What canvases drew since, waiting to be drawn at the next read ([`ImageBitmap::pixels`]):
+    /// each canvas's run of drawings in a save of its own, after the canvas's transforms and
+    /// clips. It names no drawable bitmap (a canvas draws a snapshot of one), so drawing it
+    /// reads no other bitmap's lock.
+    pub(crate) pending: crate::display_list::DisplayList,
+    /// The canvas (its id, and its state's version) whose run `pending` ends in, and the saves
+    /// to restore to close it: the next drawing of that canvas in that state joins the run.
+    pub(crate) open: Option<(u64, u64, usize)>,
+}
+
+impl Drawing {
+    /// Closes the open run: restores its saves.
+    pub(crate) fn close(&mut self) {
+        if let Some((_, _, saves)) = self.open.take() {
+            for _ in 0..saves {
+                self.pending.ops.push(crate::display_list::DrawOp::Restore);
+            }
+        }
+    }
 }
 
 impl ImageBitmap {
@@ -78,8 +105,9 @@ impl ImageBitmap {
         color_space: &ColorSpace,
     ) -> ImageBitmap {
         let pixels = vec![0; width as usize * height as usize * 4].into();
+        let drawing = Drawing { pixels, pending: Default::default(), open: None };
         let drawable = Drawable {
-            pixels: Mutex::new(pixels),
+            drawing: Mutex::new(drawing),
             config,
             has_alpha,
             color_space: color_space.clone(),
@@ -119,14 +147,60 @@ impl ImageBitmap {
         }
     }
 
-    /// The pixels now, premultiplied RGBA.
+    /// The pixels now, premultiplied RGBA: what was drawn into it is drawn first.
     pub fn pixels(&self) -> Arc<[u8]> {
         match &self.pixels {
             Pixels::Fixed(pixels) => pixels.clone(),
             Pixels::Drawable(drawable) => {
-                drawable.pixels.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+                let mut drawing = drawable.lock();
+                self.draw_pending(&mut drawing);
+                drawing.pixels.clone()
             }
         }
+    }
+
+    /// Draws what waits in `drawing` into its pixels, with the platform's rasterizer: in place
+    /// if nothing else holds them, else into a copy (a renderer may hold the ones it drew).
+    fn draw_pending(&self, drawing: &mut Drawing) {
+        if drawing.pending.ops.is_empty() {
+            return;
+        }
+        drawing.close();
+        let list = std::mem::take(&mut drawing.pending);
+        let Some(rasterizer) = crate::canvas::rasterizer() else {
+            log::warn!(
+                "compose-ui: no bitmap rasterizer: drawing into a bitmap draws nothing here"
+            );
+            return;
+        };
+        if Arc::get_mut(&mut drawing.pixels).is_none() {
+            drawing.pixels = Arc::from(&drawing.pixels[..]);
+        }
+        let pixels = Arc::get_mut(&mut drawing.pixels).expect("compose-ui: pixels of its own");
+        rasterizer.draw(&list, self.width, self.height, pixels);
+    }
+
+    /// Its pixels as they are now, as a bitmap that doesn't change: what a drawing of it into a
+    /// bitmap reads, as a canvas reads a bitmap when it draws it.
+    pub(crate) fn snapshot(&self) -> ImageBitmap {
+        match &self.pixels {
+            Pixels::Fixed(_) => self.clone(),
+            Pixels::Drawable(_) => ImageBitmap {
+                width: self.width,
+                height: self.height,
+                pixels: Pixels::Fixed(self.pixels()),
+            },
+        }
+    }
+
+    /// Runs `block` on what waits to be drawn into it, its lock held (one drawing at a time):
+    /// `None`, and a warning, for a decoded bitmap, whose pixels don't change.
+    pub(crate) fn with_drawing<R>(&self, block: impl FnOnce(&mut Drawing) -> R) -> Option<R> {
+        let Pixels::Drawable(drawable) = &self.pixels else {
+            log::warn!("compose-ui: a decoded bitmap can't be drawn into");
+            return None;
+        };
+        Some(block(&mut drawable.lock()))
     }
 
     /// An identity for caches of its pixels: the same for clones of one image while its pixels
@@ -153,18 +227,6 @@ impl ImageBitmap {
             (Pixels::Drawable(a), Pixels::Drawable(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
-    }
-
-    /// Replaces the pixels with a copy `draw` changed: a drawing into the bitmap (it may draw
-    /// the bitmap itself: it reads the pixels before). A decoded bitmap's pixels don't change.
-    pub(crate) fn update_pixels(&self, draw: impl FnOnce(&mut [u8])) {
-        let Pixels::Drawable(drawable) = &self.pixels else {
-            log::warn!("compose-ui: a decoded bitmap can't be drawn into");
-            return;
-        };
-        let mut pixels: Arc<[u8]> = Arc::from(&self.pixels()[..]);
-        draw(Arc::get_mut(&mut pixels).expect("compose-ui: a new copy"));
-        *drawable.pixels.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = pixels;
     }
 
     /// Reads a part of its pixels as unpremultiplied ARGB, as `readPixels`: the `width` by
@@ -272,6 +334,12 @@ impl PixelMap {
 
     pub fn stride(&self) -> usize {
         self.stride
+    }
+}
+
+impl Drawable {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Drawing> {
+        self.drawing.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
