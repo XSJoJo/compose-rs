@@ -564,9 +564,7 @@ impl SubcompositionsState {
                 with_the_tree(&handle, root, Some(&mut *tree), leave);
                 let host = tree.id_of(root);
                 let ignoring = tree.ignoring_remeasure.replace(host);
-                for node in gone {
-                    tree.remove_virtual_node(host, node);
-                }
+                tree.remove_virtual_nodes(host, &gone);
                 tree.ignoring_remeasure = ignoring;
             }
             None => {
@@ -574,9 +572,7 @@ impl SubcompositionsState {
                 with_the_tree(&handle, root, None, || {
                     handle.with_applier(|tree: &mut UiTree| {
                         let host = tree.id_of(root);
-                        for node in gone {
-                            tree.remove_virtual_node(host, node);
-                        }
+                        tree.remove_virtual_nodes(host, &gone);
                     });
                 });
             }

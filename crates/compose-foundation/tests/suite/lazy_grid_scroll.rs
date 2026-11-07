@@ -274,3 +274,36 @@ fn an_animated_scroll_with_spacing_follows_a_spring() {
         assert_spring_animation(spacing, (2, 0), (12, 0));
     }
 }
+
+// Release builds only: a debug build's times are too far from a release build's to bound.
+/// A jump back over thousands of new items to thousands composed takes time in proportion to them:
+/// trimming the items' contents once per item, each trim going over all those composed, made a
+/// jump to 10,000 at -2,500 over 2,040 new items of 1 px take 16 s in a release build, 92 times
+/// the first layout of 7,960 items (D1477).
+#[cfg(not(debug_assertions))]
+#[test]
+fn a_jump_back_over_thousands_of_items_takes_time_in_proportion() {
+    let owned = LazyGridState::new(0, 0);
+    let state = *owned;
+    let start = std::time::Instant::now();
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 2000), move || {
+        LazyVerticalGrid!(
+            GridCells::Fixed(4),
+            modifier = Modifier.size((Dp(400.0), Dp(1990.0))),
+            state = state,
+            |scope: LazyGridScope| {
+                scope.items(80_000, |_| Spacer(Modifier.fill_max_width().height(Dp(1.0))));
+            }
+        );
+    });
+    ui.wait_for_idle();
+    let first_layout = start.elapsed();
+    assert_eq!(state.layout_info().visible_items_info.len(), 7960);
+    ui.set_auto_advance(false);
+    state.request_scroll_to_item(10_000, -2_500);
+    let start = std::time::Instant::now();
+    ui.host().frame();
+    let jump = start.elapsed();
+    assert_eq!(state.first_visible_item_index(), 0);
+    assert!(jump < 10 * first_layout, "{jump:?} for a first layout of {first_layout:?}");
+}

@@ -3030,7 +3030,10 @@ impl ItemsMeasurePolicy for StaggeredLayout {
             c.scope.run_after_layout(post_scroll);
         }
         let (apart, _) = state.items_apart(&info.items);
-        state.keep_composed(c.scope, c.composer, &children, composed, &apart, None);
+        // What it shows, as a list's: those it stepped over to reach them leave in a measurement
+        // again (D1312). A lane's first apart from them (a very long item) is kept, not shown.
+        let shown = (least as usize, (most as usize + 1).min(count));
+        state.keep_composed(c.scope, c.composer, &children, composed, &apart, Some(shown));
         c.scope.layout(width, height)
     }
 }

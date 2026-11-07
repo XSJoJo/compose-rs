@@ -1,6 +1,7 @@
-//! What a staggered grid does where Compose's composes as it measures and this one stops and
-//! measures again in the frame's next round (D1469, D1470): that a stop changes nothing, that a
-//! frame shows something, how much is composed, and what's kept.
+//! A staggered grid's long scrolls and jumps, and lanes going off: what the tests of its stops and
+//! rounds (D1469, D1470) pinned that still holds now that it composes its items as it measures, as
+//! Compose's (D1312): what a measurement finds whichever way it's reached, that each frame shows
+//! something, what's composed and kept, and the lanes given out again.
 
 #![allow(non_snake_case)]
 

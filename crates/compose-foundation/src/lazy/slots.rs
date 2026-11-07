@@ -5,7 +5,7 @@
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use compose_runtime::{Callback, SaveableStateHolder, composable};
@@ -44,6 +44,28 @@ impl std::hash::Hasher for IndexHasher {
 
 /// A map by item index or key, with [`IndexHasher`].
 pub(super) type IndexMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<IndexHasher>>;
+
+/// A set of item indices or keys, with [`IndexHasher`].
+pub(super) type IndexSet<K> = HashSet<K, std::hash::BuildHasherDefault<IndexHasher>>;
+
+/// When the item contents kept by key are trimmed to those of the keys still composed: past `most`
+/// and past twice what stayed the last time, so a measurement composing thousands of new items
+/// trims a few times, not once per item (trimming per item, each trim going over all those
+/// composed, a frame composing 2,000 new items beside 8,000 took 13 s in a release build, D1477).
+#[derive(Default)]
+pub(super) struct TrimAt(std::cell::Cell<usize>);
+
+impl TrimAt {
+    /// Whether `held` contents are to be trimmed now, past at least `most`.
+    pub(super) fn due(&self, held: usize, most: usize) -> bool {
+        held >= self.0.get().max(most)
+    }
+
+    /// Trimmed: `left` stayed.
+    pub(super) fn trimmed(&self, left: usize) {
+        self.0.set(2 * left);
+    }
+}
 
 /// A map by item index for a measurement: the items it reaches are mostly next to each other, so
 /// a list from the first one holds them (a look-up is an index), the others (a pinned item far
@@ -176,12 +198,15 @@ pub(super) struct ItemContents {
     contents: RefCell<IndexMap<u64, ItemContent>>,
     /// Each item's content's scope, by key: run again when the list's content changes.
     pub(super) scopes: RefCell<IndexMap<u64, compose_runtime::RecomposeScope>>,
+    /// When `contents` is trimmed next.
+    trim_at: TrimAt,
 }
 
 /// An item's content, and the index its key was last found at.
 pub(super) type ItemContent = (Rc<std::cell::Cell<usize>>, Callback);
 
-/// The contents kept at most; past it, those of keys no longer composed go.
+/// The contents kept before any trim; past it and `TrimAt`'s bound, those of keys no longer
+/// composed go.
 const MOST_CONTENTS: usize = 256;
 
 impl ItemFactory {
@@ -208,11 +233,6 @@ impl ItemFactory {
             near.set(index);
             return content.clone();
         }
-        if contents.len() >= MOST_CONTENTS {
-            let composed: Vec<u64> =
-                inner.children.borrow().iter().map(|item| self.items.0.key(*item)).collect();
-            contents.retain(|key, _| composed.contains(key));
-        }
         let state = self.state;
         let near = Rc::new(std::cell::Cell::new(index));
         let at = near.clone();
@@ -235,6 +255,20 @@ impl ItemFactory {
         });
         contents.insert(key, (near, content.clone()));
         content
+    }
+
+    /// At a measurement's end, `composed` the items it composed: past `MOST_CONTENTS` and
+    /// `TrimAt`'s bound, the contents of the others go. Not while it composes: the contents of
+    /// those it composed before would go too, and they'd compose again when it moves them (D1477).
+    pub(super) fn trim_contents(&self, composed: &[usize]) {
+        let trim_at = &self.contents.trim_at;
+        let mut contents = self.contents.contents.borrow_mut();
+        if !trim_at.due(contents.len(), MOST_CONTENTS) {
+            return;
+        }
+        let keys: IndexSet<u64> = composed.iter().map(|item| self.items.0.key(*item)).collect();
+        contents.retain(|key, _| keys.contains(key));
+        trim_at.trimmed(contents.len());
     }
 
     pub(super) fn count(&self) -> usize {
@@ -468,6 +502,7 @@ pub(super) fn LazyItemsLayout(
             let expected = factory.state.inner_or_detached().children.borrow().len() + 8;
             let mut composer = ItemComposer::new(factory.clone(), expected);
             let result = policy.measure(scope, &mut composer, constraints);
+            factory.trim_contents(&composer.order);
             let inner = factory.state.inner_or_detached();
             *inner.children.borrow_mut() = composer.order;
             result

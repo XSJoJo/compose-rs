@@ -42,17 +42,37 @@ fn a_jump_back_from_its_item_shows_each_frame() {
 }
 
 // Restores `lazy_staggered_grid_stops::a_jump_stopped_before_its_first_item_shows_what_was_placed`
-// (removed by D1313), its third jump. It passes, but its first frame takes about 12 minutes in a
-// debug build: the jump back from an item past the lanes the first layout knows, to the grid's
-// start, is a cliff (a 20,000-item grid's jump to 9,999 at -10,000 takes 700 s, a 10,000-item
-// grid's to 4,999 at -5,000 26 ms).
+// (removed by D1313), its third jump. Its first frame composes the 20,000 items it steps over, as
+// Compose's: about 30 s in a debug build, where trimming the items' contents per item made it
+// about 12 minutes (D1477).
 /// A jump back past the grid's start from an item far from those known shows each frame.
 #[test]
-#[ignore = "a regression: its first frame takes about 12 minutes in a debug build"]
 fn a_jump_back_past_the_start_shows_each_frame() {
     frames_show(&mut grid(4, (400, 1990), 40_000, (0, 0), |_| 1), 8, |state| {
         state.request_scroll_to_item(19_999, -20_000);
     });
+}
+
+// Release builds only: a debug build's times are too far from a release build's to bound.
+/// A frame composing thousands of new items, stepped over beside thousands composed, takes time in
+/// proportion to them: trimming the items' contents once per new item, each trim going over all
+/// those composed, made a 20,000-item grid's jump to 9,999 at -10,000 take 13 s in a release build
+/// (77 times its first layout of 7,960 items) and 706 s in a debug one (D1477).
+#[cfg(not(debug_assertions))]
+#[test]
+fn a_frame_composing_thousands_of_new_items_takes_time_in_proportion() {
+    let start = std::time::Instant::now();
+    let mut grid = grid(4, (400, 1990), 20_000, (0, 0), |_| 1);
+    grid.ui.wait_for_idle();
+    let first_layout = start.elapsed();
+    assert_eq!(laid(grid.state).len(), 7960);
+    grid.ui.set_auto_advance(false);
+    grid.state.request_scroll_to_item(9_999, -10_000);
+    let start = std::time::Instant::now();
+    grid.ui.host().frame();
+    let jump = start.elapsed();
+    assert!(drawn(&mut grid.ui) > 0);
+    assert!(jump < 10 * first_layout, "{jump:?} for a first layout of {first_layout:?}");
 }
 
 // Restores `lazy_staggered_grid_stops::items_between_a_long_item_and_those_in_view_leave` (removed
@@ -61,7 +81,6 @@ fn a_jump_back_past_the_start_shows_each_frame() {
 /// A very long item in a lane doesn't keep what the other lanes pass composed: what's alive is what's
 /// in view, the long item among them, and a few more.
 #[test]
-#[ignore = "a regression: a staggered grid keeps each item a scroll steps over composed"]
 fn items_between_a_long_item_and_those_in_view_leave() {
     let mut grid = grid(4, (400, 800), 8000, (0, 0), |index| if index == 0 { 200_000 } else { 40 });
     grid.ui.wait_for_idle();
@@ -79,7 +98,6 @@ fn items_between_a_long_item_and_those_in_view_leave() {
 /// Past a long item it leaves; a jump back into it, its lane far from the others, composes it again
 /// and few more.
 #[test]
-#[ignore = "a regression: a staggered grid keeps each item a scroll steps over composed"]
 fn a_jump_with_lanes_far_apart_settles() {
     let mut grid =
         grid(4, (400, 800), 12_000, (0, 0), |index| if index == 0 { 60_000 } else { 40 });
