@@ -68,6 +68,7 @@ As of 2026-11-07, `origin/main` is at 659dc01d (12,481 tests).
 | Branch | What | State |
 |---|---|---|
 | `moved-node-fixes` | The moved-node review's findings (nested movable content, detach orders, a panic guard) and a moved shared element's start position | In progress |
+| `style-api` | Compose's style API (`androidx.compose.foundation.style`, D1580 and up, [design](design/style-api.md)): step 1 (values, scope, resolution, the applying modifiers, the states) done; then animation between states (2), the text locals (3) | In progress |
 | `multi-paragraph` | The rest of the paragraph API: paragraph styles in `AnnotatedString` and `MultiParagraph`, then `getRangeForRect` and `fillBoundingBoxes` (D2047 and up), one commit per step | In progress |
 
 Next, once those land: `DeferredSharedElementTest`, the moved shared element that doesn't animate from its old place, and the shared elements of `LookaheadScopeTest` and Navigation 3; touch selection's bidi tests (`TextSelectionGesturesBidiTest`); graphics leftovers (`ImageShader`, BrushPainter, FilterQuality); place-with-layer leftovers (zIndex, hit testing through layer transforms); style API, border parity, AndroidView interop, magnifier, autofill. missing.md has the full list.

@@ -12,17 +12,17 @@ What Compose's `compose/foundation/foundation` tests and public API in this area
 
 | Status | Files | @Test |
 |---|---:|---:|
-| `ported` | 75 | 985 |
+| `ported` | 81 | 1,045 |
 | `covered` | 11 | 59 |
 | `port` | 18 | 146 |
-| `partial` | 49 | 1,480 |
-| `feature:<name>` | 94 | 1,237 |
+| `partial` | 53 | 1,563 |
+| `feature:<name>` | 84 | 1,094 |
 | `n/a` | 83 | 1,030 |
 | **Total** | **330** | **4,937** |
 
 Of the `n/a` tests, 578 (53 files) test the **deprecated** value-based `BasicTextField` and its internals (see below) or `ClickableText`/`onFocusedBoundsChanged`, 389 (23 files) test Compose-internal data structures or helpers whose behaviour other files check through public API, and 28 (4 files) test Compose's own test infrastructure or compare a golden image. Three rows (`textfield/TextFieldContextMenuTest` and `textfield/TextFieldTextContextMenuBuilderTest`, `partial`, and `textfield/TextFieldToolbarTest`, `feature:`) mix the legacy and state-based fields: their 41 legacy (`btf1`) tests are n/a too.
 
-By feature, the `feature:` rows wait on: `touch-text-selection` 42 (2), `android-ime` 170 (13), `text-field-state` 118 (8), `style-api` 159 (9), `handwriting` 84 (6), `border-parity` 79 (3), `magnifier` 78 (5), `text-field-styles` 67 (4), `polygon-shapes` 64 (4), `text-links` 56 (3), `content-receiver` 40 (4), `selection-state` 34 (1), `drag-and-drop` 31 (4), `clickable-parity` 26 (4), `basic-marquee` 23 (1), `android-external-surface` 20 (2), `android-window-rects` 16 (2), `text-auto-size` 15 (1), `shapes` 14 (1), `smart-selection` 13 (4), `background-text-measurement` 11 (1), `cursor-blink` 11 (2), `basic-tooltip` 8 (1), `dead-keys` 6 (1), `inline-content` 6 (1), `ui-text-substitution` 6 (2), `bring-into-view-requester` 4 (1), `ui-text-async-fonts` 4 (1), `basic-text-drawing` 3 (1). The `partial` rows add more demand on `clickable-parity`, `focusable-parity` and `image-painter`, and on ui's input mode and indirect pointers (`ClickableTest`, `CombinedClickableTest`, `ToggleableTest`, `SelectableTest` and `FocusableTest`'s remaining scenarios).
+By feature, the `feature:` rows wait on: `touch-text-selection` 42 (2), `android-ime` 170 (13), `text-field-state` 118 (8), `style-api` 45 (1), `handwriting` 84 (6), `border-parity` 79 (3), `magnifier` 78 (5), `text-field-styles` 67 (4), `polygon-shapes` 64 (4), `text-links` 56 (3), `content-receiver` 40 (4), `selection-state` 34 (1), `drag-and-drop` 31 (4), `clickable-parity` 26 (4), `basic-marquee` 23 (1), `android-external-surface` 20 (2), `android-window-rects` 16 (2), `text-auto-size` 15 (1), `shapes` 14 (1), `smart-selection` 13 (4), `background-text-measurement` 11 (1), `cursor-blink` 11 (2), `basic-tooltip` 8 (1), `dead-keys` 6 (1), `inline-content` 6 (1), `ui-text-substitution` 6 (2), `bring-into-view-requester` 4 (1), `ui-text-async-fonts` 4 (1), `basic-text-drawing` 3 (1). The `partial` rows add more demand on `clickable-parity`, `focusable-parity` and `image-painter`, and on ui's input mode and indirect pointers (`ClickableTest`, `CombinedClickableTest`, `ToggleableTest`, `SelectableTest` and `FocusableTest`'s remaining scenarios).
 
 **The value-based `BasicTextField` is deprecated.** At this commit both `BasicTextField(value: String, onValueChange, …)` and `BasicTextField(value: TextFieldValue, …)` are `@Deprecated("Use the BasicTextField(state: TextFieldState, ...) overload instead …")` (`BasicTextField.kt` lines 799 and 970). compose-rs's only text field is the `String` one (D96). So its tests (`textfield/**`, `text/CoreTextField*`, the `Legacy*` IME tests and the legacy internals) are `n/a` here, and the state-based field's tests (`text/input/**`) wait on `text-field-state`, even where compose-rs's field already does what they check (the rows say so). `KeyboardActions`, `KeyboardOptions` and `VisualTransformation` aren't deprecated themselves, but in foundation only the deprecated field takes `KeyboardActions` and `VisualTransformation`.
 
@@ -127,9 +127,9 @@ Paths are relative to `frameworks/support`. A status cites the compose-rs tests 
 
 | File (relative to `frameworks/support`) | @Test | Covers | Status |
 |---|---:|---|---|
-| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/style/StyleEquivalenceTests.kt` | 18 | styles draw the same as the equivalent modifiers (background, border, padding, shape, alpha, size, color filter) | feature:style-api |
-| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/style/StyleLayoutTest.kt` | 29 | style layout properties (padding, sizes, min/max, fill, fractions) | feature:style-api |
-| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/style/StyleResolverNodeTest.kt` | 8 | style resolver node reuse and resolver swaps | feature:style-api |
+| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/style/StyleEquivalenceTests.kt` | 18 | styles draw the same as the equivalent modifiers (background, border, padding, shape, alpha, size, color filter) | partial — `compose-skia/tests/suite/style_equivalence.rs`: 17, pixel by pixel, through the resolver chain and the predefined properties (D1580); left: `colorFilter` (compose-rs's layers have no color filter) |
+| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/style/StyleLayoutTest.kt` | 29 | style layout properties (padding, sizes, min/max, fill, fractions) | partial — `style_layout.rs`: 27, through the resolver chain (D1580); left: `testAnimationCleanup` (animation, step 2 of the design), `testText_simple_text` (text locals, step 3) |
+| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/style/StyleResolverNodeTest.kt` | 8 | style resolver node reuse and resolver swaps | ported: 8 (`style_resolver_node.rs`, D1583) |
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/style/StyleUxTaskTests.kt` | 45 | end-to-end style tasks (states, animation, nesting) | feature:style-api |
 
 ### text (BasicText, legacy field internals, keyboard): 49 files, 322 tests
@@ -389,11 +389,11 @@ Each test of these also checks the text toolbar (the ports check it on the test 
 | `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/contextmenu/ContextMenuPopupPositionProviderTest.kt` | 18 | (internal) context menu popup positioning in the window, LTR/RTL, affinities | ported: 18 (`context_menu_position.rs`, D2034) |
 | `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/contextmenu/ContextMenuStateTest.kt` | 7 | (internal) context menu state open/closed and equality | ported: 7 (`context_menu_position.rs`, D2034; the two equalities with null and another type are one: Rust compares a state with a state) |
 | `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/shape/ShapeInterpolationTests.kt` | 14 | lerp between rounded, cut, absolute and rectangle shapes | feature:shapes |
-| `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/style/CommonStyleTest.kt` | 7 | combining `CommonStyle`s | feature:style-api |
-| `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/style/StyleCollectorTest.kt` | 26 | style collection: custom properties, states, layers, animation | feature:style-api |
-| `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/style/StylePropertyTest.kt` | 10 | style properties of each type, animated | feature:style-api |
-| `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/style/StyleResolverNodeTest.kt` | 3 | style resolver element equality and binding | feature:style-api |
-| `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/style/StyleStateTest.kt` | 13 | `StyleState` predefined and custom states, observation | feature:style-api |
+| `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/style/CommonStyleTest.kt` | 7 | combining `CommonStyle`s | ported: 7 (`style_host.rs`) |
+| `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/style/StyleCollectorTest.kt` | 26 | style collection: custom properties, states, layers, animation | partial — `style_host.rs`: 21 (`can_create_a_collector` covered: every test makes one); left: the 4 animations (step 2 of the design) |
+| `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/style/StylePropertyTest.kt` | 10 | style properties of each type, animated | partial — `style_host.rs`: 9; left: `can_animate_an_shape_property` (shapes jump: `shapes`) |
+| `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/style/StyleResolverNodeTest.kt` | 3 | style resolver element equality and binding | ported: 3 (`style_resolver_node.rs`: element equality, the swap tests, binding on attach) |
+| `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/style/StyleStateTest.kt` | 13 | `StyleState` predefined and custom states, observation | ported: 13 (`style_host.rs`) |
 | `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/KeyboardOptionsTest.kt` | 7 | `KeyboardOptions.toImeOptions`, unspecified values, `merge`/`fillUnspecifiedValuesWith` | partial — 7 ported (`compose-foundation/tests/suite/text_field_transformation.rs`) without `platformImeOptions`, `showKeyboardOnFocus` and `hintLocales`, which `KeyboardOptions` lacks (`keyboard-options-parity`) |
 | `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/LegacyTextFieldStateTest.kt` | 1 | legacy field state: layout result is snapshot state | n/a: deprecated value-based `BasicTextField` |
 | `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/LinkStateInteractionSourceObserverTest.kt` | 10 | (internal) link state from focus/hover/press interactions | feature:text-links — with `interactions` |
@@ -520,7 +520,7 @@ From `api/current.txt`, every public, non-deprecated API in this area that compo
 
 ### `androidx.compose.foundation.style` *(experimental, `ExperimentalFoundationStyleApi`)*
 
-`Modifier.appearance`/`placement`/`graphicsLayer(layerRequired, block)` and their `StyleResolver` forms (`styleAppearance`, `stylePlacement`, `styleGraphicsLayer`, `styleBorderPadding`, `styleContentPadding`, `styleExternalPadding`, `styleResolver`), `CommonStyle` (+ combinators, `then`), `CustomStyle`, `CustomStyleScope`, `CommonStyleScope`, `AnimateStyleScope`, `StyleState`/`MutableStyleState`, `StyleStateKey`, `StyleProperty`/`ProvidableStyleProperty`, `StyleResolver`, `NestedStyleKey`, `Breadth`, `Fill`, `Shadows`, `AppearanceScope`, `PlacementModifierScope`: all missing (`style-api`). `Modifier.styleable` and the `Style`/`*Scope` interfaces of the first design are deprecated.
+`Modifier.appearance`/`placement`/`graphicsLayer(layerRequired, block)` (`graphics_layer_when`) and their `StyleResolver` forms (`style_appearance`, `style_placement`, `style_graphics_layer`, `style_border_padding`, `style_content_padding`, `style_external_padding`, `style_resolver`, a `StyleModifier` trait), `CommonStyle` (+ `of`, `then`), `CustomStyle`, `CustomStyleScope`, `CommonStyleScope` (one trait for Compose's six scopes, D1582), `StyleState`/`MutableStyleState`, `StyleStateKey`, `StyleProperty`/`ProvidableStyleProperty`, `StyleResolver`, `NestedStyleKey`, `Breadth`, `Fill`, `Shadows`, `AppearanceScope`, `PlacementModifierScope`, `rememberUpdatedStyleState`: present (`compose_foundation::style`, D1580 to D1584), the predefined properties public (`style::properties`, Compose's are internal). `AnimateStyleScope`'s animations: step 2 (`style-api`). Not applied yet: rotations about X and Y, the camera distance and the color filter of the style layer. `Modifier.styleable` and the `Style`/`*Scope` interfaces of the first design are deprecated: n/a.
 
 ### `androidx.compose.foundation.text`
 
@@ -725,6 +725,7 @@ Sizes: S under a day, M a few days, L a week or two, XL multi-week. "Other area"
 - **What:** declarative, state-aware, animatable styles applied through a `StyleResolver` (`Modifier.appearance`, `placement`, `styleAppearance`, …), equivalent to background, border, padding, size, shape, alpha, text style modifiers.
 - **Tests:** `style/*` (device and host).
 - **Depends on:** `shapes`, `border-parity`, `interactions` (style states such as pressed and hovered).
+- **Done (step 1 of [the design](design/style-api.md), D1580 to D1584):** properties (`StyleProperty`, `style_property_of`, `style_local_of`, `Fill`, `Breadth`, `Shadows`, the predefined ones public in `style::properties`), `CommonStyle` and its scope (states, layers, nested styles, composition locals), `StyleState`/`MutableStyleState`/`StyleStateKey` with the interaction source, `StyleResolver` and `Modifier::style_resolver` (eager collection, per-property states: a drawing change draws, a layout change measures, a layer change updates the layer), `appearance`/`placement`/`graphics_layer_when` and their `style_*` forms, the style paddings. **Left:** animation between states (2), the text locals and content color (3).
 - **Size:** XL. **Experimental:** yes (`ExperimentalFoundationStyleApi`).
 
 ### text-field-state
