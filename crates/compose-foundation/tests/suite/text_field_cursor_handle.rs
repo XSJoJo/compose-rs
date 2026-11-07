@@ -423,7 +423,7 @@ fn char_offset(text: &str, chars: usize) -> usize {
 
 fn hebrew_field(text: &'static str) -> (TextFieldState, ComposeTestRule) {
     let state = state_with(text, TextRange::ZERO);
-    (state, field(state, Modifier.width(100.dp())))
+    (state, rtl_field(state, Modifier.width(100.dp())))
 }
 
 fn click_top_right(ui: &mut ComposeTestRule, inset: f32) {
@@ -679,4 +679,79 @@ fn a_field_scrolled_out_of_its_container_shows_no_handle() {
     });
     ui.wait_for_idle();
     assert_cursor_handle_shown(&mut ui);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldCursorHandleTest.kt, moveCursorHandleToRight_rtl_outOfBounds
+#[test]
+fn moveCursorHandleToRight_rtl_outOfBounds() {
+    let state = state_of(SHORT_HEBREW);
+    let mut ui = rtl_field(state, Modifier.width(50.dp()));
+    focus(&mut ui);
+    click(&mut ui, Offset::new(1.0, 1.0));
+    assert_cursor_handle_shown(&mut ui);
+    let width = field_width(&mut ui);
+    drag_cursor_handle(&mut ui, false, width * 2.0, 1000);
+    assert_eq!(state.selection(), TextRange::ZERO);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldCursorHandleTest.kt, moveCursorHandleToLeft_rtl_outOfBounds
+#[test]
+fn moveCursorHandleToLeft_rtl_outOfBounds() {
+    let state = state_of(SHORT_HEBREW);
+    let mut ui = rtl_field(state, Modifier.width(50.dp()));
+    focus(&mut ui);
+    click_top_right(&mut ui, 1.0);
+    assert_cursor_handle_shown(&mut ui);
+    let width = field_width(&mut ui);
+    drag_cursor_handle(&mut ui, true, width * 2.0, 1000);
+    assert_eq!(state.selection(), TextRange::at(SHORT_HEBREW.len()));
+}
+
+const WORDS_HEBREW: &str = "\u{05D0}\u{05D1}\u{05D2}\u{05D3} \u{05D0}\u{05D1}\u{05D2}\u{05D3} \u{05D0}\u{05D1}\u{05D2}\u{05D3} \u{05D0}\u{05D1}\u{05D2}\u{05D3}";
+
+/// A right-to-left single line 100 dp wide over `WORDS_HEBREW`, scrolled by `scroll`.
+fn rtl_single_line(state: TextFieldState, scroll: Option<ScrollState>) -> ComposeTestRule {
+    touch_rule(move || {
+        compose_runtime::CompositionLocalProvider(
+            compose_ui::LOCAL_LAYOUT_DIRECTION.provides(compose_ui::LayoutDirection::Rtl),
+            move || {
+                BasicTextFieldOfState!(
+                    state,
+                    modifier = Modifier.test_tag(TAG).width(100.dp()),
+                    text_style = TextStyle { font_size: 10.sp(), ..TextStyle::DEFAULT },
+                    line_limits = TextFieldLineLimits::SingleLine,
+                    scroll_state = scroll,
+                );
+            },
+        );
+    })
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldCursorHandleTest.kt, moveCursorHandleToLeft_rtl_outOfBounds_scrollable_continuesDrag
+#[test]
+fn moveCursorHandleToLeft_rtl_outOfBounds_scrollable_continuesDrag() {
+    let state = state_of(WORDS_HEBREW);
+    let mut ui = rtl_single_line(state, None);
+    focus(&mut ui);
+    click_top_right(&mut ui, 1.0);
+    assert_cursor_handle_shown(&mut ui);
+    let width = field_width(&mut ui);
+    drag_cursor_handle(&mut ui, true, width * 3.0, 1000);
+    assert_eq!(state.selection(), TextRange::at(WORDS_HEBREW.len()));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldCursorHandleTest.kt, moveCursorHandleToLeft_rtl_outOfBounds_scrollable
+#[test]
+fn moveCursorHandleToLeft_rtl_outOfBounds_scrollable() {
+    let state = state_with(WORDS_HEBREW, TextRange::ZERO);
+    let scroll = scroll_state();
+    let mut ui = rtl_single_line(state, Some(scroll));
+    focus(&mut ui);
+    ui.on_node_with_tag(TAG).perform_touch_input(|touch| touch.click_at(touch.top_right()));
+    ui.wait_for_idle();
+    assert_cursor_handle_shown(&mut ui);
+    drag_cursor_handle(&mut ui, true, 10.0 * 12.0, 1);
+    assert_eq!(state.selection(), TextRange::at(char_offset(WORDS_HEBREW, 12)));
+    drag_cursor_handle(&mut ui, true, 10.0 * 2.0, 1);
+    assert_eq!(state.selection(), TextRange::at(char_offset(WORDS_HEBREW, 14)));
 }
