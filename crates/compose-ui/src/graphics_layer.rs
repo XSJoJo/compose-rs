@@ -478,16 +478,29 @@ impl std::fmt::Debug for LayerBlock {
 impl GraphicsLayerNode {
     /// `Modifier.clip(shape)`'s layer (a built-in element's node).
     pub(crate) fn clip(shape: Shape) -> GraphicsLayerNode {
-        GraphicsLayerNode::of(Layer::Fixed(GraphicsLayerScope {
-            shape,
-            clip: true,
-            ..Default::default()
-        }))
+        GraphicsLayerNode {
+            layer: Layer::Fixed(GraphicsLayerScope { shape, clip: true, ..Default::default() }),
+            outline: Default::default(),
+            positional: Cell::new(None),
+            transparent: Cell::new(false),
+            ran: Cell::new(None),
+            ran_shape: std::cell::RefCell::new(Shape::Rectangle),
+            last_outline: Default::default(),
+        }
     }
 
-    /// A placement's layer, running `block` (D1909).
+    /// A placement's layer, running `block` (D1909). Each constructor builds its node in place:
+    /// a `Layer` passed by value to a shared one was a copy in each `clip` and element's node.
     pub(crate) fn placed(block: LayerBlock) -> GraphicsLayerNode {
-        GraphicsLayerNode::of(Layer::Block(block.0))
+        GraphicsLayerNode {
+            layer: Layer::Block(block.0),
+            outline: Default::default(),
+            positional: Cell::new(None),
+            transparent: Cell::new(false),
+            ran: Cell::new(None),
+            ran_shape: std::cell::RefCell::new(Shape::Rectangle),
+            last_outline: Default::default(),
+        }
     }
 
     /// Whether it runs `block`.
@@ -501,18 +514,6 @@ impl GraphicsLayerNode {
         match std::mem::replace(&mut self.layer, Layer::Block(block.0)) {
             Layer::Block(old) => Some(LayerBlock(old)),
             _ => None,
-        }
-    }
-
-    fn of(layer: Layer) -> GraphicsLayerNode {
-        GraphicsLayerNode {
-            layer,
-            outline: Default::default(),
-            positional: Cell::new(None),
-            transparent: Cell::new(false),
-            ran: Cell::new(None),
-            ran_shape: std::cell::RefCell::new(Shape::Rectangle),
-            last_outline: Default::default(),
         }
     }
 
@@ -851,7 +852,15 @@ fn faded(color: Color, alpha: f32) -> Color {
 impl ModifierNodeElement for GraphicsLayerElement {
     type Node = GraphicsLayerNode;
     fn create(&self) -> GraphicsLayerNode {
-        GraphicsLayerNode::of(self.0.clone())
+        GraphicsLayerNode {
+            layer: self.0.clone(),
+            outline: Default::default(),
+            positional: Cell::new(None),
+            transparent: Cell::new(false),
+            ran: Cell::new(None),
+            ran_shape: std::cell::RefCell::new(Shape::Rectangle),
+            last_outline: Default::default(),
+        }
     }
 
     fn update(&self, node: &mut GraphicsLayerNode) {
