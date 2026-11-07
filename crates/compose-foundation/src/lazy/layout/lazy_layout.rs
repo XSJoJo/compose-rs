@@ -13,9 +13,7 @@ use compose_ui::subcompose::{
 };
 use compose_ui::{Constraints, Measurable, MeasureResult, MeasureScope, Modifier};
 
-use super::super::slots::{
-    IndexMap, IndexSet, ItemComposer, ItemContent, LazyItemReusePolicy, SlotSource, TrimAt,
-};
+use super::super::slots::{ItemComposer, ItemContents, LazyItemReusePolicy, SlotSource};
 use super::prefetch_state::LazyLayoutPrefetchState;
 
 /// What a [`LazyLayout`] shows, as Compose's `LazyLayoutItemProvider`: how many items, each one's
@@ -133,24 +131,11 @@ pub(in crate::lazy) struct ProviderSource {
     /// The provider the layout was last composed or measured with.
     provider: RefCell<Rc<dyn LazyLayoutItemProvider>>,
     holder: SaveableStateHolder,
-    /// Each key's content, and the index it was last found at.
-    contents: RefCell<IndexMap<u64, ItemContent>>,
-    /// Each key's content's scope: run again when the provider changes, as Compose's content reads
-    /// `itemProvider()`, a state. Bounded as `contents` is, and pruned with it: past
-    /// `MOST_CONTENTS` and `trim_scopes`, only those of keys the last measurement composed stay (a key dropped gets
-    /// a new content, which composes anew).
-    scopes: RefCell<IndexMap<u64, compose_runtime::RecomposeScope>>,
-    /// The items the last measurement composed: the contents of the others go past
-    /// `MOST_CONTENTS`.
-    composed: RefCell<IndexSet<u64>>,
-    /// When `contents` and when `scopes` are trimmed next.
-    trim_contents: TrimAt,
-    trim_scopes: TrimAt,
+    /// Each key's content and the index it was last found at, and its content's scope: run again
+    /// when the provider changes, as Compose's content reads `itemProvider()`, a state. Trimmed at
+    /// a measurement's end to the keys it composed, as a list's are.
+    contents: ItemContents,
 }
-
-/// The contents kept before any trim; past it and `TrimAt`'s bound, those of keys the last
-/// measurement didn't compose go.
-const MOST_CONTENTS: usize = 256;
 
 impl ProviderSource {
     fn provider(&self) -> Rc<dyn LazyLayoutItemProvider> {
@@ -163,9 +148,14 @@ impl ProviderSource {
             return;
         }
         *self.provider.borrow_mut() = provider;
-        for (_, scope) in self.scopes.borrow_mut().drain() {
+        for (_, scope) in self.contents.scopes.borrow_mut().drain() {
             scope.invalidate();
         }
+    }
+
+    /// `ItemContents::held`, for tests.
+    pub(super) fn contents_held(&self) -> (usize, usize, usize) {
+        self.contents.held()
     }
 }
 
@@ -183,42 +173,22 @@ impl SlotSource for ProviderSource {
     }
 
     fn content_of(&self, index: usize, key: u64) -> Callback {
-        let mut contents = self.contents.borrow_mut();
+        let mut contents = self.contents.contents.borrow_mut();
         if let Some((near, content)) = contents.get(&key) {
             near.set(index);
             return content.clone();
-        }
-        if self.trim_contents.due(contents.len(), MOST_CONTENTS) {
-            let composed = self.composed.borrow();
-            contents.retain(|key, _| composed.contains(key));
-            self.trim_contents.trimmed(contents.len());
-            let mut scopes = self.scopes.borrow_mut();
-            scopes.retain(|key, _| composed.contains(key));
-            self.trim_scopes.trimmed(scopes.len());
         }
         let near = Rc::new(Cell::new(index));
         let at = near.clone();
         let this = self.this.clone();
         let content = Callback::new(move || {
             let Some(source) = this.upgrade() else { return };
-            {
-                // One per key composed, kept as the contents are: past `MOST_CONTENTS`, only
-                // those of the keys the last measurement composed stay.
-                let mut scopes = source.scopes.borrow_mut();
-                if source.trim_scopes.due(scopes.len(), MOST_CONTENTS) && !scopes.contains_key(&key)
-                {
-                    // A key's scope and content go together: one composed again takes a new
-                    // content, which composes with the provider as it is then.
-                    let composed = source.composed.borrow();
-                    scopes.retain(|it, _| *it == key || composed.contains(it));
-                    source.trim_scopes.trimmed(scopes.len());
-                    if let Ok(mut contents) = source.contents.try_borrow_mut() {
-                        contents.retain(|it, _| *it == key || composed.contains(it));
-                        source.trim_contents.trimmed(contents.len());
-                    }
-                }
-                scopes.insert(key, compose_runtime::current_recompose_scope());
-            }
+            // One per key composed, trimmed with the contents at a measurement's end.
+            source
+                .contents
+                .scopes
+                .borrow_mut()
+                .insert(key, compose_runtime::current_recompose_scope());
             let provider = source.provider();
             let mut index = at.get();
             if index >= provider.item_count() || provider.key(index) != key {
@@ -291,11 +261,7 @@ pub fn LazyLayout(
             this: this.clone(),
             provider: RefCell::new(provider.clone()),
             holder,
-            contents: RefCell::default(),
-            scopes: RefCell::default(),
-            composed: RefCell::default(),
-            trim_contents: TrimAt::default(),
-            trim_scopes: TrimAt::default(),
+            contents: ItemContents::default(),
         })
     });
     source.set_provider(provider.clone());
@@ -324,8 +290,8 @@ pub fn LazyLayout(
             let composer = ItemComposer::new(source.clone(), 8);
             let mut scope = LazyLayoutMeasureScope { scope, composer };
             let result = policy.measure(&mut scope, constraints);
-            let composed = scope.composer.composed_keys();
-            *source.composed.borrow_mut() = composed.into_iter().collect();
+            let composer = &scope.composer;
+            source.contents.trim(|| composer.composed_keys());
             result
         })
     });

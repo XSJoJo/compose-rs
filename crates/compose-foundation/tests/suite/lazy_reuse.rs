@@ -809,3 +809,60 @@ fn a_one_item_viewports_item_reused_after_a_jump_is_placed() {
             .assert_top_position_in_root_is_equal_to(0.dp());
     }
 }
+
+/// A list keeps its items' contents by key and their scopes, which run again when its items
+/// change: both are trimmed to the items a measurement composed, so a long scroll keeps a bounded
+/// number of them, not one scope per key it ever composed (D1477).
+#[test]
+fn a_long_scroll_keeps_a_bounded_number_of_item_contents_and_scopes() {
+    use compose_foundation::layout::*;
+    let state = LazyListState::new(0, 0);
+    let list = *state;
+    let mut ui = ComposeTestRule::sized(IntSize::new(200, 200), move || {
+        LazyColumn!(
+            modifier = Modifier.size((100.dp(), 100.dp())),
+            state = list,
+            |scope: LazyListScope| {
+                scope.items(100_000, |_| Spacer(Modifier.size((100.dp(), 10.dp()))));
+            }
+        );
+    });
+    ui.wait_for_idle();
+    for _ in 0..300 {
+        state.dispatch_raw_delta(100.0);
+        ui.wait_for_idle();
+    }
+    // About 3,000 keys composed, 10 or so at a time.
+    assert!(state.first_visible_item_index() >= 2_900);
+    let (contents, scopes, _) = state.item_contents_held();
+    assert!(contents <= 300, "{contents} contents kept");
+    assert!(scopes <= 300, "{scopes} scopes kept");
+}
+
+/// The contents kept by key are trimmed past twice what stayed the last time: a list showing 400
+/// items, scrolled an item at a time, trims once per 400 or so new keys, not at each measurement
+/// (D1477).
+#[test]
+fn a_list_showing_hundreds_of_items_trims_their_contents_once_per_as_many_new_keys() {
+    use compose_foundation::layout::*;
+    let state = LazyListState::new(0, 0);
+    let list = *state;
+    let mut ui = ComposeTestRule::sized(IntSize::new(200, 500), move || {
+        LazyColumn!(
+            modifier = Modifier.size((100.dp(), 400.dp())),
+            state = list,
+            |scope: LazyListScope| {
+                scope.items(100_000, |_| Spacer(Modifier.size((100.dp(), 1.dp()))));
+            }
+        );
+    });
+    ui.wait_for_idle();
+    let (_, _, trims) = state.item_contents_held();
+    for _ in 0..40 {
+        state.dispatch_raw_delta(10.0);
+        ui.wait_for_idle();
+    }
+    let (contents, _, after) = state.item_contents_held();
+    assert!(after - trims <= 1, "{} trims in 40 measurements", after - trims);
+    assert!(contents <= 1_000, "{contents} contents kept");
+}

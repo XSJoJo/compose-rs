@@ -992,6 +992,49 @@ fn pinning_an_item_pins_the_container_around_it_and_leaving_lets_both_go() {
     assert_eq!(parent_pins.get(), 0);
 }
 
+/// A measurement composing more items than are kept before a trim keeps the contents and scopes
+/// of all it composed: trimmed while it composed, those of the first it composed went, and their
+/// slots took new contents at the next measurement (D1477).
+#[test]
+fn a_measurement_composing_hundreds_of_items_keeps_all_their_contents() {
+    let prefetch = LazyLayoutPrefetchState::new();
+    let given = prefetch.clone();
+    let again = mutable_state_of(0);
+    let handle = again.handle();
+    let policy = lazy_layout_measure_policy(move |scope, _| {
+        handle.get();
+        for index in 0..400 {
+            let _ = scope.compose(index);
+        }
+        scope.layout(10, 10)
+    });
+    let composed = Rc::new(Cell::new(0));
+    let counted = composed.clone();
+    let items = provider(
+        || 400,
+        move |_| {
+            counted.set(counted.get() + 1);
+            Box!(modifier = Modifier.size(1.dp()));
+        },
+    );
+    let mut ui = ComposeTestRule::sized(IntSize::new(100, 100), move || {
+        let items = items.clone();
+        LazyLayout!(
+            move || items.clone(),
+            prefetch_state = Some(given.clone()),
+            measure_policy = policy.clone()
+        );
+    });
+    ui.wait_for_idle();
+    assert_eq!(composed.get(), 400);
+    // Trimmed once, at its end, keeping all it composed: the next trim is past twice as many.
+    assert_eq!(prefetch.item_contents_held(), (400, 400, 1));
+    again.set(1);
+    ui.wait_for_idle();
+    assert_eq!(composed.get(), 400, "no item composed again");
+    assert_eq!(prefetch.item_contents_held(), (400, 400, 1));
+}
+
 // Release builds only: a debug build's times are too far from a release build's to bound.
 /// A measurement composing thousands of items beside thousands composed takes time in proportion
 /// to them: trimming the items' contents once per item, each trim going over all those composed,

@@ -2320,3 +2320,162 @@ pub(crate) fn short_type_name(name: &'static str) -> &'static str {
     let name = name.split('<').next().unwrap_or(name);
     name.rsplit("::").next().unwrap_or(name)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use compose_runtime::platform::Applier;
+
+    use super::{LayoutNode, NodeId, UiTree};
+    use crate::layout::StackMeasurePolicy;
+    use crate::unit::Density;
+
+    /// A small deterministic generator (SplitMix64): a failing seed fails the same way again.
+    struct Random(u64);
+
+    impl Random {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+
+        /// One of `0..n`.
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+
+        fn chance(&mut self, one_in: usize) -> bool {
+            self.below(one_in) == 0
+        }
+    }
+
+    fn layout_node() -> LayoutNode {
+        LayoutNode::new(Rc::new(StackMeasurePolicy))
+    }
+
+    /// The host's virtual nodes and their children against `model`: each virtual node's in order,
+    /// the host's all of them in that order, and each one's parents.
+    fn check(tree: &UiTree, host: NodeId, model: &[(NodeId, Vec<NodeId>)], step: &str) {
+        let value = tree.node(host);
+        let slots: Vec<NodeId> = model.iter().map(|(slot, _)| *slot).collect();
+        assert_eq!(value.virtual_children, slots, "virtual children after {step}");
+        let all: Vec<NodeId> = model.iter().flat_map(|(_, children)| children.clone()).collect();
+        let children: Vec<NodeId> = value.children.iter().map(|child| child.node).collect();
+        assert_eq!(children, all, "host's children after {step}");
+        for (slot, expected) in model {
+            let value = tree.node(*slot);
+            assert_eq!(value.parent, Some(host), "{slot:?}'s parent after {step}");
+            let children: Vec<NodeId> = value.children.iter().map(|child| child.node).collect();
+            assert_eq!(&children, expected, "{slot:?}'s children after {step}");
+            for child in expected {
+                let value = tree.node(*child);
+                assert_eq!(value.parent, Some(host), "{child:?}'s parent after {step}");
+                assert_eq!(value.virtual_parent, Some(*slot), "{child:?}'s slot after {step}");
+            }
+        }
+    }
+
+    /// Virtual nodes of 0 to 3 children each added, moved (next to each other both ways, and
+    /// anywhere) and removed (the first, the last, both, all, or any of them; in order or the
+    /// other way; named twice or freed already) at random, against a model: the host's children
+    /// follow its virtual nodes', each in its place, and those removed are freed (D1477's moves
+    /// and removals in one pass).
+    #[test]
+    fn random_adds_moves_and_removes_match_a_model() {
+        for seed in 0..4 {
+            let mut random = Random(seed);
+            let mut tree = UiTree::new(
+                Density::new(1.0),
+                Box::new(crate::fixed_text::FixedTextMeasurer::new()),
+            );
+            let root = tree.root_id();
+            let host = NodeId::from_ref(tree.insert(root.to_ref(), 0, layout_node()));
+            let mut model: Vec<(NodeId, Vec<NodeId>)> = Vec::new();
+            let mut freed: Vec<NodeId> = Vec::new();
+            for step in 0..400 {
+                let len = model.len();
+                let kind = if len < 2 { 0 } else { random.below(5) };
+                let step = match kind {
+                    0 | 1 => {
+                        let at = random.below(len + 1);
+                        let slot = tree.add_virtual_node(host, at);
+                        let children = (0..random.below(4))
+                            .map(|index| {
+                                NodeId::from_ref(tree.insert(slot.to_ref(), index, layout_node()))
+                            })
+                            .collect();
+                        model.insert(at, (slot, children));
+                        format!("step {step} (seed {seed}): add at {at}")
+                    }
+                    2 => {
+                        let low = random.below(len - 1);
+                        let (from, to) =
+                            if random.chance(2) { (low, low + 1) } else { (low + 1, low) };
+                        tree.move_virtual_node(host, from, to);
+                        let slot = model.remove(from);
+                        model.insert(to, slot);
+                        format!("step {step} (seed {seed}): move next to it, {from} to {to}")
+                    }
+                    3 => {
+                        let (from, to) = (random.below(len), random.below(len));
+                        tree.move_virtual_node(host, from, to);
+                        let slot = model.remove(from);
+                        model.insert(to, slot);
+                        format!("step {step} (seed {seed}): move {from} to {to}")
+                    }
+                    _ => {
+                        let which = random.below(5);
+                        let mut gone: Vec<usize> = match which {
+                            0 => vec![0],
+                            1 => vec![len - 1],
+                            2 => vec![0, len - 1],
+                            3 => (0..len).collect(),
+                            _ => (0..len).filter(|_| random.chance(2)).collect(),
+                        };
+                        let reversed = random.chance(2);
+                        if reversed {
+                            gone.reverse();
+                        }
+                        let mut nodes: Vec<NodeId> = gone.iter().map(|at| model[*at].0).collect();
+                        if !nodes.is_empty() && random.chance(3) {
+                            let again = nodes[random.below(nodes.len())];
+                            nodes.insert(random.below(nodes.len() + 1), again);
+                        }
+                        if !freed.is_empty() && random.chance(3) {
+                            let old = freed[random.below(freed.len())];
+                            nodes.insert(random.below(nodes.len() + 1), old);
+                        }
+                        let step = format!(
+                            "step {step} (seed {seed}): remove {nodes:?} ({which}, reversed \
+                             {reversed}) of {len}"
+                        );
+                        if nodes.len() == 1 && random.chance(2) {
+                            tree.remove_virtual_node(host, nodes[0]);
+                        } else {
+                            tree.remove_virtual_nodes(host, &nodes);
+                        }
+                        let mut removed = Vec::new();
+                        model.retain(|(slot, children)| {
+                            let keep = !nodes.contains(slot);
+                            if !keep {
+                                removed.push(*slot);
+                                removed.extend(children.iter().copied());
+                            }
+                            keep
+                        });
+                        for node in &removed {
+                            assert!(tree.get(*node).is_none(), "{node:?} not freed after {step}");
+                        }
+                        freed.extend(removed);
+                        step
+                    }
+                };
+                check(&tree, host, &model, &step);
+            }
+        }
+    }
+}
