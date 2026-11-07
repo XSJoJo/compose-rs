@@ -48,14 +48,18 @@ impl ContainerMenu {
                 requests.hide();
             }
         }));
-        // Its items, asked of the tree where the menu's collected.
+        // Its items, asked of the tree where the menu's collected, and again where it's built
+        // (a right click's menu in composition, after the click collected it), so an open menu
+        // follows the selection, as Compose's builder reads it while its menu shows.
         let with_context: TextContextMenuBuilderWithContext = {
             let handles = handles.clone();
             Rc::new(move |context| {
-                let items = handles.menu_items(context);
+                let collected = handles.menu_items(context);
                 let handles = handles.clone();
-                let builder: TextContextMenuBuilder =
-                    Rc::new(move |scope| container_components(&handles, items, scope));
+                let builder: TextContextMenuBuilder = Rc::new(move |scope| {
+                    let items = handles.current_menu_items().unwrap_or(collected);
+                    container_components(&handles, items, scope)
+                });
                 builder
             })
         };

@@ -288,6 +288,22 @@ impl ContainerHandles {
         context.tree.enter().container_menu_items(container)
     }
 
+    /// The same, read from its tree where no context is (a menu built in composition, as
+    /// Compose's builder reads the selection while its menu shows); `None` while the tree can't
+    /// be read. A read of the selection's changes too.
+    pub fn current_menu_items(&self) -> Option<ContainerMenuItems> {
+        self.toolbar_states().changes.get();
+        let Some(container) = self.container.get() else {
+            return Some(ContainerMenuItems::default());
+        };
+        let key = self.tree.get()?;
+        let mut items = None;
+        crate::node_context::peek_tree(key, &mut |tree| {
+            items = Some(tree.container_menu_items(container));
+        });
+        items
+    }
+
     /// Runs its menu's `action`, as Compose's container's items: copy copies, then lets go of the
     /// selection in touch mode (`onRelease`); select all selects every text, asks for the
     /// focus and the toolbar. Returns whether the menu closes: always for copy, for select all
@@ -705,6 +721,23 @@ impl UiTree {
             }
         }
         self.refresh_handles(container);
+    }
+
+    /// After a layout: a selection whose end's text changed or left is let go of, as Compose's
+    /// `onSelectableChangeCallback` (`onRelease`, then `selection = null`), so its handles,
+    /// toolbar and menu follow at once; it was dropped only when next asked for before.
+    pub(crate) fn release_selection_if_its_texts_changed(&mut self) {
+        let Some(selection) = self.text_selection else { return };
+        let holds = |tree: &mut UiTree, point: &Point| {
+            let version = tree.get_mut(point.node).and_then(|value| {
+                value.chain.get_mut(point.index)?.selectable().map(|text| text.version())
+            });
+            version == Some(point.version)
+        };
+        if holds(self, &selection.anchor) && holds(self, &selection.focus) {
+            return;
+        }
+        self.handle_selection(SelectionRequest::Clear { container: selection.container });
     }
 
     /// Sets whether `container`'s toolbar should show, as Compose's `showSelectionToolbar` and

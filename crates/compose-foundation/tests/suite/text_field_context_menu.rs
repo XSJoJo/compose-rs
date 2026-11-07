@@ -342,6 +342,28 @@ fn btf2_contextMenu_readOnly_fullSelection_itemsMatch() {
     assert_items(&mut ui, [NO, YES, NO, NO, NO]);
 }
 
+/// compose-rs's: the open menu's items follow the field, as Compose's builder reads its state
+/// while the menu shows: the text cleared under it, cut and copy go, select all too (nothing to
+/// select); text and a selection set back, they come back.
+#[test]
+fn openMenu_itemsFollowTheField() {
+    let state = state("Text Text Text", TextRange::new(5, 9));
+    let mut ui = rule_with(Rc::new(MemoryClipboard::default()), move || {
+        BasicTextFieldOfState!(state, modifier = Modifier.test_tag(TAG));
+    });
+    right_click_field(&mut ui);
+    assert_items(&mut ui, [YES, YES, NO, YES, NO]);
+    state.clear_text();
+    ui.wait_for_idle();
+    assert_items(&mut ui, [NO, NO, NO, NO, NO]);
+    state.set_text_and_select_all("Text");
+    ui.wait_for_idle();
+    assert_items(&mut ui, [YES, YES, NO, NO, NO]);
+    state.edit(|buffer| buffer.set_selection(TextRange::new(1, 1)));
+    ui.wait_for_idle();
+    assert_items(&mut ui, [NO, NO, NO, YES, NO]);
+}
+
 /// The field, its middle word selected, inside a box telling whether each press and release
 /// reached it consumed (after the field, in the main pass).
 fn observed_field(consumed: Rc<RefCell<Vec<bool>>>) -> (ComposeTestRule, TextFieldState) {
@@ -384,6 +406,48 @@ fn rightClick_isTheMenus_selectionAndFocusStay() {
     assert_eq!(state.selection(), TextRange::new(5, 9));
     ui.on_node_with_tag(TAG).assert_is_not_focused();
     assert_eq!(*consumed.borrow(), vec![true, true]);
+}
+
+/// compose-rs's: the right button pressed during a primary press isn't a right click (D2040's
+/// chorded buttons, Compose's `changedToDown`): no menu; the primary press placed the cursor and
+/// focused the field.
+#[test]
+fn secondaryPressedWhilePrimaryHeld_opensNoMenu() {
+    let (mut ui, state) = observed_field(Rc::default());
+    ui.on_node_with_tag(TAG).perform_mouse_input(|mouse| {
+        mouse.move_to(Offset::new(1.0, 5.0));
+        mouse.press(MouseButton::Primary);
+        mouse.press(MouseButton::Secondary);
+        mouse.release(MouseButton::Secondary);
+        mouse.release(MouseButton::Primary);
+    });
+    ui.on_node(is_popup()).assert_does_not_exist();
+    assert_eq!(state.selection(), TextRange::new(0, 0));
+    ui.on_node_with_tag(TAG).assert_is_focused();
+}
+
+/// compose-rs's, not Compose's (D2044): the primary button pressed while a right click is held is
+/// the first down of what hears the primary button alone, so the field's decoration takes its
+/// release as a tap and focuses the field; Compose's tap detector waits for a pointer's down
+/// (`changedToDown`), and the pointer came down with the right click, consumed by the menu. The
+/// field's own gestures hear every button: the press goes by them, the cursor and the menu stay.
+#[test]
+fn rightClick_thenPrimaryWhileHeld_focusesOnTheRelease() {
+    let (mut ui, state) = observed_field(Rc::default());
+    ui.on_node_with_tag(TAG).perform_mouse_input(|mouse| {
+        mouse.move_to(Offset::new(1.0, 5.0));
+        mouse.press(MouseButton::Secondary);
+        mouse.press(MouseButton::Primary);
+    });
+    ui.on_node(is_popup()).assert_exists();
+    ui.on_node_with_tag(TAG).assert_is_not_focused();
+    ui.on_node_with_tag(TAG).perform_mouse_input(|mouse| {
+        mouse.release(MouseButton::Primary);
+        mouse.release(MouseButton::Secondary);
+    });
+    ui.on_node(is_popup()).assert_exists();
+    assert_eq!(state.selection(), TextRange::new(5, 9));
+    ui.on_node_with_tag(TAG).assert_is_focused();
 }
 
 /// compose-rs's: a middle click does nothing to the field, its selection's gestures taking the

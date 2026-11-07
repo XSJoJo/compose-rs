@@ -2,7 +2,8 @@
 //! by the gestures, shown while its content rect is visible (`derivedVisibleContentBounds`), with
 //! the field's items (`addBasicTextFieldTextContextMenuComponents`) (D2032).
 //!
-//! A field whose toolbar state is `None` and shows none pays a branch at each measurement.
+//! A field whose toolbar state is `None`, showing none and no right click's menu, pays two
+//! branches at each measurement.
 
 use std::rc::Rc;
 
@@ -115,6 +116,9 @@ pub(crate) struct Toolbar {
     /// What the clipboard held when a toolbar or a menu last showed.
     paste: ClipboardPasteState,
     handler: ToolbarHandler,
+    /// The right click's menu's job, while it may show: the items follow the field until it ends,
+    /// as Compose's builder reads the field's state while its menu shows.
+    dropdown: Option<compose_runtime::Job>,
 }
 
 impl Toolbar {
@@ -124,6 +128,7 @@ impl Toolbar {
         self.text = None;
         self.requested = false;
         self.handler.hide();
+        self.dropdown = None;
     }
 }
 
@@ -201,7 +206,8 @@ impl TextFieldNode {
 
     /// Shows or hides the toolbar at the end of a measurement, as Compose's
     /// `observeTextToolbarVisibility`: shown when its rect appears, hidden when it goes; its rect
-    /// and items told while it shows. Nothing while it's asked for nothing and shows nothing.
+    /// and items told while it shows, the items while its right click's menu may show too.
+    /// Nothing while it's asked for nothing and shows nothing.
     pub(super) fn tell_toolbar(
         &mut self,
         scope: &mut compose_ui::MeasureScope<'_>,
@@ -214,6 +220,7 @@ impl TextFieldNode {
         if self.touch.toolbar.state == ToolbarState::None
             && !self.touch.toolbar.requested
             && !tapped
+            && self.touch.toolbar.dropdown.is_none()
         {
             return;
         }
@@ -247,7 +254,17 @@ impl TextFieldNode {
         if toolbar.bounds.with(|bounds| *bounds != rect) && rect.is_some() {
             toolbar.bounds.set(rect);
         }
-        if rect.is_some() {
+        // The right click's menu's items follow the field too while it may show (Compose's
+        // builder reads the field's state, shown or not); closed, it's forgotten.
+        let dropdown = match &self.touch.toolbar.dropdown {
+            Some(job) if job.is_active() => true,
+            Some(_) => {
+                self.touch.toolbar.dropdown = None;
+                false
+            }
+            None => false,
+        };
+        if rect.is_some() || dropdown {
             let menu = self.field_menu();
             if toolbar.menu.with(|it| *it != menu) {
                 toolbar.menu.set(menu);
@@ -287,9 +304,10 @@ impl TextFieldNode {
             let handles = handles.clone();
             Rc::new(move |scope| field_components(&handles, scope))
         };
-        show_text_context_menu_at(context, click, Some(own), |anchor| {
-            Some(default_dropdown(&handles.dropdown, anchor))
-        });
+        self.touch.toolbar.dropdown =
+            show_text_context_menu_at(context, click, Some(own), |anchor| {
+                Some(default_dropdown(&handles.dropdown, anchor))
+            });
     }
 
     /// Asks the clipboard what it holds, as Compose's `updateClipboardEntry` when a toolbar or a

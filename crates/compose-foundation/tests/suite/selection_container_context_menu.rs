@@ -317,6 +317,50 @@ fn a_right_click_on_a_field_in_a_container_opens_the_fields_menu_alone() {
     item(&mut ui, CUT).assert_exists();
 }
 
+// Not Compose's: the right button pressed during a mouse's selecting drag isn't a right click
+// (D2040's chorded buttons, Compose's `changedToDown`): no menu, the drag's selection stays.
+#[test]
+fn a_secondary_press_during_a_primary_drag_opens_no_menu() {
+    let mut ui = container_rule();
+    ui.on_node_with_tag(TEXT_TAG).perform_mouse_input(|mouse| {
+        let start = mouse.center_left() + Offset::new(1.0, 0.0);
+        mouse.move_to(start);
+        mouse.press(MouseButton::Primary);
+        mouse.move_to(mouse.center_right() - Offset::new(1.0, 0.0));
+        mouse.press(MouseButton::Secondary);
+        mouse.release(MouseButton::Secondary);
+        mouse.release(MouseButton::Primary);
+    });
+    ui.on_node(is_popup()).assert_does_not_exist();
+    assert_eq!(selection(&mut ui), Some((0, 14)));
+}
+
+// Not Compose's: the open menu's items follow the selection, as Compose's builder reads it while
+// the menu shows. The selected text changes under it: the selection's let go of (Compose's
+// `onSelectableChangeCallback`), copy goes; a text not selected stays to select all.
+#[test]
+fn the_open_menus_items_follow_the_selection() {
+    let text =
+        Box::leak(Box::new(compose_runtime::mutable_state_of(String::from(DEFAULT_TEXT)))).handle();
+    let mut ui = rule_with(Rc::new(MemoryClipboard::default()), move || {
+        SelectionContainer!({
+            BasicText!(text.get(), modifier = Modifier.test_tag(TEXT_TAG));
+        });
+    });
+    ui.on_node_with_tag(TEXT_TAG).perform_touch_input(|touch| {
+        let center = touch.center();
+        let duration = touch.view_configuration().long_press_timeout_millis + 100;
+        touch.long_click_at(center, duration);
+    });
+    ui.wait_for_idle();
+    mouse_right_click(&mut ui);
+    assert_items(&mut ui, [NO, YES, NO, YES, NO]);
+    text.set(String::from("Other words"));
+    ui.wait_for_idle();
+    assert_eq!(selection(&mut ui), None);
+    assert_items(&mut ui, [NO, NO, NO, YES, NO]);
+}
+
 // Not Compose's (its tests check the top alone): a long press's toolbar goes around the selected
 // word, in the window, its bottom four handles' heights (100 px) lower, as Compose's
 // `getContentRect` (D2041).

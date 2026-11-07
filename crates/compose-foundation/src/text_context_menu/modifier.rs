@@ -549,26 +549,33 @@ fn host_menu_data<N: ToolbarHost>(handle: NodeHandle) -> TextContextMenuData {
 /// The builders and filters above the node are collected now, where the tree can be traversed:
 /// the dropdown reads its data in composition, where it can't (Compose's traverses at each read;
 /// what they add still follows the state they read).
+///
+/// Returns the menu's job, active while the menu shows (a new menu through the same provider
+/// replaces it), if one was shown.
 pub(crate) fn show_text_context_menu_at(
     context: &mut NodeContext<'_>,
     click: Offset,
     own: Option<TextContextMenuBuilder>,
     default: impl FnOnce(LayoutCoordinates) -> Option<Rc<dyn TextContextMenuProvider>>,
-) {
+) -> Option<compose_runtime::Job> {
     if !context.is_attached() {
-        return;
+        return None;
     }
     let coordinates = context.require_layout_coordinates();
     let provider = context.current_value_of(&LOCAL_TEXT_CONTEXT_MENU_DROPDOWN_PROVIDER);
-    let Some(provider) = provider.or_else(|| default(coordinates)) else { return };
+    let provider = provider.or_else(|| default(coordinates))?;
     let (mut builders, filters) = collect_modifiers(context);
     if let Some(own) = own {
         builders.insert(0, own);
     }
     let data: Rc<dyn TextContextMenuDataProvider> =
         Rc::new(ClickDataProvider { coordinates, click, builders, filters });
-    // Its job isn't kept: a new menu replaces it through the provider, as Compose's.
-    context.coroutine_scope().launch(async move { provider.show_text_context_menu(data).await });
+    // A new menu replaces it through the provider, as Compose's.
+    Some(
+        context
+            .coroutine_scope()
+            .launch(async move { provider.show_text_context_menu(data).await }),
+    )
 }
 
 /// What a right click shows where no dropdown is provided, anchored at the node clicked: a
@@ -666,7 +673,8 @@ impl compose_ui::PointerInputModifierNode for SecondaryClickNode {
                     on_pre_show(click);
                 }
                 let default = self.default.clone();
-                show_text_context_menu_at(context, click, None, |anchor| {
+                // Its job isn't kept: a new menu replaces it through the provider.
+                let _ = show_text_context_menu_at(context, click, None, |anchor| {
                     default.and_then(|default| default(anchor))
                 });
             }
