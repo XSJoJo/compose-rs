@@ -9,6 +9,9 @@
 
 #![allow(non_snake_case)]
 
+mod checks;
+pub use checks::{Drawing, Fields};
+
 use compose::animation::*;
 use compose::foundation::layout::*;
 use compose::foundation::{

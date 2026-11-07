@@ -1,5 +1,6 @@
 package rs.compose.demo
 
+import android.content.pm.ActivityInfo
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -14,6 +15,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -34,12 +36,22 @@ class MainActivity : ComponentActivity() {
         ComposeRsRuntime.loadLibrary("compose_rs_demo")
         enableEdgeToEdge()
         val start = intent.getStringExtra("app")
+        val wideColor = intent.getBooleanExtra("wideColor", true)
         setContent {
             MaterialTheme {
                 Surface(Modifier.fillMaxSize()) {
                     Column(Modifier.safeDrawingPadding()) {
-                        val apps = listOf("gallery", "todo", "counter", "graphics")
+                        val apps = listOf("gallery", "todo", "counter", "graphics", "drawing", "fields")
                         var selected by rememberSaveable { mutableIntStateOf(apps.indexOf(start).coerceAtLeast(0)) }
+                        // The drawing tab's Display P3 colors show only in a wide-gamut window
+                        // (`--ez wideColor false` keeps it sRGB, for screenshots to compare).
+                        SideEffect {
+                            window.colorMode = if (apps[selected] == "drawing" && wideColor) {
+                                ActivityInfo.COLOR_MODE_WIDE_COLOR_GAMUT
+                            } else {
+                                ActivityInfo.COLOR_MODE_DEFAULT
+                            }
+                        }
                         // Kotlin Compose: the tabs. compose-rs: what's below them.
                         TabRow(selectedTabIndex = selected) {
                             apps.forEachIndexed { index, app ->
