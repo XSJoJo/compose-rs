@@ -116,6 +116,7 @@ mod progress_canvas_parity;
 mod rect_list_integration;
 mod review_api_d;
 mod review_autofill;
+mod review_autofill_2;
 mod review_c8;
 mod review_d470;
 mod review_d475;
