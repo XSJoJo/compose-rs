@@ -1726,6 +1726,8 @@ pub trait FocusRequesterModifierNode {}
 pub enum TextAction {
     /// `OnClick`: the field takes the focus and shows its keyboard.
     Click,
+    /// `OnLongClick`: the field takes the focus and asks for its selection's toolbar (D1686).
+    LongClick,
     /// `SetText`: this text, in place of all there is, the cursor at its end.
     SetText(crate::SharedString),
     /// `InsertTextAtCursor`: this text, in place of the selection.
@@ -1743,6 +1745,8 @@ pub enum TextAction {
     PasteText,
     /// `OnImeAction`: the action the field's keyboard offers.
     ImeAction,
+    /// `OnFillData`: an autofill service's value for the field (D1681).
+    FillData(crate::autofill::FillableData),
 }
 
 /// A node that receives key and text events while it or a descendant has focus, as

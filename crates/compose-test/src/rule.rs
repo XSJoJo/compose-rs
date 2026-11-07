@@ -78,6 +78,8 @@ pub struct ComposeTestRule {
     idling_resources: Vec<Rc<dyn IdlingResource>>,
     /// The tree's floating text toolbars, as a device test's platform (D2031).
     text_toolbar: Rc<crate::text_toolbar::TestTextToolbar>,
+    /// The tree's platform autofill, installed when a test first asks for it (D1682).
+    autofill: std::cell::RefCell<Option<Rc<crate::autofill::TestAutofillManager>>>,
 }
 
 /// A test rule composing `content` in the default root, measuring text with the fixed-advance
@@ -123,6 +125,9 @@ impl ComposeTestRule {
             let modes: Rc<dyn compose_ui::TextActionModes> = text_toolbar.clone();
             host.with_tree(|tree| tree.set_text_action_modes(Some(modes)));
         }
+        // The platform has autofill, as where Compose's device tests run: a field's toolbar
+        // offers it (D1682). Told nothing until a test installs a manager (`autofill`).
+        host.with_tree(|tree| tree.set_autofill_available(true));
         let mut rule = ComposeTestRule {
             host,
             auto_advance,
@@ -137,6 +142,7 @@ impl ComposeTestRule {
             test_deadline: None,
             idling_resources: Vec::new(),
             text_toolbar,
+            autofill: Default::default(),
         };
         if let Some(optimizations) = thread_optimizations() {
             rule.host.set_optimizations(optimizations);
@@ -179,6 +185,21 @@ impl ComposeTestRule {
     /// The floating text toolbar the tree shows its text toolbars in (D2031).
     pub fn text_toolbar(&self) -> Rc<crate::text_toolbar::TestTextToolbar> {
         self.text_toolbar.clone()
+    }
+
+    /// What the tree tells the platform's autofill: a recording manager, installed at the first
+    /// call (before the content, for what the first frame tells), as Compose's tests' mock
+    /// (D1682).
+    pub fn autofill(&self) -> Rc<crate::autofill::TestAutofillManager> {
+        let mut kept = self.autofill.borrow_mut();
+        if let Some(autofill) = &*kept {
+            return autofill.clone();
+        }
+        let autofill = Rc::new(crate::autofill::TestAutofillManager::new());
+        let platform: Rc<dyn compose_ui::platform::PlatformAutofillManager> = autofill.clone();
+        self.host.with_tree(|tree| tree.set_platform_autofill_manager(Some(platform)));
+        *kept = Some(autofill.clone());
+        autofill
     }
 
     /// The root's density, as the rule's `density`.

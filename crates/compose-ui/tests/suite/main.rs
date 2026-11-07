@@ -6,6 +6,7 @@ extern crate compose_runtime as compose;
 mod alignment_lines;
 mod annotated_string;
 mod annotated_string_builder;
+mod autofill_types;
 mod beyond_bounds_layout;
 mod color_filters;
 mod color_spaces;

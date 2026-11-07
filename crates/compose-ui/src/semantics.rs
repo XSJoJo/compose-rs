@@ -556,6 +556,9 @@ impl UiTree {
         if unbound(config, &A::ON_CLICK) {
             config.on_click(None, perform(TextAction::Click));
         }
+        if unbound(config, &A::ON_LONG_CLICK) {
+            config.on_long_click(None, perform(TextAction::LongClick));
+        }
         if unbound(config, &A::COPY_TEXT) {
             config.copy_text(None, perform(TextAction::CopyText));
         }
@@ -584,6 +587,10 @@ impl UiTree {
             config.insert_text_at_cursor(None, move |text| {
                 perform(TextAction::InsertText(text.text().clone()))()
             });
+        }
+        if config.get(&A::ON_FILL_DATA).is_some_and(|action| action.action.is_none()) {
+            let perform = perform.clone();
+            config.on_fill_data(None, move |data| perform(TextAction::FillData(data))());
         }
         if config.get(&A::SET_SELECTION).is_some_and(|action| action.action.is_none()) {
             config.set_selection(None, move |start, end, relative_to_original| {

@@ -55,6 +55,8 @@ pub(crate) struct Touch {
     pub(super) toolbar: super::toolbar::Toolbar,
     /// The tree's clipboard, while focused or after a right click: what the paste item looks at.
     clipboard: Option<Rc<dyn compose_ui::ClipboardManager>>,
+    /// Whether the platform has autofill, read with the clipboard (D1684).
+    pub(super) autofill_available: bool,
     /// A right click's press opened the menu: its release is the menu's too (D2040).
     pub(super) right_click: bool,
 }
@@ -94,6 +96,7 @@ impl Touch {
             haptics: (0, 0),
             toolbar: Default::default(),
             clipboard: None,
+            autofill_available: false,
             right_click: false,
         }
     }
@@ -193,6 +196,7 @@ impl TextFieldNode {
         if focused {
             handles.field.set(Some(context.handle()));
             self.touch.clipboard = Some(compose_ui::NodeContext::clipboard(context));
+            self.touch.autofill_available = context.is_autofill_available();
             if self.touch.direct && context.input_mode() != compose_ui::InputMode::Touch {
                 self.touch.direct = false;
             }
@@ -210,6 +214,7 @@ impl TextFieldNode {
         if self.touch.clipboard.is_none() {
             self.touch.clipboard = Some(compose_ui::NodeContext::clipboard(context));
         }
+        self.touch.autofill_available = context.is_autofill_available();
     }
 
     /// A hardware key ends the touch interaction: the handles hide until a finger comes back.

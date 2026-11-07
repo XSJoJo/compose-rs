@@ -730,12 +730,25 @@ impl UiHost {
             self.wake();
         }
         let semantics_changed = self.with_tree(|tree| std::mem::take(&mut tree.semantics_changed));
+        // The platform's autofill hears of what changed, if installed (D1680).
+        if recomposed || measured || semantics_changed {
+            self.sync_autofill();
+        }
         FrameStats {
             recomposed,
             measured,
             drew,
             semantics_changed,
             bodies_run: compose_runtime::platform::bodies_run() - bodies,
+        }
+    }
+
+    /// Tells the platform's autofill what changed since it was last told, with the tree free.
+    fn sync_autofill(&mut self) {
+        if let Some((platform, calls)) = self.with_tree(|tree| tree.take_autofill_sync()) {
+            for call in calls {
+                platform.call(call);
+            }
         }
     }
 

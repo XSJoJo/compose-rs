@@ -249,7 +249,6 @@ fn a_second_tap_on_the_cursor_handle_hides_it() {
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldTextContextMenuToolbarTest.kt, longClickOnEmptyTextField_showsToolbar_butNoHandle
 #[test]
-#[ignore = "waits on autofill: an empty field's toolbar has only autofill (D2035)"]
 fn a_long_press_on_an_empty_field_shows_the_toolbar_but_no_handle() {
     let mut it = run_test(Options { text: "", ..Options::default() });
     it.long_click_offset(1);
@@ -258,8 +257,8 @@ fn a_long_press_on_an_empty_field_shows_the_toolbar_but_no_handle() {
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldTextContextMenuToolbarTest.kt, longClickOnEmptyTextField_showsToolbar_butNoHandle
-/// compose-rs's variant while it has no autofill (D2035): with text on the clipboard, the empty
-/// field's toolbar has Paste, so it shows, and still no handle.
+/// compose-rs's variant, written while it had no autofill (D2035): with text on the clipboard,
+/// the empty field's toolbar has Paste too, and still no handle.
 #[test]
 fn a_long_press_on_an_empty_field_with_a_clip_shows_the_toolbar_but_no_handle() {
     let mut it = run_test(Options { text: "", clipboard: Some("x"), ..Options::default() });
@@ -475,7 +474,6 @@ fn the_toolbar_has_select_all() {
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldTextContextMenuToolbarTest.kt, toolbarShowsAutofill_ifNotReadOnly
 #[test]
-#[ignore = "waits on autofill: no autofill item until compose-rs has autofill (D2035)"]
 fn an_editable_field_s_toolbar_has_autofill() {
     let mut it = run_test(Options::default());
     it.click_offset(2);
@@ -546,7 +544,6 @@ fn a_selection_s_toolbar_has_copy_and_cut() {
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldTextContextMenuToolbarTest.kt, toolbarShowsAutofill_whenSelectionIsCollapsed
 #[test]
-#[ignore = "waits on autofill: no autofill item until compose-rs has autofill (D2035)"]
 fn the_cursor_s_toolbar_has_autofill() {
     let mut it = run_test(Options { single_line: true, ..Options::default() });
     it.click_center();

@@ -887,11 +887,56 @@ impl SemanticsModifierNode for ClickableNode {
         } else {
             config.disabled();
         }
+        // A toggle fills from autofill, as Compose's `ToggleableNode` (D1683).
+        let enabled = self.spec.enabled;
         match &self.spec.action {
-            ClickAction::Toggle(value, _) => {
-                config.set_toggleable_state(ToggleableState::from(*value))
+            ClickAction::Toggle(value, on_value_change) => {
+                config.set_toggleable_state(ToggleableState::from(*value));
+                config.set_content_data_type(crate::autofill::ContentDataType::TOGGLE);
+                if let Some(data) = crate::autofill::FillableData::create_from_boolean(*value) {
+                    config.set_fillable_data(data);
+                }
+                let on_value_change = on_value_change.clone();
+                config.on_fill_data(None, move |data| {
+                    if !enabled {
+                        return false;
+                    }
+                    match data.boolean_value() {
+                        Some(value) => {
+                            on_value_change(value);
+                            true
+                        }
+                        None => false,
+                    }
+                });
             }
-            ClickAction::TriState(state, _) => config.set_toggleable_state(*state),
+            ClickAction::TriState(state, on_click) => {
+                let state = *state;
+                config.set_toggleable_state(state);
+                config.set_content_data_type(crate::autofill::ContentDataType::TOGGLE);
+                if state != ToggleableState::Indeterminate
+                    && let Some(data) = crate::autofill::FillableData::create_from_boolean(
+                        state == ToggleableState::On,
+                    )
+                {
+                    config.set_fillable_data(data);
+                }
+                let on_click = on_click.clone();
+                config.on_fill_data(None, move |data| {
+                    if !enabled || state == ToggleableState::Indeterminate {
+                        return false;
+                    }
+                    match data.boolean_value() {
+                        Some(target) => {
+                            if state != ToggleableState::from(target) {
+                                on_click();
+                            }
+                            true
+                        }
+                        None => false,
+                    }
+                });
+            }
             ClickAction::Click(_) => {}
         }
         if let Some(combined) = &self.combined

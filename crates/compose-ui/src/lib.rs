@@ -15,6 +15,7 @@ extern crate compose_runtime as compose;
 mod alignment;
 mod alignment_line;
 mod annotated;
+mod autofill;
 mod back;
 mod beyond_bounds;
 mod border;
@@ -133,6 +134,13 @@ mod word_boundary;
 /// list and feed input. Not for apps, and not covered by semver: these change with the hosts
 /// (D260).
 pub mod platform {
+    /// The platform side of autofill (D1680): what a host installs and is told, and the virtual
+    /// structure it hands the platform's service.
+    pub use crate::autofill::{
+        HOST_VIEW_ID, INPUT_TYPE_TEXT_PASSWORD, MAX_AUTOFILL_TEXT_LENGTH, PlatformAutofillCall,
+        PlatformAutofillManager, TEXT_CLASS_NAME, TEXT_FIELD_CLASS_NAME, VIEW_INVISIBLE,
+        VIEW_VISIBLE, ViewStructure, trim_to_safe_length,
+    };
     pub use crate::brush::{Gradient, Shader, ShaderIndex};
     pub use crate::canvas::{BitmapRasterizer, set_bitmap_rasterizer};
     pub use crate::clipboard::MemoryClipboard;
@@ -209,6 +217,9 @@ pub use alignment_line::{
 pub use annotated::{
     AnnotatedRange, AnnotatedString, AnnotatedStringBuilder, Annotation, Bullet, LinkAnnotation,
     LinkInteractionListener, SpanRange, StringAnnotation, TextLinkStyles, TtsAnnotation,
+};
+pub use autofill::{
+    AutofillManager, ContentDataType, ContentType, FillableData, LOCAL_AUTOFILL_MANAGER,
 };
 pub use back::{
     BackCancelled, BackEventCompat, BackHandler, BackProgress, LOCAL_ON_BACK_PRESSED_DISPATCHER,
@@ -366,10 +377,10 @@ pub use remeasurement::{Remeasurement, RemeasurementModifier};
 pub use ruler::{HorizontalRuler, RectRulers, Ruler, RulerScope, VerticalRuler};
 pub use semantics::{
     AccessibilityAction, ActionFn, AnySemanticsPropertyKey, CollectionInfo, CollectionItemInfo,
-    ColorProducer, CustomAccessibilityAction, GetScrollViewportLengthFn, GetTextLayoutResultFn,
-    IndexForKey, IndexForKeyFn, InputTextSuggestionState, LiveRegionMode, PART_OF_PARENT,
-    PARTS_HOST, ProgressBarRangeInfo, Role, ScrollAxisRange, ScrollByFn, ScrollByOffset,
-    ScrollByOffsetFn, ScrollToIndexFn, SemanticsActions, SemanticsConfiguration,
+    ColorProducer, CustomAccessibilityAction, FillDataFn, GetScrollViewportLengthFn,
+    GetTextLayoutResultFn, IndexForKey, IndexForKeyFn, InputTextSuggestionState, LiveRegionMode,
+    PART_OF_PARENT, PARTS_HOST, ProgressBarRangeInfo, Role, ScrollAxisRange, ScrollByFn,
+    ScrollByOffset, ScrollByOffsetFn, ScrollToIndexFn, SemanticsActions, SemanticsConfiguration,
     SemanticsProperties, SemanticsPropertyKey, SemanticsValue, SetProgressFn, SetSelectionFn,
     ShowTextSubstitutionFn, StringList, TextActionFn, ToggleableState, ValueSlot,
 };

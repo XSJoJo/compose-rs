@@ -457,9 +457,6 @@ fn whenTouch_withNoTextThenLongPress_noSelection() {
         it.set_content("");
         it.touch(|touch| touch.click());
         it.expect(|it| it.text = String::new());
-        // "Paste will show up if clipboard is not empty": a clip on it, the toolbar's only item
-        // where Compose's shows autofill too, which compose-rs hasn't (D2035, D2041).
-        it.ui.host().with_tree(|tree| tree.clipboard().set_text("clip"));
         it.touch(|touch| {
             let timeout = touch.view_configuration().double_tap_timeout_millis;
             touch.advance_event_time(timeout * 2);
@@ -480,8 +477,6 @@ fn whenTouch_withNoTextThenLongPressAndDrag_noSelection() {
         it.set_content("");
         it.touch(|touch| touch.click());
         it.expect(|it| it.text = String::new());
-        // "Paste will show up if clipboard is not empty" (D2035, D2041).
-        it.ui.host().with_tree(|tree| tree.clipboard().set_text("clip"));
         it.touch(|touch| {
             let timeout = touch.view_configuration().double_tap_timeout_millis;
             touch.advance_event_time(timeout * 2);

@@ -137,6 +137,11 @@ pub fn BasicSecureTextField(
         None => Some(controller.password_transformation.clone()),
     };
     let on_focus = controller.clone();
+    // A password to autofill, unless the application says otherwise (its modifier is outside),
+    // as Compose's.
+    let modifier = modifier.semantics(|config| {
+        config.set_content_type(compose_ui::ContentType::PASSWORD);
+    });
     let modifier = modifier.on_focus_changed(move |focus: compose_ui::FocusState| {
         if !focus.is_focused() {
             on_focus.password.hide();

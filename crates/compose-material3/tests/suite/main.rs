@@ -8,6 +8,7 @@ mod animated_content;
 mod app_bar_port;
 mod app_bars;
 mod app_bars_expressive;
+mod autofill_text_fields;
 mod bottom_sheet_scaffold;
 mod button_group;
 mod button_group_screenshots;

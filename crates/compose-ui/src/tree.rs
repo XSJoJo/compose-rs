@@ -562,6 +562,10 @@ pub struct UiTree {
     /// A node's semantics changed outside what recomposition and layout say (its
     /// `invalidate_semantics`, a semantics node's update): the frame's stats tell it.
     pub(crate) semantics_changed: bool,
+    /// The platform's autofill and what it was told, if installed (D1680).
+    pub(crate) autofill: Option<Box<crate::autofill::AutofillTracking>>,
+    /// The platform has autofill, a manager installed or not (`set_autofill_available`).
+    pub(crate) autofill_available: bool,
     /// Pointer nodes came, went or changed: the resting mouse's hover is refreshed even if
     /// nothing was laid out.
     pub(crate) hover_stale: bool,
@@ -735,6 +739,8 @@ impl UiTree {
             key,
             lifecycle: Vec::new(),
             semantics_changed: false,
+            autofill: None,
+            autofill_available: false,
             hover_stale: false,
             paused_lifecycle: Vec::new(),
             side_effects: Vec::new(),
