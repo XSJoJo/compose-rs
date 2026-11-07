@@ -65,11 +65,12 @@ Never merge the `ime-logging` branch (it records everything typed) or `parked/na
 
 ## In flight
 
-As of 2026-11-07, `origin/main` is at 7d6a022e (12,456 tests; 11,049 with the runtime feature off).
+As of 2026-11-07, `origin/main` is at 659dc01d (12,481 tests).
 
 | Branch | What | State |
 |---|---|---|
 | `moved-node-attach` | A node movable content moves is detached and attached, as in Compose (D1923) | Reviewed (`review-moved-node-attach`); findings pending |
 | `lazy-beyond-bounds-fixes` | Lazy BeyondBoundsLayout: grid limit in lines, calls from event handlers, user scrolling off (D1480) | In progress |
+| `multi-paragraph` | The rest of the paragraph API: paragraph styles in `AnnotatedString` and `MultiParagraph`, then `getRangeForRect` and `fillBoundingBoxes` (D2047 and up), one commit per step | In progress |
 
 Next, once those land: `DeferredSharedElementTest`, the moved shared element that doesn't animate from its old place, and the shared elements of `LookaheadScopeTest` and Navigation 3; touch selection's bidi tests (`TextSelectionGesturesBidiTest`); graphics leftovers (`ImageShader`, BrushPainter, FilterQuality); place-with-layer leftovers (zIndex, hit testing through layer transforms); style API, border parity, AndroidView interop, magnifier, autofill. missing.md has the full list.
