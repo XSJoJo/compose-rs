@@ -68,7 +68,7 @@ As of 2026-11-07, `origin/main` is at 23c5d9f7 (12,726 tests).
 | Branch | What | State |
 |---|---|---|
 | `moved-node-fixes` | The moved-node review's findings (nested movable content, detach orders, a panic guard) and a moved shared element's start position | In progress |
-| `multi-paragraph-2` | The paragraph API's review findings, then `fillPathForRange`, `paint`, the constructors and the horizontal-position tests, then `BasicText` honouring paragraph styles (D2049 and up) | In progress |
+| `multi-paragraph-2` | The paragraph API's review findings (D2049, the review's 5 ignored tests pass), `fillPathForRange` (D2050), the constructors and `ParagraphIntrinsics` (D2051), `paint` with a gradient spanning paragraphs (D2052), LayoutGetHorizontal* and TextLayoutFillBoundingBoxesTest ported | Ready for review; next on it: `BasicText` and the fields honouring paragraph styles (a node holding a `MultiParagraph` when the text has them, Compose's `MultiParagraphLayoutCache`), D2053 and up |
 | `autofill` | Compose's autofill: `ContentType`, semantics, `AutofillManager`, text fields, the toolbar's Autofill item (un-ignores 9 tests), Android's bridge (D1680–D1699) | In progress |
 | `style-api` | Foundation's experimental Style API (`androidx.compose.foundation.style`), design note first (D1580–D1599) | In progress |
 
