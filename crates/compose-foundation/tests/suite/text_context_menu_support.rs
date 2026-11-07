@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use compose_foundation::text_context_menu::*;
 use compose_runtime::CoroutineScope;
-use compose_ui::{LayoutCoordinates, Offset, Rect};
+use compose_ui::{LayoutCoordinates, LocalBoxFuture, Offset, Rect};
 
 /// How a launched job went, as Compose's `Job` states: running, completed, or cancelled (its
 /// future dropped before it ended).
@@ -141,4 +141,28 @@ pub(crate) fn data_provider_with(
     data: impl Fn() -> TextContextMenuData + 'static,
 ) -> Rc<dyn TextContextMenuDataProvider> {
     Rc::new(TestDataProvider { positioner: Box::new(positioner), data: Box::new(data) })
+}
+
+type OnShow = Box<dyn Fn(Rc<dyn TextContextMenuDataProvider>) -> LocalBoxFuture<'static, ()>>;
+
+/// A provider running `on_show`, as Compose's `FakeTextContextMenuProvider`.
+pub(crate) struct FakeTextContextMenuProvider {
+    on_show: OnShow,
+}
+
+impl FakeTextContextMenuProvider {
+    pub(crate) fn new(
+        on_show: impl Fn(Rc<dyn TextContextMenuDataProvider>) -> LocalBoxFuture<'static, ()> + 'static,
+    ) -> FakeTextContextMenuProvider {
+        FakeTextContextMenuProvider { on_show: Box::new(on_show) }
+    }
+}
+
+impl TextContextMenuProvider for FakeTextContextMenuProvider {
+    fn show_text_context_menu(
+        &self,
+        data_provider: Rc<dyn TextContextMenuDataProvider>,
+    ) -> LocalBoxFuture<'static, ()> {
+        (self.on_show)(data_provider)
+    }
 }

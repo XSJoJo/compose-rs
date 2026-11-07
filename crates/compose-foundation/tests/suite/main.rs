@@ -182,6 +182,7 @@ mod snapping;
 mod stretch_overscroll;
 mod subcompose_layout;
 mod text_context_menu_builder;
+mod text_context_menu_default_providers;
 mod text_context_menu_dropdown;
 mod text_context_menu_platform_toolbar;
 mod text_context_menu_provider;
