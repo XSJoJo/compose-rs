@@ -2168,7 +2168,7 @@ impl StaggeredLayout {
                 extra.push(pinned as i32);
             }
         }
-        let (before, after) = state.beyond_bounds.get();
+        let (before, after) = state.beyond_wanted();
         extra.extend((first - before as i32).max(0)..first);
         extra.extend((last + 1)..(last + 1 + after as i32).min(self.info.items.count as i32));
         extra.sort_unstable();
@@ -2301,7 +2301,7 @@ impl ItemsMeasurePolicy for StaggeredLayout {
                 state.room_forward.set(0.0);
                 state.publish_can_scroll();
                 state.room_estimated.set((false, false));
-                state.beyond_more.set((false, false));
+                state.tell_beyond((false, false), 0);
             }
             // Its items gone, what they drew may fade out, and it holds their room for that.
             let animator = &state.item_animator;
@@ -2655,7 +2655,7 @@ impl ItemsMeasurePolicy for StaggeredLayout {
         let apart: Vec<usize> = needed[..range_from].to_vec();
         let least = needed.get(range_from).copied().unwrap_or(0) as i32;
         let most = done.current_indices.iter().copied().max().unwrap_or(least);
-        let (beyond_before, beyond_after) = state.beyond_bounds.get();
+        let (beyond_before, beyond_after) = state.beyond_wanted();
         let wanted = (
             (least as usize).saturating_sub(beyond_before),
             ((most as usize) + 1 + beyond_after).min(count),
@@ -2839,7 +2839,8 @@ impl ItemsMeasurePolicy for StaggeredLayout {
             });
             state.room_estimated.set((!reaches_start, !reaches_end));
             state.publish_can_scroll();
-            state.beyond_more.set((wanted.0 > 0, wanted.1 < count));
+            // An item's average size, not over the lanes, as Compose's `visibleItemsAverageSize`.
+            state.tell_beyond((wanted.0 > 0, wanted.1 < count), average);
             let per_item = average as f32 / lanes as f32;
             let layout_info = (count, per_item, spacing, main_max, before + after);
             if state.layout_info_written.replace(layout_info) != layout_info {

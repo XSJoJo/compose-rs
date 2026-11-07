@@ -41,6 +41,12 @@ pub trait BeyondBoundsLayout {
     /// until it returns `true` (it found what it wanted) or there's nothing more to lay out; then
     /// lets go of what it laid out beyond its bounds. A layout with nothing beyond its bounds may
     /// never call `block`.
+    ///
+    /// Each step is measured and placed before `block` runs where the tree is free (between
+    /// frames, a task, an event handler's action), as Compose's `remeasureSync`. Where it's busy
+    /// (called in a composition or a measurement), a step waits for the next layout, after the
+    /// block: compose-rs's lazy layouts then tell the block what there is, then once that there's
+    /// nothing more, rather than step on unseen (D1480).
     fn layout_until(
         &self,
         direction: BeyondBoundsLayoutDirection,

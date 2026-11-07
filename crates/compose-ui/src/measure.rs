@@ -249,6 +249,16 @@ impl UiTree {
         size
     }
 
+    /// Whether a node waits to be measured or placed in the next layout: what Compose's
+    /// `hasPendingMeasureOrLayout` says.
+    pub(crate) fn has_pending_layout(&self) -> bool {
+        let root = self.node(self.root_id());
+        root.needs_measure
+            || root.subtree_needs_measure
+            || root.needs_placement
+            || root.subtree_needs_placement
+    }
+
     /// Measures `node` now with its last constraints, whether or not it asked, and so places
     /// its content, as Compose's `forceRemeasure` (`Remeasurement`, `remeasureSync`): its
     /// position in its parent stays; a new size measures its parent in the next layout, as

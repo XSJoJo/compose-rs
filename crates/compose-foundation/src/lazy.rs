@@ -210,6 +210,16 @@ struct LazyListInner {
     /// Told of each measurement: a pager (D1467).
     observer: RefCell<Option<Rc<dyn ListObserver>>>,
     beyond_more: Cell<(bool, bool)>,
+    /// The items (a grid's lines) the `BeyondBoundsLayout`s going on want laid out beyond those
+    /// in view (D1479): the measurement lays out the most of these and the focus search's
+    /// `beyond_bounds`, each way, as Compose's intervals share its `beyondBoundsInfo` (D1480).
+    beyond_layouts: OwnedState<(usize, usize)>,
+    /// The average size along the axis of an item (a grid's line) in view with the spacing, as
+    /// last laid out: what a `BeyondBoundsLayout` counts its viewport in, as Compose's
+    /// `itemsPerViewport` (D1480).
+    beyond_step: Cell<i32>,
+    /// How many measurements told the state: whether one ran since (D1480).
+    measures: Cell<u32>,
     /// A search that laid items out beyond the bounds ended: the next layout leaves the
     /// items composed for it, but those next to the ones wanted, and they're disposed rather
     /// than kept for reuse (no scroll brought them, D482).
@@ -288,6 +298,21 @@ trait ListObserver {
 }
 
 impl LazyListInner {
+    /// What a measurement telling the state found beyond the items (a grid's lines) in view:
+    /// whether there are more each way, and the average size of one in view with the spacing.
+    fn tell_beyond(&self, more: (bool, bool), step: i32) {
+        self.beyond_more.set(more);
+        self.beyond_step.set(step);
+        self.measures.set(self.measures.get().wrapping_add(1));
+    }
+
+    /// The items (a grid's lines) to lay out beyond those in view, before and after them: the
+    /// most a focus search (D477) and the `BeyondBoundsLayout`s going on (D1479) want, each way.
+    fn beyond_wanted(&self) -> (usize, usize) {
+        let (search, layouts) = (self.beyond_bounds.get(), self.beyond_layouts.get());
+        (search.0.max(layouts.0), search.1.max(layouts.1))
+    }
+
     /// Goes to `index`, `offset` pixels past its start, in this measurement.
     fn jump_to(&self, index: usize, offset: f32) {
         self.position.set((index, offset));
@@ -474,6 +499,9 @@ impl LazyListInner {
             is_grid: Cell::new(false),
             observer: RefCell::new(None),
             beyond_more: Cell::new((false, false)),
+            beyond_layouts: mutable_state_of((0, 0)),
+            beyond_step: Cell::new(0),
+            measures: Cell::new(0),
             beyond_ended: Cell::new(false),
             core: crate::gestures::ScrollCore::new(),
             laid_out: layout_info::LaidOut::new(),
@@ -2537,7 +2565,7 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
                 state.room_forward.set(0.0);
                 state.publish_can_scroll();
                 state.room_estimated.set((false, false));
-                state.beyond_more.set((false, false));
+                state.tell_beyond((false, false), 0);
             }
             if let Some(observer) = state.observer.borrow().clone() {
                 compose_runtime::snapshots::Snapshot::without_read_observation(|| {
@@ -2834,7 +2862,7 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
         // The items wanted composed: those in view, those a focus search asked for beyond them
         // (D477), and as many more as the room left would take if items were missing.
         let average = sizes.average();
-        let (beyond_before, beyond_after) = state.beyond_bounds.get();
+        let (beyond_before, beyond_after) = state.beyond_wanted();
         let (beyond_before, beyond_after) = (
             beyond_before + state.beyond_viewport.get(),
             beyond_after + state.beyond_viewport.get(),
@@ -3079,7 +3107,10 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
         let reaches_end = !missing && (end_index == count || placed_end >= count);
         if tells {
             state.room_estimated.set((!reaches_start, !reaches_end));
-            state.beyond_more.set((placed_start.min(lead) > 0, placed_end.max(end_index) < count));
+            state.tell_beyond(
+                (placed_start.min(lead) > 0, placed_end.max(end_index) < count),
+                sizes.average() + spacing,
+            );
             state.room_backward.set(if reaches_start {
                 (-extent_start) as f32 + pending
             } else {
@@ -3619,6 +3650,11 @@ impl ModifierNodeElement for LazyScrollElement {
         if node.enabled && !self.enabled {
             node.drag.cancel_leaving();
             node.drag.stop_fling();
+            // Compose's lazy layouts drop their beyond-bounds modifier: one found before lays
+            // out nothing more, and the next is a new one (D1480).
+            if let Some(beyond) = node.beyond.take() {
+                beyond.withdraw();
+            }
         }
         node.enabled = self.enabled;
         node.tell_tree();
@@ -3955,7 +3991,7 @@ impl ModifierNode for LazyScrollNode {
 
     /// Its `BeyondBoundsLayout`, as Compose's lazy layouts' `lazyLayoutBeyondBoundsModifier`
     /// (D1479): items laid out beyond those in view, measured at once, while a block runs.
-    /// None when the user can't scroll it, as Compose's.
+    /// None when the user can't scroll it, as Compose's; one found before then lays out nothing.
     fn beyond_bounds_layout(&mut self) -> Option<Rc<dyn compose_ui::BeyondBoundsLayout>> {
         if !self.enabled {
             return None;
