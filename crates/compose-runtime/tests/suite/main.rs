@@ -45,6 +45,7 @@ mod review4;
 mod review5;
 mod review6;
 mod review7;
+mod review_shared_elements_3;
 mod saveable_state_holder;
 mod saveable_state_registry;
 mod scenarios;
