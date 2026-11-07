@@ -447,6 +447,9 @@ pub struct UiTree {
     /// Where the selection's container and its ends' texts were when its handles were last
     /// told where they point: a layout that moves none of them tells them nothing.
     pub(crate) handles_placed_for: Option<crate::text_selection::HandlesPlacedFor>,
+    /// The selected texts' pinnable containers pinned, by text, so a lazy layout keeps them
+    /// composed scrolled away (Compose's `pinnedHandleBySelectableId`).
+    pub(crate) selection_pins: Vec<(NodeId, crate::pinnable::PinnedHandle)>,
     /// A node focused before it was ever placed (a prefetched lazy item): brought into view
     /// once laid out.
     pub(crate) bring_into_view_after_layout: Option<NodeId>,
@@ -658,6 +661,7 @@ impl UiTree {
             focus_requests,
             text_selection: None,
             handles_placed_for: None,
+            selection_pins: Vec::new(),
             bring_into_view_after_layout: None,
             beyond_search: crate::focus::BeyondSearch::default(),
             layout_callbacks: Vec::new(),
@@ -1908,6 +1912,7 @@ impl UiTree {
         }
         if self.text_selection.as_ref().is_some_and(|selection| selection.container() == node) {
             self.text_selection = None;
+            self.release_selection_pins();
         }
     }
 
@@ -2148,6 +2153,12 @@ impl Applier for UiTree {
                     value.attached = false;
                     value.attaching = false;
                     stack.extend(value.children.iter().map(|child| child.node));
+                    // A selection's container gone: so is its selection, and its texts' pins
+                    // are let go (D2023).
+                    if self.text_selection.is_some_and(|selection| selection.container() == next) {
+                        self.text_selection = None;
+                        self.release_selection_pins();
+                    }
                 }
                 self.queue_lifecycle(crate::lifecycle::Lifecycle::Detach(child.node));
                 self.removed_parents.push((child.node, parent));

@@ -776,3 +776,40 @@ fn select_all(ui: &mut ComposeTestRule) {
     }
     ui.wait_for_idle();
 }
+
+// Not one of Compose's: a long press's drag follows its own finger, as Compose's `drag(pointerId)`
+// in `touchSelectionFirstPress`: a second finger going down, moving and lifting neither moves the
+// selection nor clears it.
+#[test]
+fn a_second_finger_neither_drags_nor_clears_a_long_press() {
+    let mut ui = two_texts(false);
+    let first = text_layout(&mut ui, TAG1);
+    let demo = first.get_bounding_box(TEXT.find('D').unwrap()).center();
+    let last = first.get_bounding_box(TEXT.len() - 1).center();
+    let second = Offset::new(demo.x, demo.y + FONT);
+    ui.on_node_with_tag(CONTAINER).perform_touch_input(|touch| {
+        touch.down(demo);
+        touch.move_pointers_after(600);
+    });
+    ui.wait_for_idle();
+    let (start, end) = selection(&mut ui).expect("a selection");
+    assert_anchor(&mut ui, Some(start), TEXT.find('D').unwrap(), TAG1);
+    assert_anchor(&mut ui, Some(end), TEXT.find('o').unwrap() + 1, TAG1);
+    ui.on_node_with_tag(CONTAINER).perform_touch_input(|touch| {
+        touch.down_pointer(1, second);
+        touch.move_pointer_to(1, Offset::new(last.x, second.y), 16);
+        touch.up_pointer(1);
+    });
+    ui.wait_for_idle();
+    let (start, end) = selection(&mut ui).expect("still a selection");
+    assert_anchor(&mut ui, Some(start), TEXT.find('D').unwrap(), TAG1);
+    assert_anchor(&mut ui, Some(end), TEXT.find('o').unwrap() + 1, TAG1);
+    ui.on_node_with_tag(CONTAINER).perform_touch_input(|touch| {
+        touch.move_to(last);
+        touch.up();
+    });
+    ui.wait_for_idle();
+    let (start, end) = selection(&mut ui).expect("a selection dragged");
+    assert_anchor(&mut ui, Some(start), TEXT.find('D').unwrap(), TAG1);
+    assert_anchor(&mut ui, Some(end), TEXT.len(), TAG1);
+}

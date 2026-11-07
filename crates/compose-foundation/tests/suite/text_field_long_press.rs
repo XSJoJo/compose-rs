@@ -576,3 +576,26 @@ fn a_long_press_dragged_up_then_slightly_forward_hides_the_end_handle() {
     lift_after(&mut ui, Offset::new(0.0, FONT));
     assert_handles(&mut ui, true, false);
 }
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextFieldConcurrencyTest.kt, whenSelectionChangesDuringGesture_noCrash
+#[test]
+fn a_text_edited_during_a_fingers_gesture_does_not_crash() {
+    let state = state_of("123456789 1234");
+    let mut ui = field(state, Modifier);
+    let at = |offset: usize| Offset::new(FONT * offset as f32 + FONT / 2.0, FONT / 2.0);
+    ui.on_node_with_tag(TAG).perform_touch_input(|touch| touch.click_at(at(13)));
+    ui.wait_for_idle();
+    ui.on_node_with_tag(TAG).perform_touch_input(|touch| touch.down(at(13)));
+    ui.wait_for_idle();
+    // Compose's `editAsUser` without an input transformation.
+    state.edit(|buffer| buffer.delete(5, 13));
+    ui.wait_for_idle();
+    ui.on_node_with_tag(TAG).perform_touch_input(|touch| {
+        for step in 1..=12 {
+            let fraction = step as f32 / 12.0;
+            touch.move_to(at(13) + (at(0) - at(13)) * fraction);
+        }
+    });
+    ui.wait_for_idle();
+    assert_eq!(state.text().as_str(), "123454");
+}

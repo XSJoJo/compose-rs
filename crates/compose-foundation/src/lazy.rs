@@ -3164,7 +3164,12 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
         }
         // The focused item and those moving out of view with `animate_item`, by key, wherever
         // they are: composed and placed out of the way.
-        let apart = state.items_apart(&info.items);
+        let mut apart = state.items_apart(&info.items);
+        apart.sort_unstable();
+        // The pinned ones before, in their order, placed before the others and side by side up
+        // to the first, as Compose's `extraItemsBefore` (a selection across them reads them in
+        // order, D2023).
+        let mut pinned_before: Vec<(Placeable, i32)> = Vec::new();
         for &pinned in &apart {
             if (pinned < composed_start || pinned >= composed_end)
                 && Some(pinned) != header
@@ -3173,10 +3178,24 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
                 // Not one the window's room already placed: a child is placed once (D1210).
                 && !ahead.iter().chain(&placed).chain(&beyond).any(|(other, _)| *other == placeable)
             {
+                if pinned < index && pinned_items.contains(&pinned) {
+                    pinned_before.push((placeable, 0));
+                    continue;
+                }
                 let at =
                     if pinned < index { -main_of(&placeable) - main_max } else { main_max * 2 };
                 beyond.push((placeable, at));
             }
+        }
+        if !pinned_before.is_empty() {
+            let first = ahead.first().or(placed.first());
+            let mut at = first.map_or(before, |(_, main)| *main);
+            for (placeable, main) in pinned_before.iter_mut().rev() {
+                at -= (main_of(placeable) + spacing).max(0);
+                *main = at;
+            }
+            pinned_before.append(&mut ahead);
+            ahead = pinned_before;
         }
         // Placed along the axis, aligned across it.
         let cross_size = placed
