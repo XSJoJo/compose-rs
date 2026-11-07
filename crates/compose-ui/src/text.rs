@@ -145,7 +145,9 @@ pub struct ParagraphMetrics {
 /// each new layout; it keeps the paragraph alive as long as it's kept.
 #[derive(Clone)]
 pub struct TextLayoutResult {
-    pub layout_input: TextLayoutInput,
+    /// Shared, as Compose's reference to it: a text's own `MultiParagraph` keeps the same input
+    /// to paint from (D2054).
+    pub layout_input: Rc<TextLayoutInput>,
     /// The text laid out, as Compose's `MultiParagraph`: a paragraph for each run of its
     /// paragraph styles, or the whole text's when it has none (D2047).
     pub multi_paragraph: Rc<MultiParagraph>,
@@ -168,10 +170,11 @@ impl TextLayoutResult {
     /// constructor: the baselines and line count are the paragraph's, and it overflows where
     /// the paragraph is larger than `size` or had more lines than its maximum.
     pub fn new(
-        layout_input: TextLayoutInput,
+        layout_input: impl Into<Rc<TextLayoutInput>>,
         multi_paragraph: Rc<MultiParagraph>,
         size: IntSize,
     ) -> TextLayoutResult {
+        let layout_input = layout_input.into();
         TextLayoutResult {
             line_count: multi_paragraph.line_count() as u32,
             first_baseline: multi_paragraph.first_baseline(),
@@ -199,7 +202,12 @@ impl TextLayoutResult {
     }
 
     /// The same layout, from another input at another size, as Compose's `copy`.
-    pub fn copy(&self, layout_input: TextLayoutInput, size: IntSize) -> TextLayoutResult {
+    pub fn copy(
+        &self,
+        layout_input: impl Into<Rc<TextLayoutInput>>,
+        size: IntSize,
+    ) -> TextLayoutResult {
+        let layout_input = layout_input.into();
         match &self.drawable.measured {
             Some(measured) => TextLayoutResult::of_measured(
                 layout_input,
