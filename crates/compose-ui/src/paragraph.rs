@@ -75,15 +75,12 @@ pub trait Paragraph {
     /// The box of the character at `offset`, its line's height. Panics unless a character
     /// starts at or covers `offset`.
     fn get_bounding_box(&self, offset: usize) -> Rect;
-    /// The boxes of the characters in `start..end`, as Compose's
-    /// `TextLayoutResult.getBoundingBoxesForRange`.
+    /// The boxes enclosing `start..end`, as Compose's `TextLayoutResult.getBoundingBoxesForRange`:
+    /// one a line (one a run of a direction where a line's are apart), left to right, joined
+    /// where they touch, trailing spaces and hidden text left out (D2048). Panics on a range
+    /// outside the text.
     fn get_bounding_boxes_for_range(&self, start: usize, end: usize) -> Vec<Rect> {
-        let text = self.text();
-        text.char_indices()
-            .map(|(offset, _)| offset)
-            .filter(|&offset| offset >= start && offset < end)
-            .map(|offset| self.get_bounding_box(offset))
-            .collect()
+        crate::range_for_rect::range_bounding_boxes(self, start, end)
     }
     /// The cursor before `offset`: zero wide, its line's height.
     fn get_cursor_rect(&self, offset: usize) -> Rect {
@@ -101,6 +98,24 @@ pub trait Paragraph {
     }
     /// The area of `start..end`'s selection, as Android's `Layout.getSelectionPath`.
     fn get_path_for_range(&self, start: usize, end: usize) -> Path;
+    /// The range of the text in `rect`, as Compose's `getRangeForRect`: cut into pieces by
+    /// `granularity`, a piece in it as `inclusion_strategy` says, from the first piece in it to
+    /// the last; `TextRange::ZERO` when none is (D2048).
+    fn get_range_for_rect(
+        &self,
+        rect: Rect,
+        granularity: crate::range_for_rect::TextGranularity,
+        inclusion_strategy: &crate::range_for_rect::TextInclusionStrategy,
+    ) -> TextRange {
+        crate::range_for_rect::range_for_rect(self, rect, granularity, inclusion_strategy)
+    }
+    /// Fills `array` from `array_start` with the box of each character in `range`, four floats
+    /// each (left, top, right, bottom) in the text's order, as Compose's `fillBoundingBoxes`
+    /// (one box a character where Compose has one a UTF-16 unit, D2048). Panics on an empty
+    /// range, one past the text, or an array too small.
+    fn fill_bounding_boxes(&self, range: TextRange, array: &mut [f32], array_start: usize) {
+        crate::range_for_rect::fill_bounding_boxes(self, range, array, array_start)
+    }
     /// Where each placeholder went, `None` for one cut by the maximum lines or an ellipsis, as
     /// Compose's `placeholderRects`.
     fn placeholder_rects(&self) -> Vec<Option<Rect>> {

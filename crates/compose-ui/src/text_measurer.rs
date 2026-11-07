@@ -624,6 +624,17 @@ impl Paragraph for MeasuredParagraph {
     fn placeholder_rects(&self) -> Vec<Option<Rect>> {
         self.queries().placeholder_rects()
     }
+    fn get_range_for_rect(
+        &self,
+        rect: Rect,
+        granularity: crate::TextGranularity,
+        inclusion_strategy: &crate::TextInclusionStrategy,
+    ) -> TextRange {
+        self.queries().get_range_for_rect(rect, granularity, inclusion_strategy)
+    }
+    fn fill_bounding_boxes(&self, range: TextRange, array: &mut [f32], array_start: usize) {
+        self.queries().fill_bounding_boxes(range, array, array_start)
+    }
 }
 
 /// The cache's key, as Compose's `CacheTextLayoutInput`: an input, compared by what affects its

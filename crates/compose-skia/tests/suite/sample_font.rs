@@ -455,3 +455,41 @@ fn a_height_exactly_a_number_of_lines_has_room_for_them() {
         assert_eq!(paragraph.line_count(), 1, "{stack}");
     });
 }
+
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/platform/AndroidParagraphGetRangeForRectTest.kt, getRangeForRect_wordLevel_multiLine
+#[test]
+fn the_words_in_an_area_are_the_same_on_each_stack() {
+    use compose::ui::{TextGranularity, TextInclusionStrategy};
+    let text = "abc def ghk lmn";
+    plain(text, 7.0 * FONT_SIZE, |stack, paragraph| {
+        assert_eq!(paragraph.line_count(), 2, "{stack}");
+        let (b, h) = (paragraph.get_bounding_box(1), paragraph.get_bounding_box(9));
+        let rect = Rect::new(b.left.min(h.left), b.top, b.right.max(h.right), h.bottom);
+        let words = paragraph.get_range_for_rect(
+            rect,
+            TextGranularity::Word,
+            &TextInclusionStrategy::ContainsCenter,
+        );
+        assert_eq!(words, TextRange::new(0, 11), "{stack}");
+        let characters = paragraph.get_range_for_rect(
+            rect,
+            TextGranularity::Character,
+            &TextInclusionStrategy::ContainsCenter,
+        );
+        assert_eq!(characters, TextRange::new(1, 10), "{stack}");
+    });
+}
+
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphFillBoundingBoxesTest.kt, bidiLtrLine
+#[test]
+fn the_boxes_of_a_range_are_the_same_on_each_stack() {
+    let text = "a\u{5D0}\u{5D1}b";
+    plain(text, 4.0 * FONT_SIZE, |stack, paragraph| {
+        let mut array = [0.0; 16];
+        paragraph.fill_bounding_boxes(TextRange::new(0, text.len()), &mut array, 0);
+        let lefts: Vec<f32> = array.chunks(4).map(|b| b[0]).collect();
+        // Laid out as 0 2 1 3.
+        assert_eq!(lefts, [0.0, 2.0, 1.0, 3.0].map(|at| at * FONT_SIZE), "{stack}");
+        assert!(array.chunks(4).all(|b| b[2] - b[0] == FONT_SIZE), "{stack}: {array:?}");
+    });
+}

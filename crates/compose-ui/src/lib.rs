@@ -94,6 +94,7 @@ mod pointer_event;
 mod pointer_icon;
 mod pointer_input;
 mod prefetch;
+mod range_for_rect;
 mod relocation;
 mod remeasurement;
 mod render;
@@ -364,6 +365,7 @@ pub use prefetch::{
     LOCAL_PREFETCH_SCHEDULER, PrefetchClock, PrefetchRequest, PrefetchRequestScope,
     PrefetchScheduler, prefetch_now,
 };
+pub use range_for_rect::{TextGranularity, TextInclusionStrategy};
 pub use relocation::{
     BoundsRead, BringIntoViewBounds, BringIntoViewResponderNode, BringIntoViewScope,
 };

@@ -19,6 +19,7 @@ use crate::intl::{Locale, LocaleList};
 use crate::paragraph::Paragraph;
 use crate::path::Path;
 use crate::placeholder::{Placeholder, check_placeholders};
+use crate::range_for_rect::{TextGranularity, TextInclusionStrategy};
 use crate::text::TextLayoutOptions;
 use crate::text_attributes::{ResolvedTextDirection, TextDirection, TextOverflow};
 use crate::text_measurer::{LaidOutParagraph, MeasuredParagraph, ParagraphSource};
@@ -822,20 +823,96 @@ impl MultiParagraph {
         info.to_global_rect(info.paragraph.get_bounding_box(info.to_local_index(offset)))
     }
 
-    /// The boxes of the characters in `start..end`, each as [`get_bounding_box`]'s.
-    ///
-    /// [`get_bounding_box`]: Self::get_bounding_box
+    /// The range of the text in `rect`, as Compose's `MultiParagraph.getRangeForRect`: the first
+    /// paragraph's in it from the top, the last's from the bottom (D2048).
+    pub fn get_range_for_rect(
+        &self,
+        rect: Rect,
+        granularity: TextGranularity,
+        inclusion_strategy: &TextInclusionStrategy,
+    ) -> TextRange {
+        let range_in = |index: usize| {
+            let info = &self.infos[index];
+            let local = info.paragraph.get_range_for_rect(
+                info.to_local_rect(rect),
+                granularity,
+                inclusion_strategy,
+            );
+            info.to_global_range(local, true)
+        };
+        let mut first = find_paragraph_by_y(&self.infos, rect.top);
+        // The rect within one paragraph: its range.
+        if self.infos[first].bottom >= rect.bottom || first == self.infos.len() - 1 {
+            return range_in(first);
+        }
+        let mut last = find_paragraph_by_y(&self.infos, rect.bottom);
+        let mut start = TextRange::ZERO;
+        while start == TextRange::ZERO && first <= last {
+            start = range_in(first);
+            first += 1;
+        }
+        if start == TextRange::ZERO {
+            return TextRange::ZERO;
+        }
+        let mut end = TextRange::ZERO;
+        while end == TextRange::ZERO && first <= last {
+            end = range_in(last);
+            last -= 1;
+        }
+        if end == TextRange::ZERO {
+            return start;
+        }
+        TextRange::new(start.start, end.end)
+    }
+
+    /// Fills `array` from `array_start` with the box of each character in `range`, four floats
+    /// each, as Compose's `MultiParagraph.fillBoundingBoxes`: each paragraph's, below the
+    /// paragraphs above it (D2048).
+    pub fn fill_bounding_boxes(&self, range: TextRange, array: &mut [f32], array_start: usize) {
+        if self.single {
+            return self.first().paragraph.fill_bounding_boxes(range, array, array_start);
+        }
+        self.check_index(range.min());
+        self.check_index_inclusive(range.max());
+        let mut current = array_start;
+        for info in find_paragraphs_by_range(&self.infos, range) {
+            let start = info.start_index.max(range.min());
+            let end = info.end_index.min(range.max());
+            let local = TextRange::new(info.to_local_index(start), info.to_local_index(end));
+            info.paragraph.fill_bounding_boxes(local, array, current);
+            let count = self.text.as_str()[start..end].chars().count();
+            for at in (current..current + count * 4).step_by(4) {
+                array[at + 1] += info.top;
+                array[at + 3] += info.top;
+            }
+            current += count * 4;
+        }
+    }
+
+    /// The boxes enclosing `start..end`, as Compose's `TextLayoutResult.getBoundingBoxesForRange`:
+    /// each paragraph's, below the paragraphs above it; none in the paragraphs the maximum lines
+    /// left out (D2048).
     pub fn get_bounding_boxes_for_range(&self, start: usize, end: usize) -> Vec<Rect> {
         if self.single {
             return self.first().paragraph.get_bounding_boxes_for_range(start, end);
         }
-        self.text
-            .as_str()
-            .char_indices()
-            .map(|(offset, _)| offset)
-            .filter(|&offset| offset >= start && offset < end)
-            .map(|offset| self.get_bounding_box(offset))
-            .collect()
+        let length = self.text.len();
+        assert!(
+            start <= end && end <= length,
+            "Start({start}) or End({end}) is out of range [0..{length}], or start > end!"
+        );
+        let last = &self.infos[self.infos.len() - 1];
+        if start == end || self.line_count == 0 || start >= last.end_index {
+            return Vec::new();
+        }
+        let mut boxes = Vec::new();
+        for info in find_paragraphs_by_range(&self.infos, TextRange::new(start, end)) {
+            let local = info
+                .paragraph
+                .get_bounding_boxes_for_range(info.to_local_index(start), info.to_local_index(end));
+            boxes.extend(local.into_iter().map(|rect| info.to_global_rect(rect)));
+        }
+        boxes
     }
 
     pub fn get_cursor_rect(&self, offset: usize) -> Rect {
@@ -987,5 +1064,16 @@ impl Paragraph for MultiParagraph {
     }
     fn placeholder_rects(&self) -> Vec<Option<Rect>> {
         MultiParagraph::placeholder_rects(self)
+    }
+    fn get_range_for_rect(
+        &self,
+        rect: Rect,
+        granularity: TextGranularity,
+        inclusion_strategy: &TextInclusionStrategy,
+    ) -> TextRange {
+        MultiParagraph::get_range_for_rect(self, rect, granularity, inclusion_strategy)
+    }
+    fn fill_bounding_boxes(&self, range: TextRange, array: &mut [f32], array_start: usize) {
+        MultiParagraph::fill_bounding_boxes(self, range, array, array_start)
     }
 }
