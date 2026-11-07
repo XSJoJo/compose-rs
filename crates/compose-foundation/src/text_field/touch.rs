@@ -186,6 +186,12 @@ impl TextFieldNode {
     /// The long-press timeout passed with the finger still down and still: the field resolves
     /// the long press at its next measurement.
     fn long_pressed(&mut self, context: &mut compose_ui::NodeContext<'_>) {
+        // A later press of a multi-tap held past the timeout drags without the slop, as
+        // Compose's `DownResolution.Timeout` (D2021).
+        if let Some(press) = self.press.as_mut().filter(|press| press.long && press.slop_pending) {
+            press.slop_pending = false;
+            return;
+        }
         let Some(press) = self.press.as_mut().filter(|press| press.long_possible && self.enabled)
         else {
             return;

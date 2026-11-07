@@ -516,3 +516,31 @@ fn a_double_tap_past_the_last_right_to_left_line_dragged_up_selects_from_its_las
     ui.wait_for_idle();
     assert_eq!(state.selection(), chars(&text, 4, 23));
 }
+
+// Not one of Compose's (its double-tap tests drag past the slop): a second tap held past the
+// long-press timeout drags by words without passing the touch slop, as `touchSelectionSubsequentPress`'s
+// `DownResolution.Timeout` (D2021); before the timeout, a move within the slop does nothing.
+#[test]
+fn a_second_tap_held_past_the_timeout_drags_within_the_slop() {
+    let state = state_of("abc def ghi");
+    let mut ui = field(state);
+    ui.host().set_view_configuration(Some(compose_ui::ViewConfiguration {
+        touch_slop: 100.0,
+        ..compose_ui::ViewConfiguration::default()
+    }));
+    let at = Offset::new(FONT * 1.5, FONT / 2.0);
+    let to = Offset::new(FONT * 5.5, FONT / 2.0);
+    ui.on_node_with_tag(TAG).perform_touch_input(|touch| {
+        double_tap(touch, at, false);
+        touch.move_to(to);
+    });
+    ui.wait_for_idle();
+    assert_eq!(state.selection(), TextRange::new(0, 3));
+    ui.advance_time_by(std::time::Duration::from_millis(1000));
+    ui.on_node_with_tag(TAG).perform_touch_input(|touch| touch.move_to(to + Offset::new(1.0, 0.0)));
+    ui.wait_for_idle();
+    assert_eq!(state.selection(), TextRange::new(0, 7));
+    ui.on_node_with_tag(TAG).perform_touch_input(|touch| touch.up());
+    ui.wait_for_idle();
+    assert_eq!(state.selection(), TextRange::new(0, 7));
+}

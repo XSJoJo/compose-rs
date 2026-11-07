@@ -1137,6 +1137,8 @@ impl TextFieldNode {
             slop_pending: true,
             slop: Offset::ZERO,
         });
+        // Held past the long-press timeout, it drags without the slop (D2021).
+        self.start_long_press(context);
         self.touch_subsequent_press(at);
         context.invalidate_measure();
     }
