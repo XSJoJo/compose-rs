@@ -18,6 +18,7 @@ mod annotated;
 mod back;
 mod beyond_bounds;
 mod border;
+mod bounding_boxes_path;
 mod brush;
 pub mod canvas;
 mod clickable;

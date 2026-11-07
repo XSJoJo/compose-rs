@@ -7,6 +7,7 @@ mod alignment_lines;
 mod annotated_string;
 mod annotated_string_builder;
 mod beyond_bounds_layout;
+mod bounding_boxes_path;
 mod color_filters;
 mod color_spaces;
 mod colors;
