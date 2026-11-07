@@ -33,6 +33,7 @@ pub mod scrollbar;
 mod secure_text_field;
 mod selection_handles;
 pub mod shape;
+pub mod style;
 mod text;
 pub mod text_context_menu;
 mod text_field;
