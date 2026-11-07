@@ -168,7 +168,7 @@ By feature (rows whose status is that feature; `partial` rows needing it are in 
 
 | Path | `@Test` | Covers | Status | Detail |
 |---|---|---|---|---|
-| `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/nestedscroll/NestedScrollModifierTest.kt` | 34 | Dispatch order and deltas through `NestedScrollDispatcher` chains, removal and swaps, scope, mouse vs touch flings | `partial` | `fnd/nested_scroll_dispatcher.rs`: the 26 that dispatch by hand through a `NestedScrollDispatcher` (D1917), and one more of its own (a fling's end through parents removed with the node). Left: the 8 driven by real scrollables (a `LazyColumn` swiped or wheeled), partly covered by `fnd/review_nested_scroll.rs`. |
+| `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/nestedscroll/NestedScrollModifierTest.kt` | 34 | Dispatch order and deltas through `NestedScrollDispatcher` chains, removal and swaps, scope, mouse vs touch flings | `partial` | `fnd/nested_scroll_dispatcher.rs`: the 26 that dispatch by hand through a `NestedScrollDispatcher` (D1917), and one more of its own (a fling's end through parents removed with the node); `fnd/nested_scroll_tree_links.rs`: a reviewer's scenarios and their fixes' tests (a node moved by movable content, D1920; a disabled scrollable, D1921; a dispatch from a busy tree past a parent that left). Left: the 8 driven by real scrollables (a `LazyColumn` swiped or wheeled), partly covered by `fnd/review_nested_scroll.rs`. |
 
 ### Rotary and indirect input (8 files, 137 methods)
 
