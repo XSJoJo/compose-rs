@@ -2,6 +2,7 @@ package rs.compose.android
 
 import android.annotation.TargetApi
 import android.content.res.AssetManager
+import android.graphics.BlendMode
 import android.graphics.Canvas
 import android.graphics.LinearGradient
 import android.graphics.Paint
@@ -177,6 +178,8 @@ internal class TextMeasurer(
         val hasStroke: Boolean,
         /** A run's own fill, over a stroked paragraph's paint. */
         val fill: Boolean,
+        /** What the glyphs blend in, as Compose's `Paragraph.paint(…, blendMode)`; null: SrcOver. */
+        val blendMode: BlendMode? = null,
     ) {
         fun applyTo(paint: TextPaint, width: Float, height: Float) {
             brush?.shaderAt(width, height)?.let { shader ->
@@ -197,12 +200,14 @@ internal class TextMeasurer(
                 paint.strokeJoin = strokeJoin
             }
             if (fill) paint.style = Paint.Style.FILL
+            if (blendMode != null) paint.blendMode = blendMode
         }
 
         fun clearFrom(paint: TextPaint) {
             if (brush != null) paint.shader = null
             if (hasShadow) paint.clearShadowLayer()
             if (hasStroke) paint.style = Paint.Style.FILL
+            if (blendMode != null) paint.blendMode = null
         }
     }
 
@@ -263,9 +268,12 @@ internal class TextMeasurer(
         ) {}
     }
 
-    /** What [flags] (of a style's decoration byte) say follow, as Rust's `encode_paint_extras`. */
+    /**
+     * What [flags] (of a style's decoration byte) say follow, as Rust's `encode_paint_extras`;
+     * then, with flag 64 (a paragraph's paint only, [paintExtras]), a blend mode's number.
+     */
     private fun readExtras(request: ByteBuffer, flags: Int): PaintExtras? {
-        if (flags and 0x3C == 0) return null
+        if (flags and 0x7C == 0) return null
         var brush: TextBrush? = null
         if (flags and 4 != 0) {
             val kind = request.get().toInt()
@@ -302,9 +310,10 @@ internal class TextMeasurer(
             2 -> Paint.Join.BEVEL
             else -> Paint.Join.MITER
         }
+        val blendMode = if (flags and 64 != 0) Replayer.blendModeOf(request.get().toInt()) else null
         return PaintExtras(
             brush, shadowColor, shadowX, shadowY, shadowBlur, hasShadow, strokeWidth, strokeMiter, strokeCap, strokeJoin,
-            hasStroke, fill = flags and 32 != 0,
+            hasStroke, fill = flags and 32 != 0, blendMode = blendMode,
         )
     }
 

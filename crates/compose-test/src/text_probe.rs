@@ -115,8 +115,9 @@ impl<M: TextMeasurer> TextMeasurer for CountingTextMeasurer<M> {
         &mut self,
         paragraph: ParagraphHandle,
         style: &TextStyle,
+        blend_mode: compose_ui::BlendMode,
     ) -> Option<ParagraphHandle> {
-        let painted = self.inner.painted(paragraph, style)?;
+        let painted = self.inner.painted(paragraph, style, blend_mode)?;
         let text = self.inner.text(paragraph).to_string();
         self.counter.count(&text, |counts| counts.restyled += 1);
         Some(painted)
