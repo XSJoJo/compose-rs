@@ -61,6 +61,12 @@ impl TextContextMenuModifiers for Modifier {
     }
 }
 
+/// `append_text_context_menu_components` with a builder already shared: the same builder makes
+/// the same element (a field's, remembered).
+pub(crate) fn append_shared(modifier: Modifier, builder: TextContextMenuBuilder) -> Modifier {
+    modifier.then_custom(AppendElement(builder))
+}
+
 struct AppendElement(TextContextMenuBuilder);
 
 struct AppendNode(TextContextMenuBuilder);

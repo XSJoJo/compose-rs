@@ -21,6 +21,7 @@ use crate::output_transformation::{
 };
 use crate::selection_handles::TouchHandles;
 
+mod toolbar;
 mod touch;
 use crate::text_field_buffer::TextFieldCharSequence;
 use crate::text_undo::TextFieldEditUndoBehavior;
@@ -28,6 +29,7 @@ use crate::{
     InputTransformation, KeyboardActionHandler, OutputTransformation, TextFieldLineLimits,
     TextFieldState,
 };
+pub(crate) use toolbar::FieldToolbar;
 use touch::Touch;
 
 use crate::text_input::{
@@ -108,18 +110,28 @@ pub fn BasicTextField(
         handles: Some(handles.clone()),
     });
     let press_source = interaction_source_for_press;
+    let menu = field_menu(&handles);
     let inner_text_field = inner_field(element, handles);
     crate::layout::Box(
         // An I-beam over the field, as Compose Desktop's text fields.
-        modifier
-            .semantics_with(true, |config| config.parts_host())
-            .then_custom(FocusOnTap { interaction_source: press_source })
-            .pointer_hover_icon(compose_ui::PointerIcon::TEXT),
+        crate::text_context_menu::modifier::append_shared(
+            modifier
+                .semantics_with(true, |config| config.parts_host())
+                .then_custom(FocusOnTap { interaction_source: press_source })
+                .pointer_hover_icon(compose_ui::PointerIcon::TEXT),
+            menu,
+        ),
         crate::Alignment::TOP_START,
         // The decoration's size is the field's: a field given a size passes it on.
         true,
         compose_runtime::callback(move |_| decoration_box(inner_text_field.clone())),
     );
+}
+
+/// The field's context menu items, the same while the field is composed (D2032).
+fn field_menu(handles: &Rc<TouchHandles>) -> crate::text_context_menu::TextContextMenuBuilder {
+    let handles = handles.clone();
+    compose_runtime::remember(move || toolbar::field_menu_builder(handles))
 }
 
 /// The inner field: the field's node, and its handles' popups inside, as Compose composes them in
@@ -254,6 +266,7 @@ pub fn BasicTextFieldOfState(
         handles: Some(handles.clone()),
     });
     let press_source = interaction_source_for_press;
+    let menu = field_menu(&handles);
     let inner_text_field = inner_field(element, handles);
     // Dragged and wheeled along its lines, the content following the finger, as Compose's
     // `scrollable(scrollState, …, reverseDirection)` (D1138).
@@ -281,10 +294,13 @@ pub fn BasicTextFieldOfState(
         None => modifier,
     };
     crate::layout::Box(
-        modifier
-            .semantics_with(true, |config| config.parts_host())
-            .then_custom(FocusOnTap { interaction_source: press_source })
-            .pointer_hover_icon(compose_ui::PointerIcon::TEXT),
+        crate::text_context_menu::modifier::append_shared(
+            modifier
+                .semantics_with(true, |config| config.parts_host())
+                .then_custom(FocusOnTap { interaction_source: press_source })
+                .pointer_hover_icon(compose_ui::PointerIcon::TEXT),
+            menu,
+        ),
         crate::Alignment::TOP_START,
         true,
         compose_runtime::callback(move |_| decorator(inner_text_field.clone())),
@@ -415,6 +431,9 @@ impl ModifierNodeElement for StateTextFieldElement {
             // The input method reads the new state from the start, as Compose's session
             // restarts for a new state (D1141).
             node.restart_input = true;
+            // Its gestures start again, as Compose's selection state, made anew for a new state,
+            // restarts its pointer input: no multi-tap goes on across them (D2032).
+            node.last_tap = None;
         }
         link.cursor_brush = cursor_brush;
         link.input_transformation = self.input_transformation.clone();
@@ -2701,6 +2720,7 @@ impl LayoutModifierNode for TextFieldNode {
             self.reveal_cursor(scope, metrics.size, short);
         }
         self.tell_handles(&*scope.text_measurer(), paragraph);
+        self.tell_toolbar(scope, paragraph);
         self.tell_text_layout(scope, paragraph);
         let placeable = scope.measure(content, Constraints::fixed(size.width, size.height));
         scope.place(&placeable, 0, 0);
@@ -4022,7 +4042,7 @@ impl TextFieldNode {
                 self.insert(text.as_str(), false, context);
                 true
             }
-            Action::SetSelection { start, end } => {
+            Action::SetSelection { start, end, relative_to_original } => {
                 if !self.enabled {
                     return false;
                 }
@@ -4068,6 +4088,14 @@ impl TextFieldNode {
                 self.anchor = anchor;
                 self.cursor = cursor;
                 self.preferred_x = None;
+                // The selection's toolbar, but for a service's traversal or a cursor, as
+                // Compose's `setSelection` (D2032).
+                let state = if relative_to_original || start == end {
+                    toolbar::ToolbarState::None
+                } else {
+                    toolbar::ToolbarState::Selection
+                };
+                self.set_toolbar_state(state);
                 context.invalidate_measure();
                 context.invalidate_semantics();
                 true

@@ -1707,10 +1707,13 @@ pub enum TextAction {
     SetText(crate::SharedString),
     /// `InsertTextAtCursor`: this text, in place of the selection.
     InsertText(crate::SharedString),
-    /// `SetSelection`: from `start` to `end`, byte offsets of the text as shown.
+    /// `SetSelection`: from `start` to `end`, byte offsets of the text as shown;
+    /// `relative_to_original`, an accessibility service's traversal (the volume keys), which
+    /// shows no text toolbar (D2032).
     SetSelection {
         start: i32,
         end: i32,
+        relative_to_original: bool,
     },
     CopyText,
     CutText,

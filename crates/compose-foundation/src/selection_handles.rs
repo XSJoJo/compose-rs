@@ -148,8 +148,14 @@ pub(crate) struct TouchHandles {
     pub moved: std::cell::RefCell<Vec<(Handle, Offset)>>,
     /// The drag ended (lifted or cancelled): the field forgets it, after its last move.
     pub ended: Cell<bool>,
-    /// The cursor handle was tapped: what the text toolbar will toggle on (`text-context-menu`).
-    pub cursor_tapped: Cell<bool>,
+    /// The cursor handle's taps the field hasn't followed yet: each toggles its text toolbar
+    /// (D2032).
+    pub cursor_taps: Cell<u32>,
+    /// The inner field's position in the root after its last placement, while handles may show:
+    /// where its toolbar goes from (D2032).
+    pub origin: Cell<Offset>,
+    /// What the field's text toolbar reads, made when it first shows (D2032).
+    pub toolbar: std::cell::OnceCell<crate::text_field::FieldToolbar>,
     /// The field's node, measured again when a handle is dragged: the one focused last (a
     /// decoration moving the inner field makes the node anew).
     pub field: Cell<Option<NodeHandle>>,
@@ -171,7 +177,9 @@ impl TouchHandles {
             positions: compose_runtime::mutable_state_of(HandlePositions::default()),
             moved: std::cell::RefCell::new(Vec::new()),
             ended: Cell::new(false),
-            cursor_tapped: Cell::new(false),
+            cursor_taps: Cell::new(0),
+            origin: Cell::new(Offset::ZERO),
+            toolbar: std::cell::OnceCell::new(),
             field: Cell::new(None),
             active: compose_runtime::mutable_state_of(false),
             visible: Cell::new(None),
@@ -271,7 +279,8 @@ impl HandleSource for TouchHandles {
     }
     fn tapped(&self, handle: Handle) {
         if handle == Handle::Cursor {
-            self.cursor_tapped.set(!self.cursor_tapped.get());
+            self.cursor_taps.set(self.cursor_taps.get() + 1);
+            self.measure_field();
         }
     }
     fn mouse_event(&self) {
@@ -498,6 +507,14 @@ impl compose_ui::GlobalPositionAwareModifierNode for VisibleBoundsNode {
         let top_left = field.window_to_local(Offset::new(window.left, window.top));
         let bottom_right = field.window_to_local(Offset::new(window.right, window.bottom));
         let visible = Rect::new(top_left.x, top_left.y, bottom_right.x, bottom_right.y);
+        // Where its text toolbar goes from, followed while it shows (D2032).
+        let origin = field.local_to_root(Offset::ZERO);
+        self.0.origin.set(origin);
+        if let Some(toolbar) = self.0.toolbar.get()
+            && toolbar.origin.with(|it| *it != origin)
+        {
+            toolbar.origin.set(origin);
+        }
         if self.0.visible.get() != Some(visible) {
             self.0.visible.set(Some(visible));
             self.0.measure_field();

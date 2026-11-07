@@ -599,3 +599,22 @@ fn a_text_edited_during_a_fingers_gesture_does_not_crash() {
     ui.wait_for_idle();
     assert_eq!(state.text().as_str(), "123454");
 }
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldLongPressTest.kt, longPressOnEmptyRegion_showsTextToolbar_newContextMenu
+#[test]
+fn a_long_press_past_the_text_shows_the_toolbar() {
+    use compose_foundation::text_context_menu::platform_toolbar::ProvidePlatformTextContextMenuToolbar;
+    let state = state_of("abc");
+    let mut ui = touch_rule(move || {
+        ProvidePlatformTextContextMenuToolbar!(Modifier, {
+            BasicTextFieldOfState!(
+                state,
+                modifier = Modifier.test_tag(TAG).width(100.dp()),
+                text_style = style(),
+            );
+        });
+    });
+    long_click(&mut ui, Offset::new(FONT * 5.0, FONT / 2.0));
+    ui.wait_for_idle();
+    assert!(ui.text_toolbar().is_shown());
+}

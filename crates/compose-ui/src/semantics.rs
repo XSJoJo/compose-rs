@@ -586,8 +586,8 @@ impl UiTree {
             });
         }
         if config.get(&A::SET_SELECTION).is_some_and(|action| action.action.is_none()) {
-            config.set_selection(None, move |start, end, _traversal| {
-                perform(TextAction::SetSelection { start, end })()
+            config.set_selection(None, move |start, end, relative_to_original| {
+                perform(TextAction::SetSelection { start, end, relative_to_original })()
             });
         }
     }

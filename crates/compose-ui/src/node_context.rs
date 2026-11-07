@@ -256,6 +256,11 @@ impl NodeContext<'_> {
         self.tree.input_mode.input_mode()
     }
 
+    /// The tree's clipboard (`UiTree::set_clipboard`), as text fields use it.
+    pub fn clipboard(&self) -> std::rc::Rc<dyn crate::clipboard::ClipboardManager> {
+        self.tree.clipboard.clone()
+    }
+
     /// The host's floating text toolbars (`UiTree::set_text_action_modes`), if it has any.
     pub fn text_action_modes(
         &self,
@@ -740,6 +745,43 @@ impl NodeHandle {
             result = tree.with_entry_or_delegate(node, index, entry, |modifier_node, context| {
                 modifier_node.downcast_mut::<N>().map(|typed| f(typed, context))
             });
+        });
+        result
+    }
+
+    /// Runs `f` with the node as `N` and an event's context, as a handler of an event outside the
+    /// tree's dispatch (a platform toolbar's click): what it asks (focus, the keyboard, its
+    /// actions) is done after, as after an event. `None` if the node is gone, isn't an `N`, or
+    /// the tree is busy.
+    pub fn with_node_in_event<N: ModifierNode, R>(
+        &self,
+        f: impl FnOnce(&mut N, &mut crate::input::EventContext<'_>) -> R,
+    ) -> Option<R> {
+        let mut f = Some(f);
+        let mut result = None;
+        let (node, entry, owner) = (self.node, self.entry, self.owner);
+        with_free_tree(self.tree, &mut |tree: &mut UiTree| {
+            let Some(index) = tree.entry_index(node, entry) else { return };
+            let Some(f) = f.take() else { return };
+            let delegate = if entry == owner { EntryId::NO_DELEGATE } else { entry };
+            let mut actions = Vec::new();
+            let mut requests = crate::input::Requests::default();
+            result = tree
+                .with_event_context(
+                    node,
+                    index,
+                    delegate,
+                    &mut actions,
+                    &mut requests,
+                    None,
+                    false,
+                    |modifier_node, context| {
+                        modifier_node.downcast_mut::<N>().map(|typed| f(typed, context))
+                    },
+                )
+                .flatten();
+            tree.apply_requests(requests, &mut actions);
+            tree.pending_actions.append(&mut actions);
         });
         result
     }

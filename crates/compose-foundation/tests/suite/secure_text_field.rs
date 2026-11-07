@@ -574,3 +574,28 @@ fn copy_and_cut_keys_do_nothing() {
     assert_eq!(ui.host().with_tree(|tree| tree.clipboard().get_text()).as_deref(), Some("before"));
     assert_eq!(state.text().as_str(), "secret");
 }
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/BasicSecureTextFieldTest.kt, toolbarDoesNotShowCopyOrCut_newContextMenu
+#[test]
+fn a_password_s_toolbar_has_no_copy_nor_cut() {
+    use compose_foundation::text_context_menu::platform_toolbar::ProvidePlatformTextContextMenuToolbar;
+    let state = state_of("Hello");
+    let mut ui = compose_test(move || {
+        ProvidePlatformTextContextMenuToolbar!(Modifier, {
+            BasicSecureTextField!(state, modifier = Modifier.test_tag("field"));
+        });
+    });
+    ui.host().set_input_mode(compose_ui::InputMode::Touch);
+    ui.on_node_with_tag("field").request_focus();
+    // Not a traversal, so the toolbar shows: "Hel", so that "Select all" fills it.
+    ui.on_node_with_tag("field").perform_semantics_action_with(
+        &compose_ui::SemanticsActions::SET_SELECTION,
+        |set| {
+            set(0, 3, false);
+        },
+    );
+    ui.wait_for_idle();
+    let titles = ui.text_toolbar().titles();
+    assert!(!titles.is_empty());
+    assert!(!titles.iter().any(|it| it == "Cut" || it == "Copy"), "{titles:?}");
+}

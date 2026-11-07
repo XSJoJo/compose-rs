@@ -25,7 +25,7 @@ pub(crate) struct Touch {
     /// The user's last interaction with the field was a finger's (or a stylus'), as Compose's
     /// `isDirectTouchInteraction`: true at first, false once a mouse or a hardware key is used,
     /// or the field is focused in keyboard input mode.
-    direct: bool,
+    pub(super) direct: bool,
     /// The cursor handle shows, as Compose's `showCursorHandle`, set by a tap: the shown text it
     /// was set over, an edit of which hides it.
     cursor_handle: Option<String>,
@@ -36,7 +36,7 @@ pub(crate) struct Touch {
     active: bool,
     /// The handle drag the field follows: the handle, where it pointed in the text at the drag's
     /// start (Compose's `getAdjustedCoordinates`, a pixel up), and the field's scroll then.
-    drag: Option<(Handle, Offset, Offset)>,
+    pub(super) drag: Option<(Handle, Offset, Offset)>,
     /// The offset under a selection handle's drag when the selection was last adjusted, as
     /// Compose's `previousRawDragOffset`: none at the drag's start.
     raw: Option<usize>,
@@ -47,10 +47,14 @@ pub(crate) struct Touch {
     pending: Option<Pending>,
     /// A long press's drag under way, as Compose's `TextFieldTextDragObserver` (its
     /// `directDragGestureInitiator` is `Touch` meanwhile: no handle shows).
-    long: Option<LongDrag>,
+    pub(super) long: Option<LongDrag>,
     /// The haptics the gestures resolved at this measurement asked for, performed at its end
     /// with `LOCAL_HAPTIC_FEEDBACK` (D2027): `LongPress`, then `TextHandleMove`.
     haptics: (u32, u32),
+    /// Its text toolbar (D2032).
+    pub(super) toolbar: super::toolbar::Toolbar,
+    /// The tree's clipboard, while focused: what the toolbar's paste item looks at.
+    clipboard: Option<Rc<dyn compose_ui::ClipboardManager>>,
 }
 
 #[derive(Clone, Copy)]
@@ -65,7 +69,7 @@ enum Pending {
 /// (`dragBeginOffsetInText`), none when it went down past the text (`isPositionOnText`), and the
 /// unit it extends by.
 #[derive(Clone, Copy)]
-struct LongDrag {
+pub(super) struct LongDrag {
     at: Offset,
     begin: Option<usize>,
     unit: super::Unit,
@@ -86,7 +90,22 @@ impl Touch {
             pending: None,
             long: None,
             haptics: (0, 0),
+            toolbar: Default::default(),
+            clipboard: None,
         }
+    }
+
+    pub(super) fn handles(&self) -> Option<&Rc<TouchHandles>> {
+        self.handles.as_ref()
+    }
+
+    /// The inner field's visible bounds, while handles may show.
+    pub(super) fn handles_visible(&self) -> Option<Rect> {
+        self.handles.as_ref().and_then(|handles| handles.visible.get()).filter(|_| self.active)
+    }
+
+    pub(super) fn clipboard(&self) -> Option<&Rc<dyn compose_ui::ClipboardManager>> {
+        self.clipboard.as_ref()
     }
 
     /// A new element's handles: the composable's, the same while it's composed.
@@ -118,6 +137,7 @@ impl Touch {
         self.drag = None;
         self.pending = None;
         self.long = None;
+        self.toolbar.reset();
         if let Some(job) = self.long_press_job.take() {
             job.cancel();
         }
@@ -152,6 +172,10 @@ impl TextFieldNode {
     /// field, as Compose's `onTapTextField` (`showCursorHandle = true`), whatever tapped it: a
     /// mouse's tap shows it once a finger comes back (D2027).
     pub(super) fn touch_tapped(&mut self) {
+        // No toolbar after a tap, as Compose's `onTapTextField` (D2032).
+        if self.touch.toolbar.state != super::toolbar::ToolbarState::None {
+            self.set_toolbar_state(super::toolbar::ToolbarState::None);
+        }
         if !self.read_only && self.touch.handles.is_some() {
             let text = self.shown_str();
             self.touch.cursor_handle = (!text.is_empty()).then(|| text.to_owned());
@@ -165,6 +189,7 @@ impl TextFieldNode {
         let Some(handles) = &self.touch.handles else { return };
         if focused {
             handles.field.set(Some(context.handle()));
+            self.touch.clipboard = Some(compose_ui::NodeContext::clipboard(context));
             if self.touch.direct && context.input_mode() != compose_ui::InputMode::Touch {
                 self.touch.direct = false;
             }
@@ -268,6 +293,8 @@ impl TextFieldNode {
                     let text = self.shown_str();
                     self.touch.cursor_handle = (!text.is_empty()).then(|| text.to_owned());
                     self.touch.long = Some(LongDrag { at, begin: None, unit });
+                    // The cursor's toolbar, as Compose's long press past the text (D2032).
+                    self.set_toolbar_state(super::toolbar::ToolbarState::Cursor);
                 } else {
                     self.touch.long = Some(LongDrag { at, begin: None, unit });
                     if self.text.is_empty() {
@@ -282,6 +309,7 @@ impl TextFieldNode {
                     self.anchor = word.start;
                     self.cursor = word.end;
                     self.touch.long = Some(LongDrag { at, begin: Some(word.start), unit });
+                    self.set_toolbar_state(super::toolbar::ToolbarState::Selection);
                 }
             }
             Pending::DragTo(at) => {
@@ -311,6 +339,7 @@ impl TextFieldNode {
                         if begin.is_none() && start == end {
                             return;
                         }
+                        self.set_toolbar_state(super::toolbar::ToolbarState::Selection);
                         self.unit_selection(long.unit, start, end)
                     }
                 };
