@@ -1,6 +1,6 @@
 # `NestedScrollDispatcher`
 
-Design note for D1917 and D1918 (with D1920 to D1922), from Compose's `NestedScrollModifier.kt` and `NestedScrollNode.kt` (ui) and `Scrollable.kt` (foundation), and kept to what was built.
+Design note for D1917 and D1918 (with D1920 to D1922, and D1478 for the lazy layouts), from Compose's `NestedScrollModifier.kt` and `NestedScrollNode.kt` (ui) and `Scrollable.kt` (foundation), and kept to what was built.
 
 ## What Compose does
 
@@ -44,4 +44,16 @@ When the tree is busy (a dispatch from inside a node callback, or anything holdi
 
 These keep no link: the tree busy, `NestedScrollChain::above` answers `None` and the scroll reaches no parent (D1922). None of them runs busy: the key's task, the bring-into-view animation and the fling a dispatcher inside hands a scrollable (`TreeConnection::on_post_fling`, in the dispatcher's task) run with the tree free, and the host calls a semantics action outside the tree. Keeping a last link for them would cost each scrollable a shared cell at attach, which D1918 kept off the first frame.
 
-**Not yet.** The lazy layouts and `scrollable_2d` aren't in the tree's chain: their keys, semantics actions and bring-into-view requests reach no connection, as before. Nor are they parents in it, so the chain goes past them: a dispatcher, or a scrollable's key, semantics or bring-into-view scroll, inside a `LazyColumn` item reaches the nested-scroll nodes and scrollables above the `LazyColumn`, never the `LazyColumn` itself. Before this branch such a scroll's leftover reached nothing; now it skips the `LazyColumn` in between and scrolls what's outside it, where Compose's would scroll the `LazyColumn` first. A lazy list's estimated-end handling (D479) would need its own parents there too. `LocalScrollCaptureInProgress` doesn't exist, so a semantics scroll always dispatches.
+## The lazy layouts and `scrollable_2d` (D1478)
+
+Lists, grids, staggered grids and pagers share one node, `LazyScrollNode`, which takes part as a scrollable does: an unregistered handle at attach, and a participant made when a nested-scroll node in an item looks for its parent. What a dispatcher or a scrollable inside an item leaves scrolls the list first, as Compose's lazy layouts (each a `scrollable`), then what's above it.
+
+**Its estimated ends.** A list's end not laid out is an estimate: its scroll takes the whole delta and the measurement finds how far it went, offering the rest to the parents its scope names (D479). The tree connection scrolls through that scope too (`ScrollTarget::set_outer`), naming the parents above the list, found when it scrolls; `LazyListState::dispatch_raw_delta` reads them as the consumer of its scrolls did. So a dispatcher's leftover past an estimated end reaches the parents above in the frame after, as a drag's does. A dispatch from a busy tree finds no parents there, and that rest is lost.
+
+**Its own scrolls.** Page keys, and the `ScrollBy` semantics action (at once, D491), go through the nodes above, as a scrollable's. A pager's page connection is a nested-scroll node inside the pager, so it comes first: outside a gesture it takes what's left along the pager, as Compose's (`isAbsorbNonGestureNestedScrollInPagerFixEnabled`), and a dispatcher in a page moves its pager only during a drag.
+
+**Bringing into view.** A lazy layout answers a bring-into-view request at once (`ModifierNode::bring_into_view`, its rect where the item will be), with the tree busy: `NestedScrollChain::above` finds nothing then, and its scroll reaches no parent. Compose's animates it through the chain (`ContentInViewNode`). This stays with the lazy layouts' bring-into-view gap in missing.md: it closes when they animate.
+
+**`scrollable_2d`.** Traversable under the drag gestures' key (Compose's is a `DragGestureNode`, its orientation none, so no drag is aligned with it), it makes a connection over its logic for the nodes inside, and its `ScrollBy` goes through the nodes above. It has no Page keys or bring-into-view in compose-rs.
+
+**Not yet.** `LocalScrollCaptureInProgress` doesn't exist, so a semantics scroll always dispatches.

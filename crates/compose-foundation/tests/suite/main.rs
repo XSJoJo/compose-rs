@@ -69,6 +69,7 @@ mod lazy_list_reverse_layout;
 mod lazy_list_state_restoration;
 mod lazy_lookahead_support;
 mod lazy_nested_prefetch;
+mod lazy_nested_scroll_tree;
 mod lazy_request_scroll;
 mod lazy_reuse;
 mod lazy_scroll;

@@ -711,7 +711,7 @@ impl compose_ui::SemanticsModifierNode for ScrollNode {
             // Compose's action returns true (D877).
             let delta = if vertical { y } else { x };
             if delta != 0.0 {
-                semantics_scroll(&state, handle, vertical, reverse, delta);
+                semantics_scroll(&state, handle, None, vertical, reverse, delta);
             }
             true
         });
@@ -1507,19 +1507,25 @@ impl NestedScrollConnection for ScrollableConnection {
 /// scrolls no pointer starts (keys, semantics actions, bringing into view) find the chain above
 /// it from an unregistered handle when they run, and it becomes the nested-scroll parent of the
 /// nested-scroll nodes inside it when one of them looks for its parent. Its drags and wheel keep
-/// the pointer's path (D188).
-#[derive(Default)]
-pub(crate) struct NestedTree {
+/// the pointer's path (D188). `C` is its connection for those nodes: a [`TreeConnection`], or a 2D
+/// scrollable's own.
+pub(crate) struct NestedTree<C = TreeConnection> {
     /// Its node, unregistered: what finds the chain above it.
     handle: Option<compose_ui::NodeHandle>,
     /// Its participant and connection, made when a nested-scroll node inside asks.
-    participant: Option<(compose_ui::platform::NestedScrollParticipant, Rc<TreeConnection>)>,
+    participant: Option<(compose_ui::platform::NestedScrollParticipant, Rc<C>)>,
+}
+
+impl<C> Default for NestedTree<C> {
+    fn default() -> NestedTree<C> {
+        NestedTree { handle: None, participant: None }
+    }
 }
 
 /// A scrollable's connection for the nested-scroll nodes inside it, as
 /// `ScrollableNestedScrollConnection`: what they leave scrolls it, a velocity flings it; disabled,
 /// it takes nothing, and what they leave goes on to the parents above it.
-struct TreeConnection {
+pub(crate) struct TreeConnection {
     /// What it scrolls, as the node last told it.
     target: std::cell::RefCell<ScrollTarget>,
     /// Its node is enabled, as the node last told it.
@@ -1529,7 +1535,7 @@ struct TreeConnection {
 }
 
 impl NestedScrollConnection for TreeConnection {
-    fn on_post_scroll(&self, _: Offset, available: Offset, _: NestedScrollSource) -> Offset {
+    fn on_post_scroll(&self, _: Offset, available: Offset, source: NestedScrollSource) -> Offset {
         if !self.enabled.get() {
             return Offset::ZERO;
         }
@@ -1540,8 +1546,22 @@ impl NestedScrollConnection for TreeConnection {
         if delta == 0.0 || target.state.is_scroll_in_progress() {
             return Offset::ZERO;
         }
-        let scroll = |delta: f32| target.state.dispatch_raw_delta(delta);
-        let used = if target.reverse { -scroll(-delta) } else { scroll(delta) };
+        let used = match &target.set_outer {
+            // A lazy layout's: what an estimated end leaves of it goes on to the parents above it
+            // once it's laid out, as its drags' do (D479), found now.
+            Some(set_outer) => {
+                let state = target.state.clone();
+                let scope = ScrollScope::new(move |delta| state.dispatch_raw_delta(delta));
+                let chain = chain_above(self.handle);
+                let scroll =
+                    |delta| scope_scroll(&scope, Some(set_outer), &chain, None, source, delta);
+                if target.reverse { -scroll(-delta) } else { scroll(delta) }
+            }
+            None => {
+                let scroll = |delta: f32| target.state.dispatch_raw_delta(delta);
+                if target.reverse { -scroll(-delta) } else { scroll(delta) }
+            }
+        };
         target.axis(-used)
     }
 
@@ -1578,11 +1598,12 @@ pub(crate) fn chain_above(handle: Option<compose_ui::NodeHandle>) -> NestedScrol
 
 /// Scrolls by `delta` (the state's way) in `scope`, through the nested-scroll nodes above
 /// `handle`'s node, as Compose's `ScrollingLogic.scrollBy` in a `NestedScrollScope`; `reverse` as
-/// the node's drags (the state's way against the content's). Returns what was used, the state's
-/// way.
+/// the node's drags (the state's way against the content's); a lazy layout's `set_outer` is told
+/// those nodes, for what an estimated end leaves (D479). Returns what was used, the state's way.
 pub(crate) fn scroll_above(
     scope: &ScrollScope,
     handle: Option<compose_ui::NodeHandle>,
+    set_outer: Option<&OuterSetter>,
     vertical: bool,
     reverse: bool,
     delta: f32,
@@ -1592,7 +1613,7 @@ pub(crate) fn scroll_above(
         return scope.scroll_by(delta);
     }
     let sign = if reverse { -1.0 } else { 1.0 };
-    sign * scroll_through(scope, None, &chain, None, vertical, reverse, sign * delta)
+    sign * scroll_through(scope, set_outer, &chain, None, vertical, reverse, sign * delta)
 }
 
 /// Scrolls `state` by `delta` (the state's way) at once, through the nested-scroll nodes above
@@ -1601,16 +1622,17 @@ pub(crate) fn scroll_above(
 pub(crate) fn semantics_scroll(
     state: &Rc<dyn ScrollableState>,
     handle: Option<compose_ui::NodeHandle>,
+    set_outer: Option<&OuterSetter>,
     vertical: bool,
     reverse: bool,
     delta: f32,
 ) {
     let raw = state.clone();
     let scope = ScrollScope::new(move |delta| raw.dispatch_raw_delta(delta));
-    scroll_above(&scope, handle, vertical, reverse, delta);
+    scroll_above(&scope, handle, set_outer, vertical, reverse, delta);
 }
 
-impl NestedTree {
+impl<C: NestedScrollConnection + 'static> NestedTree<C> {
     /// Its node is attached.
     pub(crate) fn on_attach(&mut self, context: &mut compose_ui::NodeContext<'_>) {
         self.handle = Some(context.unregistered_handle());
@@ -1631,22 +1653,17 @@ impl NestedTree {
         self.handle
     }
 
-    /// Its participant, made now if it has none, scrolling `target` if `enabled`.
-    pub(crate) fn participant(
+    /// Its participant, made now if it has none, with the connection `connection` makes for its
+    /// node.
+    pub(crate) fn participant_with(
         &mut self,
         context: &mut compose_ui::NodeContext<'_>,
-        enabled: bool,
-        target: impl FnOnce() -> ScrollTarget,
+        connection: impl FnOnce(Option<compose_ui::NodeHandle>) -> C,
     ) -> compose_ui::platform::NestedScrollParticipant {
         // Asked by a node inside before its own `on_attach` (children attach first).
         let handle = *self.handle.get_or_insert_with(|| context.unregistered_handle());
-        let handle = Some(handle);
         let (participant, _) = self.participant.get_or_insert_with(|| {
-            let connection = Rc::new(TreeConnection {
-                target: std::cell::RefCell::new(target()),
-                enabled: Cell::new(enabled),
-                handle,
-            });
+            let connection = Rc::new(connection(Some(handle)));
             let participant =
                 compose_ui::platform::NestedScrollParticipant::new(context, connection.clone());
             (participant, connection)
@@ -1659,9 +1676,30 @@ impl NestedTree {
         self.participant.is_some()
     }
 
+    /// Its connection, if it takes part.
+    pub(crate) fn connection(&self) -> Option<&Rc<C>> {
+        self.participant.as_ref().map(|(_, connection)| connection)
+    }
+}
+
+impl NestedTree {
+    /// Its participant, made now if it has none, scrolling `target` if `enabled`.
+    pub(crate) fn participant(
+        &mut self,
+        context: &mut compose_ui::NodeContext<'_>,
+        enabled: bool,
+        target: impl FnOnce() -> ScrollTarget,
+    ) -> compose_ui::platform::NestedScrollParticipant {
+        self.participant_with(context, |handle| TreeConnection {
+            target: std::cell::RefCell::new(target()),
+            enabled: Cell::new(enabled),
+            handle,
+        })
+    }
+
     /// What it scrolls now, and whether it's enabled, if it takes part.
     pub(crate) fn set_target(&self, target: ScrollTarget, enabled: bool) {
-        if let Some((_, connection)) = &self.participant {
+        if let Some(connection) = self.connection() {
             *connection.target.borrow_mut() = target;
             connection.enabled.set(enabled);
         }
