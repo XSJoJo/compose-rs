@@ -947,6 +947,10 @@ impl TextMeasurer for FixedTextMeasurer {
         }
     }
 
+    fn height(&self, handle: ParagraphHandle) -> f32 {
+        self.measured(handle).height
+    }
+
     fn did_exceed_max_lines(&self, handle: ParagraphHandle) -> bool {
         self.measured(handle).did_exceed_max_lines
     }

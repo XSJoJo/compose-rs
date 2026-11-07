@@ -20,6 +20,8 @@ struct Setup {
     max_lines: u32,
     overflow: TextOverflow,
     density: Density,
+    /// The most height, unbounded when `None`.
+    height: Option<f32>,
 }
 
 impl Default for Setup {
@@ -30,6 +32,7 @@ impl Default for Setup {
             max_lines: u32::MAX,
             overflow: TextOverflow::Clip,
             density: Density::new(1.0),
+            height: None,
         }
     }
 }
@@ -37,12 +40,13 @@ impl Default for Setup {
 /// `text` laid out as `setup` says: at `width` exactly, or unbounded at its own width.
 fn lay_out(text: impl Into<AnnotatedString>, setup: Setup) -> Rc<dyn Paragraph> {
     let mut measurer = FixedTextMeasurer::with_metrics(FixedFontMetrics::SAMPLE_FONT);
+    let max_height = setup.height.map_or(Constraints::INFINITY, |height| height.ceil() as i32);
     let constraints = match setup.width {
         Some(width) => {
             let width = width.ceil() as i32;
-            Constraints::new(width, width, 0, Constraints::INFINITY)
+            Constraints::new(width, width, 0, max_height)
         }
-        None => Constraints::unbounded(),
+        None => Constraints::new(0, Constraints::INFINITY, 0, max_height),
     };
     let options = TextLayoutOptions {
         max_lines: setup.max_lines,
@@ -1381,6 +1385,44 @@ fn bounding_boxes_of_wrapped_feed_and_ellipsized_right_to_left_text() {
     assert_eq!(box_of(true, 1, 3, all, 5), Rect::new(10.0, 10.0, 20.0, 20.0));
     assert_eq!(box_of(true, 1, 7, all, 5), Rect::new(50.0, 10.0, 60.0, 20.0));
     assert_eq!(box_of(true, 1, 3, 1, 5), Rect::new(0.0, 0.0, 0.0, 10.0));
+}
+
+/// The box of character `index` of the bounding box text, three characters wide and one line
+/// high, ellipsized: where the ellipsis is.
+fn box_at_one_line_high(rtl: bool, feed: usize, max_lines: u32, index: usize) -> Rect {
+    let text = bounding_box_text(rtl, feed);
+    let direction = if rtl { TextDirection::Rtl } else { TextDirection::Ltr };
+    let setup = Setup {
+        style: directed(10.0, direction),
+        width: Some(30.0),
+        height: Some(10.0),
+        max_lines,
+        overflow: TextOverflow::Ellipsis,
+        ..Setup::default()
+    };
+    lay_out(text, setup).get_bounding_box(at(text, index))
+}
+
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationBoundingBoxTest.kt, ltr_noBreak_noMaxLines_smallWidth_smallHeight
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationBoundingBoxTest.kt, ltr_noBreak_1MaxLines_smallWidth_smallHeight
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationBoundingBoxTest.kt, ltr_firstBreak_noMaxLines_smallWidth_smallHeight
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationBoundingBoxTest.kt, ltr_firstBreak_1MaxLines_smallWidth_smallHeight
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationBoundingBoxTest.kt, ltr_secondBreak_noMaxLines_smallWidth_smallHeight
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationBoundingBoxTest.kt, ltr_secondBreak_1MaxLines_smallWidth_smallHeight
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationBoundingBoxTest.kt, rtl_noBreak_noMaxLines_smallWidth_smallHeight
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationBoundingBoxTest.kt, rtl_noBreak_1MaxLines_smallWidth_smallHeight
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationBoundingBoxTest.kt, rtl_firstBreak_noMaxLines_smallWidth_smallHeight
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationBoundingBoxTest.kt, rtl_firstBreak_1MaxLines_smallWidth_smallHeight
+#[test]
+fn bounding_boxes_of_text_ellipsized_at_its_height() {
+    let all = u32::MAX;
+    for max_lines in [all, 1] {
+        assert_eq!(box_at_one_line_high(false, 0, max_lines, 5), Rect::new(30.0, 0.0, 30.0, 10.0));
+        assert_eq!(box_at_one_line_high(false, 1, max_lines, 5), Rect::new(30.0, 0.0, 30.0, 10.0));
+        assert_eq!(box_at_one_line_high(false, 2, max_lines, 9), Rect::new(30.0, 0.0, 30.0, 10.0));
+        assert_eq!(box_at_one_line_high(true, 0, max_lines, 5), Rect::new(0.0, 0.0, 0.0, 10.0));
+        assert_eq!(box_at_one_line_high(true, 1, max_lines, 5), Rect::new(0.0, 0.0, 0.0, 10.0));
+    }
 }
 
 /// The visible end of `line` of `text` at 20 sp, 10 characters wide.

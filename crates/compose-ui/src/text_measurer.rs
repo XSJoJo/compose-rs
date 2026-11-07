@@ -13,15 +13,16 @@ use std::rc::Rc;
 use compose_runtime::{ComposeArg, composable};
 
 use crate::alignment::LayoutDirection;
-use crate::annotated::AnnotatedString;
+use crate::annotated::{AnnotatedRange, AnnotatedString};
 use crate::constraints::Constraints;
 use crate::draw::DrawScope;
 use crate::font::{FontFamilyResolver, LOCAL_FONT_FAMILY_RESOLVER, LOCAL_TREE_TEXT_MEASURER};
 use crate::graphics::{Color, DrawStyle, Shadow};
 use crate::intl::LocaleList;
+use crate::multi_paragraph::{MultiParagraph, MultiParagraphIntrinsics, StackedParagraph};
 use crate::paragraph::{Paragraph, TextLayoutInput};
 use crate::path::Path;
-use crate::placeholder::{Placeholders, check_placeholders};
+use crate::placeholder::{Placeholder, Placeholders, check_placeholders};
 use crate::text::{
     ParagraphHandle, ParagraphKeeper, ParagraphMetrics, SharedTextMeasurer, TextLayoutOptions,
     TextLayoutResult,
@@ -186,16 +187,60 @@ impl fmt::Debug for TextMeasurer {
 /// (Compose's `finalMaxWidth`, D104) and the lines of an ellipsis without wrapping.
 fn lay_out(input: TextLayoutInput) -> TextLayoutResult {
     assert!(input.max_lines >= 1, "max_lines should be greater than 0");
+    // Paragraph styles split the text into paragraphs, each laid out in its own (D2047); a text
+    // without them is one paragraph of the platform's, as before.
+    if input.text.has_paragraph_styles() {
+        return lay_out_paragraphs(input);
+    }
     let platform = input.font_family_resolver.platform().clone();
-    let measured = LaidOutParagraph::lay_out(&platform, &input, &input.style);
+    let measured = LaidOutParagraph::lay_out(&platform, input.source(), &input.style);
     let size = input.constraints.constrain(measured.0.metrics.size);
-    let queries: Rc<dyn Paragraph> =
-        Rc::new(MeasuredParagraph { laid_out: measured.clone(), queries: OnceCell::new() });
+    let queries: Rc<dyn Paragraph> = Rc::new(MeasuredParagraph::new(measured.clone()));
+    let multi_paragraph = Rc::new(MultiParagraph::of_paragraph(input.text.clone(), queries));
     let drawable = Rc::new(DrawableParagraphs {
         measured: Some(measured.clone()),
         elsewhere: RefCell::default(),
     });
-    TextLayoutResult::of_measured(input, &measured, queries, drawable, size)
+    TextLayoutResult::of_measured(input, &measured, multi_paragraph, drawable, size)
+}
+
+/// `input`'s paragraphs laid out, as Compose's `TextMeasurer.layout`: at the width the widest of
+/// them asks for within the constraints (Compose's `finalMaxWidth`), each at that width.
+fn lay_out_paragraphs(input: TextLayoutInput) -> TextLayoutResult {
+    let style = TextStyle::resolve_defaults(&input.style, input.layout_direction);
+    let intrinsics = MultiParagraphIntrinsics::new(
+        input.text.clone(),
+        &style,
+        input.placeholder_ranges(),
+        input.density,
+        input.font_family_resolver.clone(),
+        input.soft_wrap,
+        input.default_locale_list.clone(),
+    );
+    let constraints = input.constraints;
+    let ellipsis = input.overflow.is_ellipsis();
+    let max_width = if (input.soft_wrap || ellipsis) && constraints.has_bounded_width() {
+        constraints.max_width
+    } else {
+        Constraints::INFINITY
+    };
+    let max_lines = if !input.soft_wrap && ellipsis { 1 } else { input.max_lines };
+    let width = if constraints.min_width == max_width {
+        max_width
+    } else {
+        (intrinsics.max_intrinsic_width().ceil() as i32).clamp(constraints.min_width, max_width)
+    };
+    let multi_paragraph = MultiParagraph::new(
+        Rc::new(intrinsics),
+        Constraints::fit_prioritizing_width(0, width, 0, constraints.max_height),
+        max_lines,
+        input.overflow,
+    );
+    let size = constraints.constrain(IntSize::new(
+        multi_paragraph.width().ceil() as i32,
+        multi_paragraph.height().ceil() as i32,
+    ));
+    TextLayoutResult::new(input, Rc::new(multi_paragraph), size)
 }
 
 /// What a draw scope draws of a [`TextLayoutResult`].
@@ -215,7 +260,7 @@ impl TextLayoutResult {
     pub(crate) fn of_measured(
         layout_input: TextLayoutInput,
         measured: &LaidOutParagraph,
-        multi_paragraph: Rc<dyn Paragraph>,
+        multi_paragraph: Rc<MultiParagraph>,
         drawable: Rc<DrawableParagraphs>,
         size: IntSize,
     ) -> TextLayoutResult {
@@ -236,10 +281,8 @@ impl TextLayoutResult {
     }
 
     fn has_stale_resolved_fonts(&self) -> bool {
-        self.drawable.measured.as_ref().is_some_and(|measured| {
-            let inner = &measured.0;
-            inner.platform.borrow().has_stale_resolved_fonts(inner.keeper.handle())
-        })
+        self.drawable.measured.as_ref().is_some_and(LaidOutParagraph::has_stale_resolved_fonts)
+            || self.multi_paragraph.has_stale_resolved_fonts()
     }
 
     /// The paragraph's size rounded up, unconstrained: what a cached layout measures again.
@@ -258,6 +301,35 @@ impl TextLayoutResult {
 /// last of them lets go of it (D1116).
 #[derive(Clone)]
 pub(crate) struct LaidOutParagraph(Rc<LaidOutInner>);
+
+/// What a platform paragraph is laid out from: a text, or one paragraph of it, with its
+/// placeholders and how to break it.
+#[derive(Clone, Copy)]
+pub(crate) struct ParagraphSource<'a> {
+    pub(crate) text: &'a AnnotatedString,
+    pub(crate) placeholders: &'a [AnnotatedRange<Placeholder>],
+    pub(crate) options: TextLayoutOptions,
+    pub(crate) constraints: Constraints,
+    pub(crate) density: &'a Density,
+}
+
+impl TextLayoutInput {
+    /// The whole text as one platform paragraph.
+    pub(crate) fn source(&self) -> ParagraphSource<'_> {
+        ParagraphSource {
+            text: &self.text,
+            placeholders: self.placeholder_ranges(),
+            options: TextLayoutOptions {
+                soft_wrap: self.soft_wrap,
+                max_lines: self.max_lines,
+                direction: self.layout_direction,
+                overflow: self.overflow,
+            },
+            constraints: self.constraints,
+            density: &self.density,
+        }
+    }
+}
 
 struct LaidOutInner {
     platform: SharedTextMeasurer,
@@ -281,47 +353,70 @@ impl fmt::Debug for LaidOutParagraph {
 }
 
 impl LaidOutParagraph {
-    /// `input`'s text laid out on `platform` in `style` (its own style, or that style in another
+    /// `source`'s text laid out on `platform` in `style` (its own style, or that style in another
     /// paint).
-    fn lay_out(
+    pub(crate) fn lay_out(
         platform: &SharedTextMeasurer,
-        input: &TextLayoutInput,
+        source: ParagraphSource<'_>,
         style: &TextStyle,
     ) -> LaidOutParagraph {
         // Nothing draws what was dropped, and no measurement needs it: this keeps a measurer
         // that isn't a host's (or that draws between frames) from growing.
         platform.release_dropped();
-        let options = TextLayoutOptions {
-            soft_wrap: input.soft_wrap,
-            max_lines: input.max_lines,
-            direction: input.layout_direction,
-            overflow: input.overflow,
-        };
+        let options = source.options;
         let paint = TextPaint::of(style);
         // As Compose's: a direction left unspecified is the layout's.
-        let style = TextStyle::resolve_defaults(style, input.layout_direction);
+        let style = TextStyle::resolve_defaults(style, options.direction);
         let mut measurer = platform.borrow_mut();
-        let placeholders = input.placeholder_ranges();
-        check_placeholders(input.text.as_str(), placeholders);
+        let placeholders = source.placeholders;
+        check_placeholders(source.text.as_str(), placeholders);
         let handle = if placeholders.is_empty() {
             measurer.layout_annotated(
-                &input.text,
+                source.text,
                 &style,
                 options,
-                input.constraints,
-                &input.density,
+                source.constraints,
+                source.density,
             )
         } else {
             measurer.layout_with_placeholders(
-                &input.text,
+                source.text,
                 &style,
                 placeholders,
                 options,
-                input.constraints,
-                &input.density,
+                source.constraints,
+                source.density,
             )
         };
         LaidOutParagraph::of_handle(platform, &mut *measurer, handle, paint)
+    }
+
+    /// The platform's paragraph.
+    pub(crate) fn handle(&self) -> ParagraphHandle {
+        self.0.keeper.handle()
+    }
+
+    /// What recordings drawing it keep.
+    pub(crate) fn keeper(&self) -> &ParagraphKeeper {
+        &self.0.keeper
+    }
+
+    /// The platform it was laid out on.
+    pub(crate) fn platform(&self) -> &SharedTextMeasurer {
+        &self.0.platform
+    }
+
+    pub(crate) fn metrics(&self) -> ParagraphMetrics {
+        self.0.metrics
+    }
+
+    pub(crate) fn did_exceed_max_lines(&self) -> bool {
+        self.0.did_exceed_max_lines
+    }
+
+    /// A font it asked for arrived since it was laid out.
+    pub(crate) fn has_stale_resolved_fonts(&self) -> bool {
+        self.0.platform.borrow().has_stale_resolved_fonts(self.0.keeper.handle())
     }
 
     fn of_handle(
@@ -343,7 +438,12 @@ impl LaidOutParagraph {
     /// This layout in `paint`: itself, the last one asked for if that's the paint, else made
     /// (from the layout if the platform can, as Compose paints a kept layout in another color,
     /// else laid out anew).
-    fn in_paint(&self, paint: &TextPaint, input: &TextLayoutInput) -> LaidOutParagraph {
+    pub(crate) fn in_paint(
+        &self,
+        paint: &TextPaint,
+        base: &TextStyle,
+        source: ParagraphSource<'_>,
+    ) -> LaidOutParagraph {
         if self.0.paint == *paint {
             return self.clone();
         }
@@ -356,14 +456,14 @@ impl LaidOutParagraph {
             }
         }
         let platform = &self.0.platform;
-        let style = paint.over(&input.style);
+        let style = paint.over(base);
         let painted = {
             let mut measurer = platform.borrow_mut();
             measurer.painted(self.0.keeper.handle(), &style).map(|handle| {
                 LaidOutParagraph::of_handle(platform, &mut *measurer, handle, paint.clone())
             })
         };
-        let copy = painted.unwrap_or_else(|| LaidOutParagraph::lay_out(platform, input, &style));
+        let copy = painted.unwrap_or_else(|| LaidOutParagraph::lay_out(platform, source, &style));
         let mut repainted = self.0.repainted.borrow_mut();
         if repainted.len() == REPAINTED_COPIES {
             repainted.remove(0);
@@ -376,7 +476,7 @@ impl LaidOutParagraph {
 /// What a paragraph is drawn in, of a text's style: all the draw affecting attributes but the
 /// blend mode, which is the drawing's.
 #[derive(Clone, PartialEq, Debug)]
-struct TextPaint {
+pub(crate) struct TextPaint {
     foreground: TextForegroundStyle,
     shadow: Option<Shadow>,
     decoration: Option<TextDecoration>,
@@ -412,12 +512,16 @@ impl TextPaint {
 
 /// A [`TextLayoutResult`]'s paragraph: what a measurement laid out, its queries asked of the
 /// platform when first needed (on Android, each text's whole layout across JNI).
-struct MeasuredParagraph {
+pub(crate) struct MeasuredParagraph {
     laid_out: LaidOutParagraph,
     queries: OnceCell<Rc<dyn Paragraph>>,
 }
 
 impl MeasuredParagraph {
+    pub(crate) fn new(laid_out: LaidOutParagraph) -> MeasuredParagraph {
+        MeasuredParagraph { laid_out, queries: OnceCell::new() }
+    }
+
     fn queries(&self) -> &dyn Paragraph {
         &**self.queries.get_or_init(|| {
             let inner = &self.laid_out.0;
@@ -519,6 +623,17 @@ impl Paragraph for MeasuredParagraph {
     }
     fn placeholder_rects(&self) -> Vec<Option<Rect>> {
         self.queries().placeholder_rects()
+    }
+    fn get_range_for_rect(
+        &self,
+        rect: Rect,
+        granularity: crate::TextGranularity,
+        inclusion_strategy: &crate::TextInclusionStrategy,
+    ) -> TextRange {
+        self.queries().get_range_for_rect(rect, granularity, inclusion_strategy)
+    }
+    fn fill_bounding_boxes(&self, range: TextRange, array: &mut [f32], array_start: usize) {
+        self.queries().fill_bounding_boxes(range, array, array_start)
     }
 }
 
@@ -762,21 +877,59 @@ impl DrawScope<'_> {
     /// `result`'s layout in `paint` at `top_left`, clipped to its size if it overflows and isn't
     /// meant to show.
     fn draw_laid_out(&mut self, result: &TextLayoutResult, paint: &TextPaint, top_left: Offset) {
-        let paragraph = self.drawable_of(result).in_paint(paint, &result.layout_input);
         let clipped =
             result.has_visual_overflow() && result.layout_input.overflow != TextOverflow::Visible;
         let (width, height) = (result.size.width as f32, result.size.height as f32);
-        let handle = paragraph.0.keeper.handle();
-        self.list.laid_out_paragraphs.push(paragraph.0.keeper.clone());
+        let parts = result.multi_paragraph.parts();
+        let mut stacked: Vec<(ParagraphHandle, f32)> = Vec::new();
+        let single = if parts.is_empty() {
+            let input = &result.layout_input;
+            let paragraph = self.drawable_of(result).in_paint(paint, &input.style, input.source());
+            self.list.laid_out_paragraphs.push(paragraph.keeper().clone());
+            Some(paragraph.handle())
+        } else {
+            // Each paragraph below the one before, as Compose's `MultiParagraph.paint`.
+            for part in parts {
+                let paragraph =
+                    self.drawable_of_part(part).in_paint(paint, &part.style, part.source());
+                self.list.laid_out_paragraphs.push(paragraph.keeper().clone());
+                stacked.push((paragraph.handle(), part.top));
+            }
+            None
+        };
+        let draw = |scope: &mut DrawScope<'_>| match single {
+            Some(handle) => scope.draw_paragraph(handle, Offset::ZERO),
+            None => {
+                for &(handle, top) in &stacked {
+                    scope.draw_paragraph(handle, Offset::new(0.0, top));
+                }
+            }
+        };
         self.translate(top_left.x, top_left.y, |scope| {
             if clipped {
-                scope.clip_rect(Rect::new(0.0, 0.0, width, height), |scope| {
-                    scope.draw_paragraph(handle, Offset::ZERO);
-                });
+                scope.clip_rect(Rect::new(0.0, 0.0, width, height), draw);
             } else {
-                scope.draw_paragraph(handle, Offset::ZERO);
+                draw(scope);
             }
         });
+    }
+
+    /// The paragraph of a multi-paragraph text this drawing's renderer can draw, as
+    /// [`drawable_of`](Self::drawable_of) a text's.
+    fn drawable_of_part(&self, part: &StackedParagraph) -> LaidOutParagraph {
+        let platform = self.current_value_of(&LOCAL_TREE_TEXT_MEASURER);
+        if part.measured.platform().ptr_eq(&platform) {
+            return part.measured.clone();
+        }
+        let mut elsewhere = part.elsewhere.borrow_mut();
+        if let Some(laid_out) = &*elsewhere
+            && laid_out.platform().ptr_eq(&platform)
+        {
+            return laid_out.clone();
+        }
+        let laid_out = LaidOutParagraph::lay_out(&platform, part.source(), &part.style);
+        *elsewhere = Some(laid_out.clone());
+        laid_out
     }
 
     /// The paragraph of `result` this drawing's renderer can draw: what the measurement laid
@@ -797,7 +950,7 @@ impl DrawScope<'_> {
             return laid_out.clone();
         }
         let input = &result.layout_input;
-        let laid_out = LaidOutParagraph::lay_out(platform, input, &input.style);
+        let laid_out = LaidOutParagraph::lay_out(platform, input.source(), &input.style);
         *elsewhere = Some(laid_out.clone());
         laid_out
     }

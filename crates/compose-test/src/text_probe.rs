@@ -139,6 +139,10 @@ impl<M: TextMeasurer> TextMeasurer for CountingTextMeasurer<M> {
         self.inner.metrics(paragraph)
     }
 
+    fn height(&self, paragraph: ParagraphHandle) -> f32 {
+        self.inner.height(paragraph)
+    }
+
     fn did_exceed_max_lines(&self, paragraph: ParagraphHandle) -> bool {
         self.inner.did_exceed_max_lines(paragraph)
     }
