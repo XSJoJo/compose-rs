@@ -568,3 +568,62 @@ fn a_description_read_through_extends_nothing() {
     let range = node.config.get(&SemanticsProperties::TEXT_SELECTION_RANGE).copied();
     assert_eq!(range, Some(TextRange::new(4, 4)), "collapsed, at the word's end");
 }
+
+/// Twelve letters shown four a line and cut after two lines: plain, or in three paragraphs whose
+/// last is left out (D2070).
+fn cut_text_scene(paragraphs: bool) -> Scene {
+    let text = if paragraphs {
+        AnnotatedString::build(|text| {
+            for part in ["abcd", "efgh", "ijkl"] {
+                text.with_paragraph_style(ParagraphStyle::DEFAULT, |text| {
+                    text.append(part);
+                });
+            }
+        })
+    } else {
+        AnnotatedString::new("abcdefghijkl")
+    };
+    Scene::new(move || {
+        BasicAnnotatedText!(
+            text.clone(),
+            modifier = Modifier.width(30.dp()).test_tag("node"),
+            max_lines = 2
+        );
+    })
+}
+
+#[test]
+fn a_service_moves_through_the_lines_a_cut_text_shows_and_stops_where_it_is_cut() {
+    for paragraphs in [false, true] {
+        let mut scene = cut_text_scene(paragraphs);
+        assert!(scene.previous(movement::LINE), "from nowhere: the last line shown");
+        assert_eq!(scene.selection(), (4, 4), "paragraphs: {paragraphs}");
+        assert!(scene.next(movement::LINE));
+        assert_eq!(scene.selection(), (8, 8));
+        assert!(!scene.next(movement::LINE), "where it's cut, paragraphs: {paragraphs}");
+        assert!(!scene.next(movement::PAGE));
+        assert_eq!(scene.selection(), (8, 8));
+        assert!(scene.previous(movement::PAGE));
+        assert_eq!(scene.selection(), (4, 4));
+        assert!(scene.previous(movement::PAGE));
+        assert_eq!(scene.selection(), (0, 0));
+        assert!(scene.next(movement::PAGE));
+        assert_eq!(scene.selection(), (8, 8));
+    }
+}
+
+#[test]
+fn a_service_past_where_a_text_is_cut_has_no_line_or_page_after_and_the_last_shown_before() {
+    for paragraphs in [false, true] {
+        let mut scene = cut_text_scene(paragraphs);
+        assert!(scene.previous(movement::PAGE), "from nowhere: the end shown");
+        assert_eq!(scene.selection(), (4, 4), "paragraphs: {paragraphs}");
+        // Moved past where it's cut by its words, nothing more follows by lines or pages.
+        assert!(scene.next(movement::WORD));
+        assert_eq!(scene.selection(), (12, 12));
+        assert!(!scene.next(movement::LINE), "paragraphs: {paragraphs}");
+        assert!(!scene.next(movement::PAGE), "paragraphs: {paragraphs}");
+        assert!(scene.previous(movement::LINE));
+        assert_eq!(scene.selection(), (4, 4));
+    }
+}

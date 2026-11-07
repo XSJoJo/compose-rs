@@ -2183,6 +2183,38 @@ fn characters_are_counted_in_units_a_pair_being_one() {
 }
 
 #[test]
+fn a_cut_text_of_paragraphs_has_its_characters_found_and_those_left_out_at_its_end() {
+    let laid_out = |paragraphs: bool| {
+        let text = if paragraphs {
+            AnnotatedString::build(|text| {
+                for part in ["abcd", "efgh", "ijkl"] {
+                    text.with_paragraph_style(ParagraphStyle::DEFAULT, |text| {
+                        text.append(part);
+                    });
+                }
+            })
+        } else {
+            AnnotatedString::new("abcdefghijkl")
+        };
+        let mut host = host_of(move || {
+            BasicAnnotatedText!(
+                text.clone(),
+                modifier = Modifier.width(30.dp()).test_tag("text"),
+                max_lines = 2
+            );
+        });
+        let node = tagged(&host, "text");
+        character_locations(&mut host, &node, 0, 13).expect("laid out")
+    };
+    let (plain, paragraphs) = (laid_out(false), laid_out(true));
+    assert_eq!(paragraphs, plain);
+    assert!(paragraphs[..8].iter().all(Option::is_some), "what's shown");
+    // What's left out is at the end of the last paragraph laid out, none of it in the node: as
+    // what the plain text's lines leave out.
+    assert!(paragraphs[8..].iter().all(Option::is_none));
+}
+
+#[test]
 fn a_scrolled_fields_characters_are_where_it_shows_them() {
     let mut host = host_of(|| {
         BasicTextField!(

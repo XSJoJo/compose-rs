@@ -61,7 +61,7 @@ impl<'a> TextSegments<'a> {
             Granularity::Word => self.word_following(start)?,
             Granularity::Paragraph => self.paragraph_following(start)?,
             Granularity::Line(layout) => self.line_following(layout, current)?,
-            Granularity::Page(layout, height) => self.page_following(layout, height, start),
+            Granularity::Page(layout, height) => self.page_following(layout, height, start)?,
         };
         non_empty(range)
     }
@@ -214,6 +214,18 @@ impl<'a> TextSegments<'a> {
         Some((start, end))
     }
 
+    /// Where `layout`'s lines end, in UTF-16 units: the text's end, or where its maximum lines cut
+    /// it. Lines and pages move through what's shown: nothing follows past it, and a move back
+    /// from past it goes as from it (D2070). Compose's iterators ask the layout about offsets past
+    /// it, which a text of paragraphs can't answer (`MultiParagraph` panics in the paragraphs it
+    /// left out, as Compose's throws) and which give a plain text's page a start after its end.
+    fn laid_out_end(&self, layout: &TextLayoutResult) -> i32 {
+        match (layout.line_count as usize).checked_sub(1) {
+            Some(last) => self.unit_of(layout.get_line_end(last, false)),
+            None => 0,
+        }
+    }
+
     /// The first unit of `line`, in the order `TextView`'s movement sees it: from the other end in a
     /// right-to-left paragraph.
     fn line_start_edge(&self, layout: &TextLayoutResult, line: usize) -> i32 {
@@ -236,6 +248,9 @@ impl<'a> TextSegments<'a> {
     }
 
     fn line_following(&self, layout: &TextLayoutResult, current: i32) -> Option<(i32, i32)> {
+        if current >= self.laid_out_end(layout) {
+            return None;
+        }
         let line = if current < 0 {
             layout.get_line_for_offset(0)
         } else {
@@ -250,8 +265,9 @@ impl<'a> TextSegments<'a> {
     }
 
     fn line_preceding(&self, layout: &TextLayoutResult, current: i32) -> Option<(i32, i32)> {
-        let line = if current > self.len() {
-            layout.get_line_for_offset(self.text.len())
+        let line = if current > self.laid_out_end(layout) {
+            // From past what's shown, its last line.
+            (layout.line_count as usize).checked_sub(1)?
         } else {
             let at = layout.get_line_for_offset(self.byte_of(current));
             // From the end of a line, that line; from inside one, the one before.
@@ -260,7 +276,15 @@ impl<'a> TextSegments<'a> {
         Some((self.line_start_edge(layout, line), self.line_end_edge(layout, line)))
     }
 
-    fn page_following(&self, layout: &TextLayoutResult, height: f32, start: i32) -> (i32, i32) {
+    fn page_following(
+        &self,
+        layout: &TextLayoutResult,
+        height: f32,
+        start: i32,
+    ) -> Option<(i32, i32)> {
+        if start >= self.laid_out_end(layout) {
+            return None;
+        }
         let line = layout.get_line_for_offset(self.byte_of(start));
         let next_page = layout.get_line_top(line) + height.round();
         let last_line = (layout.line_count as usize).saturating_sub(1);
@@ -269,10 +293,12 @@ impl<'a> TextSegments<'a> {
         } else {
             last_line
         };
-        (start, self.line_end_edge(layout, end_line))
+        Some((start, self.line_end_edge(layout, end_line)))
     }
 
     fn page_preceding(&self, layout: &TextLayoutResult, height: f32, end: i32) -> (i32, i32) {
+        let laid_out_end = self.laid_out_end(layout);
+        let end = end.min(laid_out_end);
         let line = layout.get_line_for_offset(self.byte_of(end));
         let previous_page = layout.get_line_top(line) - height.round();
         let mut start_line = if previous_page > 0.0 {
@@ -281,7 +307,7 @@ impl<'a> TextSegments<'a> {
             0
         };
         // At the end of the text, it's the end of the current line rather than the start of a next.
-        if end == self.len() && start_line < line {
+        if end == laid_out_end && start_line < line {
             start_line += 1;
         }
         (self.line_start_edge(layout, start_line), end)

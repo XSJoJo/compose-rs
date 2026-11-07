@@ -19,7 +19,7 @@ The log is split by area into the files below, one table each, rows in number or
 |---|---|---|
 | [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 182 |
 | [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 459 |
-| [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 145 |
+| [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 146 |
 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md) | Lazy lists and grids, item reuse, the policy of composing only what is in view, prefetch. | 120 |
 | [android-drawing](decisions/android-drawing.md) | The display list and its replayer, render nodes and repaint boundaries, paths, shadows, layers. | 34 |
 | [android-host-and-performance](decisions/android-host-and-performance.md) | The view and activity glue, the frame loop, the hint session, jank, startup, memory, and the optimization flags. | 31 |
@@ -991,7 +991,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1585 | [ui-and-layout](decisions/ui-and-layout.md#d1585) | revised by [D1587](decisions/ui-and-layout.md#d1587) |
 | D1586 | [ui-and-layout](decisions/ui-and-layout.md#d1586) | current |
 | D1587 | [ui-and-layout](decisions/ui-and-layout.md#d1587) | current |
-| D1650 | [ui-and-layout](decisions/ui-and-layout.md#d1650) | current |
+| D1650 | [ui-and-layout](decisions/ui-and-layout.md#d1650) | revised by [D2070](decisions/text.md#d2070) |
 | D1651 | [ui-and-layout](decisions/ui-and-layout.md#d1651) | current |
 | D1652 | [ui-and-layout](decisions/ui-and-layout.md#d1652) | current |
 | D1653 | [ui-and-layout](decisions/ui-and-layout.md#d1653) | current |
@@ -1111,6 +1111,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D2051 | [text](decisions/text.md#d2051) | current |
 | D2052 | [text](decisions/text.md#d2052) | revised by [D2053](decisions/text.md#d2053), [D2060](decisions/text.md#d2060) |
 | D2053 | [text](decisions/text.md#d2053) | revised by [D2054](decisions/text.md#d2054) |
-| D2054 | [text](decisions/text.md#d2054) | current |
+| D2054 | [text](decisions/text.md#d2054) | revised by [D2070](decisions/text.md#d2070) |
 | D2060 | [text](decisions/text.md#d2060) | current |
 | D2061 | [text](decisions/text.md#d2061) | current |
+| D2070 | [text](decisions/text.md#d2070) | current |

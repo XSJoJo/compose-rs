@@ -326,3 +326,167 @@ fn a_page_preceding_the_end_starts_a_line_later_than_one_from_inside() {
     let above = layout.get_line_for_vertical_position(layout.get_line_top(last) - height);
     assert_eq!(layout.get_line_for_offset(start as usize), above);
 }
+
+/// Each of `parts` in a paragraph of its own, in no style of its own: a text of paragraphs, laid
+/// out as a `MultiParagraph` (D2053).
+fn paragraphs(parts: &[&str]) -> AnnotatedString {
+    AnnotatedString::build(|text| {
+        for part in parts {
+            text.with_paragraph_style(ParagraphStyle::DEFAULT, |text| {
+                text.append(part);
+            });
+        }
+    })
+}
+
+/// `text` laid out four letters a line and cut after two lines.
+fn cut_after_two_lines(text: AnnotatedString, max_lines: u32) -> (UiHost, TextLayoutResult) {
+    let result: Rc<RefCell<Option<TextLayoutResult>>> = Rc::default();
+    let heard = result.clone();
+    let mut host = UiHost::headless(400, 800);
+    host.set_content(move || {
+        let heard = heard.clone();
+        BasicAnnotatedText!(
+            text.clone(),
+            modifier = Modifier.width(Dp(30.0)),
+            max_lines = max_lines,
+            on_text_layout = Some(move |layout| *heard.borrow_mut() = Some(layout))
+        );
+    });
+    host.settle(5);
+    let layout = result.borrow().clone().expect("laid out");
+    (host, layout)
+}
+
+/// Texts of twelve letters shown as `abcd` and `efgh`, cut there by their two lines: a plain text
+/// (the control), a text of paragraphs whose last is left out, and one whose second is cut inside
+/// and whose third is left out. A text of paragraphs can't be asked about what it left out
+/// (`MultiParagraph`'s queries panic there, as Compose's throw, D2054); a service moving through
+/// any of them treats where it's cut as its end (D2070).
+fn cut_texts() -> Vec<(&'static str, UiHost, TextLayoutResult)> {
+    [
+        ("plain", AnnotatedString::new("abcdefghijkl")),
+        ("the last paragraph left out", paragraphs(&["abcd", "efgh", "ijkl"])),
+        ("the second cut inside", paragraphs(&["abcd", "efghij", "kl"])),
+    ]
+    .into_iter()
+    .map(|(name, text)| {
+        let (host, layout) = cut_after_two_lines(text, 2);
+        assert_eq!(layout.line_count, 2, "{name}");
+        assert_eq!((layout.get_line_start(0), layout.get_line_end(0, false)), (0, 4), "{name}");
+        assert_eq!((layout.get_line_start(1), layout.get_line_end(1, false)), (4, 8), "{name}");
+        (name, host, layout)
+    })
+    .collect()
+}
+
+const CUT_TEXT: &str = "abcdefghijkl";
+
+#[test]
+fn lines_follow_up_to_where_a_text_is_cut_and_none_past_it() {
+    let segments = TextSegments::new(CUT_TEXT);
+    for (name, _host, layout) in cut_texts() {
+        let next = |current| segments.following(Granularity::Line(&layout), current);
+        let expected = [
+            (-1, Some((0, 4))),
+            (0, Some((0, 4))),
+            (2, Some((4, 8))),
+            (4, Some((4, 8))),
+            (6, None),
+            (8, None),
+            (9, None),
+            (10, None),
+            (11, None),
+            (12, None),
+        ];
+        for (current, range) in expected {
+            assert_eq!(next(current), range, "{name}, from {current}");
+        }
+    }
+}
+
+#[test]
+fn lines_precede_from_past_where_a_text_is_cut_as_from_where_it_is() {
+    let segments = TextSegments::new(CUT_TEXT);
+    for (name, _host, layout) in cut_texts() {
+        let previous = |current| segments.preceding(Granularity::Line(&layout), current);
+        let expected = [
+            (13, Some((4, 8))),
+            (12, Some((4, 8))),
+            (11, Some((4, 8))),
+            (10, Some((4, 8))),
+            (9, Some((4, 8))),
+            (8, Some((4, 8))),
+            (6, Some((0, 4))),
+            (4, Some((0, 4))),
+            (2, None),
+            (0, None),
+        ];
+        for (current, range) in expected {
+            assert_eq!(previous(current), range, "{name}, from {current}");
+        }
+    }
+}
+
+#[test]
+fn a_page_follows_up_to_where_a_text_is_cut_and_none_past_it() {
+    let segments = TextSegments::new(CUT_TEXT);
+    for (name, _host, layout) in cut_texts() {
+        let line_height = layout.get_line_bottom(0);
+        let next = |current| segments.following(Granularity::Page(&layout, line_height), current);
+        let expected = [
+            (-1, Some((0, 8))),
+            (0, Some((0, 8))),
+            (4, Some((4, 8))),
+            (6, Some((6, 8))),
+            (8, None),
+            (9, None),
+            (10, None),
+            (11, None),
+            (12, None),
+        ];
+        for (current, range) in expected {
+            assert_eq!(next(current), range, "{name}, from {current}");
+        }
+    }
+}
+
+#[test]
+fn a_page_precedes_from_past_where_a_text_is_cut_as_from_where_it_is() {
+    let segments = TextSegments::new(CUT_TEXT);
+    for (name, _host, layout) in cut_texts() {
+        let line_height = layout.get_line_bottom(0);
+        let previous =
+            |current| segments.preceding(Granularity::Page(&layout, line_height), current);
+        let expected = [
+            (13, Some((4, 8))),
+            (12, Some((4, 8))),
+            (11, Some((4, 8))),
+            (10, Some((4, 8))),
+            (9, Some((4, 8))),
+            (8, Some((4, 8))),
+            (6, Some((0, 6))),
+            (4, Some((0, 4))),
+            (2, Some((0, 2))),
+            (0, None),
+        ];
+        for (current, range) in expected {
+            assert_eq!(previous(current), range, "{name}, from {current}");
+        }
+    }
+}
+
+#[test]
+fn a_text_of_paragraphs_not_cut_is_moved_through_to_its_end() {
+    let segments = TextSegments::new(CUT_TEXT);
+    let (_host, layout) = cut_after_two_lines(paragraphs(&["abcd", "efgh", "ijkl"]), u32::MAX);
+    assert_eq!(layout.line_count, 3);
+    let page = layout.get_line_bottom(0);
+    assert_eq!(segments.following(Granularity::Line(&layout), 8), Some((8, 12)));
+    assert_eq!(segments.following(Granularity::Line(&layout), 10), None);
+    assert_eq!(segments.preceding(Granularity::Line(&layout), 12), Some((8, 12)));
+    assert_eq!(segments.preceding(Granularity::Line(&layout), 13), Some((8, 12)));
+    assert_eq!(segments.following(Granularity::Page(&layout, page), 9), Some((9, 12)));
+    assert_eq!(segments.preceding(Granularity::Page(&layout, page), 12), Some((4, 12)));
+    assert_eq!(segments.preceding(Granularity::Page(&layout, page), 10), Some((0, 10)));
+}
