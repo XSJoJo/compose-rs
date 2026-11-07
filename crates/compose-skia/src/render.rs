@@ -400,6 +400,41 @@ fn draw_op(
             let skia = skia_path(path).make_offset((offset.x, offset.y));
             canvas.clip_path(&skia, ClipOp::Intersect, true);
         }
+        DrawOp::ClipOutPath { path, offset } => {
+            let skia = skia_path(path).make_offset((offset.x, offset.y));
+            canvas.clip_path(&skia, ClipOp::Difference, true);
+        }
+        DrawOp::Concat(m) => {
+            let matrix =
+                skia_safe::Matrix::new_all(m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8]);
+            canvas.concat(&matrix);
+        }
+        DrawOp::DrawVertices { vertices, blend_mode, paint } => {
+            use compose_ui::canvas::VertexMode as Mode;
+            let mode = match vertices.vertex_mode() {
+                Mode::Triangles => skia_safe::vertices::VertexMode::Triangles,
+                Mode::TriangleStrip => skia_safe::vertices::VertexMode::TriangleStrip,
+                Mode::TriangleFan => skia_safe::vertices::VertexMode::TriangleFan,
+            };
+            let point = |offset: &compose_ui::Offset| Point::new(offset.x, offset.y);
+            let positions: Vec<Point> = vertices.positions().iter().map(point).collect();
+            let texs: Vec<Point> = vertices.texture_coordinates().iter().map(point).collect();
+            let colors: Vec<skia_safe::Color> = vertices
+                .colors()
+                .iter()
+                .map(|color| skia_safe::Color::new(color.to_argb()))
+                .collect();
+            let indices = (!vertices.indices().is_empty()).then_some(vertices.indices());
+            let skia = skia_safe::Vertices::new_copy(mode, &positions, &texs, &colors, indices);
+            // Without a shader, the vertices' colors alone, as Android draws them (Compose's
+            // test draws red vertices with a black paint); with one, blended with it.
+            let blend = if paint.shader().is_some() {
+                skia_blend_mode(*blend_mode)
+            } else {
+                skia_safe::BlendMode::Dst
+            };
+            canvas.draw_vertices(&skia, blend, &skia_paint_with(paint, tables, None));
+        }
         DrawOp::DrawImage { image, src, dst, alpha: image_alpha, color_filter } => {
             let (alpha, outer_alpha) = (*image_alpha, alpha);
             if let Some(skia) = skia_image(image) {

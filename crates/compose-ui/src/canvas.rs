@@ -5,10 +5,10 @@
 use std::sync::{Arc, RwLock};
 
 use crate::alignment::LayoutDirection;
-use crate::color_filter::ColorFilter;
+use crate::color_filter::{BlendMode, ColorFilter};
 use crate::display_list::{DisplayList, DrawOp};
 use crate::draw::DrawScope;
-use crate::graphics::Paint;
+use crate::graphics::{Color, Paint, PaintStyle, StrokeCap};
 use crate::image::ImageBitmap;
 use crate::path::Path;
 use crate::unit::{Density, IntOffset, IntSize, Offset, Rect, Size};
@@ -229,6 +229,71 @@ impl Canvas {
         self.state(DrawOp::ClipPath { path: path.data(), offset: Offset::ZERO });
     }
 
+    /// Clips what follows to `rect` or out of it, as `clipRect(rect, clipOp)`.
+    pub fn clip_rect_with(&mut self, rect: Rect, clip_op: ClipOp) {
+        match clip_op {
+            ClipOp::Intersect => self.clip_rect(rect),
+            ClipOp::Difference => {
+                let path = Path::new();
+                path.add_rect(rect);
+                self.clip_path_with(&path, ClipOp::Difference);
+            }
+        }
+    }
+
+    /// Clips what follows to `path` or out of it, as `clipPath(path, clipOp)`.
+    pub fn clip_path_with(&mut self, path: &Path, clip_op: ClipOp) {
+        match clip_op {
+            ClipOp::Intersect => self.clip_path(path),
+            ClipOp::Difference => {
+                self.state(DrawOp::ClipOutPath { path: path.data(), offset: Offset::ZERO });
+            }
+        }
+    }
+
+    /// Skews what follows by `sx` horizontally and `sy` vertically (tangents of the angles),
+    /// as `skew(sx, sy)`.
+    pub fn skew(&mut self, sx: f32, sy: f32) {
+        self.state(DrawOp::Concat(Box::new([1.0, sx, 0.0, sy, 1.0, 0.0, 0.0, 0.0, 1.0])));
+    }
+
+    /// Skews what follows by angles in radians, as `skewRad(sxRad, syRad)`.
+    pub fn skew_rad(&mut self, sx_rad: f32, sy_rad: f32) {
+        self.skew(sx_rad.tan(), sy_rad.tan());
+    }
+
+    /// Transforms what follows by `matrix`, as `concat(matrix)`: its 2D part (the z row and
+    /// column left out), as Android's canvas takes it.
+    pub fn concat(&mut self, matrix: &crate::matrix::Matrix) {
+        let m = &matrix.values;
+        self.state(DrawOp::Concat(Box::new([
+            m[0], m[4], m[12], m[1], m[5], m[13], m[3], m[7], m[15],
+        ])));
+    }
+
+    /// `points` drawn as `point_mode` says, with `paint`'s stroke width and cap, as
+    /// `drawPoints(pointMode, points, paint)`: each a dot (round if the cap is, else square, a
+    /// pixel wide for a fill or a hairline), each pair a line, or a line through them all.
+    pub fn draw_points(&mut self, point_mode: PointMode, points: &[Offset], paint: Paint) {
+        for op in points_ops(point_mode, points, paint) {
+            self.draw(op);
+        }
+    }
+
+    /// [`draw_points`](Canvas::draw_points) of points given as x, y pairs, as
+    /// `drawRawPoints(pointMode, points, paint)`: a last odd value is left out.
+    pub fn draw_raw_points(&mut self, point_mode: PointMode, points: &[f32], paint: Paint) {
+        let points: Vec<Offset> =
+            points.as_chunks::<2>().0.iter().map(|[x, y]| Offset::new(*x, *y)).collect();
+        self.draw_points(point_mode, &points, paint);
+    }
+
+    /// `vertices`' triangles, each vertex's color blended with `paint`'s by `blend_mode`, as
+    /// `drawVertices(vertices, blendMode, paint)`.
+    pub fn draw_vertices(&mut self, vertices: &Arc<Vertices>, blend_mode: BlendMode, paint: Paint) {
+        self.draw(DrawOp::DrawVertices { vertices: vertices.clone(), blend_mode, paint });
+    }
+
     pub fn draw_line(&mut self, from: Offset, to: Offset, paint: Paint) {
         self.draw(DrawOp::DrawLine(from, to, paint));
     }
@@ -398,5 +463,156 @@ impl CanvasDrawScope {
         };
         block(&mut scope);
         canvas.draw_recording(recording);
+    }
+}
+
+/// Whether a clip keeps what's inside its shape or what's outside, as Compose's `ClipOp`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum ClipOp {
+    #[default]
+    Intersect,
+    Difference,
+}
+
+/// How `draw_points` draws its points, as Compose's `PointMode`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum PointMode {
+    /// Each point a dot.
+    Points,
+    /// Each pair of points a line (a last odd one left out).
+    Lines,
+    /// A line from each point to the next.
+    Polygon,
+}
+
+/// The operations `points` drawn as `point_mode` says are (no operation of their own: dots are
+/// lines of no length with a square or round cap, as Skia draws points).
+pub(crate) fn points_ops(point_mode: PointMode, points: &[Offset], paint: Paint) -> Vec<DrawOp> {
+    let width = match paint.style {
+        PaintStyle::Stroke(width) => width,
+        PaintStyle::Fill => 0.0,
+    };
+    let mut stroke = paint;
+    stroke.style = PaintStyle::Stroke(width);
+    match point_mode {
+        PointMode::Points => {
+            stroke.style = PaintStyle::Stroke(if width > 0.0 { width } else { 1.0 });
+            if stroke.cap != StrokeCap::Round {
+                stroke.cap = StrokeCap::Square;
+            }
+            points.iter().map(|point| DrawOp::DrawLine(*point, *point, stroke)).collect()
+        }
+        PointMode::Lines => points
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|[from, to]| DrawOp::DrawLine(*from, *to, stroke))
+            .collect(),
+        PointMode::Polygon => {
+            points.windows(2).map(|pair| DrawOp::DrawLine(pair[0], pair[1], stroke)).collect()
+        }
+    }
+}
+
+/// How `Vertices`' points make triangles, as Compose's `VertexMode`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum VertexMode {
+    /// Each three points a triangle.
+    Triangles,
+    /// Each point a triangle with the two before it.
+    TriangleStrip,
+    /// Each point a triangle with the one before it and the first.
+    TriangleFan,
+}
+
+/// Triangles to draw with `Canvas::draw_vertices`, as Compose's `Vertices`: positions, the
+/// texture coordinates a paint's shader is sampled at, a color per vertex, and the indices of
+/// the vertices drawn in order (all of them in order if none).
+#[derive(Clone, PartialEq, Debug)]
+pub struct Vertices {
+    vertex_mode: VertexMode,
+    positions: Vec<Offset>,
+    texture_coordinates: Vec<Offset>,
+    colors: Vec<Color>,
+    indices: Vec<u16>,
+}
+
+impl Vertices {
+    /// As `Vertices(vertexMode, positions, textureCoordinates, colors, indices)`.
+    ///
+    /// # Panics
+    ///
+    /// As Compose's throws: if `texture_coordinates` or `colors` aren't one per position, or an
+    /// index names no position.
+    pub fn new(
+        vertex_mode: VertexMode,
+        positions: &[Offset],
+        texture_coordinates: &[Offset],
+        colors: &[Color],
+        indices: &[u16],
+    ) -> Vertices {
+        assert!(
+            texture_coordinates.len() == positions.len(),
+            "positions and textureCoordinates lengths must match."
+        );
+        assert!(colors.len() == positions.len(), "positions and colors lengths must match.");
+        assert!(
+            indices.iter().all(|index| usize::from(*index) < positions.len()),
+            "indices values must be valid indices in the positions list."
+        );
+        Vertices {
+            vertex_mode,
+            positions: positions.to_vec(),
+            texture_coordinates: texture_coordinates.to_vec(),
+            colors: colors.to_vec(),
+            indices: indices.to_vec(),
+        }
+    }
+
+    /// From flat arrays, as the array constructor: positions and texture coordinates as x, y
+    /// pairs, colors as ARGB.
+    ///
+    /// # Panics
+    ///
+    /// As Compose's throws: if `positions` has an odd length, `texture_coordinates` isn't as
+    /// long, `colors` isn't one per position, or an index names no position.
+    pub fn from_raw(
+        vertex_mode: VertexMode,
+        positions: &[f32],
+        texture_coordinates: &[f32],
+        colors: &[u32],
+        indices: &[u16],
+    ) -> Vertices {
+        assert!(positions.len().is_multiple_of(2), "positions length must be even");
+        assert!(
+            texture_coordinates.len() == positions.len(),
+            "positions and textureCoordinates lengths must match."
+        );
+        assert!(colors.len() == positions.len() / 2, "positions and colors lengths must match.");
+        let pairs = |values: &[f32]| -> Vec<Offset> {
+            values.as_chunks::<2>().0.iter().map(|[x, y]| Offset::new(*x, *y)).collect()
+        };
+        let colors: Vec<Color> = colors.iter().map(|argb| Color::from_argb(*argb)).collect();
+        Vertices::new(vertex_mode, &pairs(positions), &pairs(texture_coordinates), &colors, indices)
+    }
+
+    pub fn vertex_mode(&self) -> VertexMode {
+        self.vertex_mode
+    }
+
+    pub fn positions(&self) -> &[Offset] {
+        &self.positions
+    }
+
+    pub fn texture_coordinates(&self) -> &[Offset] {
+        &self.texture_coordinates
+    }
+
+    pub fn colors(&self) -> &[Color] {
+        &self.colors
+    }
+
+    pub fn indices(&self) -> &[u16] {
+        &self.indices
     }
 }

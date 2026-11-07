@@ -125,6 +125,9 @@ internal class Replayer(
     /** The filter being read, as its key. */
     private val filterKey = IntArray(FILTER_KEY_INTS)
     private val rect = RectF()
+    /** A `CONCAT`'s matrix and its values, row-major. */
+    private val concatMatrix = Matrix()
+    private val matrixValues = FloatArray(9)
     private val source = Rect()
     private val clip = Path()
     private val radii = FloatArray(8)
@@ -592,6 +595,40 @@ internal class Replayer(
                             canvas.clipPath(clip)
                         }
                     }
+                }
+                CLIP_OUT_PATH -> {
+                    val kept = paths.get(buffer.getInt())
+                    val x = buffer.float()
+                    val y = buffer.float()
+                    // An unknown path clips nothing out.
+                    if (kept != null) {
+                        kept.drawnAsPath = true
+                        kept.path.offset(x, y, clip)
+                        canvas.clipOutPath(clip)
+                    }
+                }
+                CONCAT -> {
+                    for (index in 0 until 9) matrixValues[index] = buffer.float()
+                    concatMatrix.setValues(matrixValues)
+                    canvas.concat(concatMatrix)
+                }
+                DRAW_VERTICES -> {
+                    val mode = when (buffer.get().toInt()) {
+                        1 -> Canvas.VertexMode.TRIANGLE_STRIP
+                        2 -> Canvas.VertexMode.TRIANGLE_FAN
+                        else -> Canvas.VertexMode.TRIANGLES
+                    }
+                    val count = buffer.getInt()
+                    val positions = FloatArray(count * 2) { buffer.float() }
+                    val textures = FloatArray(count * 2) { buffer.float() }
+                    val colors = IntArray(count) { buffer.getInt() }
+                    val indices = ShortArray(buffer.getInt()) { buffer.getShort() }
+                    // Its blend mode isn't Android's to take, as Compose's `drawVertices`.
+                    buffer.get()
+                    canvas.drawVertices(
+                        mode, positions.size, positions, 0, textures, 0, colors, 0,
+                        if (indices.isEmpty()) null else indices, 0, indices.size, buffer.readPaint(),
+                    )
                 }
                 DRAW_RECT -> {
                     buffer.readRect(rect)
@@ -1819,6 +1856,9 @@ internal class Replayer(
         const val DROP_IMAGE = 23
         const val SAVE_LAYER = 24
         const val BEGIN_EDGE_EFFECTS = 25
+        const val CONCAT = 26
+        const val CLIP_OUT_PATH = 27
+        const val DRAW_VERTICES = 28
 
         // A paint's style flags: what follows its color and stroke width.
         const val PAINT_STROKE = 1

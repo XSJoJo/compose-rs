@@ -93,6 +93,14 @@ pub mod tag {
     /// stretch's axis, the padding in from its bounds of a glow (left, top, right, bottom) (f32s),
     /// then the length in bytes of what it holds (u32), which follows.
     pub const BEGIN_EDGE_EFFECTS: u8 = 25;
+    /// A 3 × 3 matrix the canvas is transformed by (`DrawOp::Concat`): nine f32s, row-major.
+    pub const CONCAT: u8 = 26;
+    /// A path clipped out (`DrawOp::ClipOutPath`): its id (u32), its offset.
+    pub const CLIP_OUT_PATH: u8 = 27;
+    /// Triangles (`DrawOp::DrawVertices`): their mode (u8: 0 triangles, 1 strip, 2 fan), the
+    /// vertex count (u32), positions and texture coordinates (an x, y pair each), colors
+    /// (ARGB), the index count (u32) and indices (u16 each), the blend mode (u8), a paint.
+    pub const DRAW_VERTICES: u8 = 28;
 }
 
 /// What follows a `BEGIN_EDGE_EFFECTS` tag up to what it holds: its operands and that length.
@@ -731,7 +739,15 @@ pub fn operand_bytes(bytes: &[u8], at: usize) -> usize {
         tag::TRANSLATE => 8,
         tag::CLIP_RECT => 16,
         tag::CLIP_ROUND_RECT => 32,
-        tag::CLIP_PATH => 4 + 8,
+        tag::CLIP_PATH | tag::CLIP_OUT_PATH => 4 + 8,
+        tag::CONCAT => 9 * 4,
+        tag::DRAW_VERTICES => {
+            let count = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+            let vertices = count(at + 2) as usize;
+            let indices_at = at + 2 + 4 + vertices * (8 + 8 + 4);
+            let paint_at = indices_at + 4 + 2 * count(indices_at) as usize + 1;
+            paint_at - at - 1 + paint_bytes(bytes, paint_at)
+        }
         tag::GROUP_REF => 8,
         // What it holds comes after, and reads as what it is.
         tag::BEGIN_EDGE_EFFECTS => EDGE_EFFECTS_HEADER_BYTES,
@@ -1735,6 +1751,40 @@ fn write_op(
             out.u32(id);
             out.offset(*offset);
         }
+        DrawOp::ClipOutPath { path, offset } => {
+            let id = resources.path_id(path);
+            out.u8(tag::CLIP_OUT_PATH);
+            out.u32(id);
+            out.offset(*offset);
+        }
+        DrawOp::Concat(matrix) => {
+            out.u8(tag::CONCAT);
+            for value in matrix.iter() {
+                out.f32(*value);
+            }
+        }
+        DrawOp::DrawVertices { vertices, blend_mode, paint } => {
+            use compose_ui::canvas::VertexMode;
+            out.u8(tag::DRAW_VERTICES);
+            out.u8(match vertices.vertex_mode() {
+                VertexMode::Triangles => 0,
+                VertexMode::TriangleStrip => 1,
+                VertexMode::TriangleFan => 2,
+            });
+            out.u32(vertices.positions().len() as u32);
+            for point in vertices.positions().iter().chain(vertices.texture_coordinates()) {
+                out.offset(*point);
+            }
+            for color in vertices.colors() {
+                out.u32(color.to_argb());
+            }
+            out.u32(vertices.indices().len() as u32);
+            for index in vertices.indices() {
+                out.bytes.extend_from_slice(&index.to_le_bytes());
+            }
+            out.u8(*blend_mode as u8);
+            out.paint(paint, tables, alpha);
+        }
     }
 }
 
@@ -2006,6 +2056,9 @@ mod tests {
         assert_eq!(constant("PAINT_BLUR"), paint_flag::BLUR);
         assert_eq!(constant("PAINT_COLOR_LONG"), COLOR_LONG);
         assert_eq!(constant("WIDE_GRADIENT"), WIDE_GRADIENT);
+        assert_eq!(constant("CONCAT"), tag::CONCAT);
+        assert_eq!(constant("CLIP_OUT_PATH"), tag::CLIP_OUT_PATH);
+        assert_eq!(constant("DRAW_VERTICES"), tag::DRAW_VERTICES);
         // The flags are read through these names only, never as bare numbers.
         assert!(!kotlin.contains("flags and 1 ") && !kotlin.contains("flags and 16 "));
         let table = kotlin.split("BLEND_MODES = arrayOf(").nth(1).expect("the modes").split(')');
@@ -2578,6 +2631,60 @@ mod tests {
         assert_eq!(stops, [0.0, 0.25, 1.0]);
         assert_eq!(read_f32(bytes, at + 16), 0.5, "the shader's alpha");
         assert_eq!(bytes.len(), at + 20);
+    }
+
+    // Compose: compose/ui/ui-graphics/src/androidMain/kotlin/androidx/compose/ui/graphics/AndroidCanvas.android.kt, concat, clipPath(ClipOp.Difference), drawVertices (no Compose test)
+    /// A bitmap canvas's matrix, clip out and vertices are written as `Replayer.kt` reads them.
+    #[test]
+    fn a_matrix_a_clip_out_and_vertices_are_written() {
+        use compose_ui::canvas::{VertexMode, Vertices};
+        let path = Path::new();
+        path.add_rect(Rect::new(0.0, 0.0, 2.0, 2.0));
+        let corners = [Offset::new(0.0, 0.0), Offset::new(4.0, 0.0), Offset::new(0.0, 4.0)];
+        let vertices = Vertices::new(
+            VertexMode::TriangleFan,
+            &corners,
+            &corners,
+            &[Color::RED; 3],
+            &[0, 2, 1],
+        );
+        let mut list = DisplayList::default();
+        list.push(DrawOp::Concat(Box::new([1.0, 0.5, 2.0, 0.0, 1.0, 3.0, 0.0, 0.0, 1.0])));
+        list.push(DrawOp::ClipOutPath { path: path.data(), offset: Offset::new(1.0, 1.0) });
+        let paint = Paint::fill(Color::BLACK).with_blend_mode(BlendMode::Xor);
+        let draw = DrawOp::DrawVertices {
+            vertices: Arc::new(vertices),
+            blend_mode: BlendMode::Dst,
+            paint,
+        };
+        list.push(draw);
+        list.push(DrawOp::Restore);
+        let (mut resources, mut out) = (Resources::default(), Writer::default());
+        write_display_list(&list, &mut resources, &mut GroupCache::default(), &mut out);
+        let bytes = &out.bytes;
+        assert_eq!(bytes[0], tag::CONCAT);
+        assert_eq!(read_f32(bytes, 1 + 4), 0.5);
+        assert_eq!(read_f32(bytes, 1 + 5 * 4), 3.0);
+        let clip = 1 + operand_bytes(bytes, 0);
+        assert_eq!(bytes[clip], tag::CLIP_OUT_PATH);
+        assert_eq!(read_f32(bytes, clip + 1 + 4), 1.0);
+        let at = clip + 1 + operand_bytes(bytes, clip);
+        assert_eq!((bytes[at], bytes[at + 1]), (tag::DRAW_VERTICES, 2), "a fan");
+        assert_eq!(read_u32(bytes, at + 2), 3);
+        let colors_at = at + 2 + 4 + 3 * 16;
+        assert_eq!(read_u32(bytes, colors_at), Color::RED.to_argb());
+        let indices_at = colors_at + 3 * 4;
+        assert_eq!(read_u32(bytes, indices_at), 3);
+        assert_eq!(&bytes[indices_at + 4..indices_at + 10], &[0, 0, 2, 0, 1, 0]);
+        assert_eq!(bytes[indices_at + 10], BlendMode::Dst as u8);
+        assert_eq!(bytes[indices_at + 11 + 4], paint_flag::BLEND_MODE, "the paint follows");
+        let end = at + 1 + operand_bytes(bytes, at);
+        assert_eq!((bytes[end], end + 1), (tag::RESTORE, bytes.len()));
+        assert_eq!(
+            resources.pending.len() + resources.pending_paths.len(),
+            1,
+            "the path's definition"
+        );
     }
 
     /// A sweep gradient of `colors`' bytes: its tile mode byte, ARGB colors and longs if any.

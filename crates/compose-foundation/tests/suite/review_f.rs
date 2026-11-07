@@ -206,8 +206,11 @@ fn painted(
             | DrawOp::DrawLine(..)
             | DrawOp::Transform { .. }
             | DrawOp::ClipPath { .. }
+            | DrawOp::ClipOutPath { .. }
+            | DrawOp::Concat(_)
             | DrawOp::DrawPath { .. }
             | DrawOp::DrawShadow { .. }
+            | DrawOp::DrawVertices { .. }
             | DrawOp::DrawArc { .. } => {}
         }
     }
