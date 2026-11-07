@@ -152,6 +152,24 @@ pub trait SharedContentConfig {
     fn permit_transform_during_deferred_transition(&self) -> bool {
         true
     }
+
+    /// Whether `state`'s content takes part, as `SharedContentState.isEnabled` (state reads are
+    /// observed).
+    fn is_enabled(&self, _state: &crate::SharedContentState) -> bool {
+        true
+    }
+
+    /// The bounds to animate to once the visible content is removed during a transition, given
+    /// where it was going and the layout's size, as
+    /// `alternativeTargetBoundsInTransitionScopeAfterRemoval`: none, the default, ends the match.
+    fn alternative_target_bounds_in_transition_scope_after_removal(
+        &self,
+        _state: &crate::SharedContentState,
+        _target_bounds_before_removal: Rect,
+        _shared_transition_layout_size: compose_ui::Size,
+    ) -> Option<Rect> {
+        None
+    }
 }
 
 /// Compose's defaults, as `SharedTransitionDefaults.SharedContentConfig`.

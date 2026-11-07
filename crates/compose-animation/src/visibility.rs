@@ -1160,6 +1160,23 @@ pub(crate) fn create_enter_exit_modifier(
     transform_state: Option<Rc<SharedMutableTransformState>>,
     label: &'static str,
 ) -> Modifier {
+    create_enter_exit_modifier_enabled(transition, enter, exit, transform_state, None, label)
+}
+
+/// What answers whether an enter and exit animate, as Compose's `isEnabled`: shared bounds' only
+/// once a match is found. Not animating, its content is measured and placed as it is.
+pub(crate) type EnterExitEnabled = Option<Rc<dyn Fn() -> bool>>;
+
+/// [`create_enter_exit_modifier`] animating only while `is_enabled` says so, as
+/// `createModifier(…, isEnabled, …)`.
+pub(crate) fn create_enter_exit_modifier_enabled(
+    transition: &Transition<EnterExitState>,
+    enter: EnterTransition,
+    exit: ExitTransition,
+    transform_state: Option<Rc<SharedMutableTransformState>>,
+    is_enabled: EnterExitEnabled,
+    label: &'static str,
+) -> Modifier {
     let parts = EnterExit { enter: Rc::new(enter), exit: Rc::new(exit) };
     let manual = transform_state.as_deref();
     let animate_slide = parts.enter.config.slide.is_some()
@@ -1208,7 +1225,8 @@ pub(crate) fn create_enter_exit_modifier(
     let no_clip = parts.enter.config.change_size.as_ref().is_some_and(|change| !change.clip)
         || parts.exit.config.change_size.as_ref().is_some_and(|change| !change.clip)
         || !animate_size;
-    let layer = graphics_layer_block(&animations, &parts, transform_state.clone());
+    let layer =
+        graphics_layer_block(&animations, &parts, transform_state.clone(), is_enabled.clone());
     let clip = if no_clip { Modifier } else { Modifier.clip(RECTANGLE_SHAPE) };
     // Over the parent: before the other parts (not transformed by them); else after them.
     let (before, after) = match veil {
@@ -1223,6 +1241,7 @@ pub(crate) fn create_enter_exit_modifier(
             parts,
             animations,
             transform_state,
+            is_enabled,
         })
         .then(layer)
         .then(after)
@@ -1390,12 +1409,17 @@ fn graphics_layer_block(
     animations: &Animations,
     parts: &EnterExit,
     transform_state: Option<Rc<SharedMutableTransformState>>,
+    is_enabled: EnterExitEnabled,
 ) -> Modifier {
     if animations.alpha.is_none() && animations.scale.is_none() && transform_state.is_none() {
         return Modifier;
     }
     let (animations, parts) = (animations.clone(), parts.clone());
     Modifier.graphics_layer(move |layer| {
+        // Not enabled, nothing animates, as Compose's node not running its layer block.
+        if is_enabled.as_ref().is_some_and(|enabled| !enabled()) {
+            return;
+        }
         let manual = transform_state.as_deref();
         let mut alpha_value = None;
         if let Some(alpha) = &animations.alpha {
@@ -1521,6 +1545,7 @@ struct EnterExitElement {
     parts: EnterExit,
     animations: Animations,
     transform_state: Option<Rc<SharedMutableTransformState>>,
+    is_enabled: EnterExitEnabled,
 }
 
 struct EnterExitNode {
@@ -1528,6 +1553,7 @@ struct EnterExitNode {
     parts: EnterExit,
     animations: Animations,
     transform_state: Option<Rc<SharedMutableTransformState>>,
+    is_enabled: EnterExitEnabled,
     /// The side that stays, latched at the start of a change, as `currentAlignment`.
     current_alignment: Option<Alignment>,
     /// The content's size ahead, in a `LookaheadScope`: what the size and slide go to and from
@@ -1543,6 +1569,7 @@ impl ModifierNodeElement for EnterExitElement {
             parts: self.parts.clone(),
             animations: self.animations.clone(),
             transform_state: self.transform_state.clone(),
+            is_enabled: self.is_enabled.clone(),
             current_alignment: None,
             lookahead_size: None,
         }
@@ -1553,6 +1580,7 @@ impl ModifierNodeElement for EnterExitElement {
         node.parts = self.parts.clone();
         node.animations = self.animations.clone();
         node.transform_state = self.transform_state.clone();
+        node.is_enabled = self.is_enabled.clone();
     }
 
     fn same(&self, other: &Self) -> bool {
@@ -1560,6 +1588,11 @@ impl ModifierNodeElement for EnterExitElement {
             && *other.parts.enter == *self.parts.enter
             && *other.parts.exit == *self.parts.exit
             && same_state(&other.transform_state, &self.transform_state)
+            && match (&other.is_enabled, &self.is_enabled) {
+                (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
     }
 
     fn name(&self) -> &'static str {
@@ -1614,6 +1647,12 @@ impl LayoutModifierNode for EnterExitNode {
             return scope.layout_with(placeable.width, placeable.height, move |placement| {
                 placement.place(&placeable, 0, 0);
             });
+        }
+        if self.is_enabled.as_ref().is_some_and(|enabled| !enabled()) {
+            // Not enabled, nothing animates, as Compose's.
+            let placeable = scope.measure(content, constraints);
+            scope.place(&placeable, 0, 0);
+            return scope.layout(placeable.width, placeable.height);
         }
         let placeable = scope.measure(content, constraints);
         let measured = placeable.size();

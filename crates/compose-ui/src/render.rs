@@ -151,11 +151,32 @@ impl UiTree {
     /// kept boundary drawing it is drawn again in this frame. A measurement it invalidates is
     /// left to the next frame, which the write asked for (as before boundaries kept anything).
     pub fn draw(&mut self) -> bool {
-        if self.placed_layer_nodes == 0 {
+        let drew = if self.placed_layer_nodes == 0 {
             self.draw_pass::<false>()
         } else {
             self.draw_pass::<true>()
+        };
+        if crate::graphics_layer_object::take_pass_told() {
+            self.draw_again();
         }
+        drew
+    }
+
+    /// A drawing drew a `GraphicsLayer` before another recorded it later in the pass (a shared
+    /// element's overlay drawing what its content records): it draws again now, in this frame,
+    /// once, as Compose's render node is current at once (D1331).
+    #[cold]
+    #[inline(never)]
+    fn draw_again(&mut self) {
+        // The layers' versions were written outside a snapshot: their readers hear of it now.
+        compose_runtime::snapshots::Snapshot::send_apply_notifications();
+        if self.placed_layer_nodes == 0 {
+            self.draw_pass::<false>();
+        } else {
+            self.draw_pass::<true>();
+        }
+        // A layer changing again in that pass draws its drawings in the next frame.
+        crate::graphics_layer_object::take_pass_told();
     }
 
     /// `draw`, `P` saying whether a node has a layer placed with one (D1909).
