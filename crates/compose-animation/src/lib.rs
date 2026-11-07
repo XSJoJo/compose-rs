@@ -15,6 +15,7 @@ mod animatable;
 mod animation;
 mod arc_spline;
 mod as_state;
+mod bounds;
 mod captured;
 mod content;
 mod content_size;
@@ -52,6 +53,7 @@ pub use as_state::{
     animate_int_offset_as_state, animate_int_size_as_state, animate_offset_as_state,
     animate_rect_as_state, animate_size_as_state, animate_value_as_state,
 };
+pub use bounds::BoundsModifiers;
 pub use captured::CapturedAnimatedVisibility;
 /// As animation-core's `withInfiniteAnimationFrameNanos`/`Millis` (the runtime's, D901).
 pub use compose_runtime::{

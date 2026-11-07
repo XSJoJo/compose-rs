@@ -33,10 +33,10 @@ The inventory of Compose's animation and navigation tests and public API against
 | Status | Files | @Test |
 |---|---|---|
 | `covered` | 0 | 0 |
-| `ported` | 72 | 799 |
+| `ported` | 73 | 807 |
 | `port` | 0 | 0 |
 | `partial` | 9 | 114 |
-| `feature:<name>` | 13 | 152 |
+| `feature:<name>` | 12 | 144 |
 | `n/a` | 14 | 154 |
 
 By module:
@@ -44,7 +44,7 @@ By module:
 | Module | Files | @Test | covered | ported | port | partial | feature | n/a |
 |---|---|---|---|---|---|---|---|---|
 | animation-core | 30 | 212 | 0 | 28 / 204 | 0 | 2 / 8 | 0 | 0 |
-| animation | 15 | 238 | 0 | 7 / 79 | 0 | 4 / 49 | 4 / 110 | 0 |
+| animation | 15 | 238 | 0 | 8 / 87 | 0 | 4 / 49 | 3 / 102 | 0 |
 | animation-graphics | 5 | 22 | 0 | 0 | 0 | 0 | 5 / 22 | 0 |
 | navigation-compose | 9 | 121 | 0 | 0 | 0 | 0 | 0 | 9 / 121 |
 | navigation3-runtime | 21 | 307 | 0 | 20 / 300 | 0 | 0 | 0 | 1 / 7 |
@@ -59,11 +59,10 @@ By module:
 | movable-content | 3 | 19 |
 | animated-image-vector | 5 | 22 |
 | lookahead-visual-debug | 1 | 16 |
-| animate-bounds | 1 | 8 |
 
 Four parts:
 
-- **Animation** (50 files, 472 tests): 35 files `ported` (283 tests), 6 `partial` (57), 9 waiting on features (132), of which what's left needs lookahead (shared-transition, animate-bounds, lookahead-visual-debug) or a full `ImageVector` (animated-image-vector).
+- **Animation** (50 files, 472 tests): 36 files `ported` (291 tests), 6 `partial` (57), 8 waiting on features (124), of which what's left needs shared elements (shared-transition, lookahead-visual-debug) or a full `ImageVector` (animated-image-vector).
 - **Navigation 3** (36 files, 428 tests): 29 files `ported` (353 tests), 2 `partial` (48), 4 waiting on features (20: movable content, shared elements), 1 `n/a` (7). It's what compose-rs models (D704).
 - **Navigation events and back** (13 files, 198 tests), what Navigation 3's back is built on: 8 files `ported` (163 tests), 1 `partial` (9), 4 `n/a` (26), in `compose-navigation-event` (D845).
 - **Navigation Compose** (9 files, 121 tests): all `n/a: replaced by Navigation 3 (D704)`. Their notes say which Navigation 3 tests check the same behaviour.
@@ -112,7 +111,7 @@ The "covered" notes cite compose-rs test files under `crates/compose-animation/t
 | 28 | `compose/animation/animation-core/src/androidDeviceTest/kotlin/androidx/compose/animation/core/TransitionTest.kt` | 17 | `updateTransition`/`Transition`: values per segment, animations added mid-flight, MutableTransitionState, child transitions, totalDurationNanos, recomposition counts, interruption-aware spec | ported | `transition.rs`, `interruption_aware.rs` (`interruptionAwareAnimationSpec_preservedOnInterruption` with keyframes for its spec of its own), `seekable.rs` (`childTransitionStartsUninterrupted_usingSeekableTransition`) |
 | 29 | `compose/animation/animation-core/src/androidHostTest/kotlin/androidx/compose/animation/core/EasingTest.android.kt` | 2 | cubic solver near 0/1 and with overshooting curves | ported | `easing.rs` |
 | 30 | `compose/animation/animation-core/src/androidHostTest/kotlin/androidx/compose/animation/core/SpringEstimationTest.kt` | 1 | spring duration estimation against simulation over a grid of mass/stiffness | ported | `spring_estimation.rs`: every fifth mass and spring constant of Compose's grid (2.9 million of its 70 million cases) |
-| 31 | `compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/AnimateBoundsTest.kt` | 8 | `Modifier.animateBounds`: position, size, bounds, movable content, lazy layouts, scrolling | `feature:animate-bounds` | needs ui lookahead |
+| 31 | `compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/AnimateBoundsTest.kt` | 8 | `Modifier.animateBounds`: position, size, bounds, movable content, lazy layouts, scrolling | ported | `animate_bounds.rs`, all 8 (D1328) |
 | 32 | `compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/AnimatedContentTest.kt` | 17 | `AnimatedContent`: SizeTransform, alignment, slideInto/OutOfContainer, contentKey, subcomposition, interruption, KeepUntilTransitionsFinished, lookahead, cleanup | partial | 12 ported (`animated_content.rs`: the size transform frame by frame, to and from an empty content, the alignment, an exit finished then interrupted, a transition recreated; `animated_content_scope.rs`: slides into and out of the container, `contentKey` (2), `KeepUntilTransitionsFinished` (2), the enter and exit an interruption picks, the last with a wait one frame later (D817); `compose-material3/tests/suite/animated_content.rs`: a scaffold with tabs); lookahead and `animateBounds` (3); n/a: `AnimatedContentWithInterruption` (the test ends as it sets the flag, so its layout-callback assertions never see the interruption, under which Compose's content slides too) and `testAnimatedContentCleanup` (an internal map's size) |
 | 33 | `compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/AnimatedVisibilityTest.kt` | 17 | `AnimatedVisibility`: expand/shrink, slide, fade, scale with exact values, None, Transition overload, seeking, lookahead, veil, settle time | ported | all 17 (`animated_visibility.rs`: expand and shrink, slide, a content size change, fade, scale, the scale spring's threshold, `None`/`None`, the `Transition` overload, an interrupted exit, the settle time, `testAnimatedVisibilityInLookaheadScope` (sized ahead where it ends, D1320, with each frame of the exit; and in a scope, an expansion going to its content's size ahead, D1327), with a test of the column and row defaults; `veil.rs`: the five veil tests; `seekable.rs`: seeking, through a `SeekableTransitionState` for the internal `setPlaytimeAfterInitialAndTargetStateEstablished`) |
 | 34 | `compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/AnimationModifierTest.kt` | 6 | `animateContentSize`: frame-by-frame size, alignment LTR/RTL, lookahead, inspector, re-attach | partial | 3 ported (`content_size.rs`: the frame-by-frame size with its finished listener, alignment left to right and right to left); `properFinalStateAfterReAttach` needs movable content (compose-runtime has no `movableContentOf`); lookahead (1) needs lookahead; inspector n/a |
@@ -302,7 +301,7 @@ Deprecated and left out:
 | `DeferredAnimatedContent`, `DeferredAnimatedVisibility`, `MutableContentTransform(…)`, `MutableTransform`, `TransformScope` (`alpha`, `scale`, `offset`, `transformOrigin`, `veil`) | present: methods of `DeferredTransition`; `TransformScope`'s setters `set_alpha` and the like (D828) | deferred-transition |
 | `BoundsTransform`, `SharedTransitionDefaults` (`BoundsTransform`, `SharedContentConfig`), `SharedTransitionScope.PlaceholderSize` (`ContentSize`, `AnimatedSize`), `ResizeMode` (`RemeasureToBounds`, `scaleToBounds(contentScale, alignment)`), `SharedContentConfig`'s `shouldKeepEnabledForOngoingAnimation` and `permitTransformDuringDeferredTransition` | present (D829); what takes a `SharedContentState` comes with the scope | shared-transition |
 | `SharedTransitionLayout`, `SharedTransitionScope(content)`, the rest of the `SharedTransitionScope` interface:<br>• the modifiers: `sharedElement`, `sharedBounds`, `sharedElementWithCallerManagedVisibility`, `skipToLookaheadSize`, `skipToLookaheadPosition`, `renderInSharedTransitionScopeOverlay`;<br>• the state: `rememberSharedContentState(key[, config])`, `SharedContentConfig(…)`, `OverlayClip`, `isTransitionActive`;<br>• the nested types: `SharedContentState` (`key`, `isMatchFound`, `clipPathInOverlay`, `parentSharedContentState`, `prepareTransitionWithInitialVelocity`), `SharedContentConfig` (`isEnabled`, `shouldKeepEnabledForOngoingAnimation`, `permitTransformDuringDeferredTransition`, `alternativeTargetBoundsInTransitionScopeAfterRemoval`), `PlaceholderSize` (`ContentSize`, `AnimatedSize`), `ResizeMode` (`RemeasureToBounds`, `scaleToBounds(contentScale, alignment)`);<br>• `SharedTransitionDefaults` (`BoundsTransform`, `SharedContentConfig`) and `BoundsTransform` | missing | shared-transition |
-| `Modifier.animateBounds(lookaheadScope, modifier, boundsTransform, animateMotionFrameOfReference)` | missing | animate-bounds |
+| `Modifier.animateBounds(lookaheadScope, modifier, boundsTransform, animateMotionFrameOfReference)` | present: `animate_bounds`, `animate_bounds_with` (D1328) | animate-bounds |
 | `LookaheadAnimationVisualDebugging(…)`, `CustomizedLookaheadAnimationVisualDebugging(…)` (experimental) | missing | lookahead-visual-debug |
 | `splineBasedDecay(density)`, `rememberSplineBasedDecay()`, `SplineBasedFloatDecayAnimationSpec` | present (D820; foundation's flings decay along it, D826) | decay-animation |
 | `Color.VectorConverter(colorSpace)` | `Animate for Color` (sRGB only: compose-rs colors have no color spaces) | (none: n/a until color spaces exist) |
@@ -597,6 +596,7 @@ One entry per feature. Sizes:
 
 #### animate-bounds (L, not exp.)
 
+- **Done (D1328):** all of it, on compose-ui's public `ApproachLayoutModifierNode` ([design](design/shared-elements.md)).
 - **API:** `Modifier.animate_bounds(lookahead_scope, modifier, bounds_transform, animate_motion_frame_of_reference)`.
 - **Tests:** `AnimateBoundsTest`.
 - **Dependencies:** ui lookahead; `BoundsTransform` (done, D829); movable content for 1 test.
@@ -673,7 +673,7 @@ Navigation 3 has replaced `compose-navigation`'s model (D704): its `NavControlle
 12. **Navigation 3 (D704), after S3 (the runtime's state collections):** nav3-runtime, then nav3-ui with the entry decorators over `compose-lifecycle`, nav3-results, and nav3-deep-links last: all done but what waits for movable content and shared elements.
 13. **After ui lookahead (and movable content) lands in its own area:**
     - lookahead in animations (S–M);
-    - animate-bounds (L);
+    - animate-bounds (L), done (D1328);
     - shared-transition (XL);
     - lookahead-visual-debug (M, experimental).
 14. **captured-animated-visibility (M)**: done but its lookahead tests.

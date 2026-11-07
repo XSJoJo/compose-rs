@@ -3,6 +3,7 @@
 
 extern crate compose_runtime as compose;
 
+mod animate_bounds;
 mod animated_content;
 mod animated_content_scope;
 mod animated_visibility;
