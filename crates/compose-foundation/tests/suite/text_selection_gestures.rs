@@ -1,7 +1,10 @@
-//! A `SelectionContainer`'s gestures over one text, from Compose's `TextSelectionGesturesTest` as
-//! `SingleTextSelectionGesturesTest` and `SingleTextSelectionGesturesRtlTest` run it (each test
-//! in both directions): a finger's long press and its drags, a mouse's and a trackpad's clicks
-//! and drags (each mouse test with the trackpad too), the input mode switching the handles.
+//! A `SelectionContainer`'s gestures, from Compose's `TextSelectionGesturesTest` as
+//! `SingleTextSelectionGesturesTest` and `SingleTextSelectionGesturesRtlTest` run it over one
+//! text, and `MultiTextSelectionGesturesTest` and `MultiTextSelectionGesturesRtlTest` over a column
+//! of texts, one for each line (each test in both directions, over one text and over several): a
+//! finger's long press and its drags, a mouse's and a trackpad's clicks and drags (each mouse test
+//! with the trackpad too), the input mode switching the handles. The offsets are the lines' with
+//! their new lines, as the multi-text tests' (`textContentIndices`): a line's end is its text's.
 //!
 //! As Compose's tests: the test font at 15 sp, density 1, a touch slop of 0.1, the container
 //! inset by 32 dp and wrapping its text, which fills its width. Each check is the asserter's:
@@ -118,6 +121,8 @@ pub(crate) struct Gestures {
     pub ui: ComposeTestRule,
     content: compose_runtime::MutableState<String>,
     rtl: bool,
+    /// A text for each line, as the multi-text tests' (`testTag0`, `testTag1`, …).
+    multi: bool,
     /// The selection expected, `(start, end)` as Compose's `TextRange` (crossed when start > end).
     pub selection: Option<(usize, usize)>,
     pub handles_shown: bool,
@@ -126,9 +131,20 @@ pub(crate) struct Gestures {
     pub haptics: u32,
 }
 
+/// Each test's runs: in both directions, over one text and over several.
+fn variants() -> impl Iterator<Item = (bool, bool)> {
+    [(false, false), (true, false), (false, true), (true, true)].into_iter()
+}
+
 /// As Compose's `setTextFieldTestContent` around `Content()`: the container inset by 32 dp in a
 /// window of 400 by 800 px (a phone's shape), wrapping its text.
 pub(crate) fn gestures(rtl: bool) -> Gestures {
+    gestures_in(rtl, false)
+}
+
+/// The same over a column of texts, one for each line, when `multi`, as the multi-text tests'
+/// `TextContent`.
+fn gestures_in(rtl: bool, multi: bool) -> Gestures {
     // `SingleTextSelectionGesturesTest`'s, or `SingleTextSelectionGesturesRtlTest`'s: words of
     // five letters, laid out right to left.
     let text = if rtl {
@@ -158,14 +174,33 @@ pub(crate) fn gestures(rtl: bool) -> Gestures {
                                     Modifier.padding(32.dp()).fill_max_size().wrap_content_size(),
                                 {
                                     SelectionContainer!(modifier = Modifier.test_tag(TAG), {
-                                        BasicText!(
-                                            content.get(),
-                                            modifier = Modifier.fill_max_width().test_tag(TEXT_TAG),
-                                            style = TextStyle {
-                                                font_size: FONT.sp(),
-                                                ..TextStyle::DEFAULT
-                                            },
-                                        );
+                                        let style = TextStyle {
+                                            font_size: FONT.sp(),
+                                            ..TextStyle::DEFAULT
+                                        };
+                                        if !multi {
+                                            BasicText!(
+                                                content.get(),
+                                                modifier =
+                                                    Modifier.fill_max_width().test_tag(TEXT_TAG),
+                                                style = style,
+                                            );
+                                        } else {
+                                            Column!({
+                                                for (index, line) in
+                                                    content.get().split('\n').enumerate()
+                                                {
+                                                    let tag = format!("{TEXT_TAG}{index}");
+                                                    BasicText!(
+                                                        line.to_string(),
+                                                        modifier = Modifier
+                                                            .fill_max_width()
+                                                            .test_tag(&tag),
+                                                        style = style.clone(),
+                                                    );
+                                                }
+                                            });
+                                        }
                                     });
                                 }
                             );
@@ -186,6 +221,7 @@ pub(crate) fn gestures(rtl: bool) -> Gestures {
         ui,
         content,
         rtl,
+        multi,
         selection: None,
         handles_shown: false,
         start_shown: None,
@@ -200,10 +236,26 @@ impl Gestures {
         if self.rtl { RTL_CHAR.to_string().repeat(5) } else { "hello".to_string() }
     }
 
-    /// Compose's offset `offset` (in UTF-16 units, one per character here) in bytes.
-    fn byte(&self, offset: usize) -> usize {
+    /// Compose's offset `offset` (in UTF-16 units, one per character here): the tag of the text
+    /// it's in, and its byte there. Over several texts, each line's offsets go to its new line,
+    /// its text's end (`offsetToSelectableId`, `offsetToLocalOffset`).
+    fn place(&self, offset: usize) -> (String, usize) {
         let text = self.content.get();
-        text.char_indices().nth(offset).map_or(text.len(), |(byte, _)| byte)
+        let byte_in = |text: &str, offset: usize| {
+            text.char_indices().nth(offset).map_or(text.len(), |(byte, _)| byte)
+        };
+        if !self.multi {
+            return (TEXT_TAG.to_string(), byte_in(&text, offset));
+        }
+        let mut start = 0;
+        for (index, line) in text.split('\n').enumerate() {
+            let length = line.chars().count();
+            if offset <= start + length {
+                return (format!("{TEXT_TAG}{index}"), byte_in(line, offset - start));
+            }
+            start += length + 1;
+        }
+        panic!("offset {offset} past {text:?}");
     }
 
     /// The text shown is `text`, as the tests' `textContent.value = …`.
@@ -269,9 +321,9 @@ impl Gestures {
         Offset::new(at.x + dx, at.y + dy)
     }
 
-    fn layout(&mut self) -> TextLayoutResult {
+    fn layout(&mut self, tag: &str) -> TextLayoutResult {
         let mut results = Vec::new();
-        self.ui.on_node_with_tag(TEXT_TAG).perform_semantics_action_with(
+        self.ui.on_node_with_tag(tag).perform_semantics_action_with(
             &compose_ui::SemanticsActions::GET_TEXT_LAYOUT_RESULT,
             |get| {
                 get(&mut results);
@@ -283,16 +335,19 @@ impl Gestures {
     /// Character `offset`'s box at its start side's middle, nudged to its end, as the single
     /// texts' `characterPosition` (`centerLeft`, or `centerRight` right to left).
     pub fn character(&mut self, offset: usize) -> Offset {
-        let byte = self.byte(offset);
-        let rect = self.layout().get_bounding_box(byte);
+        let rect = self.character_box(offset);
         let side = Offset::new(if self.rtl { rect.right } else { rect.left }, rect.center().y);
         self.nudge(side, Some(true), None)
     }
 
-    /// Character `offset`'s box in the text (the container's coordinates).
+    /// Character `offset`'s box in the container's coordinates (its text's moved by where the
+    /// text is in it, as the multi-text tests' `translate(nodePosition - pointerAreaPosition)`).
     pub fn character_box(&mut self, offset: usize) -> Rect {
-        let byte = self.byte(offset);
-        self.layout().get_bounding_box(byte)
+        let (tag, byte) = self.place(offset);
+        let text = self.ui.on_node_with_tag(&tag).fetch_semantics_snapshot().bounds;
+        let area = self.ui.on_node_with_tag(TAG).fetch_semantics_snapshot().bounds;
+        let rect = self.layout(&tag).get_bounding_box(byte);
+        rect.translate(Offset::new(text.left - area.left, text.top - area.top))
     }
 
     /// Character `offset`'s box at its left side's middle, as the handle tests'
@@ -401,12 +456,14 @@ impl Gestures {
     /// Checks what's expected, as the asserter's `assert`; the haptics expected are then reset.
     #[track_caller]
     pub fn check(&mut self) {
-        let found = self
-            .ui
-            .host()
-            .with_tree(|tree| tree.selection_anchors())
-            .map(|((_, start), (_, end))| (start, end));
-        let expected = self.selection.map(|(start, end)| (self.byte(start), self.byte(end)));
+        let found = self.ui.host().with_tree(|tree| tree.selection_anchors());
+        let expected = self.selection.map(|(start, end)| {
+            let (start, end) = (self.place(start), self.place(end));
+            let mut at = |(tag, byte): (String, usize)| {
+                (self.ui.on_node_with_tag(&tag).fetch_semantics_snapshot().id, byte)
+            };
+            (at(start), at(end))
+        });
         assert_eq!(found, expected, "the selection in {:?}", self.content.get());
         let start = self.start_shown.unwrap_or(self.handles_shown);
         let end = self.end_shown.unwrap_or(self.handles_shown);
@@ -436,8 +493,8 @@ impl Gestures {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withLongPressOutOfBounds_nothingHappens
 #[test]
 fn whenTouch_withLongPressOutOfBounds_nothingHappens() {
-    for rtl in [false, true] {
-        let mut it = gestures(rtl);
+    for (rtl, multi) in variants() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.top_start();
         let at = it.nudge(at, None, Some(false));
         it.long_press(at);
@@ -452,8 +509,8 @@ fn whenTouch_withLongPressOutOfBounds_nothingHappens() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withNoTextThenLongPress_noSelection
 #[test]
 fn whenTouch_withNoTextThenLongPress_noSelection() {
-    for rtl in [false, true] {
-        let mut it = gestures(rtl);
+    for (rtl, multi) in variants() {
+        let mut it = gestures_in(rtl, multi);
         it.set_content("");
         let center = it.center();
         it.long_click(center);
@@ -464,8 +521,8 @@ fn whenTouch_withNoTextThenLongPress_noSelection() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withNoTextThenLongPressAndDrag_noSelection
 #[test]
 fn whenTouch_withNoTextThenLongPressAndDrag_noSelection() {
-    for rtl in [false, true] {
-        let mut it = gestures(rtl);
+    for (rtl, multi) in variants() {
+        let mut it = gestures_in(rtl, multi);
         it.set_content("");
         let center = it.center();
         it.long_press(center);
@@ -481,8 +538,8 @@ fn whenTouch_withNoTextThenLongPressAndDrag_noSelection() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withLongPressInEndPaddingOfEmptyLine_entersSelectionMode
 #[test]
 fn whenTouch_withLongPressInEndPaddingOfEmptyLine_entersSelectionMode() {
-    for rtl in [false, true] {
-        let mut it = gestures(rtl);
+    for (rtl, multi) in variants() {
+        let mut it = gestures_in(rtl, multi);
         let word = it.word();
         it.set_content(&format!("{word}\n\n{word}"));
         let at = it.center_end();
@@ -501,8 +558,8 @@ fn whenTouch_withLongPressInEndPaddingOfEmptyLine_entersSelectionMode() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withLongPressInEndPaddingOfEmptyFinalLine_entersSelectionMode
 #[test]
 fn whenTouch_withLongPressInEndPaddingOfEmptyFinalLine_entersSelectionMode() {
-    for rtl in [false, true] {
-        let mut it = gestures(rtl);
+    for (rtl, multi) in variants() {
+        let mut it = gestures_in(rtl, multi);
         let word = it.word();
         it.set_content(&format!("{word}\n\n"));
         let at = it.bottom_end();
@@ -547,8 +604,8 @@ fn whenTouch_withLongPressInEndPaddingOfEmptyFinalLine_entersSelectionMode() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withLongPressThenClear_noSelection
 #[test]
 fn whenTouch_withLongPressThenClear_noSelection() {
-    for rtl in [false, true] {
-        let mut it = gestures(rtl);
+    for (rtl, multi) in variants() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.long_click(at);
         it.expect(|it| {
@@ -569,8 +626,8 @@ fn whenTouch_withLongPressThenClear_noSelection() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withLongPressThenDragLeftOutOfBoundsUpAndDown_selectsLines
 #[test]
 fn whenTouch_withLongPressThenDragLeftOutOfBoundsUpAndDown_selectsLines() {
-    for rtl in [false, true] {
-        let mut it = gestures(rtl);
+    for (rtl, multi) in variants() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.character(9);
         it.long_press(at);
         it.expect(|it| {
@@ -605,8 +662,8 @@ fn whenTouch_withLongPressThenDragLeftOutOfBoundsUpAndDown_selectsLines() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withLongPress_selectsSingleWord
 #[test]
 fn whenTouch_withLongPress_selectsSingleWord() {
-    for rtl in [false, true] {
-        let mut it = gestures(rtl);
+    for (rtl, multi) in variants() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.long_click(at);
         it.expect(|it| {
@@ -620,8 +677,8 @@ fn whenTouch_withLongPress_selectsSingleWord() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withLongPressesOnMultipleWords_selectsSingleWords
 #[test]
 fn whenTouch_withLongPressesOnMultipleWords_selectsSingleWords() {
-    for rtl in [false, true] {
-        let mut it = gestures(rtl);
+    for (rtl, multi) in variants() {
+        let mut it = gestures_in(rtl, multi);
         it.handles_shown = true;
         let words = [(2, (0, 5)), (8, (6, 11)), (13, (12, 17)), (20, (18, 23)), (26, (24, 29))];
         for (offset, selection) in words {
@@ -637,8 +694,8 @@ fn whenTouch_withLongPressesOnMultipleWords_selectsSingleWords() {
 
 /// As the tests' `touchLongPressThenDragForwardsAndBackTest`.
 fn long_press_then_drag_forwards_and_back(forward: usize, back: usize, expected: (usize, usize)) {
-    for rtl in [false, true] {
-        let mut it = gestures(rtl);
+    for (rtl, multi) in variants() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.long_press(at);
         it.expect(|it| {
@@ -686,8 +743,8 @@ fn whenTouch_withLongPressThenDragDownAndBack_selectsWordsThenChars() {
 
 /// As the tests' `touchLongPressThenDragToEndPaddingTest`.
 fn long_press_then_drag_to_end_padding(to: fn(&mut Gestures) -> Offset, expected: (usize, usize)) {
-    for rtl in [false, true] {
-        let mut it = gestures(rtl);
+    for (rtl, multi) in variants() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.long_press(at);
         it.expect(|it| {
@@ -727,8 +784,8 @@ fn whenTouch_withLongPressThenDragToLowerEndPaddingAndBack_selectsWordsThenChars
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withLongPressInEndPadding_entersSelectionMode
 #[test]
 fn whenTouch_withLongPressInEndPadding_entersSelectionMode() {
-    for rtl in [false, true] {
-        let mut it = gestures(rtl);
+    for (rtl, multi) in variants() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.top_end();
         it.long_press(at);
         it.expect(|it| {
@@ -747,8 +804,8 @@ fn whenTouch_withLongPressInEndPadding_entersSelectionMode() {
 /// Long presses at the middle line's end, then drags to `to` and back, twice, as the two
 /// `whenTouch_withLongPressInEndPaddingThenDragTo*EndPadding_*` tests.
 fn long_press_in_end_padding_then_drag(to: fn(&mut Gestures) -> Offset, expected: (usize, usize)) {
-    for rtl in [false, true] {
-        let mut it = gestures(rtl);
+    for (rtl, multi) in variants() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.center_end();
         it.long_press(at);
         it.expect(|it| {
@@ -792,8 +849,8 @@ fn whenTouch_withLongPressInEndPaddingThenDragToLowerEndPadding_selectsNewLineAn
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withLongPressInEndPaddingOfFinalLine_entersSelectionMode
 #[test]
 fn whenTouch_withLongPressInEndPaddingOfFinalLine_entersSelectionMode() {
-    for rtl in [false, true] {
-        let mut it = gestures(rtl);
+    for (rtl, multi) in variants() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.bottom_end();
         it.long_press(at);
         it.expect(|it| {
@@ -811,8 +868,8 @@ fn whenTouch_withLongPressInEndPaddingOfFinalLine_entersSelectionMode() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withLongPressInFinalLineEndPaddingThenDragToMidEndPadding_entersSelectionMode
 #[test]
 fn whenTouch_withLongPressInFinalLineEndPaddingThenDragToMidEndPadding_entersSelectionMode() {
-    for rtl in [false, true] {
-        let mut it = gestures(rtl);
+    for (rtl, multi) in variants() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.bottom_end();
         it.long_press(at);
         it.expect(|it| {
@@ -844,8 +901,8 @@ fn whenTouch_withLongPressInFinalLineEndPaddingThenDragToMidEndPadding_entersSel
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withLongPressInEndPadding_selectsFinalWord
 #[test]
 fn whenTouch_withLongPressInEndPadding_selectsFinalWord() {
-    for rtl in [false, true] {
-        let mut it = gestures(rtl);
+    for (rtl, multi) in variants() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.center_end();
         it.long_press(at);
         it.expect(|it| {
@@ -861,8 +918,8 @@ fn whenTouch_withLongPressInEndPadding_selectsFinalWord() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenMouse_withLongClick_collapsedSelectionAtClick, whenTrackpad_withLongClick_collapsedSelectionAtClick
 #[test]
 fn whenMouse_withLongClick_collapsedSelectionAtClick() {
-    for (rtl, kind) in directions_and_cursors() {
-        let mut it = gestures(rtl);
+    for (rtl, multi, kind) in directions_and_cursors() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.cursor(kind, |cursor| cursor.long_click(at));
         it.expect(|it| it.selection = Some((13, 13)));
@@ -872,8 +929,8 @@ fn whenMouse_withLongClick_collapsedSelectionAtClick() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenMouse_withClick_collapsedSelectionAtClick, whenTrackpad_withClick_collapsedSelectionAtClick
 #[test]
 fn whenMouse_withClick_collapsedSelectionAtClick() {
-    for (rtl, kind) in directions_and_cursors() {
-        let mut it = gestures(rtl);
+    for (rtl, multi, kind) in directions_and_cursors() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.cursor(kind, |cursor| cursor.click(at));
         it.expect(|it| it.selection = Some((13, 13)));
@@ -883,8 +940,8 @@ fn whenMouse_withClick_collapsedSelectionAtClick() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenMouse_withSingleClick_collapsedSelection, whenTrackpad_withSingleClick_collapsedSelection
 #[test]
 fn whenMouse_withSingleClick_collapsedSelection() {
-    for (rtl, kind) in directions_and_cursors() {
-        let mut it = gestures(rtl);
+    for (rtl, multi, kind) in directions_and_cursors() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.cursor(kind, |cursor| {
             cursor.move_to(at);
@@ -897,14 +954,14 @@ fn whenMouse_withSingleClick_collapsedSelection() {
 }
 
 /// Both directions with each cursor.
-fn directions_and_cursors() -> impl Iterator<Item = (bool, Cursor)> {
-    [false, true].into_iter().flat_map(|rtl| CURSORS.map(|kind| (rtl, kind)))
+fn directions_and_cursors() -> impl Iterator<Item = (bool, bool, Cursor)> {
+    variants().flat_map(|(rtl, multi)| CURSORS.map(|kind| (rtl, multi, kind)))
 }
 
 /// As the tests' `mouseClicksThenDragTest` and `trackpadClicksThenDragTest`.
 fn clicks_then_drag(clicks: u32, end: usize, first: (usize, usize), last: (usize, usize)) {
-    for (rtl, kind) in directions_and_cursors() {
-        let mut it = gestures(rtl);
+    for (rtl, multi, kind) in directions_and_cursors() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.cursor(kind, |cursor| {
             cursor.move_to(at);
@@ -952,8 +1009,8 @@ fn whenMouse_withSingleClickThenDragDown_selectsCharacters() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenMouse_withDoubleClick_selectsWord, whenTrackpad_withDoubleClick_selectsWord
 #[test]
 fn whenMouse_withDoubleClick_selectsWord() {
-    for (rtl, kind) in directions_and_cursors() {
-        let mut it = gestures(rtl);
+    for (rtl, multi, kind) in directions_and_cursors() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.cursor(kind, |cursor| {
             cursor.click(at);
@@ -990,8 +1047,8 @@ fn whenMouse_withDoubleClickThenDragDown_selectsWords() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenMouse_thenTouch_touchBehaviorsAppear, whenTrackpad_thenTouch_touchBehaviorsAppear
 #[test]
 fn whenMouse_thenTouch_touchBehaviorsAppear() {
-    for (rtl, kind) in directions_and_cursors() {
-        let mut it = gestures(rtl);
+    for (rtl, multi, kind) in directions_and_cursors() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.cursor(kind, |cursor| {
             cursor.click(at);
@@ -1006,8 +1063,8 @@ fn whenMouse_thenTouch_touchBehaviorsAppear() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_thenMouse_touchBehaviorsDisappear, whenTouch_thenTrackpad_touchBehaviorsDisappear
 #[test]
 fn whenTouch_thenMouse_touchBehaviorsDisappear() {
-    for (rtl, kind) in directions_and_cursors() {
-        let mut it = gestures(rtl);
+    for (rtl, multi, kind) in directions_and_cursors() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.long_click(at);
         it.expect(|it| {
@@ -1023,8 +1080,8 @@ fn whenTouch_thenMouse_touchBehaviorsDisappear() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenMouseCollapsedSelection_thenTouch_noUiElements, whenTrackpadCollapsedSelection_thenTouch_noUiElements
 #[test]
 fn whenMouseCollapsedSelection_thenTouch_noUiElements() {
-    for (rtl, kind) in directions_and_cursors() {
-        let mut it = gestures(rtl);
+    for (rtl, multi, kind) in directions_and_cursors() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.cursor(kind, |cursor| cursor.click(at));
         it.expect(|it| it.selection = Some((13, 13)));
@@ -1036,8 +1093,8 @@ fn whenMouseCollapsedSelection_thenTouch_noUiElements() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouchCollapsedSelection_thenMouse_noUiElements, whenTouchCollapsedSelection_thenTrackpad_noUiElements
 #[test]
 fn whenTouchCollapsedSelection_thenMouse_noUiElements() {
-    for (rtl, kind) in directions_and_cursors() {
-        let mut it = gestures(rtl);
+    for (rtl, multi, kind) in directions_and_cursors() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.touch(|touch| touch.click_at(at));
         it.check();
@@ -1047,10 +1104,12 @@ fn whenTouchCollapsedSelection_thenMouse_noUiElements() {
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenMouseCollapsedSelectionAcrossLines_thenTouch_showUi, whenTrackpadCollapsedSelectionAcrossLines_thenTouch_showUi
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/MultiTextSelectionGesturesTest.kt, whenMouseCollapsedSelectionAcrossLines_thenTouch_showUi, whenTrackpadCollapsedSelectionAcrossLines_thenTouch_showUi
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/MultiTextSelectionGesturesRtlTest.kt, whenMouseCollapsedSelectionAcrossLines_thenTouch_showUi, whenTrackpadCollapsedSelectionAcrossLines_thenTouch_showUi
 #[test]
 fn whenMouseCollapsedSelectionAcrossLines_thenTouch_showUi() {
-    for (rtl, kind) in directions_and_cursors() {
-        let mut it = gestures(rtl);
+    for (rtl, multi, kind) in directions_and_cursors() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.center_end();
         it.cursor(kind, |cursor| {
             cursor.move_to(at);
@@ -1067,8 +1126,8 @@ fn whenMouseCollapsedSelectionAcrossLines_thenTouch_showUi() {
 
 /// As the tests' `mouseClickThenDragUpToPaddingTest` and its trackpad twin.
 fn clicks_then_drag_up_to_end_padding(clicks: u32, last: (usize, usize)) {
-    for (rtl, kind) in directions_and_cursors() {
-        let mut it = gestures(rtl);
+    for (rtl, multi, kind) in directions_and_cursors() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.cursor(kind, |cursor| {
             cursor.move_to(at);
@@ -1101,8 +1160,8 @@ fn whenMouse_thenDoubleClickAndDragUpToEndPadding_selectsWords() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withDoubleClick_selectsWord
 #[test]
 fn whenTouch_withDoubleClick_selectsWord() {
-    for rtl in [false, true] {
-        let mut it = gestures(rtl);
+    for (rtl, multi) in variants() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.touch(|touch| {
             touch.click_at(at);
@@ -1118,8 +1177,8 @@ fn whenTouch_withDoubleClick_selectsWord() {
 /// As the tests' `touchTapsThenDragTest` of two taps: the second held past the long-press
 /// timeout, then dragged.
 fn double_tap_then_drag(end: usize, last: (usize, usize)) {
-    for rtl in [false, true] {
-        let mut it = gestures(rtl);
+    for (rtl, multi) in variants() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.touch(|touch| {
             touch.down(at);
@@ -1369,8 +1428,8 @@ fn a_handle_grows_by_words_from_a_boundary_and_shrinks_by_characters() {
 #[test]
 fn whenMouse_withTripleClick_selectsParagraph() {
     // Compose's `whenTouch_*` twin clicks with the mouse too.
-    for (rtl, kind) in directions_and_cursors() {
-        let mut it = gestures(rtl);
+    for (rtl, multi, kind) in directions_and_cursors() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.cursor(kind, |cursor| {
             for _ in 0..3 {
@@ -1414,8 +1473,8 @@ fn whenMouse_thenTripleClickAndDragUpToEndPadding_selectsParagraph() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenMouse_thenTripleClickInEndPadding_selectsOnlyCurrentParagraph, whenTrackpad_thenTripleClickInEndPadding_selectsOnlyCurrentParagraph
 #[test]
 fn whenMouse_thenTripleClickInEndPadding_selectsOnlyCurrentParagraph() {
-    for (rtl, kind) in directions_and_cursors() {
-        let mut it = gestures(rtl);
+    for (rtl, multi, kind) in directions_and_cursors() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.center_end();
         it.cursor(kind, |cursor| {
             cursor.move_to(at);
@@ -1435,8 +1494,8 @@ fn whenMouse_thenTripleClickInEndPadding_selectsOnlyCurrentParagraph() {
 /// As the tests' `touchTapsThenDragTest` of three taps: the third held past the long-press
 /// timeout, then dragged.
 fn triple_tap_then_drag(end: usize, last: (usize, usize)) {
-    for rtl in [false, true] {
-        let mut it = gestures(rtl);
+    for (rtl, multi) in variants() {
+        let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.touch(|touch| {
             touch.down(at);

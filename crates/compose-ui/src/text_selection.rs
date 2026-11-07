@@ -254,8 +254,6 @@ pub(crate) struct TextSelection {
     container: NodeId,
     anchor: Point,
     focus: Point,
-    /// What the press selected (a word, a text): a drag keeps it whole.
-    initial: (Point, Point),
     unit: Unit,
 }
 
@@ -284,6 +282,15 @@ impl Entry {
     fn holds(&self, point: &Point) -> bool {
         self.node == point.node && self.index == point.index && self.version == point.version
     }
+}
+
+/// Where a selection's moving end is (`UiTree::point_at`): its point, whether it's on its
+/// text, and whether it's in the gap before it (the other end after it: crossed).
+#[derive(Clone, Copy)]
+struct Placed {
+    point: Point,
+    on: bool,
+    before: bool,
 }
 
 /// A selection's ends as places in a container's texts: `(order, offset)`, first to last.
@@ -350,36 +357,78 @@ impl UiTree {
             .unwrap_or(0)
     }
 
-    /// The point nearest to `position` (in the root), as Compose's selection finds it: in the
-    /// text under it; else, on a text's line (a row of texts), in the last text starting
-    /// before it; else at the start of the first text below it, or the end of the last.
-    fn point_at(&mut self, entries: &[Entry], position: Offset) -> Option<Point> {
-        let last = entries.last()?;
-        let within = |entry: &Entry| {
-            position.y >= entry.origin.y && position.y < entry.origin.y + entry.size.height as f32
+    /// Where a selection's moving end at `position` (in the root) is, as Compose's
+    /// `SelectionLayoutBuilder` places it (D2028). The texts go in order; each is before, on or
+    /// after the position (Compose's `resolve2dDirection`: by its rows, beside them by its
+    /// columns), and the other end (`anchor`, its text's order; the position itself for a new
+    /// selection) before, on or after it by order. A text both ends are past on the same side is
+    /// left out (`isSelected`); a mouse out of touch mode selects between texts
+    /// (`allowSelectionBetweenSelectables`): then only those both are before once one is kept,
+    /// and those both are after but the last. The end is on the first text kept that it's on,
+    /// or in the gap before the first kept that it's before (always the first kept: its point
+    /// there, the other end after it), or past the last kept (its point in it): Compose's slots
+    /// and `startOrEndSlotToIndex`, which round a gap's end to the text on the other end's side.
+    /// The offset is `getOffsetForPosition`'s, kept to the text's start above it and to its end
+    /// below.
+    fn point_at(
+        &mut self,
+        container: NodeId,
+        entries: &[Entry],
+        position: Offset,
+        anchor: Option<usize>,
+    ) -> Option<Placed> {
+        let between = !self.container_in_touch_mode(container);
+        let side = |at: f32, from: f32, to: f32| {
+            if at < from {
+                -1
+            } else if at > to {
+                1
+            } else {
+                0
+            }
         };
-        if let Some(entry) = entries.iter().find(|entry| {
-            within(entry)
-                && position.x >= entry.origin.x
-                && position.x < entry.origin.x + entry.size.width as f32
-        }) {
-            let offset = self.offset_in(entry, position);
-            return Some(entry.point(offset));
+        let mut found = None;
+        let mut last_kept = None;
+        for (order, entry) in entries.iter().enumerate() {
+            let (origin, size) = (entry.origin, entry.size);
+            let current = match side(position.y, origin.y, origin.y + size.height as f32) {
+                0 => side(position.x, origin.x, origin.x + size.width as f32),
+                y => y,
+            };
+            let other = match anchor {
+                None => current,
+                // Before this text when it's earlier in order (`getDirectionById`).
+                Some(anchor) => (anchor as isize - order as isize).signum() as i32,
+            };
+            let left_out = if between {
+                (current == 1 && other == 1 && order + 1 != entries.len())
+                    || (current == -1 && other == -1 && last_kept.is_some())
+            } else {
+                current != 0 && current == other
+            };
+            if left_out {
+                continue;
+            }
+            if current != 1 {
+                found = Some((order, current == 0));
+                break;
+            }
+            last_kept = Some(order);
         }
-        let row: Vec<&Entry> = entries.iter().filter(|entry| within(entry)).collect();
-        if let Some(first) = row.first() {
-            // Past its end (or in a gap after it), or before the first: the offset there on the
-            // line beside it, as Compose's `getOffsetForPosition` (that line's end, or start).
-            let found = row.iter().rev().find(|entry| entry.origin.x <= position.x);
-            let entry = **found.unwrap_or(first);
-            let offset = self.offset_in(&entry, position);
-            return Some(entry.point(offset));
-        }
-        if let Some(entry) = entries.iter().find(|entry| position.y < entry.origin.y) {
-            return Some(entry.point(0));
-        }
-        let length = self.selectable_text(last.node, last.index).len();
-        Some(last.point(length))
+        let (index, on, before) = match found {
+            Some((index, on)) => (index, on, !on),
+            None => (last_kept?, false, false),
+        };
+        let entry = entries[index];
+        let local = position - entry.origin;
+        let offset = if local.y <= 0.0 {
+            0
+        } else if local.y >= entry.size.height as f32 {
+            self.selectable_text(entry.node, entry.index).len()
+        } else {
+            self.offset_in(&entry, position)
+        };
+        Some(Placed { point: entry.point(offset), on, before })
     }
 
     /// The selection's ends in `entries`' order, or `None` if a text it ends in is gone or
@@ -457,7 +506,10 @@ impl UiTree {
             SelectionRequest::Start { container, position, unit } => {
                 let entries = self.selectables(container);
                 self.clear_other_selection(container);
-                let Some(point) = self.point_at(&entries, position) else { return };
+                let Some(Placed { point, .. }) = self.point_at(container, &entries, position, None)
+                else {
+                    return;
+                };
                 let (anchor, focus) = match unit {
                     Unit::Character => (point, point),
                     Unit::Word => {
@@ -472,13 +524,7 @@ impl UiTree {
                         )
                     }
                 };
-                self.text_selection = Some(TextSelection {
-                    container,
-                    anchor,
-                    focus,
-                    initial: (anchor, focus),
-                    unit,
-                });
+                self.text_selection = Some(TextSelection { container, anchor, focus, unit });
                 self.show_selection(&entries);
             }
             SelectionRequest::Extend { container, position } => {
@@ -488,39 +534,37 @@ impl UiTree {
                     return;
                 };
                 let entries = self.selectables(container);
-                let Some(point) = self.point_at(&entries, position) else { return };
-                let (Some(start), Some(end), Some(at)) = (
-                    Self::order_of(&entries, &selection.initial.0),
-                    Self::order_of(&entries, &selection.initial.1),
-                    Self::order_of(&entries, &point),
-                ) else {
+                // The other end is the selection's start as it is, adjusted again at each move,
+                // as Compose's `previousSelection.start` (D2028): a word's end on punctuation
+                // goes past it as the drag crosses.
+                let raw = selection.anchor;
+                let Some(anchor) = Self::order_of(&entries, &raw) else {
                     self.text_selection = None;
                     self.show_selection(&entries);
                     return;
                 };
-                // A word selection extends by words, a paragraph's by paragraphs.
-                let snap = |tree: &mut UiTree, forward: bool| match selection.unit {
+                let found = self.point_at(container, &entries, position, Some(anchor.0));
+                let Some(Placed { point, on, before }) = found else { return };
+                let Some(at) = Self::order_of(&entries, &point) else { return };
+                // Crossed when the moving end comes before the start, or at it from the gap
+                // before its text (Compose's `crossStatus`: by offsets, else by slots).
+                let crossed = if at == anchor { before } else { at < anchor };
+                // A unit's far side from the other end, or its near side: by words, by
+                // paragraphs, as Compose's `adjustToBoundaries`; from a gap between texts, the
+                // point itself (off its slot).
+                let snap = |tree: &mut UiTree, point: Point, far: bool| match selection.unit {
                     Unit::Character => point,
                     Unit::Word => {
                         let word = tree.word(point);
-                        Point { offset: if forward { word.end } else { word.start }, ..point }
+                        Point { offset: if far { word.end } else { word.start }, ..point }
                     }
                     Unit::Paragraph => {
                         let paragraph = tree.paragraph(point);
-                        Point {
-                            offset: if forward { paragraph.end } else { paragraph.start },
-                            ..point
-                        }
+                        Point { offset: if far { paragraph.end } else { paragraph.start }, ..point }
                     }
                 };
-                // From the side of what the press selected away from the pointer.
-                (selection.anchor, selection.focus) = if at >= start {
-                    let focus = snap(self, true);
-                    let focus_at = (at.0, focus.offset);
-                    (selection.initial.0, if focus_at >= end { focus } else { selection.initial.1 })
-                } else {
-                    (selection.initial.1, snap(self, false))
-                };
+                selection.anchor = snap(self, raw, crossed);
+                selection.focus = if on { snap(self, point, !crossed) } else { point };
                 self.text_selection = Some(selection);
                 self.show_selection(&entries);
                 self.bring_dragged_into_view(container, &entries, position, point);
@@ -530,13 +574,8 @@ impl UiTree {
                 let (Some(first), Some(last)) = (entries.first(), entries.last()) else { return };
                 let length = self.selectable_text(last.node, last.index).len();
                 let (anchor, focus) = (first.point(0), last.point(length));
-                self.text_selection = Some(TextSelection {
-                    container,
-                    anchor,
-                    focus,
-                    initial: (anchor, anchor),
-                    unit: Unit::Character,
-                });
+                self.text_selection =
+                    Some(TextSelection { container, anchor, focus, unit: Unit::Character });
                 self.show_selection(&entries);
             }
             SelectionRequest::Copy { container } => {
@@ -613,7 +652,11 @@ impl UiTree {
         let origin = self.layer_origin(container, found.layer);
         let entries = self.selectables(container);
         let target = origin + begin + moved;
-        let Some(point) = self.point_at(&entries, target) else { return };
+        let other = if start { selection.focus } else { selection.anchor };
+        let anchor = Self::order_of(&entries, &other).map(|(order, _)| order);
+        let Some(Placed { point, .. }) = self.point_at(container, &entries, target, anchor) else {
+            return;
+        };
         // The selection follows the finger when its place in the texts changed since it last
         // did (the texts may have moved under a still finger), as Compose's
         // `shouldRecomputeSelection`; the place it was then is the next move's previous one.
@@ -639,7 +682,6 @@ impl UiTree {
                 selection.focus = moved_to;
             }
         }
-        selection.initial = (selection.anchor, selection.focus);
         selection.unit = Unit::Character;
         self.text_selection = Some(selection);
         self.show_selection(&entries);
@@ -1199,6 +1241,9 @@ struct FingerPress {
     /// What the drag leaves out of the finger's place: the touch slop a later press passed
     /// (Compose's over-slop).
     slop: Offset,
+    /// Where the finger last was: a move that doesn't move it drags nothing, as Compose's
+    /// `drag(pointerId)` hears only moves that change its place (D2028).
+    last: Offset,
 }
 
 impl SelectionContainerNode {
@@ -1272,7 +1317,7 @@ impl PointerInputModifierNode for SelectionContainerNode {
         if pass == PointerEventPass::Initial {
             // A long press's drag is the selection's before what's inside sees it, as Compose's
             // texts take it ahead of the scrollables around them (a lazy column's items).
-            let dragging = self.finger.as_ref().filter(|finger| {
+            let dragging = self.finger.as_mut().filter(|finger| {
                 finger.long && !finger.slop_pending && finger.pointer == event.pointer
             });
             if let Some(finger) = dragging
@@ -1281,8 +1326,11 @@ impl PointerInputModifierNode for SelectionContainerNode {
                 && !event.consumed
             {
                 let Some(position) = context.pointer_position() else { return };
-                let position = position - finger.slop;
                 event.consume();
+                if std::mem::replace(&mut finger.last, position) == position {
+                    return;
+                }
+                let position = position - finger.slop;
                 let container = context.node;
                 context.requests.selection.push(SelectionRequest::Extend { container, position });
             }
@@ -1422,6 +1470,7 @@ impl SelectionContainerNode {
                     long: later,
                     slop_pending: later,
                     slop: Offset::ZERO,
+                    last: position,
                 });
             }
             PointerEventType::Move if event.pressed => {
@@ -1438,6 +1487,7 @@ impl SelectionContainerNode {
                             job.cancel();
                         }
                         event.consume();
+                        finger.last = position;
                         let position = position - finger.slop;
                         context
                             .requests
