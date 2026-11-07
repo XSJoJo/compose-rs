@@ -22,6 +22,7 @@ use crate::output_transformation::{
 use crate::selection_handles::TouchHandles;
 
 mod toolbar;
+pub use toolbar::ClipboardPasteState;
 mod touch;
 use crate::text_field_buffer::TextFieldCharSequence;
 use crate::text_undo::TextFieldEditUndoBehavior;

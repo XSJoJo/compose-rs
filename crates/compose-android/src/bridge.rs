@@ -784,6 +784,16 @@ impl compose_ui::ClipboardManager for JniClipboard {
         })
     }
 
+    /// Whether it holds anything, from `hasPrimaryClip`, never reading the clip (D2035).
+    fn has_clip(&self) -> bool {
+        with_main_env(|env| {
+            let has =
+                env.call_method(&**self.view, jni_str!("clipboardHasClip"), jni_sig!("()Z"), &[]);
+            check(env, "ComposeRsView.clipboardHasClip");
+            has.and_then(|value| value.z()).unwrap_or(false)
+        })
+    }
+
     fn set_text(&self, text: &str) {
         with_main_env(|env| {
             if let Ok(text) = env.new_string(text) {

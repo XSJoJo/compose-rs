@@ -17,6 +17,11 @@ pub trait ClipboardManager {
     fn has_text(&self) -> bool {
         self.get_text().is_some_and(|text| !text.is_empty())
     }
+    /// Whether it holds anything, as Android's `hasPrimaryClip` (what Compose's
+    /// `ClipboardPasteState` asks first, D2035).
+    fn has_clip(&self) -> bool {
+        self.get_text().is_some()
+    }
 }
 
 /// A clipboard in memory: the default, and what tests use.

@@ -198,8 +198,9 @@ fn standard_id(key: &super::data::TextContextMenuKey) -> Option<i32> {
 }
 
 impl TextActionModeCallback for ToolbarCallback {
-    /// The menu's bounds in the anchor, in the root (Compose's `positionInRoot` translation);
-    /// zero while the anchor isn't placed.
+    /// The menu's bounds in the anchor, in the window: the host's view, which a popup's or a
+    /// dialog's content is placed in (Compose's `positionInRoot` translation, its root the view the
+    /// mode starts on, a popup's own; D2035); zero while the anchor isn't placed.
     fn on_get_content_rect(&self) -> Rect {
         let Some(inner) = self.inner.upgrade() else { return Rect::ZERO };
         inner.observer.observe(POSITION_READS, || {
@@ -208,7 +209,7 @@ impl TextActionModeCallback for ToolbarCallback {
                 return Rect::ZERO;
             };
             let local = self.data_provider.content_bounds(&destination);
-            local.translate(destination.position_in_root())
+            local.translate(destination.position_in_window())
         })
     }
 
@@ -285,36 +286,16 @@ pub fn platform_text_context_menu_toolbar_provider(
     provider.map(|provider| provider as Rc<dyn TextContextMenuProvider>)
 }
 
-/// A tree's floating toolbars (kept weakly) and its default toolbar provider.
-type DefaultToolbar = (Weak<dyn TextActionModes>, Rc<PlatformTextContextMenuToolbarProvider>);
-
-thread_local! {
-    /// The default toolbar provider of each tree's floating toolbars (D2031).
-    static DEFAULT_TOOLBARS: RefCell<Vec<DefaultToolbar>> =
-        const { RefCell::new(Vec::new()) };
-}
-
-/// The platform's toolbar provider of `context`'s tree, placing menus in its root: what a field
-/// or a container shows its toolbar with when none is provided, as Compose's
-/// `ProvideDefaultPlatformTextContextMenuProviders` provides it (D2031). None without floating
-/// toolbars.
+/// The platform's toolbar provider for `context`'s node, placing menus where the node is: what a
+/// field or a container shows its toolbar with when none is provided, as Compose's
+/// `ProvideDefaultPlatformTextContextMenuProviders` provides one around each (D2031, D2035). Made
+/// at each show, so nothing is kept while no toolbar shows; a new toolbar replaces the shown one
+/// through the platform, as Compose's providers of two fields do. None without floating toolbars.
 pub(crate) fn default_toolbar_provider(
     context: &mut NodeContext<'_>,
 ) -> Option<Rc<dyn TextContextMenuProvider>> {
     let modes = context.text_action_modes()?;
-    let root = context.require_layout_coordinates().find_root_coordinates();
-    DEFAULT_TOOLBARS.with(|toolbars| {
-        let mut toolbars = toolbars.borrow_mut();
-        toolbars.retain(|(modes, _)| modes.strong_count() > 0);
-        if let Some((_, provider)) = toolbars
-            .iter()
-            .find(|(kept, _)| kept.upgrade().is_some_and(|kept| Rc::ptr_eq(&kept, &modes)))
-        {
-            return Some(provider.clone() as Rc<dyn TextContextMenuProvider>);
-        }
-        let anchor: AnchorCoordinates = Rc::new(move || Some(root));
-        let provider = Rc::new(PlatformTextContextMenuToolbarProvider::new(modes.clone(), anchor));
-        toolbars.push((Rc::downgrade(&modes), provider.clone()));
-        Some(provider as Rc<dyn TextContextMenuProvider>)
-    })
+    let anchor = context.require_layout_coordinates();
+    let anchor: AnchorCoordinates = Rc::new(move || Some(anchor));
+    Some(Rc::new(PlatformTextContextMenuToolbarProvider::new(modes, anchor)))
 }

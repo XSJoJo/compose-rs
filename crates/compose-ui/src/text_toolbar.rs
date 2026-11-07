@@ -27,7 +27,7 @@ pub type TextToolbarAction = Rc<dyn Fn()>;
 /// A text toolbar, as Compose's `TextToolbar`: the floating toolbar of copy, paste, cut, select
 /// all and autofill.
 pub trait TextToolbar {
-    /// Shows the toolbar around `rect` (in the root), with an item for each action given, as
+    /// Shows the toolbar around `rect` (in the window, the host's view), with an item for each action given, as
     /// `showMenu(rect, onCopyRequested, onPasteRequested, onCutRequested, onSelectAllRequested,
     /// onAutofillRequested)`: a missing action has no item. Showing it again updates it.
     fn show_menu(
@@ -67,7 +67,8 @@ pub trait TextActionMode {
 /// What a floating toolbar asks of what shows it, as Android's `ActionMode.Callback2` (Compose's
 /// internal `TextActionModeCallback`).
 pub trait TextActionModeCallback {
-    /// Where it goes around: a rect in the root (the view), as `onGetContentRect`.
+    /// Where it goes around: a rect in the window, the host's view, which a popup's or a dialog's
+    /// content is placed in, as `onGetContentRect` (D2035).
     fn on_get_content_rect(&self) -> Rect;
     /// Fills its menu when it starts: whether it shows (`onCreateActionMode`).
     fn on_create_action_mode(&self, menu: &mut TextActionMenu) -> bool;

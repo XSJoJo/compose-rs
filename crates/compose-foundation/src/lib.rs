@@ -130,6 +130,8 @@ pub use text::{
     BasicAnnotatedText, BasicText, DisableSelection, LOCAL_TEXT_SELECTION_COLORS,
     SelectionContainer, TextSelectionColors,
 };
+#[doc(hidden)]
+pub use text_field::ClipboardPasteState;
 pub use text_field::{BasicTextField, BasicTextFieldOfState, inner_text_field_only};
 pub use text_field_buffer::{ChangeList, TextFieldBuffer};
 pub use text_field_state::{TextFieldLineLimits, TextFieldState, remember_text_field_state};

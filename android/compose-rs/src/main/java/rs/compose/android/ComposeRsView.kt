@@ -1411,6 +1411,10 @@ class ComposeRsView @JvmOverloads constructor(
             clipboard.primaryClipDescription?.hasMimeType("text/*") == true
     }
 
+    /** Whether the clipboard holds anything, never reading its clip (D2035). */
+    fun clipboardHasClip(): Boolean =
+        context.getSystemService(ClipboardManager::class.java).hasPrimaryClip()
+
     fun setClipboardText(text: String) {
         val clipboard = context.getSystemService(ClipboardManager::class.java)
         clipboard.setPrimaryClip(ClipData.newPlainText("text", text))
