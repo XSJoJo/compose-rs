@@ -12,6 +12,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use compose_runtime::OwnedState;
+use smallvec::SmallVec;
 
 use crate::input::{
     EventContext, Key, KeyEvent, KeyEventType, PointerEvent, PointerEventPass, PointerEventType,
@@ -169,6 +170,9 @@ pub struct ContainerHandles {
     /// selection last followed it, in the container's coordinates, as `handleDragObserver`'s
     /// first and later `dragBeginPosition`.
     drag: Cell<Option<(bool, Offset, Offset)>>,
+    /// The point in the texts the selection last followed the drag to (the previous layout's
+    /// raw offset, Compose's `givenRawPreviousHandleOffset`), none before the first move.
+    drag_point: Cell<Option<Point>>,
     /// What a selection's change vibrates with in touch mode (`LocalHapticFeedback`'s where the
     /// container is composed), as `SelectionManager.hapticFeedBack`.
     haptics: std::cell::RefCell<Option<Rc<dyn crate::platform_services::HapticFeedback>>>,
@@ -182,6 +186,7 @@ impl ContainerHandles {
             positions: compose_runtime::mutable_state_of([None, None]),
             container: Cell::new(None),
             drag: Cell::new(None),
+            drag_point: Cell::new(None),
             haptics: std::cell::RefCell::new(None),
         }
     }
@@ -218,6 +223,7 @@ impl ContainerHandles {
     /// begins anew where it points.
     pub fn end_drag(&self) {
         self.drag.set(None);
+        self.drag_point.set(None);
     }
 
     /// The handle dragged, if any (`SelectionManager.draggingHandle`).
@@ -497,6 +503,7 @@ impl UiTree {
                 };
                 self.text_selection = Some(selection);
                 self.show_selection(&entries);
+                self.bring_dragged_into_view(container, &entries, position, point);
             }
             SelectionRequest::SelectAll { container } => {
                 let entries = self.selectables(container);
@@ -560,7 +567,7 @@ impl UiTree {
         let Some(found) = self.container_handles(container) else { return };
         let handles = found.handles;
         let Some(moved) = moved else {
-            handles.drag.set(None);
+            handles.end_drag();
             return;
         };
         let Some(mut selection) =
@@ -568,8 +575,10 @@ impl UiTree {
         else {
             return;
         };
-        let (begin, previous) = match handles.drag.get() {
-            Some((dragged, begin, previous)) if dragged == start => (begin, previous),
+        let (begin, previous, previous_point) = match handles.drag.get() {
+            Some((dragged, begin, previous)) if dragged == start => {
+                (begin, previous, handles.drag_point.get())
+            }
             _ => {
                 let pointed =
                     compose_runtime::snapshots::Snapshot::without_read_observation(|| {
@@ -578,27 +587,30 @@ impl UiTree {
                 // A hidden handle isn't dragged, as Compose's `onDown`.
                 let Some(pointed) = pointed else { return };
                 let begin = Offset::new(pointed.x, pointed.y - 1.0);
-                (begin, begin)
+                (begin, begin, None)
             }
         };
         let origin = self.layer_origin(container, found.layer);
         let entries = self.selectables(container);
         let target = origin + begin + moved;
         let Some(point) = self.point_at(&entries, target) else { return };
-        // The selection follows the finger when its place in the texts changed, as Compose's
+        // The selection follows the finger when its place in the texts changed since it last
+        // did (the texts may have moved under a still finger), as Compose's
         // `shouldRecomputeSelection`; the place it was then is the next move's previous one.
-        if self.point_at(&entries, origin + previous) == Some(point) {
+        if previous_point == Some(point) {
             handles.drag.set(Some((start, begin, previous)));
+            self.bring_dragged_into_view(container, &entries, target, point);
             return;
         }
         handles.drag.set(Some((start, begin, begin + moved)));
+        handles.drag_point.set(Some(point));
         let (end, other) = if start {
             (selection.anchor, selection.focus)
         } else {
             (selection.focus, selection.anchor)
         };
-        let moved_to =
-            self.accelerated(&entries, start, point, target, origin + previous, end, other);
+        let previous = (origin + previous, previous_point);
+        let moved_to = self.accelerated(&entries, start, point, target, previous, end, other);
         // Never collapsed by a handle, as Compose's `ensureAtLeastOneChar` keeps a character.
         if moved_to != other {
             if start {
@@ -611,6 +623,86 @@ impl UiTree {
         selection.unit = Unit::Character;
         self.text_selection = Some(selection);
         self.show_selection(&entries);
+        self.bring_dragged_into_view(container, &entries, target, point);
+    }
+
+    /// Scrolls what's around the text under a drag toward the finger, as Compose's
+    /// `bringDraggedPositionIntoView` (`isSelectionAutoScrollEnabled`): the text whose point
+    /// the drag at `position` (in the root) is at asks its scrolling ancestors for the drag's
+    /// place, in touch mode with the box of the character there (Compose's cursor at the
+    /// handle's offset), stretched to the nearest point of the text's bounds, so a list scrolls
+    /// a little each move, never past what it composes next.
+    fn bring_dragged_into_view(
+        &mut self,
+        container: NodeId,
+        entries: &[Entry],
+        position: Offset,
+        point: Point,
+    ) {
+        let Some(entry) = entries.iter().find(|entry| entry.holds(&point)).copied() else {
+            return;
+        };
+        let local = position - entry.origin;
+        let mut rect = Rect::new(local.x, local.y, local.x, local.y);
+        if self.container_in_touch_mode(container) {
+            let edge = self
+                .node_and_measurer(entry.node)
+                .and_then(|(value, (measurer, _))| {
+                    let text = value.chain[entry.index].selectable()?;
+                    Some(text.bounding_box(point.offset, measurer))
+                })
+                .unwrap_or(rect);
+            rect = union(rect, edge);
+        }
+        let (width, height) = (entry.size.width as f32, entry.size.height as f32);
+        let nearest = Offset::new(local.x.clamp(0.0, width), local.y.clamp(0.0, height));
+        rect = union(rect, Rect::new(nearest.x, nearest.y, nearest.x, nearest.y));
+        self.bring_entry_rect_into_view(entry.node, entry.index, rect);
+    }
+
+    /// Whether `container`'s node is in touch mode (its last pointer a finger's).
+    fn container_in_touch_mode(&mut self, container: NodeId) -> bool {
+        let Some(value) = self.get_mut(container) else { return false };
+        value.chain.iter_mut().find_map(|entry| {
+            entry.node.downcast_mut::<SelectionContainerNode>().map(|node| node.touch == Some(true))
+        }) == Some(true)
+    }
+
+    /// Pins the pinnable containers (a lazy layout's items) of the texts `selected` holds a
+    /// part of, and lets go of those of the texts among `entries` it no longer does, as
+    /// Compose's `updatePinnedSelectables`: a selected text scrolled away stays composed. A
+    /// pinned text not among `entries` (not placed) keeps its pin while a selection exists.
+    fn update_selection_pins(&mut self, entries: &[Entry], selected: &[NodeId]) {
+        if self.text_selection.is_none() {
+            self.release_selection_pins();
+            return;
+        }
+        let mut index = 0;
+        while index < self.selection_pins.len() {
+            let node = self.selection_pins[index].0;
+            let shown = entries.iter().any(|entry| entry.node == node);
+            if shown && !selected.contains(&node) {
+                self.selection_pins.swap_remove(index).1.release();
+            } else {
+                index += 1;
+            }
+        }
+        for &node in selected {
+            if self.selection_pins.iter().any(|(pinned, _)| *pinned == node) {
+                continue;
+            }
+            let container = self.node(node).locals.get(&crate::pinnable::LOCAL_PINNABLE_CONTAINER);
+            if let Some(container) = container {
+                self.selection_pins.push((node, container.pin()));
+            }
+        }
+    }
+
+    /// Lets go of every selected text's pin.
+    pub(crate) fn release_selection_pins(&mut self) {
+        for (_, handle) in self.selection_pins.drain(..) {
+            handle.release();
+        }
     }
 
     /// Where a handle's drag moves its end (`end`, the other being `other`) when the finger is at
@@ -625,7 +717,7 @@ impl UiTree {
         start: bool,
         point: Point,
         target: Offset,
-        previous: Offset,
+        previous: (Offset, Option<Point>),
         end: Point,
         other: Point,
     ) -> Point {
@@ -683,7 +775,12 @@ impl UiTree {
             // Into another text: by words.
             return snapped(self);
         }
-        let previous_raw = self.offset_in(&entry, previous);
+        // Where the finger was in this text when the selection last followed it, as the previous
+        // layout says it, else as its place there now says it.
+        let previous_raw = match previous {
+            (_, Some(point)) if entry.holds(&point) => point.offset,
+            (position, _) => self.offset_in(&entry, position),
+        };
         if point.offset == previous_raw {
             return end;
         }
@@ -849,10 +946,14 @@ impl UiTree {
         if span.is_none() {
             self.text_selection = None;
         }
+        let mut selected: SmallVec<[NodeId; 8]> = SmallVec::new();
         for (order, entry) in entries.iter().enumerate() {
             let range = span.and_then(|span| range_of(span, order));
             let text = self.selectable_text(entry.node, entry.index);
             let range = range.map(|range| clamp(&text, range));
+            if range.as_ref().is_some_and(|range| range.start < range.end) {
+                selected.push(entry.node);
+            }
             let changed =
                 self.node_and_measurer(entry.node).is_some_and(|(value, (measurer, _))| {
                     value.chain[entry.index]
@@ -862,6 +963,9 @@ impl UiTree {
             if changed {
                 self.invalidate_draw_of(entry.node);
             }
+        }
+        if !selected.is_empty() || !self.selection_pins.is_empty() {
+            self.update_selection_pins(entries, &selected);
         }
     }
 
@@ -997,6 +1101,11 @@ fn range_of(span: Span, order: usize) -> Option<Range<usize>> {
     let from = if order == start.0 { start.1 } else { 0 };
     let to = if order == end.0 { end.1 } else { usize::MAX };
     Some(from..to)
+}
+
+/// The smallest rectangle holding both, as Compose's `Rect.union`.
+fn union(a: Rect, b: Rect) -> Rect {
+    Rect::new(a.left.min(b.left), a.top.min(b.top), a.right.max(b.right), a.bottom.max(b.bottom))
 }
 
 /// `range` within `text`, at character boundaries.

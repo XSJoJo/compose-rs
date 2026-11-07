@@ -302,7 +302,9 @@ fn focus_skips_deactivated_content_and_comes_back_with_it() {
 /// its text node is reused by another item of the same text. `TextNode::on_reset` clears the
 /// node's drawn selection but keeps its `version` (bumped only when the text changes), and the
 /// tree drops the selection only when the reset node is the container: the selection's points
-/// hold again, on the other item.
+/// hold again, on the other item. Since D2023 the selected item is pinned, as Compose's
+/// (`updatePinnedSelectables`): it stays composed scrolled away, its node isn't reused, and the
+/// selection stays on it.
 #[test]
 fn a_selection_does_not_move_to_the_item_reusing_the_selected_ones_text() {
     use compose_ui::{Offset, PointerEvent};
@@ -346,11 +348,11 @@ fn a_selection_does_not_move_to_the_item_reusing_the_selected_ones_text() {
         });
     }
     ui.wait_for_idle();
-    let shown = ui.dump_display_list().contains("#664286F4");
     let extended = ui.host().with_tree(|tree| tree.selected_text());
-    assert_eq!(
-        (selected.as_deref(), shown),
-        (None, false),
-        "item 0's selection on another item (extended: {extended:?}):\n{display}"
-    );
+    let first = ui.on_node_with_tag("t0").fetch_semantics_snapshot().id;
+    let anchors = ui.host().with_tree(|tree| tree.selection_anchors());
+    assert_eq!(selected.as_deref(), Some("world"), "{display}");
+    let nodes = anchors.map(|((start, _), (end, _))| (start, end));
+    assert_eq!(nodes, Some((first, first)), "item 0's selection on another item");
+    assert!(extended.is_some_and(|text| text.starts_with("world")));
 }

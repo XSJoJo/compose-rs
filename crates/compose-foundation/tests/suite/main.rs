@@ -158,6 +158,7 @@ mod scrollbar;
 mod secure_text_field;
 mod selected_region_rect;
 mod selection;
+mod selection_container_auto_scroll;
 mod selection_container_touch;
 mod selection_focus_hover_parity;
 mod selection_handle_popup_position;
