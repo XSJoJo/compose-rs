@@ -2860,3 +2860,445 @@ fn shared_element_with_changing_mfr_offset() {
         assert!(frames < 300, "the transition ends");
     }
 }
+
+/// Enabled only while its transition goes to `false`, keeping an animation running on or not,
+/// as the one-direction tests' configs.
+struct TowardsFalse {
+    transition: Transition<bool>,
+    keep_for_ongoing_animation: bool,
+}
+
+impl SharedContentConfig for TowardsFalse {
+    fn should_keep_enabled_for_ongoing_animation(&self) -> bool {
+        self.keep_for_ongoing_animation
+    }
+
+    fn is_enabled(&self, _state: &SharedContentState) -> bool {
+        !self.transition.target_state()
+    }
+}
+
+/// What the one-direction tests record of each content: sizes and offsets in the layout.
+#[derive(Clone, Default)]
+struct Recorded {
+    sizes: [Rc<RefCell<Vec<IntSize>>>; 2],
+    offsets: [Rc<RefCell<Vec<Offset>>>; 2],
+}
+
+impl Recorded {
+    fn clear(&self) {
+        for at in 0..2 {
+            self.sizes[at].borrow_mut().clear();
+            self.offsets[at].borrow_mut().clear();
+        }
+    }
+
+    fn noting(&self, scope: &SharedTransitionScope, at: usize) -> Modifier {
+        let (scope, recorded) = (scope.clone(), self.clone());
+        Modifier.on_placed(move |it: LayoutCoordinates| {
+            recorded.sizes[at].borrow_mut().push(it.size());
+            if let Some(root) = scope.lookahead_root_for_test() {
+                recorded.offsets[at].borrow_mut().push(root.local_position_of(&it, Offset::ZERO));
+            }
+        })
+    }
+}
+
+/// An `AnimatedContent` of `target`'s transition with no enter or exit: a shared element of
+/// 20 × 20 while `true`, one of 180 × 180 at (20, 20) while `false`, both over a 160 ms tween.
+/// With `both`, both contents are enabled only towards `false`, an animation running not kept;
+/// otherwise the second only, kept.
+fn one_direction(
+    target: MutableState<bool>,
+    both: bool,
+) -> (ComposeTestRule, Rc<RefCell<Option<Transition<bool>>>>, Recorded) {
+    let recorded = Recorded::default();
+    let created: Rc<RefCell<Option<Transition<bool>>>> = Rc::default();
+    let (given, made) = (recorded.clone(), created.clone());
+    let ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let (recorded, made) = (given.clone(), made.clone());
+        SharedTransitionLayout!(move |scope: SharedTransitionScope| {
+            let transition = update_transition(target.get(), None);
+            *made.borrow_mut() = Some(transition.clone());
+            let config: Rc<dyn SharedContentConfig> = {
+                let transition = transition.clone();
+                remember(move || {
+                    Rc::new(TowardsFalse {
+                        transition: transition.clone(),
+                        keep_for_ongoing_animation: !both,
+                    }) as Rc<dyn SharedContentConfig>
+                })
+            };
+            let (recorded, scope) = (recorded.clone(), scope.clone());
+            transition.AnimatedContent(
+                Modifier,
+                |_| EnterTransition::NONE.together_with(ExitTransition::NONE).using(None),
+                Alignment::TOP_START,
+                ContentKey::state(),
+                move |content: AnimatedContentScope, target_state: bool| {
+                    let (recorded, scope, config) =
+                        (recorded.clone(), scope.clone(), config.clone());
+                    Box!(modifier = Modifier.size(200.dp()), move |_| {
+                        let options =
+                            SharedOptions { bounds_transform: tween_of(160), ..Default::default() };
+                        if target_state {
+                            let state = if both {
+                                scope.remember_shared_content_state_with("test", config.clone())
+                            } else {
+                                scope.remember_shared_content_state("test")
+                            };
+                            Box!(
+                                modifier = scope
+                                    .shared_element_with(&state, &content, options)
+                                    .then(recorded.noting(&scope, 0))
+                                    .size(20.dp())
+                            );
+                        } else {
+                            let state =
+                                scope.remember_shared_content_state_with("test", config.clone());
+                            Box!(
+                                modifier = Modifier
+                                    .offset(20.dp(), 20.dp())
+                                    .then(scope.shared_element_with(&state, &content, options))
+                                    .then(recorded.noting(&scope, 1))
+                                    .size(180.dp())
+                            );
+                        }
+                    });
+                },
+            );
+        });
+    });
+    (ui, created, recorded)
+}
+
+/// A tween of `millis` with the default easing, for bounds.
+fn tween_of(millis: u32) -> BoundsTransform {
+    BoundsTransform::new(move |_, _| tween(millis).into())
+}
+
+/// Advances frames until `done` says so.
+fn frames_until(ui: &mut ComposeTestRule, mut done: impl FnMut() -> bool) {
+    let mut frames = 0;
+    while !done() {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        frames += 1;
+        assert!(frames < 300, "it happens");
+    }
+}
+
+/// Checks the first content took the animation mid-way, in size and offset.
+fn mid_way(recorded: &Recorded) {
+    let size = *recorded.sizes[0].borrow().last().expect("placed");
+    assert!(size.width > 20 && size.width < 180, "width {}", size.width);
+    assert!(size.height > 20 && size.height < 180, "height {}", size.height);
+    let offset = *recorded.offsets[0].borrow().last().expect("placed");
+    assert!(offset.x > 0.0 && offset.x < 20.0, "x {}", offset.x);
+    assert!(offset.y > 0.0 && offset.y < 20.0, "y {}", offset.y);
+}
+
+/// Checks nothing animated: each content kept its size and place.
+fn unanimated(recorded: &Recorded) {
+    assert!(recorded.sizes[0].borrow().iter().all(|it| *it == IntSize::new(20, 20)));
+    assert!(recorded.sizes[1].borrow().iter().all(|it| *it == IntSize::new(180, 180)));
+    assert!(recorded.offsets[0].borrow().iter().all(|it| *it == Offset::ZERO));
+    assert!(recorded.offsets[1].borrow().iter().all(|it| *it == Offset::new(20.0, 20.0)));
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testIsEnabledOnlyInOneDirection
+/// A shared element enabled only going to `false` animates that way, growing and moving
+/// steadily, and not back.
+#[test]
+fn is_enabled_only_in_one_direction() {
+    let target = mutable_state_of(true);
+    let (mut ui, created, recorded) = one_direction(target.handle(), false);
+    let current = |created: &Rc<RefCell<Option<Transition<bool>>>>| {
+        created.borrow().as_ref().expect("composed").current_state()
+    };
+    ui.wait_for_idle();
+    ui.set_auto_advance(false);
+    target.set(false);
+    frames_until(&mut ui, || !current(&created));
+    let sizes = recorded.sizes[1].borrow().clone();
+    for pair in sizes.windows(2) {
+        assert!(pair[1].width >= pair[0].width && pair[1].height >= pair[0].height, "{sizes:?}");
+    }
+    assert_eq!(sizes.first(), Some(&IntSize::new(20, 20)));
+    assert_eq!(sizes.last(), Some(&IntSize::new(180, 180)));
+    let offsets = recorded.offsets[1].borrow().clone();
+    for pair in offsets.windows(2) {
+        assert!(pair[1].x >= pair[0].x && pair[1].y >= pair[0].y, "{offsets:?}");
+    }
+    assert_eq!(offsets.first(), Some(&Offset::ZERO));
+    assert_eq!(offsets.last(), Some(&Offset::new(20.0, 20.0)));
+    ui.set_auto_advance(true);
+    ui.wait_for_idle();
+    // Back: no animation.
+    ui.set_auto_advance(false);
+    recorded.clear();
+    target.set(true);
+    frames_until(&mut ui, || current(&created));
+    unanimated(&recorded);
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testIsEnabledOnlyInOneDirectionWithInterruption
+/// Enabled only going to `false` and interrupted mid-way, the way back keeps the animation
+/// running (`should_keep_enabled_for_ongoing_animation`): the second content shrinks steadily,
+/// moving.
+#[test]
+fn is_enabled_only_in_one_direction_with_interruption() {
+    let target = mutable_state_of(true);
+    let (mut ui, created, recorded) = one_direction(target.handle(), false);
+    ui.wait_for_idle();
+    ui.set_auto_advance(false);
+    target.set(false);
+    let sizes = recorded.sizes[0].clone();
+    frames_until(&mut ui, || sizes.borrow().last().expect("placed").width != 20);
+    for _ in 0..3 {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+    }
+    mid_way(&recorded);
+    ui.wait_for_idle();
+    recorded.clear();
+    target.set(true);
+    frames_until(&mut ui, || {
+        let transition = created.borrow().clone().expect("composed");
+        transition.current_state() && transition.target_state()
+    });
+    let sizes = recorded.sizes[1].borrow().clone();
+    for pair in sizes.windows(2) {
+        assert!(pair[0].width >= pair[1].width && pair[0].height >= pair[1].height, "{sizes:?}");
+    }
+    assert!(distinct(&recorded.offsets[1].borrow()) > 2);
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testIsEnabledOnlyInOneDirectionExplicitlyNoInterruptionHandling
+/// Enabled only going to `false`, an animation running not kept: interrupted mid-way, the way
+/// back doesn't animate.
+#[test]
+fn is_enabled_only_in_one_direction_explicitly_no_interruption_handling() {
+    let target = mutable_state_of(true);
+    let (mut ui, created, recorded) = one_direction(target.handle(), true);
+    ui.wait_for_idle();
+    ui.set_auto_advance(false);
+    target.set(false);
+    let sizes = recorded.sizes[0].clone();
+    frames_until(&mut ui, || sizes.borrow().last().expect("placed").width != 20);
+    for _ in 0..3 {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+    }
+    mid_way(&recorded);
+    ui.wait_for_idle();
+    recorded.clear();
+    target.set(true);
+    frames_until(&mut ui, || {
+        let transition = created.borrow().clone().expect("composed");
+        transition.current_state() && transition.target_state()
+    });
+    unanimated(&recorded);
+}
+
+/// The alternative-target tests' config of the `false` content: enabled while `enabled` (always
+/// without), keeping an animation running on as `keep` says, going to `alternative` once its
+/// visible content is removed.
+struct Alternative {
+    enabled: Option<MutableState<bool>>,
+    keep: bool,
+    alternative: Option<compose_ui::Rect>,
+}
+
+impl SharedContentConfig for Alternative {
+    fn should_keep_enabled_for_ongoing_animation(&self) -> bool {
+        self.keep
+    }
+
+    fn is_enabled(&self, _state: &SharedContentState) -> bool {
+        self.enabled.is_none_or(|it| it.get())
+    }
+
+    fn alternative_target_bounds_in_transition_scope_after_removal(
+        &self,
+        _state: &SharedContentState,
+        _target_bounds_before_removal: compose_ui::Rect,
+        _shared_transition_layout_size: compose_ui::Size,
+    ) -> Option<compose_ui::Rect> {
+        self.alternative
+    }
+}
+
+/// `target`'s transition's `AnimatedContent` fading over 2 s: a shared element of 20 × 20 while
+/// `true`; while `false`, a 200 × 200 box, then, unless `removed`, a shared element of 180 × 180
+/// at (20, 20) with `config`, both over a 160 ms tween.
+fn alternative_target(
+    target: MutableState<bool>,
+    removed: MutableState<bool>,
+    config: impl Fn() -> Alternative + 'static,
+) -> (ComposeTestRule, Rc<RefCell<Option<Transition<bool>>>>, Recorded) {
+    let recorded = Recorded::default();
+    let created: Rc<RefCell<Option<Transition<bool>>>> = Rc::default();
+    let (given, made, config) = (recorded.clone(), created.clone(), Rc::new(config));
+    let ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let (recorded, made, config) = (given.clone(), made.clone(), config.clone());
+        SharedTransitionLayout!(move |scope: SharedTransitionScope| {
+            let transition = update_transition(target.get(), None);
+            *made.borrow_mut() = Some(transition.clone());
+            let config = config.clone();
+            let config: Rc<dyn SharedContentConfig> =
+                remember(move || Rc::new(config()) as Rc<dyn SharedContentConfig>);
+            let (recorded, scope) = (recorded.clone(), scope.clone());
+            transition.AnimatedContent(
+                Modifier,
+                |_| {
+                    fade_in_with(tween(2000), 0.0)
+                        .together_with(fade_out_with(tween(2000), 0.0))
+                        .using(None)
+                },
+                Alignment::TOP_START,
+                ContentKey::state(),
+                move |content: AnimatedContentScope, target_state: bool| {
+                    let (recorded, scope, config) =
+                        (recorded.clone(), scope.clone(), config.clone());
+                    Box!(modifier = Modifier.size(200.dp()), move |_| {
+                        let options =
+                            SharedOptions { bounds_transform: tween_of(160), ..Default::default() };
+                        if target_state {
+                            let state = scope.remember_shared_content_state("test");
+                            Box!(
+                                modifier = scope
+                                    .shared_element_with(&state, &content, options)
+                                    .then(recorded.noting(&scope, 0))
+                                    .size(20.dp())
+                            );
+                        } else {
+                            Box!(modifier = Modifier.size(200.dp()));
+                            if !removed.get() {
+                                let state = scope
+                                    .remember_shared_content_state_with("test", config.clone());
+                                Box!(
+                                    modifier = Modifier
+                                        .offset(20.dp(), 20.dp())
+                                        .then(scope.shared_element_with(&state, &content, options))
+                                        .then(recorded.noting(&scope, 1))
+                                        .size(180.dp())
+                                );
+                            }
+                        }
+                    });
+                },
+            );
+        });
+    });
+    (ui, created, recorded)
+}
+
+/// Goes `target` to `to` and advances until the first content's size moves off `from_width`,
+/// then three frames more.
+fn into_the_animation(
+    ui: &mut ComposeTestRule,
+    recorded: &Recorded,
+    target: &OwnedState<bool>,
+    to: bool,
+    at: usize,
+    from_width: i32,
+) {
+    ui.wait_for_idle();
+    ui.set_auto_advance(false);
+    target.set(to);
+    let sizes = recorded.sizes[at].clone();
+    frames_until(ui, || sizes.borrow().last().expect("placed").width != from_width);
+    for _ in 0..3 {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+    }
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, removeTargetWithoutExplicitAlternativeTarget
+/// The visible content removed mid-way with no alternative target: the animation ends, the
+/// other content back at its size and place.
+#[test]
+fn remove_target_without_explicit_alternative_target() {
+    let target = mutable_state_of(true);
+    let removed = mutable_state_of(false);
+    let (mut ui, created, recorded) = alternative_target(target.handle(), removed.handle(), || {
+        Alternative { enabled: None, keep: true, alternative: None }
+    });
+    into_the_animation(&mut ui, &recorded, &target, false, 0, 20);
+    mid_way(&recorded);
+    ui.wait_for_idle();
+    recorded.clear();
+    removed.set(true);
+    frames_until(&mut ui, || !created.borrow().as_ref().expect("composed").current_state());
+    assert!(recorded.sizes[0].borrow().iter().all(|it| *it == IntSize::new(20, 20)));
+    assert!(recorded.offsets[0].borrow().iter().all(|it| *it == Offset::ZERO));
+    assert!(recorded.sizes[1].borrow().is_empty());
+    assert!(recorded.offsets[1].borrow().is_empty());
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, disableIgnoreAnimationWithAlternativeTargetOnDisabledContent
+/// The content with an alternative target disabled (an animation running not kept) as the
+/// transition turns back: no animation, though the target has an alternative.
+#[test]
+fn disable_ignore_animation_with_alternative_target_on_disabled_content() {
+    let target = mutable_state_of(false);
+    let enable_target = mutable_state_of(true);
+    let removed = mutable_state_of(false);
+    let enabled = enable_target.handle();
+    let (mut ui, created, recorded) =
+        alternative_target(target.handle(), removed.handle(), move || Alternative {
+            enabled: Some(enabled),
+            keep: false,
+            alternative: Some(compose_ui::Rect::new(30.0, 40.0, 80.0, 100.0)),
+        });
+    into_the_animation(&mut ui, &recorded, &target, true, 1, 180);
+    mid_way(&recorded);
+    ui.wait_for_idle();
+    recorded.clear();
+    enable_target.set(false);
+    target.set(false);
+    frames_until(&mut ui, || {
+        let transition = created.borrow().clone().expect("composed");
+        !transition.target_state() && !transition.current_state()
+    });
+    unanimated(&recorded);
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testRemoveTargetWithAlternativeTargetSpecified
+/// The visible content removed mid-way with an alternative target: the other content animates
+/// on to it, at (30, 40), 50 × 60.
+#[test]
+fn remove_target_with_alternative_target_specified() {
+    let target = mutable_state_of(true);
+    let removed = mutable_state_of(false);
+    let (mut ui, created, recorded) =
+        alternative_target(target.handle(), removed.handle(), || Alternative {
+            enabled: None,
+            keep: true,
+            alternative: Some(compose_ui::Rect::new(30.0, 40.0, 80.0, 100.0)),
+        });
+    into_the_animation(&mut ui, &recorded, &target, false, 0, 20);
+    mid_way(&recorded);
+    ui.wait_for_idle();
+    recorded.clear();
+    removed.set(true);
+    frames_until(&mut ui, || !created.borrow().as_ref().expect("composed").current_state());
+    assert!(recorded.sizes[1].borrow().is_empty());
+    assert!(recorded.offsets[1].borrow().is_empty());
+    assert_eq!(recorded.sizes[0].borrow().last(), Some(&IntSize::new(50, 60)));
+    assert_eq!(recorded.offsets[0].borrow().last(), Some(&Offset::new(30.0, 40.0)));
+    assert!(distinct(&recorded.offsets[0].borrow()) > 2);
+    assert!(distinct(&recorded.sizes[0].borrow()) > 2);
+}
+
+/// How many distinct values `values` holds, as Kotlin's `distinct().size`.
+fn distinct<T: PartialEq>(values: &[T]) -> usize {
+    let mut seen: Vec<&T> = Vec::new();
+    for value in values {
+        if !seen.contains(&value) {
+            seen.push(value);
+        }
+    }
+    seen.len()
+}

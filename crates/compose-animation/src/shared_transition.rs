@@ -2181,6 +2181,9 @@ impl ApproachLayoutModifierNode for SharedBoundsNode {
     fn is_measurement_approach_in_progress(&mut self, _lookahead_size: IntSize) -> bool {
         let entry = self.shared.entry();
         let element = entry.element();
+        // Compose's lookahead placement, which handles the deferred request, comes before this
+        // pass's measurement; here placement ahead may come after it (D1335).
+        element.machine.process_pending_request();
         entry.is_enabled() && element.found_match() && element.scope().is_transition_active.get()
     }
 
