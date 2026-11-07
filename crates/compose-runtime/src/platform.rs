@@ -25,8 +25,8 @@ pub use crate::recomposer::{
 pub use crate::remember::remember_across_reuse;
 pub use crate::snapshots::Turn;
 pub use crate::state::{
-    live_state_count, snapshot_paths_are_plain, state_observed_read_count, state_reader_capacity,
-    state_reader_count, state_records,
+    live_state_count, preexisting_state_of, snapshot_paths_are_plain, state_observed_read_count,
+    state_reader_capacity, state_reader_count, state_records,
 };
 
 /// The number of composition contexts on this thread. For tests.

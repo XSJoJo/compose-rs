@@ -969,8 +969,9 @@ fn a_drawing_drawing_a_layer_then_recording_it_draws_again_showing_it() {
     assert!(take_log().is_empty(), "idle");
 }
 
-/// A drawing told of a change gives its place among a layer's readers to the next new one: a
-/// layer drawn by a new node each step, changed between them, keeps two (D1337).
+/// A drawing gone leaves a layer's readers when the next new one comes (D1339; told readers gave
+/// it their place in D1337): a layer drawn by a new node each step, changed between them, keeps
+/// two at most.
 #[test]
 fn told_readers_make_room_for_new_ones() {
     let layer = GraphicsLayer::new();
@@ -1148,4 +1149,76 @@ fn a_drawing_drawing_a_layer_before_and_after_moving_it_hears_of_a_later_move() 
     take_log();
     host.frame();
     assert!(take_log().is_empty(), "idle");
+}
+
+/// A drawing that stops drawing a layer (a state it reads) is no reader of it once a new drawing
+/// draws the layer: its run isn't current, and the new reader drops it (D1339).
+#[test]
+fn a_drawing_that_stopped_drawing_a_layer_is_dropped_by_the_next_reader() {
+    let layer = GraphicsLayer::new();
+    let draws = mutable_state_of(true);
+    let second = mutable_state_of(false);
+    let (d, shown) = (draws.handle(), second.handle());
+    let (first_layer, second_layer) = (layer.clone(), layer.clone());
+    let mut host = host(move || {
+        let (first_layer, second_layer) = (first_layer.clone(), second_layer.clone());
+        Column!({
+            let (first_layer, second_layer) = (first_layer.clone(), second_layer.clone());
+            Leaf(
+                Modifier
+                    .repaint_boundary()
+                    .draw_behind(move |scope| {
+                        if d.get() {
+                            scope.draw_layer(&first_layer);
+                        }
+                    })
+                    .size(10.dp()),
+            );
+            if shown.get() {
+                Leaf(
+                    Modifier
+                        .repaint_boundary()
+                        .draw_behind(move |scope| scope.draw_layer(&second_layer))
+                        .size(10.dp()),
+                );
+            }
+        });
+    });
+    host.frame();
+    assert_eq!(layer.reader_count(), 1);
+    draws.set(false);
+    host.frame();
+    assert_eq!(layer.reader_count(), 1, "kept until a new reader comes");
+    second.set(true);
+    host.frame();
+    assert_eq!(layer.reader_count(), 1, "the first drawing's reader dropped");
+    // The one left is told of a change.
+    layer.set_alpha(0.5);
+    host.frame();
+    assert!(host.display_list().dump().contains("0.5"), "{}", host.display_list().dump());
+}
+
+/// A layer drawn where the drawing's reads aren't observed (`without_read_observation`) is read
+/// as outside any drawing: one reader for those reads and a bitmap's, none for the drawing,
+/// whose read of its version wouldn't be recorded (D1339).
+#[test]
+fn a_layer_drawn_where_reads_are_not_observed_has_no_reader_for_the_drawing() {
+    let layer = GraphicsLayer::new();
+    let drawn = layer.clone();
+    let mut host = host(move || {
+        let drawn = drawn.clone();
+        Leaf(
+            Modifier
+                .repaint_boundary()
+                .draw_behind(move |scope| {
+                    compose_runtime::snapshots::Snapshot::without_read_observation(|| {
+                        scope.draw_layer(&drawn)
+                    })
+                })
+                .size(10.dp()),
+        );
+    });
+    host.frame();
+    let _ = layer.to_image_bitmap();
+    assert_eq!(layer.reader_count(), 1, "the drawing's and the bitmap's reads are no drawing's");
 }

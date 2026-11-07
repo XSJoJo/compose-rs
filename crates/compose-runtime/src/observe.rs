@@ -14,7 +14,7 @@ use crate::runtime::{try_with_runtime, with_runtime};
 pub(crate) struct ObserverEntry {
     serial: u64,
     notify: Rc<dyn Fn()>,
-    /// The current observation of each key: reads from older ones are stale.
+    /// The current observation (run) of each key: reads from older ones are stale.
     // FNV, not SipHash: looked up for each observation (a node's measure, a node's draw), by
     // keys no one chooses.
     epochs: HashMap<u64, u32, BuildHasherDefault<KeyHasher>>,
@@ -50,11 +50,16 @@ pub(crate) struct ObservedRead {
 pub(crate) struct Observers {
     entries: Vec<Option<ObserverEntry>>,
     serial: u64,
+    /// The last observation run's number: each run of any key of any observer on the thread
+    /// takes the next, so a run's number isn't taken again by a later run of its key, even one
+    /// after the key was forgotten or by another observer in its place, until they wrap (after
+    /// 2³² runs: a stale read taken for a current one then is read again for nothing, D1339).
+    last_run: u32,
 }
 
 impl Observers {
     pub(crate) const fn new() -> Observers {
-        Observers { entries: Vec::new(), serial: 0 }
+        Observers { entries: Vec::new(), serial: 0, last_run: 0 }
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -173,16 +178,22 @@ impl ReadObserver {
                 observing.depth = runtime.snapshots.depth();
                 return previous;
             }
-            let epoch = match runtime.observers.entry(self.index, self.serial) {
-                Some(entry) => {
-                    let epoch = entry.epochs.entry(key).or_insert(0);
-                    if !adding {
-                        *epoch = epoch.wrapping_add(1);
+            let observers = &mut runtime.observers;
+            let next = observers.last_run.wrapping_add(1);
+            let epoch = match observers.entry(self.index, self.serial) {
+                Some(entry) => match entry.epochs.entry(key) {
+                    std::collections::hash_map::Entry::Occupied(run) if adding => *run.get(),
+                    std::collections::hash_map::Entry::Occupied(mut run) => {
+                        run.insert(next);
+                        next
                     }
-                    *epoch
-                }
+                    std::collections::hash_map::Entry::Vacant(run) => *run.insert(next),
+                },
                 None => return runtime.observing,
             };
+            if epoch == next {
+                observers.last_run = next;
+            }
             let depth = runtime.snapshots.depth();
             runtime.observing.replace(Observing {
                 observer: self.index,
@@ -257,7 +268,8 @@ impl ReadObserver {
 
 /// The observation a read now would register under, outside composition: who reads (its
 /// observer and key) and which run of it. Each [`ReadObserver::observe`] under a key starts a
-/// new run; one nested in an observation of the same key, or `observe_adding`, continues it.
+/// new run, whose number no other run on the thread has (until they wrap, after 2³² runs); one
+/// nested in an observation of the same key, or `observe_adding`, continues it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ObservationRun {
     observer: u32,
@@ -270,13 +282,24 @@ impl ObservationRun {
     pub fn same_reader(&self, other: &ObservationRun) -> bool {
         self.observer == other.observer && self.key == other.key
     }
+
+    /// Whether it's its reader's latest run (in progress or not), so what it read is still
+    /// observed: not once the key ran again, was forgotten ([`ReadObserver::forget`], its node
+    /// gone) or its observer dropped (D1339).
+    pub fn is_current(&self) -> bool {
+        let read = ObservedRead { observer: self.observer, key: self.key, epoch: self.run };
+        try_with_runtime(|runtime| runtime.observers.is_current(&read)).unwrap_or(false)
+    }
 }
 
 /// The observation running now, if any ([`ObservationRun`]): what a platform object read by
-/// several observed drawings tells them apart by (a graphics layer, D1337).
+/// several observed drawings tells them apart by (a graphics layer, D1337). `None` inside
+/// [`Snapshot::without_read_observation`](crate::snapshots::Snapshot::without_read_observation)
+/// in it, where reads aren't recorded under it (D1339).
 pub fn current_observation() -> Option<ObservationRun> {
     try_with_runtime(|runtime| {
-        runtime.observing.map(|observing| ObservationRun {
+        let observing = runtime.observing?;
+        runtime.snapshots.observes_at(observing.depth).then_some(ObservationRun {
             observer: observing.observer,
             key: observing.key,
             run: observing.epoch,

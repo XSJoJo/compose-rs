@@ -30,8 +30,6 @@ fn setting(name: &'static str, change: impl Fn() + 'static) -> Modifier {
 /// Told readers make room for new ones (`told_readers_make_room_for_new_ones`), but a layer that
 /// doesn't change tells no one. In Compose a drawing keeps nothing in the layer.
 #[test]
-#[ignore = "review: a GraphicsLayer that doesn't change keeps a reader (and a state) for every \
-            drawing that ever drew it, gone or not: unbounded in a long-running app"]
 fn a_layer_drawn_by_drawings_coming_and_going_keeps_few_readers() {
     let layer = GraphicsLayer::new();
     let step = mutable_state_of(0u32);
@@ -60,8 +58,6 @@ fn a_layer_drawn_by_drawings_coming_and_going_keeps_few_readers() {
 /// drawing animates the alpha: a change to what a reader set itself tells it nothing, so it's
 /// never told and its place is never taken.
 #[test]
-#[ignore = "review: a reader that set what changes is never told, so a drawing gone that set a \
-            layer's alpha keeps its place however often the alpha changes"]
 fn drawings_gone_that_set_what_changes_leave_the_readers() {
     let layer = GraphicsLayer::new();
     let step = mutable_state_of(0u32);
@@ -294,8 +290,6 @@ fn a_layer_recorded_in_one_window_is_drawn_again_in_another() {
 /// sent in the middle of the draw, its apply observers called there. Compose's `drawLayer`
 /// takes no snapshot.
 #[test]
-#[ignore = "review: a GraphicsLayer's first drawing by a drawing sends the global snapshot's \
-            changes (apply observers run) in the middle of the draw pass"]
 fn a_first_drawing_of_a_layer_sends_nothing_mid_draw() {
     let layer = GraphicsLayer::new();
     let written = mutable_state_of(0u32);

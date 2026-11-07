@@ -23,7 +23,7 @@ pub(crate) use global::{
 pub(crate) use global::{
     begin_calculation, birth, calculation_depth, calculation_reads, end_calculation, in_pass,
     next_record, note_extra_record, notify_read_if_observed, observe_calculation, plain_reads,
-    return_calculation_reads, valid_mark, valid_mark_and_plain, view,
+    preexisting_birth, return_calculation_reads, valid_mark, valid_mark_and_plain, view,
 };
 pub(crate) use id_set::IdSet;
 pub use list::{

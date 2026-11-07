@@ -249,8 +249,7 @@ struct Reader {
     /// found. (Running again, the drawing starts from what the pass ends with, and its own
     /// changes after drawing the layer are what they were.)
     seen: Option<Box<Seen>>,
-    /// Its version was bumped since it drew the layer: nothing more to tell it, and the next
-    /// new reader takes its place (the send of the bump may then tell that one too, once).
+    /// Its version was bumped since it drew the layer: nothing more to tell it.
     told: bool,
 }
 
@@ -290,8 +289,9 @@ struct LayerCell {
     content: Cell<u64>,
     /// What it was when the current draw pass first changed it.
     pass_start: RefCell<Option<PassStart>>,
-    /// What drew it and isn't told yet (and told ones, whose places new readers take), each
-    /// with a version of its own (D1337).
+    /// What drew it, each with a version of its own (D1337): the drawings whose latest run
+    /// drew it, and those gone (or run again without drawing it) since a new one last came,
+    /// which drops them (D1339).
     readers: RefCell<Vec<Reader>>,
     /// The observation run that last set something on it (`None`: code outside one), and
     /// what it set.
@@ -332,19 +332,19 @@ impl LayerCell {
         let mut readers = self.readers.borrow_mut();
         let index = match readers.iter().position(|reader| same_reader(reader.who, run)) {
             Some(index) => index,
-            None => match readers.iter().position(|reader| reader.told) {
-                Some(index) => index,
-                None => {
-                    readers.push(Reader {
-                        who: run,
-                        version: new_version(),
-                        own,
-                        seen: None,
-                        told: true,
-                    });
-                    readers.len() - 1
-                }
-            },
+            None => {
+                // A new reader: those whose observation isn't current any more (their node
+                // gone, or drawn again without drawing it) read it no more, told or not (D1339).
+                readers.retain(|reader| reader.who.is_none_or(|who| who.is_current()));
+                readers.push(Reader {
+                    who: run,
+                    version: new_version(),
+                    own,
+                    seen: None,
+                    told: true,
+                });
+                readers.len() - 1
+            }
         };
         let reader = &mut readers[index];
         if reader.told || reader.who != run {
@@ -395,17 +395,15 @@ impl LayerCell {
     }
 }
 
-/// A reader's version, made in a snapshot so that its first write is a change its readers hear:
-/// one made in the global snapshot (in a draw, where readers are met) isn't changed by a write
-/// there until that snapshot advances (as Compose's, which takes such a write for its
-/// initialization), so a reader met in a pass with nothing else written since wouldn't hear
-/// of its first change.
+/// A reader's version, counted as initialized so that its first write is a change its readers
+/// hear: one made in the global snapshot (in a draw, where readers are met) isn't changed by a
+/// write there until that snapshot advances (as Compose's, which takes such a write for its
+/// initialization), so a reader met in a pass with nothing else written since wouldn't hear of
+/// its first change. Made without a snapshot, whose taking would send the global snapshot's
+/// changes in the middle of the draw (D1339).
 #[cold]
 fn new_version() -> compose_runtime::OwnedState<u64> {
-    let snapshot = compose_runtime::snapshots::Snapshot::take_snapshot(None);
-    let version = snapshot.enter(|| compose_runtime::mutable_state_of(0));
-    snapshot.dispose();
-    version
+    compose_runtime::platform::preexisting_state_of(0)
 }
 
 /// Tells what read `versions`.
@@ -677,8 +675,7 @@ impl GraphicsLayer {
         self.0.released.set(true);
     }
 
-    /// How many readers it keeps (told ones included, whose places new readers take): for
-    /// tests.
+    /// How many readers it keeps (gone ones included until a new one comes): for tests.
     #[doc(hidden)]
     pub fn reader_count(&self) -> usize {
         self.0.readers.borrow().len()

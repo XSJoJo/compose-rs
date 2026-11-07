@@ -1380,6 +1380,16 @@ pub(crate) fn birth() -> (SnapshotId, SnapshotId, u32) {
     })
 }
 
+/// The birth of a state counted as initialized (`platform::preexisting_state_of`): a record
+/// every snapshot can read, of no snapshot's, so a write in any (the global one's included) is a
+/// change; nothing is made that a snapshot must advance for.
+pub(crate) fn preexisting_birth() -> (SnapshotId, SnapshotId, u32) {
+    with_runtime(|runtime| {
+        let version = runtime.snapshots.next_version();
+        (super::records::PREEXISTING, super::records::PREEXISTING, version)
+    })
+}
+
 /// A derived state's calculation starts: its reads are recorded (`record_dependency`).
 pub(crate) fn begin_calculation() {
     with_runtime(|runtime| {

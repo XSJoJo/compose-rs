@@ -30,6 +30,7 @@ mod jvm_composition;
 mod mock;
 mod model;
 mod movable_content;
+mod observation_runs;
 mod pausable;
 mod produce_state;
 mod recomposer;
