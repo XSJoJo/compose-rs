@@ -352,22 +352,24 @@ fn dragOutsideSelectsAndScrolls_withLongTextInNonLazyContainer_scrollableOutside
     }
 }
 
-// Not one of Compose's (its manager lets go when it's forgotten, `onForgotten`): a container
-// leaving the composition with a selection lets go of its texts' pins.
-#[test]
-fn a_container_leaving_lets_go_of_its_pins() {
-    let shown = Box::leak(Box::new(compose_runtime::mutable_state_of(true))).handle();
-    let pinned: Rc<RefCell<BTreeSet<usize>>> = Rc::default();
-    let tracked = pinned.clone();
-    let mut ui = rule(move || {
+type Pinned = Rc<RefCell<BTreeSet<usize>>>;
+
+/// A container, unless `shown` says no, over a lazy list of `LINES` items whose pins `pinned`
+/// tracks, each item's content `item`.
+fn tracked_list(
+    shown: compose_runtime::MutableState<bool>,
+    pinned: Pinned,
+    item: impl Fn(usize) + Clone + 'static,
+) -> ComposeTestRule {
+    rule(move || {
         if !shown.get() {
             return;
         }
-        let tracked = tracked.clone();
+        let (tracked, item) = (pinned.clone(), item.clone());
         SelectionContainer!({
-            let tracked = tracked.clone();
+            let (tracked, item) = (tracked.clone(), item.clone());
             LazyColumn!(modifier = Modifier.size(200.dp()), move |scope: LazyListScope| {
-                let tracked = tracked.clone();
+                let (tracked, item) = (tracked.clone(), item.clone());
                 scope.items(LINES, move |index| {
                     let delegate = compose_ui::LOCAL_PINNABLE_CONTAINER
                         .current()
@@ -375,23 +377,110 @@ fn a_container_leaving_lets_go_of_its_pins() {
                     let pinned = tracked.clone();
                     let container: Rc<dyn PinnableContainer> =
                         Rc::new(Tracking { delegate, index, pinned });
+                    let item = item.clone();
                     compose_runtime::CompositionLocalProvider(
                         compose_ui::LOCAL_PINNABLE_CONTAINER.provides(Some(container)),
-                        move || {
-                            BasicText!(
-                                format!("Line{index}"),
-                                modifier = Modifier.test_tag(format!("text{index}")),
-                            );
-                        },
+                        move || item(index),
                     );
                 });
             });
         });
-    });
+    })
+}
+
+fn line(index: usize) {
+    BasicText!(format!("Line{index}"), modifier = Modifier.test_tag(format!("text{index}")));
+}
+
+fn state_of<T: Clone + PartialEq + 'static>(value: T) -> compose_runtime::MutableState<T> {
+    Box::leak(Box::new(compose_runtime::mutable_state_of(value))).handle()
+}
+
+// Not one of Compose's (its manager lets go when it's forgotten, `onForgotten`): a container
+// leaving the composition with a selection lets go of its texts' pins.
+#[test]
+fn a_container_leaving_lets_go_of_its_pins() {
+    let shown = state_of(true);
+    let pinned: Pinned = Rc::default();
+    let mut ui = tracked_list(shown, pinned.clone(), line);
     start(&mut ui, Drag::LongPress);
     finish(&mut ui, Drag::LongPress);
     assert_eq!(*pinned.borrow(), BTreeSet::from([0]));
     shown.set(false);
     ui.wait_for_idle();
     assert!(pinned.borrow().is_empty(), "{:?}", pinned.borrow());
+}
+
+// Compose: compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/text/selection/SelectionManager.kt, afterSelectableUnsubscribe (a text leaving lets go of its pin at once)
+#[test]
+fn a_selected_text_leaving_lets_go_of_its_pin() {
+    let text_shown = state_of(true);
+    let pinned: Pinned = Rc::default();
+    let mut ui = tracked_list(state_of(true), pinned.clone(), move |index| {
+        Box!(
+            modifier = Modifier
+                .height_in(14.dp(), compose_ui::Dp::UNSPECIFIED)
+                .test_tag(format!("item{index}")),
+            {
+                if index != 0 || text_shown.get() {
+                    line(index);
+                }
+            }
+        );
+    });
+    start(&mut ui, Drag::LongPress);
+    finish(&mut ui, Drag::LongPress);
+    assert_eq!(*pinned.borrow(), BTreeSet::from([0]));
+    // The item stays, its text goes: nothing else of the selection changes.
+    text_shown.set(false);
+    ui.wait_for_idle();
+    ui.on_node_with_tag("item0").assert_exists();
+    assert!(pinned.borrow().is_empty(), "{:?}", pinned.borrow());
+}
+
+// Compose: compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/text/selection/SelectionManager.kt, afterSelectableUnsubscribe (a text reused for other content unsubscribes as it's forgotten, its node keeping no pin)
+#[test]
+fn a_selected_text_reused_lets_go_of_its_pin() {
+    let key = state_of(0);
+    let pinned: Pinned = Rc::default();
+    let mut ui = tracked_list(state_of(true), pinned.clone(), move |index| {
+        let key = if index == 0 { key.get() } else { 0 };
+        compose_runtime::ReusableContent(key, || line(index));
+    });
+    start(&mut ui, Drag::LongPress);
+    finish(&mut ui, Drag::LongPress);
+    assert_eq!(*pinned.borrow(), BTreeSet::from([0]));
+    let node = ui.on_node_with_tag("text0").fetch_semantics_snapshot().id;
+    key.set(1);
+    ui.wait_for_idle();
+    // The same node, reused for the new content: its pin went with what it held.
+    assert_eq!(ui.on_node_with_tag("text0").fetch_semantics_snapshot().id, node);
+    assert!(pinned.borrow().is_empty(), "{:?}", pinned.borrow());
+    // Selected again, it pins its item again.
+    start(&mut ui, Drag::LongPress);
+    finish(&mut ui, Drag::LongPress);
+    assert_eq!(*pinned.borrow(), BTreeSet::from([0]));
+}
+
+// Compose: compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/text/selection/SelectionManager.kt, updatePinnedSelectables (the texts no longer selected let go)
+#[test]
+fn a_selection_shrinking_lets_go_of_the_texts_left_out() {
+    let pinned: Pinned = Rc::default();
+    let mut ui = tracked_list(state_of(true), pinned.clone(), line);
+    start(&mut ui, Drag::LongPress);
+    let center = |ui: &mut ComposeTestRule, tag: &str| {
+        let text = bounds(ui, tag);
+        let container = bounds(ui, "text0");
+        Offset::new(text.center().x - container.left, text.center().y - container.top)
+    };
+    let third = center(&mut ui, "text2");
+    ui.on_node_with_tag("text0").perform_touch_input(|touch| touch.move_to(third));
+    ui.wait_for_idle();
+    assert_eq!(*pinned.borrow(), BTreeSet::from([0, 1, 2]));
+    let first = center(&mut ui, "text0");
+    ui.on_node_with_tag("text0").perform_touch_input(|touch| touch.move_to(first));
+    ui.wait_for_idle();
+    assert_eq!(*pinned.borrow(), BTreeSet::from([0]));
+    finish(&mut ui, Drag::LongPress);
+    assert_eq!(*pinned.borrow(), BTreeSet::from([0]));
 }

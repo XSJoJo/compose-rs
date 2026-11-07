@@ -362,6 +362,9 @@ impl UiTree {
 
     /// Marks `node`'s entries detached, as `markAsDetached`.
     fn mark_detached(&mut self, node: NodeId) {
+        if !self.selection_pins.is_empty() {
+            self.selectable_leaving(node);
+        }
         self.reset_alignment_lines(node);
         self.forget_semantics(node);
         let count = self.get(node).map_or(0, |value| value.chain.len());

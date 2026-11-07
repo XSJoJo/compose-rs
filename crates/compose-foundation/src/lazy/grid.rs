@@ -2427,7 +2427,7 @@ impl ItemsMeasurePolicy for LazyGridLayout {
         }
         // A focused item (pinned) and those moving out of view with `animate_item`, placed out of
         // view.
-        let apart = state.items_apart(&info.items);
+        let (apart, _) = state.items_apart(&info.items);
         let mut pinned: Vec<(Placeable, i32, i32)> = Vec::new();
         for &item in &apart {
             if (item < composed_start || item >= composed_end)

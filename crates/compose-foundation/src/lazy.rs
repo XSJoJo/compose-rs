@@ -339,9 +339,10 @@ impl LazyListInner {
         !same
     }
 
-    /// The items composed apart from the measured ones, by key, wherever they are now: the
-    /// focused item (pinned), and those moving out of view with `animate_item`.
-    fn items_apart(&self, items: &Items) -> Vec<usize> {
+    /// The items composed apart from the measured ones, by key, wherever they are now: the pinned
+    /// ones (a focused item, a selected text's), in their order whatever order they were pinned
+    /// in, then those moving out of view with `animate_item`, and how many are pinned.
+    fn items_apart(&self, items: &Items) -> (Vec<usize>, usize) {
         let mut apart = Vec::new();
         for pinned in self.pinned.get() {
             if let Some(index) = items.index_of(pinned, self.pinned_near.get()) {
@@ -349,6 +350,8 @@ impl LazyListInner {
                 apart.push(index);
             }
         }
+        apart.sort_unstable();
+        let pinned = apart.len();
         if self.item_animator.has_kept() {
             for &(kept, near) in self.item_animator.kept().iter() {
                 if let Some(index) = items.index_of(kept, near)
@@ -357,8 +360,9 @@ impl LazyListInner {
                     apart.push(index);
                 }
             }
+            apart[pinned..].sort_unstable();
         }
-        apart
+        (apart, pinned)
     }
 
     /// At a measurement's end, what stays composed with what it measured: of the items composed
@@ -2454,17 +2458,11 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
         let main_of =
             move |placeable: &Placeable| if vertical { placeable.height } else { placeable.width };
         state.prefetch.layout_started();
-        // Set where only items composed already are placed (beyond those wanted, up to a pinned
-        // one): the others between aren't composed for it.
-        let only_composed = Cell::new(false);
         // An item is composed as the measurement reaches it (a request's paused composition
         // completed and applied then), as Compose's `measuredItemProvider.getAndMeasure`.
         let mut measure_child = |index: usize, sizes: &mut Sizes| -> Option<Placeable> {
             if let Some(placeable) = placeables.get(&index) {
                 return Some(*placeable);
-            }
-            if only_composed.get() && !children.contains(&index) && !composer.has(index) {
-                return None;
             }
             let measurable = composer.measurable(scope, index)?;
             let placeable = scope.measure(measurable, item_constraints);
@@ -3010,28 +3008,16 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
         // The items wanted are placed, composed as they're measured: those in view, and those a
         // focus search asked for beyond them (clipped away), so focus can move to them; those
         // composed beyond the ones wanted (prefetched, kept behind) aren't, as Compose's: nothing
-        // draws or hits them until they're wanted. A focused one among those is placed, next to the others: focus
-        // scrolls it in.
-        let (mut placed_start, mut placed_end) = (wanted_start, wanted_end);
+        // draws or hits them until they're wanted. The pinned ones out of those are placed beside
+        // them, below.
+        let (placed_start, placed_end) = (wanted_start, wanted_end);
         // What was composed and what stays (a prefetched item next to those wanted).
         let (composed_start, composed_end) =
             (composed_start.min(composed.0), composed_end.max(composed.1));
-        let mut pinned_items: Vec<usize> = Vec::new();
-        for key in state.pinned.get() {
-            if let Some(pinned) = info.items.index_of(key, state.pinned_near.get()) {
-                pinned_items.push(pinned);
-                if (placed_end..composed_end).contains(&pinned) {
-                    placed_end = pinned + 1;
-                } else if (composed_start..placed_start).contains(&pinned) {
-                    placed_start = pinned;
-                }
-            }
-        }
         let mut beyond: Vec<(Placeable, i32)> = Vec::new();
         let mut main =
             placed.last().map_or(before, |(placeable, main)| main + main_of(placeable) + spacing);
         for next in end_index..placed_end.min(count) {
-            only_composed.set(next >= wanted_end && !pinned_items.contains(&next));
             if let Some(placeable) = measure(next, &mut sizes) {
                 beyond.push((placeable, main));
                 main += (main_of(&placeable) + spacing).max(0);
@@ -3039,18 +3025,18 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
         }
         // How far the list can scroll each way: known when the composed items reach its ends.
         let extent_end = main - spacing + after;
+        // Where the pinned items after those laid out begin, as Compose's `extraItemsAfter`.
+        let after_laid_out = main;
         // Those before, placed first, in the items' order: the children are then placed in
         // their order (but a sticky header), which the tree draws and hits without sorting them.
         let mut ahead: Vec<(Placeable, i32)> = Vec::new();
         let mut main = placed.first().map_or(before, |(_, main)| *main);
         for previous in (placed_start.min(lead)..lead).rev() {
-            only_composed.set(previous < wanted_start && !pinned_items.contains(&previous));
             if let Some(placeable) = measure(previous, &mut sizes) {
                 main -= (main_of(&placeable) + spacing).max(0);
                 ahead.push((placeable, main));
             }
         }
-        only_composed.set(false);
         ahead.reverse();
         let extent_start = main - before;
         let pending = state.pending.get();
@@ -3164,27 +3150,30 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
         }
         // The focused item and those moving out of view with `animate_item`, by key, wherever
         // they are: composed and placed out of the way.
-        let mut apart = state.items_apart(&info.items);
-        apart.sort_unstable();
-        // The pinned ones before, in their order, placed before the others and side by side up
-        // to the first, as Compose's `extraItemsBefore` (a selection across them reads them in
-        // order, D2023).
+        let (apart, pinned) = state.items_apart(&info.items);
+        // The pinned ones out of those laid out, in their order, placed side by side before the
+        // first and after the last, as Compose's `extraItemsBefore` and `extraItemsAfter` (a
+        // selection across them reads them in order, D2023); the others composed apart (moving
+        // away with `animate_item`) out of the way.
         let mut pinned_before: Vec<(Placeable, i32)> = Vec::new();
-        for &pinned in &apart {
-            if (pinned < composed_start || pinned >= composed_end)
-                && Some(pinned) != header
-                && !prefetch.detached.borrow().contains(&pinned)
-                && let Some(placeable) = measure(pinned, &mut sizes)
+        let mut pinned_after: Vec<(Placeable, i32)> = Vec::new();
+        let mut moving_away: Vec<(Placeable, i32)> = Vec::new();
+        for (position, &item) in apart.iter().enumerate() {
+            let is_pinned = position < pinned;
+            if (is_pinned || item < composed_start || item >= composed_end)
+                && Some(item) != header
+                && !prefetch.detached.borrow().contains(&item)
+                && let Some(placeable) = measure(item, &mut sizes)
                 // Not one the window's room already placed: a child is placed once (D1210).
                 && !ahead.iter().chain(&placed).chain(&beyond).any(|(other, _)| *other == placeable)
             {
-                if pinned < index && pinned_items.contains(&pinned) {
-                    pinned_before.push((placeable, 0));
+                if is_pinned {
+                    let side = if item < lead { &mut pinned_before } else { &mut pinned_after };
+                    side.push((placeable, 0));
                     continue;
                 }
-                let at =
-                    if pinned < index { -main_of(&placeable) - main_max } else { main_max * 2 };
-                beyond.push((placeable, at));
+                let at = if item < index { -main_of(&placeable) - main_max } else { main_max * 2 };
+                moving_away.push((placeable, at));
             }
         }
         if !pinned_before.is_empty() {
@@ -3197,6 +3186,13 @@ impl slots::ItemsMeasurePolicy for LazyListLayout {
             pinned_before.append(&mut ahead);
             ahead = pinned_before;
         }
+        let mut at = after_laid_out;
+        for (placeable, main) in &mut pinned_after {
+            *main = at;
+            at += (main_of(placeable) + spacing).max(0);
+        }
+        beyond.append(&mut pinned_after);
+        beyond.append(&mut moving_away);
         // Placed along the axis, aligned across it.
         let cross_size = placed
             .iter()

@@ -30,10 +30,10 @@ By area: `foundation-layout` 29 files (850 tests); lazy lists, grids and `LazyLa
 | Status | Files | `@Test` methods |
 |---|---|---|
 | `covered` | 13 | 132 |
-| `ported` | 70 | 948 |
+| `ported` | 71 | 967 |
 | `port` | 2 | 11 |
 | `partial` | 42 | 1,133 |
-| `feature:<name>` | 47 | 757 |
+| `feature:<name>` | 46 | 738 |
 | `n/a` | 11 | 148 |
 | **Total** | **185** | **3,129** |
 
@@ -110,7 +110,7 @@ The table's suite references (`lazy_api.rs`, `fling.rs`, …) are files in `crat
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/list/LazyListLayoutInfoTest.kt | 16 | `layoutInfo`: visible items, viewport offsets, padding, reverse, orientation, content type, observability | ported (`lazy_layout_info.rs`: 13 tests, all 16 in the four configurations; `snapshotFlow` replaced by a composable reading the info) |
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/list/LazyListMovableContentTest.kt | 2 | A list in `movableContentOf` keeps its position when moved | feature:movable-content (runtime) |
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/list/LazyListNestedPrefetchingTest.kt | 6 | Nested lists' items prefetched with the parent's, cancellation, constraints, automatic count | ported (`lazy_nested_prefetch.rs` for 4, the automatic count starting at 2 as no strategy of your own can ask 1; `overridingNestedPrefetchCountIsRespected` and `nestedPrefetchIsMeasuredWithProvidedConstraints` need a strategy of your own: n/a at the tip's window. Scrolled into the window, as it asks later than the one-item strategy) |
-| compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/list/LazyListPinnableContainerTest.kt | 19 | `LocalPinnableContainer` pinning keeps items composed and placed | feature:pinnable (compose-rs pins the focused item internally: `review_lazy2.rs::a_focused_item_stays_pinned…`) |
+| compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/list/LazyListPinnableContainerTest.kt | 19 | `LocalPinnableContainer` pinning keeps items composed and placed | ported (`lazy_list_pins.rs`: 18, each in and out of a `LookaheadScope`, the pinned items out of those laid out placed beside them as Compose's `extraItemsBefore` and `extraItemsAfter`, D2024; `focusedAndroidViewItemIsComposedAndPlacedWhenScrolledOut` is n/a, `AndroidView`) |
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/list/LazyListPrefetchPrecedenceTest.kt | 4 | The default is the cache window; the flag-off fallback; an explicit window or strategy wins | ported (`lazy_cache_window.rs`: 2; the other 2 are n/a, the fallback flag and the deprecated strategy not being ported, D892) |
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/list/LazyListPrefetchStrategyTest.kt | 7 | Callbacks of a custom `LazyListPrefetchStrategy` | n/a: `LazyListPrefetchStrategy` is `@Deprecated` at tip |
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/list/LazyListPrefetcherTest.kt | 13 | The one-item-ahead prefetch: forward/backward, twice, reverse, padding, sticky header, cancellation | covered (`prefetch_parity.rs`, `prefetch.rs`, at the default window now. At tip this file pins the deprecated strategy, and the cache-window rows supersede it: see Tip differences) |
@@ -376,7 +376,7 @@ From `compose/foundation/foundation-layout/api/current.txt` and `compose/foundat
 - **grid-parity:** done, `animate_item` with it (D1472), D1451; `overscrollEffect` D1464.
 - **cache-window:** done for lists, grids (D892) and staggered grids (D1469).
 - **lazy-semantics:** `CollectionInfo`, `ScrollToIndex` and `scrollByOffset` are done on lists, grids and pagers (D1468), a traversal group too. Left: `CollectionItemInfo` and `IndexForKey`, for `performScrollToKey`.
-- **pinnable:** (Started, D1282: `LOCAL_PINNABLE_CONTAINER`, `PinnableContainer` and `PinnedHandle` in ui, lazy items pinned one at a time by what's focusable; `LazyLayoutPinnableItem`, `LazyLayoutPinnedItemList` and `PinnedItem` public, D1325, the lists keeping their own `ItemPin` for now; the rest of this waits.) `LocalPinnableContainer`/`PinnableContainer` (ui) honoured by lazy items.
+- **pinnable:** (Started, D1282: `LOCAL_PINNABLE_CONTAINER`, `PinnableContainer` and `PinnedHandle` in ui, lazy items pinned one at a time by what's focusable; `LazyLayoutPinnableItem`, `LazyLayoutPinnedItemList` and `PinnedItem` public, D1325, the lists keeping their own `ItemPin` for now; lists place their pinned items beside those laid out, as Compose's, and `LazyListPinnableContainerTest` is ported, D2024; the grids' files wait.) `LocalPinnableContainer`/`PinnableContainer` (ui) honoured by lazy items.
 - **beyond-bounds-api:** ui's `BeyondBoundsLayout` (`ModifierLocalBeyondBoundsLayout`, `layout(direction) {}`) answered by lazy layouts. compose-rs answers focus searches only.
 - **animate-item:** `Modifier::animate_item` and `animate_item_with(scope, fade_in_spec, placement_spec, fade_out_spec)` (`AnimateItemModifier`), D1472: lists, grids and staggered grids (`LazyStaggeredGridItemScope`) done. In lookahead scopes all three (D1226). Left: their Compose lookahead tests, the rows' remaining tests.
 - **lazy-layout-public:**

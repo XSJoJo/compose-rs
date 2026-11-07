@@ -299,12 +299,9 @@ fn focus_skips_deactivated_content_and_comes_back_with_it() {
 }
 
 /// A selection in a `SelectionContainer` around a list, in an item's text: the item leaves and
-/// its text node is reused by another item of the same text. `TextNode::on_reset` clears the
-/// node's drawn selection but keeps its `version` (bumped only when the text changes), and the
-/// tree drops the selection only when the reset node is the container: the selection's points
-/// hold again, on the other item. Since D2023 the selected item is pinned, as Compose's
-/// (`updatePinnedSelectables`): it stays composed scrolled away, its node isn't reused, and the
-/// selection stays on it.
+/// its text node would be reused by another item of the same text. Since D2023 the selected item
+/// is pinned, as Compose's (`updatePinnedSelectables`): it stays composed scrolled away, its node
+/// isn't reused, and the selection stays on it. The reuse itself is the next test's.
 #[test]
 fn a_selection_does_not_move_to_the_item_reusing_the_selected_ones_text() {
     use compose_ui::{Offset, PointerEvent};
@@ -355,4 +352,37 @@ fn a_selection_does_not_move_to_the_item_reusing_the_selected_ones_text() {
     let nodes = anchors.map(|((start, _), (end, _))| (start, end));
     assert_eq!(nodes, Some((first, first)), "item 0's selection on another item");
     assert!(extended.is_some_and(|text| text.starts_with("world")));
+}
+
+/// The same reuse without a pinnable container around (a `ReusableContent` whose key changes):
+/// the text's node is reused for new content reading the same, and `TextNode::on_reset` bumps
+/// its `version`, so the selection doesn't move to it: the tree drops it.
+#[test]
+fn a_selection_does_not_move_to_new_content_reusing_the_selected_text() {
+    use compose_ui::{Offset, PointerEvent};
+    let key = mutable_state_of(0u32);
+    let read = key.handle();
+    let mut ui = ComposeTestRule::with_manual_clock(move || {
+        SelectionContainer!({
+            ReusableContent(read.get(), || {
+                BasicText!("Hello world", modifier = Modifier.test_tag("text"));
+            });
+        });
+    });
+    ui.wait_for_idle();
+    let bounds = ui.on_node_with_tag("text").fetch_semantics_snapshot().bounds;
+    let point = Offset::new(bounds.left + 7.0 * 8.0 + 1.0, (bounds.top + bounds.bottom) / 2.0);
+    for _ in 0..2 {
+        ui.host().send_pointer(PointerEvent::press(point));
+        ui.host().send_pointer(PointerEvent::release(point));
+        ui.advance_time_by(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(ui.host().with_tree(|tree| tree.selected_text()).as_deref(), Some("world"));
+    let node = ui.on_node_with_tag("text").fetch_semantics_snapshot().id;
+    key.set(1);
+    ui.advance_time_by(std::time::Duration::from_millis(16));
+    ui.wait_for_idle();
+    assert_eq!(ui.on_node_with_tag("text").fetch_semantics_snapshot().id, node, "not reused");
+    assert_eq!(ui.host().with_tree(|tree| tree.selected_text()), None);
+    assert_eq!(ui.host().with_tree(|tree| tree.selection_anchors()), None);
 }

@@ -698,6 +698,15 @@ impl UiTree {
         }
     }
 
+    /// `node` leaves (detached, deactivated or reset for reuse): its text lets go of its pin at
+    /// once, as Compose's `afterSelectableUnsubscribe`, so neither an item whose selected text
+    /// went nor another text its node is reused for keeps it.
+    pub(crate) fn selectable_leaving(&mut self, node: NodeId) {
+        if let Some(at) = self.selection_pins.iter().position(|(pinned, _)| *pinned == node) {
+            self.selection_pins.swap_remove(at).1.release();
+        }
+    }
+
     /// Lets go of every selected text's pin.
     pub(crate) fn release_selection_pins(&mut self) {
         for (_, handle) in self.selection_pins.drain(..) {
