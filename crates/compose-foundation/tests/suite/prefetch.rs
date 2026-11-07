@@ -978,7 +978,7 @@ fn a_scroll_frame_after_prefetch_asks_for_no_other_frame() {
 /// write asks for no other (D1688).
 #[test]
 fn with_autofill_a_scroll_frame_after_prefetch_asks_for_no_other_frame() {
-    compose_test::use_autofill(true);
+    let _autofill = compose_test::use_autofill(true);
     crate::legacy::lazy_lists();
     let state = LazyListState::new(0, 0);
     let given = *state;

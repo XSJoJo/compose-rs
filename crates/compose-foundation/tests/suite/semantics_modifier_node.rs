@@ -121,7 +121,7 @@ fn tagged(tag: &'static str) -> TestSemantics {
 #[test]
 fn semantics_are_computed_once_and_kept() {
     // Counting computations: no platform autofill computing them at each frame (D1688).
-    compose_test::use_autofill(false);
+    let _autofill = compose_test::use_autofill(false);
     let semantics = tagged("TestTag");
     let given = semantics.clone();
     let mut ui = unchecked(move || Box!(modifier = given.modifier()));
@@ -144,7 +144,7 @@ fn semantics_are_computed_once_and_kept() {
 #[test]
 fn invalidating_computes_again_at_the_next_read() {
     // Counting computations: no platform autofill computing them at each frame (D1688).
-    compose_test::use_autofill(false);
+    let _autofill = compose_test::use_autofill(false);
     let semantics = tagged("TestTag");
     let given = semantics.clone();
     let mut ui = unchecked(move || Box!(modifier = given.modifier()));
@@ -168,7 +168,7 @@ fn invalidating_computes_again_at_the_next_read() {
 #[test]
 fn an_observed_read_written_computes_again() {
     // Counting computations: no platform autofill computing them at each frame (D1688).
-    compose_test::use_autofill(false);
+    let _autofill = compose_test::use_autofill(false);
     let tag = mutable_state_of("tag1");
     let handle = tag.handle();
     let semantics = TestSemantics::new(move |config| config.set_test_tag(handle.get()));
@@ -187,7 +187,7 @@ fn an_observed_read_written_computes_again() {
 #[test]
 fn an_unobserved_change_needs_an_invalidation() {
     // Counting computations: no platform autofill computing them at each frame (D1688).
-    compose_test::use_autofill(false);
+    let _autofill = compose_test::use_autofill(false);
     let tag = Rc::new(RefCell::new("tag1"));
     let read = tag.clone();
     let semantics = TestSemantics::new(move |config| config.set_test_tag(*read.borrow()));

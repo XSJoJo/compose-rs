@@ -536,7 +536,7 @@ impl UiTree {
         }
         if changed {
             self.needs_draw = true;
-            self.semantics_changed = true;
+            self.mark_semantics_changed();
             self.window_focus_changed();
         }
     }

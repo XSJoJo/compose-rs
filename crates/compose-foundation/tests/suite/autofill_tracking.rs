@@ -1,7 +1,7 @@
 //! What the tree looks at for the platform's autofill (D1688): only the nodes noted since the last
-//! sync (semantics invalidated or forgotten, attached, detached, deactivated, reused; measured
-//! where what they had was autofill's), so a frame that changes nothing autofill reads looks at
-//! nothing; and nothing at all while the platform's autofill is off.
+//! sync (semantics invalidated or forgotten, attached, detached, deactivated, reused; not measured,
+//! D1689), so a frame that changes nothing autofill reads looks at nothing; and nothing at all
+//! while the platform's autofill is off.
 
 use std::cell::Cell;
 use std::rc::Rc;

@@ -111,14 +111,30 @@ thread_local! {
     static AUTOFILL: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
-/// The rules made on this thread from now on install a recording platform autofill manager before
-/// their content (`on`: [`ComposeTestRule::autofill`] returns it), as Android has on every view, or
-/// don't (`!on`), whatever `COMPOSE_TEST_AUTOFILL` says. Without it a rule installs one when the
-/// variable is `1`, else only when its test asks (D1688): `COMPOSE_TEST_AUTOFILL=1 cargo test`
-/// runs the suite with the sync Android runs after every frame. A test counting the semantics
-/// computed or the frames run says `false`.
-pub fn use_autofill(on: bool) {
-    AUTOFILL.with(|cell| cell.set(Some(on)));
+/// The rules made on this thread while the guard returned lives install a recording platform
+/// autofill manager before their content (`on`: [`ComposeTestRule::autofill`] returns it), as
+/// Android has on every view, or don't (`!on`), whatever `COMPOSE_TEST_AUTOFILL` says. Without it
+/// a rule installs one when the variable is `1`, else only when its test asks (D1688):
+/// `COMPOSE_TEST_AUTOFILL=1 cargo test` runs the suite with the sync Android runs after every
+/// frame. A test counting the semantics computed or the frames run says `false`. Dropped, the
+/// guard gives back what was said before (D1689: a helper saying it doesn't leak into the tests
+/// after it on its thread).
+pub fn use_autofill(on: bool) -> UseAutofill {
+    UseAutofill { previous: AUTOFILL.with(|cell| cell.replace(Some(on))) }
+}
+
+/// What [`use_autofill`] said holds while it lives.
+#[must_use = "what `use_autofill` says holds while its guard lives"]
+pub struct UseAutofill {
+    previous: Option<bool>,
+}
+
+impl Drop for UseAutofill {
+    fn drop(&mut self) {
+        let previous = self.previous;
+        // A thread-local destroyed (the thread ending) has nothing to give back to.
+        let _ = AUTOFILL.try_with(|cell| cell.set(previous));
+    }
 }
 
 /// Whether this thread's rules install a recording autofill manager (`use_autofill`, else

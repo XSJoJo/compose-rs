@@ -191,6 +191,7 @@ mod selection_focus_hover_parity;
 mod selection_gestures_multi_text;
 mod selection_handle_popup_position;
 mod semantics_actions;
+mod semantics_in_measure;
 mod semantics_invalidation;
 mod semantics_modifier_node;
 mod semantics_properties;

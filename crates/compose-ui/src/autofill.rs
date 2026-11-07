@@ -24,7 +24,7 @@ use crate::modifier::Modifier;
 use crate::node_chain::NodeKinds;
 use crate::platform_services::of_composing_tree;
 use crate::semantics::{
-    OwnSemantics, PART_OF_PARENT, PARTS_HOST, Role, SemanticsActions, SemanticsConfiguration,
+    PART_OF_PARENT, PARTS_HOST, Role, SemanticsActions, SemanticsConfiguration,
     SemanticsProperties, ToggleableState,
 };
 use crate::text::SharedString;
@@ -445,8 +445,8 @@ pub(crate) fn same_for_autofill(a: &SemanticsConfiguration, b: &SemanticsConfigu
         && a.contains(&PARTS_HOST) == b.contains(&PARTS_HOST)
 }
 
-/// Whether `config` has something the bookkeeping reads (`Snapshot`): a node measured again is
-/// looked at only then, and a node noted told of only then (D1688).
+/// Whether `config` has something the bookkeeping reads (`Snapshot`): a node noted is told of only
+/// then (D1688).
 fn is_autofill_related(config: &SemanticsConfiguration) -> bool {
     config.contains(&SemanticsProperties::CONTENT_DATA_TYPE)
         || config.contains(&SemanticsProperties::INPUT_TEXT)
@@ -473,8 +473,7 @@ pub(crate) struct AutofillTracking {
 #[derive(Default)]
 struct Live {
     /// The nodes whose semantics were forgotten since the last sync (invalidated, a chain changed,
-    /// attached, detached, deactivated, reused; measured, if what they had was autofill's), each
-    /// maybe more than once.
+    /// attached, detached, deactivated, reused; not measured, D1689), each maybe more than once.
     dirty: Vec<NodeId>,
     /// Those attached since (or reused, with a new id): `onPostAttach`.
     attached: Vec<NodeId>,
@@ -640,19 +639,6 @@ impl UiTree {
         if let Some(live) = self.autofill_live() {
             live.dirty.push(node);
             live.attached.push(node);
-        }
-    }
-
-    /// `node` was measured, its kept semantics `dropped`: looked at at the next sync only if they
-    /// had something the bookkeeping reads (a field's text, a toggle's state). Compose doesn't
-    /// compute semantics again for a measurement; compose-rs forgets them (D1257), and what
-    /// autofill reads changes with one only where it was there (D1688).
-    #[inline]
-    pub(crate) fn note_autofill_measured(&mut self, node: NodeId, dropped: &OwnSemantics) {
-        if let Some(live) = self.autofill_live()
-            && is_autofill_related(&dropped.config)
-        {
-            live.dirty.push(node);
         }
     }
 

@@ -529,7 +529,7 @@ fn main() {
     let n: usize = n.parse().expect("a number of iterations");
     use_optimizations(Optimizations::NONE);
     #[cfg(feature = "bench-autofill")]
-    use_autofill(true);
+    let _autofill = use_autofill(true);
     match scenario.as_str() {
         "service_flat" => service_reads(ServiceFlat, n),
         "service_padded" => service_reads(ServicePadded, n),

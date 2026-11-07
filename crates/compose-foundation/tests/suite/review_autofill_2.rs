@@ -51,7 +51,6 @@ fn values(am: &TestAutofillManager) -> Vec<String> {
 // `autofill_tracking::a_state_field_edited_from_its_state_tells_its_value` passes only because
 // its `id()` (a finder) keeps the semantics before the edit.
 #[test]
-#[ignore = "review: a state-based field's programmatic edit isn't told when nothing kept its semantics"]
 fn a_state_field_edited_from_its_state_without_a_semantics_read_tells_its_value() {
     let state = TextFieldState::new("");
     let state = **Box::leak(Box::new(state));
@@ -70,7 +69,6 @@ fn a_state_field_edited_from_its_state_without_a_semantics_read_tells_its_value(
 // The same, a second edit after a first one the sync heard of (its semantics computed, not kept,
 // at that sync).
 #[test]
-#[ignore = "review: a state-based field's programmatic edit isn't told when nothing kept its semantics"]
 fn a_state_field_edited_twice_from_its_state_tells_each_value() {
     let state = TextFieldState::new("");
     let state = **Box::leak(Box::new(state));
@@ -192,7 +190,7 @@ fn a_semantics_read_written_and_sent_after_drawing_is_told() {
 // once, `tell_at_once`), for the same write sent after drawing.
 #[test]
 fn a_semantics_write_sent_after_drawing_says_the_semantics_changed() {
-    compose_test::use_autofill(false);
+    let _autofill = compose_test::use_autofill(false);
     let key = mutable_state_of(0);
     let label = mutable_state_of(String::from("a"));
     let (read_key, read_label) = (key.handle(), label.handle());
@@ -258,7 +256,7 @@ fn a_field_s_content_type_taken_off_its_host_commits() {
 /// value then written: returns whether a frame said the semantics changed.
 fn scroll_after_autofill_semantics(autofill: bool) -> bool {
     use compose_foundation::gestures::ScrollableState;
-    compose_test::use_autofill(autofill);
+    let _autofill = compose_test::use_autofill(autofill);
     let tag = mutable_state_of("a");
     let read = tag.handle();
     let kept = Rc::new(Cell::new(None));
@@ -305,7 +303,6 @@ fn without_autofill_a_scroll_says_its_semantics_changed() {
 // and no frame says the semantics changed (Android's accessibility tells a service within 100 ms,
 // from the measurement, instead of at once). The frame that measured it says it may have.
 #[test]
-#[ignore = "review: the autofill sync's computation drops the observation of the full semantics' reads"]
 fn with_autofill_a_scroll_says_its_semantics_changed() {
     assert!(scroll_after_autofill_semantics(true));
 }
