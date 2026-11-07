@@ -1165,3 +1165,206 @@ fn shared_content_state_clip_path_in_overlay() {
         assert!(frames < 300, "the transition ends");
     }
 }
+
+/// The alphas under 1 the display list composites with: its layers' and its groups'.
+fn faded_alphas(ui: &mut ComposeTestRule) -> Vec<f32> {
+    let flat = ui.host().display_list();
+    let mut alphas: Vec<f32> = flat
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            DrawOp::SaveLayerAlpha { alpha, .. } | DrawOp::SaveLayer { alpha, .. } => Some(*alpha),
+            _ => None,
+        })
+        .collect();
+    alphas.extend(flat.groups.iter().filter_map(|group| group.layer.as_ref()).map(|l| l.alpha));
+    alphas.retain(|alpha| *alpha < 1.0);
+    alphas
+}
+
+// Compose: compose/animation/animation/src/commonMain/kotlin/androidx/compose/animation/SharedTransitionScope.kt, sharedBounds (its enter and exit enabled while isMatchFound)
+/// A `shared_bounds` entering with no match doesn't fade: its enter waits for a match, so the
+/// content comes in opaque from its first frame.
+#[test]
+fn shared_bounds_without_a_match_does_not_fade() {
+    let visible = mutable_state_of(false);
+    let v = visible.handle();
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        SharedTransitionLayout!(
+            modifier = Modifier.required_size(100.dp()),
+            move |scope: SharedTransitionScope| {
+                let s = scope.clone();
+                AnimatedVisibility!(
+                    v.get(),
+                    enter = EnterTransition::NONE,
+                    exit = ExitTransition::NONE,
+                    move |visibility: AnimatedVisibilityScope| {
+                        let state = s.remember_shared_content_state("alone");
+                        let options = SharedOptions {
+                            enter: fade_in_with(tween(160).easing(LINEAR_EASING), 0.0),
+                            ..Default::default()
+                        };
+                        Box!(
+                            modifier = s
+                                .shared_bounds_with(&state, &visibility, options)
+                                .background(Color::RED)
+                                .fill_max_size()
+                        );
+                    }
+                );
+            }
+        );
+    });
+    ui.wait_for_idle();
+    assert!(rects_of(&mut ui, Color::RED).0.is_empty());
+    ui.set_auto_advance(false);
+    visible.set(true);
+    for frame in 0..10 {
+        ui.advance_time_by_frame();
+        ui.wait_for_idle();
+        assert!(!rects_of(&mut ui, Color::RED).0.is_empty(), "shown at {frame}");
+        assert_eq!(faded_alphas(&mut ui), Vec::<f32>::new(), "at {frame}");
+    }
+}
+
+// Compose: compose/animation/animation/src/commonMain/kotlin/androidx/compose/animation/SharedTransitionScope.kt, LayerRendererComparator (a top-level shared entry of z-index 0 sorts as -1)
+/// In the overlay, a top-level shared content at z-index 0 draws under what renders in the
+/// overlay at z-index 0, though it joins the overlay after it.
+#[test]
+fn a_top_level_shared_content_at_z_zero_draws_under_the_overlay() {
+    let visible = mutable_state_of(true);
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let (v, sc) = (visible.handle(), seen.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let sc = sc.clone();
+        SharedTransitionLayout!(
+            modifier = Modifier.required_size(100.dp()).background(Color::WHITE),
+            move |scope: SharedTransitionScope| {
+                *sc.borrow_mut() = Some(scope.clone());
+                let in_overlay = {
+                    let scope = scope.clone();
+                    remember(|| Rc::new(move || scope.is_transition_active()))
+                };
+                let in_overlay = in_overlay.clone();
+                Box!(
+                    modifier = scope
+                        .render_in_shared_transition_scope_overlay_with(0.0, move || in_overlay())
+                        .background(Color::GREEN)
+                        .fill_max_size()
+                );
+                let options = SharedOptions {
+                    enter: EnterTransition::NONE,
+                    exit: ExitTransition::NONE,
+                    bounds_transform: linear(200),
+                    ..Default::default()
+                };
+                let (s1, o1) = (scope.clone(), options.clone());
+                AnimatedVisibility!(
+                    v.get(),
+                    enter = EnterTransition::NONE,
+                    exit = fade_out_with(tween(200).easing(LINEAR_EASING), 0.0),
+                    move |visibility: AnimatedVisibilityScope| {
+                        let state = s1.remember_shared_content_state("child");
+                        Box!(
+                            modifier = s1
+                                .shared_bounds_with(&state, &visibility, o1.clone())
+                                .background(Color::RED)
+                                .fill_max_size()
+                        );
+                    }
+                );
+                let (s2, o2) = (scope.clone(), options.clone());
+                AnimatedVisibility!(
+                    !v.get(),
+                    enter = fade_in_with(tween(200).easing(LINEAR_EASING), 0.0),
+                    exit = ExitTransition::NONE,
+                    move |visibility: AnimatedVisibilityScope| {
+                        let state = s2.remember_shared_content_state("child");
+                        Box!(
+                            modifier = s2
+                                .shared_bounds_with(&state, &visibility, o2.clone())
+                                .background(Color::BLUE)
+                                .fill_max_size()
+                        );
+                    }
+                );
+            }
+        );
+    });
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    assert_eq!(top_color_at(&mut ui, Offset::new(50.0, 50.0)), Some(Color::RED));
+    start_transition(&mut ui, &visible, &scope);
+    let mut frames = 0;
+    while scope.is_transition_active() {
+        assert_eq!(top_color_at(&mut ui, Offset::new(50.0, 50.0)), Some(Color::GREEN), "{frames}");
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        frames += 1;
+        assert!(frames < 300, "the transition ends");
+    }
+    assert!(frames > 2, "{frames}");
+}
+
+// Compose: compose/runtime/runtime/src/commonMain/kotlin/androidx/compose/runtime/Recomposer.kt, runRecomposeAndApplyChanges (a frame's animations run before the recomposition reversing the target)
+/// Reversed mid-way, a shared element takes the frame's step toward the old target (the frame's
+/// animations run before the recomposition reversing it, as Compose's), then turns back at once:
+/// the deferred match update applies in that frame's lookahead placement, not a frame later.
+#[test]
+fn a_reversal_turns_back_after_the_frames_step() {
+    let visible = mutable_state_of(true);
+    let positions: Rc<RefCell<Vec<Offset>>> = Rc::new(RefCell::new(vec![Offset::ZERO; 2]));
+    let sizes: Rc<RefCell<Vec<IntSize>>> = Rc::new(RefCell::new(vec![IntSize::ZERO; 2]));
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let (p, s, sc, v) = (positions.clone(), sizes.clone(), seen.clone(), visible.handle());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let (p, s, sc) = (p.clone(), s.clone(), sc.clone());
+        SharedTransitionLayout!(move |scope: SharedTransitionScope| {
+            *sc.borrow_mut() = Some(scope.clone());
+            let options = SharedOptions { bounds_transform: linear(500), ..Default::default() };
+            for (at, shown) in [(0usize, v.get()), (1, !v.get())] {
+                let (p, s, scope, options) = (p.clone(), s.clone(), scope.clone(), options.clone());
+                AnimatedVisibility!(
+                    shown,
+                    enter = EnterTransition::NONE,
+                    exit = ExitTransition::NONE,
+                    move |visibility: AnimatedVisibilityScope| {
+                        let state = scope.remember_shared_content_state("box");
+                        Box!(
+                            modifier = Modifier
+                                .offset((at as i32 * 100).dp(), 0.dp())
+                                .then(scope.shared_element_with(
+                                    &state,
+                                    &visibility,
+                                    options.clone(),
+                                ))
+                                .then(noting(&scope, &p, &s, at))
+                                .size(20.dp())
+                        );
+                    }
+                );
+            }
+        });
+    });
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    start_transition(&mut ui, &visible, &scope);
+    for _ in 0..10 {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+    }
+    let before = positions.borrow()[1].x;
+    assert!(before > 10.0 && before < 90.0, "{before}");
+    visible.set(true);
+    ui.wait_for_idle();
+    ui.advance_time_by_frame();
+    let reversed = positions.borrow()[0].x;
+    assert!(reversed > before, "the frame's step toward the old target: {reversed} {before}");
+    ui.wait_for_idle();
+    ui.advance_time_by_frame();
+    let back = positions.borrow()[0].x;
+    assert!(back < reversed, "turned back in the next frame: {back} {reversed}");
+    ui.set_auto_advance(true);
+    ui.wait_for_idle();
+    assert_eq!(positions.borrow()[0], Offset::ZERO);
+}

@@ -598,3 +598,220 @@ fn a_layer_recorded_later_in_the_pass_is_drawn_in_that_frame() {
     let dump = host.display_list().dump();
     assert!(dump.contains("#FF0000FF") && !dump.contains("#FFFF0000"), "{dump}");
 }
+
+// Compose: compose/ui/ui-graphics/src/androidMain/kotlin/androidx/compose/ui/graphics/layer/AndroidGraphicsLayer.android.kt, record and drawLayer (a layer recorded then drawn is drawn current, once)
+/// A drawing recording a `GraphicsLayer` and then drawing it draws once in a frame its
+/// recording changes: what it drew is current. Another drawing that drew the layer in an earlier
+/// frame and isn't drawn again in the pass draws again in that frame (D1332).
+#[test]
+fn a_drawing_recording_a_layer_then_drawing_it_draws_once() {
+    let layer = GraphicsLayer::new();
+    let color = mutable_state_of(Color::RED);
+    let (own, other, shade) = (layer.clone(), layer.clone(), color.handle());
+    let mut host = host(move || {
+        let (own, other) = (own.clone(), other.clone());
+        Column!({
+            let (own, other) = (own.clone(), other.clone());
+            Leaf(
+                Modifier
+                    .repaint_boundary()
+                    .draw_with_content(move |scope| {
+                        log("recorder");
+                        scope.record_layer(&own, |scope| {
+                            let size = scope.size();
+                            let rect = Rect::new(0.0, 0.0, size.width, size.height);
+                            scope.draw_rect(rect, Paint::fill(shade.get()));
+                        });
+                        scope.draw_layer(&own);
+                    })
+                    .size(10.dp()),
+            );
+            Leaf(
+                Modifier
+                    .repaint_boundary()
+                    .draw_behind(move |scope| {
+                        log("other");
+                        scope.draw_layer(&other);
+                    })
+                    .size(10.dp()),
+            );
+        });
+    });
+    assert_eq!(take_log(), ["recorder", "other"], "drawn once each");
+    for next in [Color::BLUE, Color::GREEN, Color::RED] {
+        color.set(next);
+        host.frame();
+        assert_eq!(take_log(), ["recorder", "other"], "the recorder once, the other told");
+        let dump = host.display_list().dump();
+        let shown = format!("#{:08X}", next.to_argb());
+        assert_eq!(dump.matches(&shown).count(), 2, "both show it\n{dump}");
+    }
+    host.frame();
+    assert!(take_log().is_empty(), "settled");
+}
+
+/// A boundary of 10 × 10 logging `name` and recording `layer` filled with what `color` gives
+/// (nothing for `None`), drawing nothing itself.
+fn recording(
+    name: &'static str,
+    layer: &GraphicsLayer,
+    color: impl Fn() -> Option<Color> + 'static,
+) -> Modifier {
+    let layer = layer.clone();
+    Modifier
+        .repaint_boundary()
+        .draw_with_content(move |scope| {
+            log(name);
+            if let Some(color) = color() {
+                scope.record_layer(&layer, |scope| {
+                    let size = scope.size();
+                    let rect = Rect::new(0.0, 0.0, size.width, size.height);
+                    scope.draw_rect(rect, Paint::fill(color));
+                });
+            }
+        })
+        .size(10.dp())
+}
+
+/// A boundary of 10 × 10 logging `name` and drawing `layer`, reading `step`.
+fn drawing(name: &'static str, layer: &GraphicsLayer, step: MutableState<u32>) -> Modifier {
+    let layer = layer.clone();
+    Modifier
+        .repaint_boundary()
+        .draw_behind(move |scope| {
+            step.get();
+            log(name);
+            scope.draw_layer(&layer);
+        })
+        .size(10.dp())
+}
+
+// Compose: compose/ui/ui-graphics/src/androidMain/kotlin/androidx/compose/ui/graphics/layer/AndroidGraphicsLayer.android.kt, record (a render node drawn shows its last recording)
+/// A drawing that drew a layer between two changes of it in a pass draws again in that frame,
+/// showing the last (D1332).
+#[test]
+fn a_layer_changed_after_a_drawing_drew_it_in_the_pass_draws_it_again() {
+    let layer = GraphicsLayer::new();
+    let step = mutable_state_of(0u32);
+    let s = step.handle();
+    let given = layer.clone();
+    let mut host = host(move || {
+        let layer = given.clone();
+        Column!({
+            Leaf(recording("first", &layer, move || {
+                Some(if s.get() == 0 { Color::RED } else { Color::GREEN })
+            }));
+            Leaf(drawing("drawer", &layer, s));
+            Leaf(recording("last", &layer, move || (s.get() > 0).then_some(Color::BLUE)));
+        });
+    });
+    assert_eq!(take_log(), ["first", "drawer", "last"]);
+    assert!(host.display_list().dump().contains("#FFFF0000"));
+    step.set(1);
+    host.frame();
+    assert_eq!(take_log(), ["first", "drawer", "last", "drawer"], "the drawer told");
+    let dump = host.display_list().dump();
+    assert!(dump.contains("#FF0000FF") && !dump.contains("#FF00FF00"), "{dump}");
+}
+
+// Compose: compose/ui/ui-graphics/src/androidMain/kotlin/androidx/compose/ui/graphics/layer/AndroidGraphicsLayer.android.kt, record (a render node drawn shows its last recording)
+/// A drawing that drew a layer after changes in a pass undoing each other still hears of the
+/// layer's later changes (D1332).
+#[test]
+fn a_drawing_after_changes_undoing_each_other_hears_of_later_ones() {
+    let layer = GraphicsLayer::new();
+    let step = mutable_state_of(0u32);
+    let s = step.handle();
+    let given = layer.clone();
+    let mut host = host(move || {
+        let layer = given.clone();
+        Column!({
+            Leaf(recording("first", &layer, move || {
+                Some(if s.get() == 0 { Color::RED } else { Color::GREEN })
+            }));
+            Leaf(recording("last", &layer, move || {
+                s.get();
+                Some(Color::BLUE)
+            }));
+            Leaf(drawing("drawer", &layer, s));
+        });
+    });
+    assert_eq!(take_log(), ["first", "last", "drawer"]);
+    step.set(1);
+    host.frame();
+    let log = take_log();
+    assert_eq!(&log[..3], ["first", "last", "drawer"], "{log:?}");
+    assert!(host.display_list().dump().contains("#FF0000FF"));
+    layer.set_alpha(0.5);
+    host.frame();
+    assert_eq!(take_log(), ["drawer"], "told of the change");
+}
+
+/// The node with `count` children under `node`, depth first.
+fn with_children(tree: &UiTree, node: NodeId, count: usize) -> Option<NodeId> {
+    if tree.children_of(node).count() == count {
+        return Some(node);
+    }
+    tree.children_of(node).find_map(|child| with_children(tree, child, count))
+}
+
+// Compose: compose/ui/ui/src/androidMain/kotlin/androidx/compose/ui/platform/AndroidComposeView.android.kt, dispatchDraw (a draw returns whether it drew)
+/// A layer a boundary drawn ahead records (between frames) tells what drew it at the next
+/// frame, not at a draw before it: drawing ahead leaves no second pass to the next `draw`, and
+/// `draw` says whether it drew (D1332).
+#[test]
+fn a_layer_recorded_ahead_draws_its_drawings_in_the_next_frame() {
+    let layer = GraphicsLayer::new();
+    let (drawn, recorded) = (layer.clone(), layer.clone());
+    // Places its first child only: the second waits, as a lazy list's prefetched item.
+    let first_only = measure_policy(|scope, measurables, constraints| {
+        let placeable = scope.measure(measurables[0], constraints);
+        scope.place(&placeable, 0, 0);
+        scope.layout(constraints.max_width, constraints.max_height)
+    });
+    let mut host = host(move || {
+        let (drawn, recorded) = (drawn.clone(), recorded.clone());
+        Layout(
+            Modifier.size(10.dp()),
+            first_only.clone(),
+            callback(move || {
+                let (drawn, recorded) = (drawn.clone(), recorded.clone());
+                Leaf(
+                    Modifier
+                        .repaint_boundary()
+                        .draw_behind(move |scope| {
+                            log("drawer");
+                            scope.draw_layer(&drawn);
+                        })
+                        .size(10.dp()),
+                );
+                Leaf(
+                    Modifier
+                        .repaint_boundary()
+                        .draw_with_content(move |scope| {
+                            log("recorder");
+                            scope.record_layer(&recorded, |scope| {
+                                let size = scope.size();
+                                let rect = Rect::new(0.0, 0.0, size.width, size.height);
+                                scope.draw_rect(rect, Paint::fill(Color::BLUE));
+                            });
+                        })
+                        .size(10.dp()),
+                );
+            }),
+        );
+    });
+    assert_eq!(take_log(), ["drawer"]);
+    let drew = host.with_tree(|tree| {
+        let parent = with_children(tree, tree.root_id(), 2).expect("the layout");
+        tree.premeasure(parent, 1, Constraints::fixed(10, 10)).expect("the second child");
+        assert!(tree.draw_ahead().is_some(), "the second child drawn ahead");
+        assert_eq!(take_log(), ["recorder"]);
+        tree.draw()
+    });
+    assert_eq!(drew, !take_log().is_empty(), "draw says whether it drew");
+    host.frame();
+    assert_eq!(take_log(), ["drawer"], "the drawer told");
+    let dump = host.display_list().dump();
+    assert!(dump.contains("#FF0000FF"), "{dump}");
+}

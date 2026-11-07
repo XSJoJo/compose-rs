@@ -33,7 +33,7 @@ compose-rs has no `composed` (D18): `shared_element`, `shared_bounds` and `share
 
 ### The overlay on compose-ui's layers
 
-The overlay is drawn by the root modifier's `draw_with_content`: the content, then each renderer's `GraphicsLayer` with `DrawScope::draw_layer`, translated to its bounds in the root and clipped by its path. The layers are the `GraphicsLayer` objects of `graphics_layer_object.rs`: a node records its content into one with `ContentDrawScope::record_layer` (and draws nothing in place); a layer's change draws again what drew it (its version, read in `draw_layer`), so the root's overlay follows a content's change with no invalidation of its own; a change of the bounds is a state read in that drawing. On Android the recorded ops are replayed in the root's group, so the overlay is in the root's render node, above all of the layout's content, as Compose's (which draws it into the root's canvas too).
+The overlay is drawn by the root modifier's `draw_with_content`: the content, then each renderer's `GraphicsLayer` with `DrawScope::draw_layer`, translated to its bounds in the root and clipped by its path. The layers are the `GraphicsLayer` objects of `graphics_layer_object.rs`: a node records its content into one with `ContentDrawScope::record_layer` (and draws nothing in place); a layer's change draws again what drew it before the change, in the same frame (its version, read in `draw_layer`; D1331), and not what drew it after, current already (D1332), so the root's overlay follows a content's change with no invalidation of its own, drawing once a frame; a change of the bounds is a state read in that drawing. On Android the recorded ops are replayed in the root's group, so the overlay is in the root's render node, above all of the layout's content, as Compose's (which draws it into the root's canvas too).
 
 Placement with a layer (D1909) is what `skipToLookaheadSize`'s scale uses (`place_with_layer`, a block setting the scale and the origin). Nothing else here needs a placement layer: the shared content's motion is a placement offset each frame, as Compose's.
 
@@ -41,6 +41,7 @@ Placement with a layer (D1909) is what `skipToLookaheadSize`'s scale uses (`plac
 
 - The target is read ahead: the shared node's lookahead block (`ApproachLayoutModifierNode::measure`'s placement, `is_looking_ahead()`) reads its lookahead position in the layout's lookahead coordinates, `LookaheadScope::local_lookahead_position_of_with`, and its size ahead.
 - The current bounds are read now: the approach placement reads where the node is now in the layout's coordinates (`LayoutCoordinates::local_position_of`), and writes the animated bounds.
+- A reversal shows the frame's step toward the old target, then turns back, as Compose's: a frame's animations run before the recomposition reversing the target, and the deferred match update applies in that frame's lookahead placement (D1332).
 - A node measured ahead is measured now after (D1319): a change ahead (the other content showing) reaches the approach in the same frame. An animation frame is a state change read in the approach measurement and placement only, so it measures and places the approach alone (D1221's per-pass observation).
 
 ### Cost

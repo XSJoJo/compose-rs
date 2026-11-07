@@ -164,11 +164,35 @@ fn end_changed_pass() {
     let changed = PASS_CHANGES.with(|changes| std::mem::take(&mut *changes.borrow_mut()));
     for layer in changed.iter().filter_map(std::rc::Weak::upgrade) {
         let Some(start) = layer.pass_start.take() else { continue };
-        if !start.is_now(&layer) {
-            layer.version.handle().update(|version| version.wrapping_add(1));
+        let changed = !start.is_now(&layer);
+        let read = layer.read.get();
+        // The drawings that read the other version: changed after they did, they're stale, as
+        // the others; ending the pass as it started, they drew it as it is, but are told so
+        // that its readers stay on one version (this one doesn't become the other).
+        if start.fresh == Fresh::Stale || (start.fresh == Fresh::Current && !changed) {
+            layer.bump(1 - read);
             PASS_TOLD.set(true);
         }
+        if changed {
+            layer.bump(read);
+            PASS_TOLD.set(true);
+            // What drew it after its last change is current, and reads what becomes its version.
+            if start.fresh == Fresh::Current {
+                layer.read.set(1 - read);
+            }
+        }
     }
+}
+
+/// Whether drawings drew a layer after its first change in a pass, reading its other version.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fresh {
+    /// None did.
+    No,
+    /// Some did, and it didn't change since.
+    Current,
+    /// Some did, and it changed since: they and any drawing it after are told.
+    Stale,
 }
 
 /// A layer as a draw pass found it, kept at its first change in the pass.
@@ -180,6 +204,8 @@ struct PassStart {
     density: f32,
     released: bool,
     properties: Properties,
+    /// Whether drawings drew it after its first change.
+    fresh: Fresh,
 }
 
 impl PassStart {
@@ -207,11 +233,40 @@ struct LayerCell {
     released: Cell<bool>,
     /// What it was when the current draw pass first changed it.
     pass_start: RefCell<Option<PassStart>>,
-    /// Read where it's drawn and bumped when it changes, so what draws it draws again.
-    version: compose_runtime::OwnedState<u64>,
+    /// Read where it's drawn and bumped when it changes, so what draws it draws again: the
+    /// one at `read`, but by a drawing drawing it after its first change in a draw pass, which
+    /// reads the other, not bumped at the pass's end unless it changed again (D1332).
+    versions: [compose_runtime::OwnedState<u64>; 2],
+    /// Which of `versions` drawings read.
+    read: Cell<usize>,
     /// The block a placement placing with it runs, made once so placing again with it is the
     /// same block (D1909).
     placement_block: RefCell<Option<crate::graphics_layer::LayerBlock>>,
+}
+
+impl LayerCell {
+    /// Reads its version, so a change draws again what reads it: the one drawings read, or,
+    /// after its first change in a draw pass, the other, which the pass's end bumps only if it
+    /// changed after that read (D1332).
+    #[inline]
+    fn read_version(&self) {
+        let read = self.read.get();
+        let mut start = self.pass_start.borrow_mut();
+        match start.as_mut() {
+            None => self.versions[read].get(),
+            Some(start) => {
+                if start.fresh == Fresh::No {
+                    start.fresh = Fresh::Current;
+                }
+                self.versions[1 - read].get()
+            }
+        };
+    }
+
+    /// Tells what read version `index`.
+    fn bump(&self, index: usize) {
+        self.versions[index].handle().update(|version| version.wrapping_add(1));
+    }
 }
 
 /// A graphics layer, as Compose's `GraphicsLayer`: shared as a Kotlin reference is (a clone is
@@ -254,7 +309,8 @@ impl GraphicsLayer {
             properties: RefCell::default(),
             released: Cell::new(false),
             pass_start: RefCell::new(None),
-            version: compose_runtime::mutable_state_of(0),
+            versions: [compose_runtime::mutable_state_of(0), compose_runtime::mutable_state_of(0)],
+            read: Cell::new(0),
             placement_block: RefCell::new(None),
         }))
     }
@@ -265,11 +321,15 @@ impl GraphicsLayer {
     fn will_change(&self, properties: impl FnOnce() -> Properties) -> bool {
         let cell = &self.0;
         if PASS_DEPTH.with(|depth| depth.get() & !CHANGED_IN_PASS == 0) {
-            cell.version.handle().update(|version| version.wrapping_add(1));
+            cell.bump(cell.read.get());
             return false;
         }
         let mut start = cell.pass_start.borrow_mut();
-        if start.is_none() {
+        if let Some(start) = start.as_mut() {
+            if start.fresh == Fresh::Current {
+                start.fresh = Fresh::Stale;
+            }
+        } else {
             PASS_CHANGES.with(|changes| changes.borrow_mut().push(Rc::downgrade(cell)));
             PASS_DEPTH.with(|depth| depth.set(depth.get() | CHANGED_IN_PASS));
             *start = Some(PassStart {
@@ -279,6 +339,7 @@ impl GraphicsLayer {
                 density: cell.density.get(),
                 released: cell.released.get(),
                 properties: properties(),
+                fresh: Fresh::No,
             });
         }
         true
@@ -487,7 +548,7 @@ impl GraphicsLayer {
     /// alpha, shadow, clip (to the bounds) and compositing strategy; its pivot, if set, as a
     /// fraction of the scope's size. Reads its version, so a change to them runs this again.
     pub(crate) fn apply_to_scope(&self, scope: &mut crate::graphics_layer::GraphicsLayerScope) {
-        self.0.version.get();
+        self.0.read_version();
         let properties = self.0.properties.borrow();
         scope.alpha = properties.alpha;
         scope.scale_x = properties.scale_x;
@@ -588,7 +649,7 @@ impl DrawScope<'_> {
     /// released. What drew it draws again when it changes.
     pub fn draw_layer(&mut self, layer: &GraphicsLayer) {
         let cell = &layer.0;
-        cell.version.get();
+        cell.read_version();
         if cell.released.get() {
             return;
         }
