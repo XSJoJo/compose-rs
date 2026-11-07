@@ -357,6 +357,37 @@ impl UiTree {
             .unwrap_or(0)
     }
 
+    /// The text a finger at `position` (in the root) touches: the one it's on, else the nearest
+    /// whose minimum touch target (its bounds grown to `minimum_touch_target_size`, centered) it's
+    /// in, as Compose's `hitTestMinimumTouchTarget` picks between overlapping targets (the first
+    /// of those as near). Only within the container: its node takes the touches (D2029).
+    fn touched_text(
+        &mut self,
+        container: NodeId,
+        entries: &[Entry],
+        position: Offset,
+    ) -> Option<Entry> {
+        let minimum = self.view_configuration_of(container).minimum_touch_target_size;
+        let density = self.node(container).density;
+        let (width, height) = (density.to_px(minimum.width), density.to_px(minimum.height));
+        let mut nearest: Option<(f32, Entry)> = None;
+        for entry in entries {
+            let size = (entry.size.width as f32, entry.size.height as f32);
+            let local = position - entry.origin;
+            // How far past each side it is, and how far its target reaches.
+            let past = ((-local.x).max(local.x - size.0), (-local.y).max(local.y - size.1));
+            let reach = (((width - size.0) / 2.0).max(0.0), ((height - size.1) / 2.0).max(0.0));
+            if past.0 > reach.0 || past.1 > reach.1 {
+                continue;
+            }
+            let distance = past.0.max(0.0).powi(2) + past.1.max(0.0).powi(2);
+            if nearest.is_none_or(|(best, _)| distance < best) {
+                nearest = Some((distance, *entry));
+            }
+        }
+        nearest.map(|(_, entry)| entry)
+    }
+
     /// Where a selection's moving end at `position` (in the root) is, as Compose's
     /// `SelectionLayoutBuilder` places it (D2028). The texts go in order; each is before, on or
     /// after the position (Compose's `resolve2dDirection`: by its rows, beside them by its
@@ -593,21 +624,25 @@ impl UiTree {
                 }
             }
             SelectionRequest::LongPress { container, position, unit } => {
-                // On a text only: Compose's long press is each text's (`SelectionController`).
+                // On a text only: Compose's long press is each text's (`SelectionController`),
+                // in its minimum touch target too (D2029).
                 let entries = self.selectables(container);
-                let on_text = entries.iter().any(|entry| {
-                    let local = position - entry.origin;
-                    local.x >= 0.0
-                        && local.y >= 0.0
-                        && local.x < entry.size.width as f32
-                        && local.y < entry.size.height as f32
+                let Some(entry) = self.touched_text(container, &entries, position) else { return };
+                // Put in the text's bounds, as Compose's `onSelectionUpdateStartCallback`
+                // (`coerceIn`); the end then goes where the finger is, as Compose's tests find
+                // it: before the text, the selection crosses.
+                let (origin, size) = (entry.origin, entry.size);
+                let inside = Offset::new(
+                    position.x.clamp(origin.x, origin.x + size.width as f32),
+                    position.y.clamp(origin.y, origin.y + size.height as f32),
+                );
+                self.apply_selection_request(SelectionRequest::Start {
+                    container,
+                    position: inside,
+                    unit,
                 });
-                if on_text {
-                    self.apply_selection_request(SelectionRequest::Start {
-                        container,
-                        position,
-                        unit,
-                    });
+                if inside != position {
+                    self.apply_selection_request(SelectionRequest::Extend { container, position });
                 }
             }
             SelectionRequest::RefreshHandles { .. } => {}

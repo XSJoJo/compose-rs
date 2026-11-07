@@ -663,3 +663,138 @@ fn whenDragEndHandleOutOfBounds_selectionAndHandleUpdates() {
     assert_clipped_selection(&mut ui, 0, 4);
     assert_eq!(handles_shown(&mut ui), (true, true));
 }
+
+// ---- MultiTextMinTouchBoundsSelectionGesturesTest ------------------------------------------
+
+/// Two texts "A" of 20 sp (20 px square), 20 px apart, `1` above `2`, with a minimum touch target
+/// of 44 px: 12 past each side of a text, so the targets overlap from 28 to 32 (29 nearer the
+/// first, 30 as near both, 31 nearer the second).
+fn stacked() -> ComposeTestRule {
+    let mut ui = rule(|| {
+        SelectionContainer!(modifier = Modifier.test_tag(TAG), {
+            Column!(vertical_arrangement = Arrangement::spaced_by(20.dp()), {
+                for tag in ["1", "2"] {
+                    BasicText!(
+                        "A".to_string(),
+                        style = TextStyle { font_size: 20.sp(), ..TextStyle::DEFAULT },
+                        modifier = Modifier.test_tag(tag),
+                    );
+                }
+            });
+        });
+    });
+    ui.host().set_view_configuration(Some(compose_ui::ViewConfiguration {
+        minimum_touch_target_size: compose_ui::DpSize::new(44.dp(), 44.dp()),
+        ..compose_ui::ViewConfiguration::default()
+    }));
+    ui.wait_for_idle();
+    ui
+}
+
+/// The test's `TestHorizontal`: `(x, coercedX)`.
+const LEFT: (f32, f32) = (-6.0, 1.0);
+const CENTER_X: (f32, f32) = (10.0, 10.0);
+const RIGHT: (f32, f32) = (26.0, 19.0);
+
+/// The test's `TestVertical`: `(y, coercedY)`.
+const ABOVE: (f32, f32) = (-6.0, 1.0);
+const ON_FIRST: (f32, f32) = (10.0, 10.0);
+const NO_OVERLAP_BELONGS_TO_FIRST: (f32, f32) = (25.0, 19.0);
+const OVERLAP_BELONGS_TO_FIRST: (f32, f32) = (29.0, 19.0);
+const OVERLAP_EQUIDISTANT: (f32, f32) = (30.0, 19.0);
+const OVERLAP_BELONGS_TO_SECOND: (f32, f32) = (31.0, 41.0);
+const NO_OVERLAP_BELONGS_TO_SECOND: (f32, f32) = (35.0, 41.0);
+const ON_SECOND: (f32, f32) = (50.0, 50.0);
+const BELOW: (f32, f32) = (66.0, 59.0);
+
+/// The test's `ExpectedText`: the text selected (`None`: either) and whether crossed.
+#[derive(Clone, Copy, Debug)]
+struct Expected(Option<&'static str>, bool);
+
+const FIRST: Expected = Expected(Some("1"), false);
+const SECOND: Expected = Expected(Some("2"), false);
+const FIRST_REVERSED: Expected = Expected(Some("1"), true);
+const SECOND_REVERSED: Expected = Expected(Some("2"), true);
+const EITHER: Expected = Expected(None, false);
+
+type Case = ((f32, f32), (f32, f32), Expected);
+
+/// The test's parameters (each with either context menu: here one).
+const CASES: [Case; 27] = [
+    (LEFT, ABOVE, FIRST_REVERSED),
+    (LEFT, ON_FIRST, FIRST_REVERSED),
+    (LEFT, NO_OVERLAP_BELONGS_TO_FIRST, FIRST),
+    (LEFT, OVERLAP_BELONGS_TO_FIRST, FIRST),
+    (LEFT, OVERLAP_EQUIDISTANT, EITHER),
+    (LEFT, OVERLAP_BELONGS_TO_SECOND, SECOND_REVERSED),
+    (LEFT, NO_OVERLAP_BELONGS_TO_SECOND, SECOND_REVERSED),
+    (LEFT, ON_SECOND, SECOND_REVERSED),
+    (LEFT, BELOW, SECOND),
+    (CENTER_X, ABOVE, FIRST_REVERSED),
+    (CENTER_X, ON_FIRST, FIRST),
+    (CENTER_X, NO_OVERLAP_BELONGS_TO_FIRST, FIRST),
+    (CENTER_X, OVERLAP_BELONGS_TO_FIRST, FIRST),
+    (CENTER_X, OVERLAP_EQUIDISTANT, EITHER),
+    (CENTER_X, OVERLAP_BELONGS_TO_SECOND, SECOND_REVERSED),
+    (CENTER_X, NO_OVERLAP_BELONGS_TO_SECOND, SECOND_REVERSED),
+    (CENTER_X, ON_SECOND, SECOND),
+    (CENTER_X, BELOW, SECOND),
+    (RIGHT, ABOVE, FIRST_REVERSED),
+    (RIGHT, ON_FIRST, FIRST),
+    (RIGHT, NO_OVERLAP_BELONGS_TO_FIRST, FIRST),
+    (RIGHT, OVERLAP_BELONGS_TO_FIRST, FIRST),
+    (RIGHT, OVERLAP_EQUIDISTANT, EITHER),
+    (RIGHT, OVERLAP_BELONGS_TO_SECOND, SECOND_REVERSED),
+    (RIGHT, NO_OVERLAP_BELONGS_TO_SECOND, SECOND_REVERSED),
+    (RIGHT, ON_SECOND, SECOND),
+    (RIGHT, BELOW, SECOND),
+];
+
+/// The text "A" selected whole, crossed or not, as the test's `assertSelectedSelectableIs`.
+#[track_caller]
+fn assert_selected(ui: &mut ComposeTestRule, expected: Expected, case: &Case) {
+    let found = selection(ui);
+    let Expected(Some(tag), crossed) = expected else {
+        assert!(found.is_some(), "a selection for {case:?}");
+        return;
+    };
+    let text = node(ui, tag);
+    let (start, end) = if crossed { (1, 0) } else { (0, 1) };
+    assert_eq!(found, Some(((text, start), (text, end))), "for {case:?}");
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/MultiTextMinTouchBoundsSelectionGesturesTest.kt, minTouchTargetSelectionGestureTest
+#[test]
+fn minTouchTargetSelectionGestureTest() {
+    // Only the places in the container: compose-rs's texts take touches through it, which takes
+    // only what's in its bounds (D2029).
+    for case in CASES.iter().filter(|(x, _, _)| *x == CENTER_X) {
+        let ((x, _), (y, _), expected) = *case;
+        if y < 0.0 || y > 60.0 {
+            continue;
+        }
+        let mut ui = stacked();
+        touch(&mut ui, |touch| {
+            let duration = touch.view_configuration().long_press_timeout_millis + 100;
+            touch.long_click_at(Offset::new(x, y), duration);
+        });
+        assert_selected(&mut ui, expected, case);
+    }
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/MultiTextMinTouchBoundsSelectionGesturesTest.kt, dragIntoMinTouchTargetSelectionGestureTest
+#[test]
+fn dragIntoMinTouchTargetSelectionGestureTest() {
+    for case in &CASES {
+        let ((x, coerced_x), (y, coerced_y), expected) = *case;
+        let mut ui = stacked();
+        // A quick drag from the text to the place, the move right after the long press.
+        touch(&mut ui, |touch| {
+            let timeout = touch.view_configuration().long_press_timeout_millis;
+            touch.down(Offset::new(coerced_x, coerced_y));
+            touch.move_pointers_after(timeout + 10);
+            touch.move_pointer_to(0, Offset::new(x, y), 0);
+        });
+        assert_selected(&mut ui, Expected(expected.0, expected.1), case);
+    }
+}

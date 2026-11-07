@@ -1042,3 +1042,4 @@ The log is split by area into the files below, one table each, rows in number or
 | D2026 | [text](decisions/text.md#d2026) | current |
 | D2027 | [text](decisions/text.md#d2027) | current |
 | D2028 | [text](decisions/text.md#d2028) | current |
+| D2029 | [text](decisions/text.md#d2029) | current |
