@@ -63,11 +63,12 @@ Never merge the `ime-logging` branch (it records everything typed) or `parked/na
 
 ## In flight
 
-As of 2026-11-07, `origin/main` is at 0d7973e7 (12,524 tests).
+As of 2026-11-07, `origin/main` is at 23c5d9f7 (12,726 tests).
 
 | Branch | What | State |
 |---|---|---|
 | `moved-node-fixes` | The moved-node review's findings (nested movable content, detach orders, a panic guard) and a moved shared element's start position | In progress |
+| `multi-paragraph-2` | The paragraph API's review findings, then `fillPathForRange`, `paint`, the constructors and the horizontal-position tests, then `BasicText` honouring paragraph styles (D2049 and up) | In progress |
 | `autofill` | Compose's autofill: `ContentType`, semantics, `AutofillManager`, text fields, the toolbar's Autofill item (un-ignores 9 tests), Android's bridge (D1680–D1699) | In progress |
 | `style-api` | Foundation's experimental Style API (`androidx.compose.foundation.style`), design note first (D1580–D1599) | In progress |
 
