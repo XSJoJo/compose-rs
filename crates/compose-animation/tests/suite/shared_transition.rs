@@ -3720,3 +3720,569 @@ fn is_transition_active_with_shared_element_with_caller_managed_visibility() {
     ui.wait_for_idle();
     assert!(!scope.is_transition_active());
 }
+
+/// The detaching tests' layout: movable content of a 200 × 200 shared element of key 1 with
+/// caller-managed visibility (visible until `show_match`), recording where it is in the root
+/// and whether the transition is active; while `show_match`, it moves and a visible 100 × 100
+/// match comes after it. `offset_inside` puts the offset in the content, else around it while
+/// not matched.
+fn detaching_rule(
+    show_match: MutableState<bool>,
+    seen: Rc<RefCell<Option<SharedTransitionScope>>>,
+    record: Rc<RefCell<Vec<(Offset, bool)>>>,
+    offset_inside: bool,
+) -> ComposeTestRule {
+    ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let (seen, record) = (seen.clone(), record.clone());
+        SharedTransitionLayout!(move |scope: SharedTransitionScope| {
+            *seen.borrow_mut() = Some(scope.clone());
+            let initial = {
+                let (scope, record) = (scope.clone(), record.clone());
+                remember(move || {
+                    let (scope, record) = (scope.clone(), record.clone());
+                    movable_content_of(move || {
+                        let state = scope.remember_shared_content_state(1);
+                        let (noted, active) = (record.clone(), scope.clone());
+                        let offset = if offset_inside {
+                            Modifier.offset_with(|_| compose_ui::IntOffset::new(200, 100))
+                        } else {
+                            Modifier
+                        };
+                        Box!(
+                            modifier = offset
+                                .then(scope.shared_element_with_caller_managed_visibility(
+                                    &state,
+                                    !show_match.get(),
+                                ),)
+                                .size(200.dp())
+                                .on_globally_positioned(move |it: LayoutCoordinates| {
+                                    noted.borrow_mut().push((
+                                        it.position_in_root(),
+                                        active.is_transition_active(),
+                                    ));
+                                })
+                        );
+                    })
+                })
+            };
+            let scope = scope.clone();
+            Box!(modifier = Modifier.fill_max_size(), move |_| {
+                if !show_match.get() {
+                    if offset_inside {
+                        initial();
+                    } else {
+                        let initial = initial.clone();
+                        Box!(
+                            modifier =
+                                Modifier.offset_with(|_| compose_ui::IntOffset::new(200, 100)),
+                            move |_| initial()
+                        );
+                    }
+                } else {
+                    initial();
+                    let state = scope.remember_shared_content_state(1);
+                    Box!(
+                        modifier = Modifier.size(100.dp()).then(
+                            scope.shared_element_with_caller_managed_visibility(&state, true)
+                        )
+                    );
+                }
+            });
+        });
+    })
+}
+
+/// Checks the detaching tests' record of the move: at least three places between, more than
+/// three frames transitioning, none at the end.
+fn moved_with_animation(record: &[(Offset, bool)], scope: &SharedTransitionScope) {
+    let between = record
+        .iter()
+        .filter(|(it, _)| it.x > 0.0 && it.x < 200.0 && it.y > 0.0 && it.y < 100.0)
+        .count();
+    assert!(between >= 3, "{record:?}");
+    let animating = record.iter().filter(|(_, active)| *active).count();
+    assert!(animating > 3, "{record:?}");
+    assert!(!scope.is_transition_active());
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testDetachingSharedElementAndReattachingBeforeAnimating
+/// A shared element moved (movable content) as its visible match comes animates from where it
+/// was to the match.
+#[test]
+fn detaching_shared_element_and_reattaching_before_animating() {
+    let show_match = mutable_state_of(false);
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let record: Rc<RefCell<Vec<(Offset, bool)>>> = Rc::default();
+    let mut ui = detaching_rule(show_match.handle(), seen.clone(), record.clone(), true);
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    assert!(!scope.is_transition_active());
+    assert!(!record.borrow().is_empty());
+    assert!(record.borrow().iter().all(|(it, _)| *it == Offset::new(200.0, 100.0)));
+    record.borrow_mut().clear();
+    show_match.set(true);
+    ui.wait_for_idle();
+    moved_with_animation(&record.borrow(), &scope);
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testDetachingSharedElementAndReattachingInNewPositionBeforeAnimating
+/// The same, the element moved out of an offset parent to the origin: it animates from where it
+/// was and ends at the origin.
+#[test]
+#[ignore = "compose-ui doesn't detach and attach again the modifier nodes of a layout node \
+            movable content moves, where Compose does: the shared node keeps no bounds from \
+            before the move, and starts where it lands (missing.md)"]
+fn detaching_shared_element_and_reattaching_in_new_position_before_animating() {
+    let show_match = mutable_state_of(false);
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let record: Rc<RefCell<Vec<(Offset, bool)>>> = Rc::default();
+    let mut ui = detaching_rule(show_match.handle(), seen.clone(), record.clone(), false);
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    assert!(!scope.is_transition_active());
+    assert!(!record.borrow().is_empty());
+    assert!(record.borrow().iter().all(|(it, active)| *it == Offset::new(200.0, 100.0) && !active));
+    record.borrow_mut().clear();
+    show_match.set(true);
+    ui.wait_for_idle();
+    assert_eq!(record.borrow().last().map(|(it, _)| *it), Some(Offset::ZERO));
+    moved_with_animation(&record.borrow(), &scope);
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, removeSharedTransitionLayout
+/// Movable content with a shared element moved out of its `SharedTransitionLayout`, which goes,
+/// composed without the scope: nothing fails.
+#[test]
+fn remove_shared_transition_layout() {
+    let remove_scope = mutable_state_of(false);
+    let r = remove_scope.handle();
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let movable = remember(|| {
+            movable_content_of_with(|scope: Option<SharedTransitionScope>| {
+                AnimatedVisibility!(true, move |visibility: AnimatedVisibilityScope| {
+                    let shared = match &scope {
+                        Some(scope) => {
+                            let state = scope.remember_shared_content_state("test");
+                            scope.shared_element(&state, &visibility)
+                        }
+                        None => Modifier,
+                    };
+                    Box!(modifier = Modifier.fill_max_size().then(shared).size(100.dp()));
+                });
+            })
+        });
+        if !r.get() {
+            let movable = movable.clone();
+            SharedTransitionLayout!(
+                modifier = Modifier.fill_max_size(),
+                move |scope: SharedTransitionScope| movable(Some(scope))
+            );
+        } else {
+            movable(None);
+        }
+    });
+    ui.wait_for_idle();
+    remove_scope.set(true);
+    ui.wait_for_idle();
+}
+
+/// Places nothing of what it measured, as the skip tests' `layout { … layout(w, h) {} }`.
+fn placing_nothing() -> Modifier {
+    Modifier.layout(|scope, measurable, constraints| {
+        let placeable = scope.measure(measurable, constraints);
+        scope.layout(placeable.width, placeable.height)
+    })
+}
+
+/// The skip tests' content: an `AnimatedContent` of a state switching at once, with
+/// `around` it, holding full-size shared bounds fading over 500 ms; it goes once `detach`.
+fn skipped_shared_bounds(
+    scope: &SharedTransitionScope,
+    state: MutableState<i32>,
+    detach: MutableState<bool>,
+    around: Modifier,
+) {
+    if detach.get() {
+        return;
+    }
+    let scope = scope.clone();
+    AnimatedContent!(
+        state.get(),
+        modifier = around,
+        transition_spec = |_| fade_in_with(snap(0), 0.0).together_with(fade_out_with(snap(0), 0.0)),
+        move |content: AnimatedContentScope, _: i32| {
+            let shared = scope.remember_shared_content_state("key");
+            let options = SharedOptions {
+                enter: fade_in_with(tween(500), 0.0),
+                exit: fade_out_with(tween(500), 0.0),
+                ..Default::default()
+            };
+            Box!(modifier = scope.shared_bounds_with(&shared, &content, options).fill_max_size());
+        }
+    );
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testSkipSharedTransitionPlacement
+/// A `SharedTransitionLayout` whose modifier places nothing, its shared bounds then removed:
+/// nothing fails.
+#[test]
+fn skip_shared_transition_placement() {
+    let state = mutable_state_of(0);
+    let detach = mutable_state_of(false);
+    let (s, d) = (state.handle(), detach.handle());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        SharedTransitionLayout!(
+            modifier = Modifier.size(100.dp()).then(placing_nothing()),
+            move |scope: SharedTransitionScope| skipped_shared_bounds(&scope, s, d, Modifier)
+        );
+    });
+    ui.wait_for_idle();
+    detach.set(true);
+    ui.wait_for_idle();
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testSkipSharedBoundsModifierPlacement
+/// An `AnimatedContent` whose modifier places nothing of its shared bounds, which are then
+/// removed: nothing fails.
+#[test]
+fn skip_shared_bounds_modifier_placement() {
+    let state = mutable_state_of(0);
+    let detach = mutable_state_of(false);
+    let (s, d) = (state.handle(), detach.handle());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        SharedTransitionLayout!(
+            modifier = Modifier.size(100.dp()),
+            move |scope: SharedTransitionScope| {
+                skipped_shared_bounds(&scope, s, d, placing_nothing())
+            }
+        );
+    });
+    ui.wait_for_idle();
+    detach.set(true);
+    ui.wait_for_idle();
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testLayerCreatedByOverlayInFirstFrame
+/// The visible match whose drawing is skipped by the node before it still gets its layer in the
+/// transition's first frames: the overlay makes it.
+#[test]
+fn layer_created_by_overlay_in_first_frame() {
+    let show_match = mutable_state_of(false);
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let target: Rc<RefCell<Option<SharedContentState>>> = Rc::default();
+    let (m, sc, t) = (show_match.handle(), seen.clone(), target.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let (sc, t) = (sc.clone(), t.clone());
+        SharedTransitionLayout!(move |scope: SharedTransitionScope| {
+            *sc.borrow_mut() = Some(scope.clone());
+            let (scope, t) = (scope.clone(), t.clone());
+            Box!(modifier = Modifier.fill_max_size(), move |_| {
+                let first = scope.remember_shared_content_state("box");
+                Box!(
+                    modifier = scope
+                        .shared_element_with_caller_managed_visibility(&first, !m.get())
+                        .size(200.dp())
+                        .background(Color::RED)
+                );
+                let second = scope.remember_shared_content_state("box");
+                *t.borrow_mut() = Some(second.clone());
+                Box!(
+                    modifier = Modifier
+                        .draw_with_content(move |draw| {
+                            if !m.get() {
+                                draw.draw_content();
+                            }
+                        })
+                        .then(scope.shared_element_with_caller_managed_visibility(&second, m.get()))
+                        .size(100.dp())
+                        .background(Color::BLUE)
+                );
+            });
+        });
+    });
+    ui.wait_for_idle();
+    show_match.set(true);
+    ui.set_auto_advance(false);
+    for _ in 0..3 {
+        ui.advance_time_by_frame();
+        ui.wait_for_idle();
+    }
+    let scope = seen.borrow().clone().expect("the scope");
+    assert!(scope.has_layer_for(target.borrow().as_ref().expect("composed")));
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testNoLayerWhenRenderInOverlayDuringTransitionFalse
+/// Shared elements not rendering in the overlay hold no layer through their transition.
+#[test]
+fn no_layer_when_render_in_overlay_during_transition_false() {
+    let show_target = mutable_state_of(false);
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let states: Rc<RefCell<Vec<SharedContentState>>> = Rc::default();
+    let (s, sc, st) = (show_target.handle(), seen.clone(), states.clone());
+    let mut ui =
+        ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+            let (sc, st) = (sc.clone(), st.clone());
+            SharedTransitionLayout!(move |scope: SharedTransitionScope| {
+                *sc.borrow_mut() = Some(scope.clone());
+                let st = st.clone();
+                AnimatedContent!(s.get(), move |content: AnimatedContentScope, show: bool| {
+                    let state = scope.remember_shared_content_state("box");
+                    if !st.borrow().contains(&state) {
+                        st.borrow_mut().push(state.clone());
+                    }
+                    let options = SharedOptions {
+                        render_in_overlay_during_transition: false,
+                        ..Default::default()
+                    };
+                    Box!(
+                        modifier = scope
+                            .shared_element_with(&state, &content, options)
+                            .size(if show { 100.dp() } else { 200.dp() })
+                    );
+                });
+            });
+        });
+    ui.wait_for_idle();
+    show_target.set(true);
+    ui.set_auto_advance(false);
+    for _ in 0..5 {
+        ui.advance_time_by_frame();
+    }
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    assert!(states.borrow().len() >= 2);
+    for state in states.borrow().iter() {
+        assert!(!scope.has_layer_for(state));
+    }
+    ui.set_auto_advance(true);
+    ui.wait_for_idle();
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testRenderInOverlayFalse_withContainerScale_calculatesCorrectPosition
+/// A shared element drawn in place inside a container scaling out moves to its match's place
+/// along its tween, its position in the root taking the container's scale in.
+#[test]
+fn render_in_overlay_false_with_container_scale_calculates_correct_position() {
+    let visible = mutable_state_of(true);
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let exit: Rc<RefCell<Option<Transition<EnterExitState>>>> = Rc::default();
+    let position: Rc<Cell<Option<Offset>>> = Rc::default();
+    let (v, sc, ex, p) = (visible.handle(), seen.clone(), exit.clone(), position.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let (sc, ex, p) = (sc.clone(), ex.clone(), p.clone());
+        SharedTransitionLayout!(
+            modifier = Modifier.test_tag("scope").required_size(100.dp()),
+            move |scope: SharedTransitionScope| {
+                *sc.borrow_mut() = Some(scope.clone());
+                let (s1, ex, p) = (scope.clone(), ex.clone(), p.clone());
+                AnimatedVisibility!(
+                    v.get(),
+                    enter = EnterTransition::NONE,
+                    exit = scale_out_with(
+                        tween(100).easing(LINEAR_EASING),
+                        0.1,
+                        compose_ui::TransformOrigin::CENTER
+                    ),
+                    move |visibility: AnimatedVisibilityScope| {
+                        *ex.borrow_mut() = Some(visibility.transition().clone());
+                        let state = s1.remember_shared_content_state("child");
+                        let options = SharedOptions {
+                            render_in_overlay_during_transition: false,
+                            bounds_transform: linear(100),
+                            ..Default::default()
+                        };
+                        let p = p.clone();
+                        Box!(
+                            modifier = s1
+                                .shared_element_with(&state, &visibility, options)
+                                .on_globally_positioned(move |it: LayoutCoordinates| {
+                                    p.set(Some(it.position_in_root()))
+                                })
+                                .required_size(50.dp())
+                        );
+                    }
+                );
+                let s2 = scope.clone();
+                AnimatedVisibility!(
+                    !v.get(),
+                    modifier = Modifier.offset(25.dp(), 25.dp()),
+                    enter = fade_in_with(tween(100).easing(LINEAR_EASING), 0.0),
+                    exit = ExitTransition::NONE,
+                    move |visibility: AnimatedVisibilityScope| {
+                        let state = s2.remember_shared_content_state("child");
+                        let options =
+                            SharedOptions { bounds_transform: linear(100), ..Default::default() };
+                        Box!(
+                            modifier = s2
+                                .shared_element_with(&state, &visibility, options)
+                                .required_size(50.dp())
+                        );
+                    }
+                );
+            }
+        );
+    });
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    assert!(!scope.is_transition_active());
+    start_transition(&mut ui, &visible, &scope);
+    let mut frames = 0;
+    while scope.is_transition_active() {
+        if let (Some(at), Some(exit)) = (position.get(), exit.borrow().as_ref()) {
+            let millis = exit.play_time_nanos() / 1_000_000;
+            let fraction = (millis as f32 / 100.0).clamp(0.0, 1.0);
+            let expected = 25.0 * fraction;
+            assert!((at.x - expected).abs() <= 2.0, "{at:?} at {fraction}");
+            assert!((at.y - expected).abs() <= 2.0, "{at:?} at {fraction}");
+        }
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        frames += 1;
+        assert!(frames < 300, "the transition ends");
+    }
+}
+
+/// Two `AnimatedVisibility`s fading over `millis`, the first shown while not `expanded`, each
+/// holding `content(scope, visibility, small)`.
+fn expanding_rule(
+    expanded: MutableState<bool>,
+    seen: Rc<RefCell<Option<SharedTransitionScope>>>,
+    millis: u32,
+    content: impl Fn(&SharedTransitionScope, &AnimatedVisibilityScope, bool) + 'static,
+) -> ComposeTestRule {
+    let content = Rc::new(content);
+    ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let (seen, content) = (seen.clone(), content.clone());
+        SharedTransitionLayout!(move |scope: SharedTransitionScope| {
+            *seen.borrow_mut() = Some(scope.clone());
+            for small in [true, false] {
+                let (scope, content) = (scope.clone(), content.clone());
+                let fade = tween(millis).easing(LINEAR_EASING);
+                AnimatedVisibility!(
+                    expanded.get() != small,
+                    enter = fade_in_with(fade.clone(), 0.0),
+                    exit = fade_out_with(fade.clone(), 0.0),
+                    move |visibility: AnimatedVisibilityScope| content(&scope, &visibility, small)
+                );
+            }
+        });
+    })
+}
+
+/// A shared element of `key`, 40 square while `small`, else 100, over a linear tween of
+/// `millis`, with `config` if any.
+fn expanding_element(
+    scope: &SharedTransitionScope,
+    visibility: &AnimatedVisibilityScope,
+    key: &'static str,
+    small: bool,
+    millis: u32,
+    config: Option<Rc<dyn SharedContentConfig>>,
+) {
+    let state = match config {
+        Some(config) => scope.remember_shared_content_state_with(key, config),
+        None => scope.remember_shared_content_state(key),
+    };
+    let options = SharedOptions { bounds_transform: linear(millis), ..Default::default() };
+    Box!(
+        modifier = scope.shared_element_with(&state, visibility, options).required_size(if small {
+            40.dp()
+        } else {
+            100.dp()
+        })
+    );
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testIsTransitionActive_lifecycle_multipleEntries
+/// Two keys matched at once: the transition is active while they animate, not after.
+#[test]
+fn is_transition_active_lifecycle_multiple_entries() {
+    let expanded = mutable_state_of(false);
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let mut ui =
+        expanding_rule(expanded.handle(), seen.clone(), 300, |scope, visibility, small| {
+            let (scope, visibility) = (scope.clone(), visibility.clone());
+            Column!(move |_| {
+                expanding_element(&scope, &visibility, "first", small, 300, None);
+                expanding_element(&scope, &visibility, "second", small, 300, None);
+            });
+        });
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    assert!(!scope.is_transition_active());
+    ui.set_auto_advance(false);
+    expanded.set(true);
+    ui.wait_for_idle();
+    ui.advance_time_by(std::time::Duration::from_millis(100));
+    ui.wait_for_idle();
+    assert!(scope.is_transition_active());
+    ui.set_auto_advance(true);
+    ui.wait_for_idle();
+    assert!(!scope.is_transition_active());
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testIsTransitionActive_modifierRemovedMidTransition
+/// The shared elements removed mid-transition: it's no longer active from the next frame.
+#[test]
+fn is_transition_active_modifier_removed_mid_transition() {
+    let expanded = mutable_state_of(false);
+    let has_shared_element = mutable_state_of(true);
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let has = has_shared_element.handle();
+    let mut ui =
+        expanding_rule(expanded.handle(), seen.clone(), 500, move |scope, visibility, small| {
+            if has.get() {
+                expanding_element(scope, visibility, "box", small, 500, None);
+            }
+        });
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    assert!(!scope.is_transition_active());
+    ui.set_auto_advance(false);
+    expanded.set(true);
+    ui.advance_time_by(std::time::Duration::from_millis(150));
+    ui.wait_for_idle();
+    assert!(scope.is_transition_active());
+    has_shared_element.set(false);
+    ui.advance_time_by_frame();
+    ui.wait_for_idle();
+    assert!(!scope.is_transition_active());
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testIsTransitionActive_configDisabledEntry
+/// A match one of whose contents is disabled makes no transition; enabled, the way back does.
+#[test]
+fn is_transition_active_config_disabled_entry() {
+    let expanded = mutable_state_of(false);
+    let enabled = mutable_state_of(false);
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let on = enabled.handle();
+    let mut ui =
+        expanding_rule(expanded.handle(), seen.clone(), 500, move |scope, visibility, small| {
+            let config = small.then(|| {
+                remember(move || Rc::new(EnabledWhile(on)) as Rc<dyn SharedContentConfig>)
+            });
+            expanding_element(scope, visibility, "box", small, 500, config);
+        });
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    assert!(!scope.is_transition_active());
+    ui.set_auto_advance(false);
+    expanded.set(true);
+    ui.advance_time_by(std::time::Duration::from_millis(150));
+    ui.wait_for_idle();
+    assert!(!scope.is_transition_active());
+    ui.set_auto_advance(true);
+    ui.wait_for_idle();
+    assert!(!scope.is_transition_active());
+    enabled.set(true);
+    ui.wait_for_idle();
+    ui.set_auto_advance(false);
+    expanded.set(false);
+    ui.advance_time_by(std::time::Duration::from_millis(150));
+    ui.wait_for_idle();
+    assert!(scope.is_transition_active());
+    ui.set_auto_advance(true);
+    ui.wait_for_idle();
+    assert!(!scope.is_transition_active());
+}
