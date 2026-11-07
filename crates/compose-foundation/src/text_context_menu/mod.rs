@@ -5,6 +5,7 @@
 
 pub mod builder;
 pub mod data;
+pub mod dropdown;
 pub mod modifier;
 pub mod platform_toolbar;
 pub mod provider;

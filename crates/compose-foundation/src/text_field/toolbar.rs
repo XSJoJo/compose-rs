@@ -39,7 +39,8 @@ pub(crate) struct FieldMenu {
 }
 
 /// Whether the clipboard holds something to paste, as Compose's internal `ClipboardPasteState`:
-/// known when it's updated (when a toolbar or a menu shows), never reading the clip itself, which
+/// known when it's updated (a field updates it when its toolbar shows), never reading the clip
+/// itself (a clipboard's `has_clip` and `has_text` mustn't), which
 /// would show Android's "pasted from your clipboard" notice (b/422754681). Compose's takes the
 /// clipboard when made; this one is given it at each update, the field's being the tree's while
 /// it's focused (D2035).
@@ -107,7 +108,8 @@ pub(crate) struct Toolbar {
     taps: u32,
     /// The toolbar was asked to show and not to hide since.
     requested: bool,
-    /// What the clipboard held when a toolbar or a menu last showed.
+    /// What the clipboard held when the toolbar last showed (Compose also updates it before a
+    /// right click's menu, which compose-rs's fields don't open yet).
     paste: ClipboardPasteState,
     handler: ToolbarHandler,
 }
@@ -261,8 +263,8 @@ impl TextFieldNode {
         }
     }
 
-    /// Asks the clipboard what it holds, as Compose's `updateClipboardEntry` when a toolbar or a
-    /// menu shows, and tells the items.
+    /// Asks the clipboard what it holds, as Compose's `updateClipboardEntry` when the toolbar
+    /// shows, and tells the items.
     pub(super) fn update_clipboard_entry(&mut self) {
         if let Some(clipboard) = self.touch.clipboard().cloned() {
             self.touch.toolbar.paste.update(&*clipboard);

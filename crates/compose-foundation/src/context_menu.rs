@@ -1,7 +1,14 @@
 //! The dropdown context menu's internals, as Compose's internal `foundation.contextmenu`: its
-//! state and where its popup goes (D2034). Hidden: compose-rs's tests are outside the crate.
+//! state and where its popup goes (D2034), its look and the area a right click opens it in
+//! (D2036). Hidden: compose-rs's tests are outside the crate.
 
 use std::rc::Rc;
+
+mod area;
+mod ui;
+
+pub use area::*;
+pub use ui::*;
 
 use compose_ui::{
     IntOffset, IntRect, IntSize, LayoutDirection, Offset, PopupPositionProvider, Rect,
