@@ -30,10 +30,14 @@ What can change a parent after that is a nested-scroll node attaching above (a c
 
 ## Scrollables in the tree's chain (D1918)
 
-A scrollable delegates to a `nested_scroll_modifier_node` whose connection is the scrollable's own, built once and kept current by the node's updates. That makes it the tree parent of the dispatchers inside it. The delegate isn't a pointer observer, because the scrollable already enters its own connection on the pointer's path.
+`Modifier.scrollable`, `vertical_scroll` and `horizontal_scroll` each delegate to a nested-scroll node (`nested_scroll_tree_node`) with a connection and a dispatcher of their own. That makes each the tree parent of the dispatchers inside it. The delegate isn't on the pointer's path, because the scrollable already enters a connection of its own there, built at each press.
 
-Drags and the wheel keep the pointer's path. The scrolls a pointer doesn't start take their chain from the delegate's dispatcher:
+The tree connection holds the scrollable's `ScrollTarget` (its state, axis, direction, fling behavior and density). The node sets it again on attach, on each update, when its density changes, and when a horizontal scroll's layout direction does. What a dispatcher inside leaves scrolls the state, unless a scroll of the state's own is going on (Compose's `performRawScroll`). A post-fling velocity flings it, its fling's parents found through its own dispatcher.
 
-- Page Up and Page Down;
-- the `ScrollBy` semantics action (Compose's `semanticsScrollBy`, skipped while a scroll capture is in progress);
-- the `ContentInView` animation's deltas.
+Drags, the wheel and flings keep the pointer's path. The scrolls a pointer doesn't start take their chain from the scrollable's dispatcher, resolved when they run:
+
+- Page Up and Page Down, in the task the key launches;
+- the `ScrollBy` semantics action, at once as before (D491), in a scope over `dispatch_raw_delta`;
+- the bring-into-view animation's deltas, in its scroll.
+
+**Not yet.** The lazy layouts and `scrollable_2d` aren't in the tree's chain: their keys, semantics actions and bring-into-view requests reach no connection, as before. A lazy list's estimated-end handling (D479) would need its own parents there too. `LocalScrollCaptureInProgress` doesn't exist, so a semantics scroll always dispatches.

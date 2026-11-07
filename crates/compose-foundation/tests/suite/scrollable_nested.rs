@@ -821,3 +821,232 @@ fn only_a_page_key_alone_going_down_scrolls() {
     ui.wait_for_idle();
     assert_eq!(total.get(), 0.0);
 }
+
+/// A scrollable taking all of what's left of a scrollable inside it taking half, as `orientation`
+/// goes; `inner_content` is inside the inner one, which carries `inner_tag`.
+fn half_inside_whole(
+    orientation: Orientation,
+    inner_tag: Option<&'static str>,
+    inner_content: fn(),
+) -> (ComposeTestRule, Rc<Cell<f32>>, Rc<Cell<f32>>) {
+    let (outer, outer_total) = consuming(1.0);
+    let (inner, inner_total) = consuming(0.5);
+    let ui = window(move || {
+        let inner = inner.clone();
+        Box!(
+            modifier = Modifier.size(300.dp()).scrollable(outer.clone(), orientation),
+            content_alignment = Alignment::CENTER,
+            {
+                let tagged = match inner_tag {
+                    Some(tag) => Modifier.test_tag(tag),
+                    None => Modifier,
+                };
+                Box!(modifier = tagged.size(300.dp()).scrollable(inner.clone(), orientation), {
+                    inner_content()
+                });
+            }
+        );
+    });
+    (ui, outer_total, inner_total)
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/ScrollableTest.kt, scrollable_nestedScroll_childPartialConsumptionForKeyboardPageUpAndDown
+#[test]
+fn a_page_key_s_rest_scrolls_the_scrollable_around() {
+    let (mut ui, outer, inner) = half_inside_whole(Orientation::Horizontal, None, || {
+        Box!(modifier = Modifier.test_tag("focus").focusable().size(300.dp()));
+    });
+    ui.on_node_with_tag("focus").request_focus();
+    ui.wait_for_idle();
+    ui.press_key(compose_ui::Key::PageDown);
+    ui.wait_for_idle();
+    assert!(outer.get() < 0.0);
+    assert!(inner.get() < 0.0);
+    assert_eq!(inner.get(), outer.get());
+    outer.set(0.0);
+    inner.set(0.0);
+    ui.press_key(compose_ui::Key::PageUp);
+    ui.wait_for_idle();
+    assert!(outer.get() > 0.0);
+    assert!(inner.get() > 0.0);
+    assert_eq!(inner.get(), outer.get());
+}
+
+/// Performs the `ScrollBy` semantics action on `tag` by `(x, y)`.
+fn semantics_scroll_by(ui: &mut ComposeTestRule, tag: &str, x: f32, y: f32) {
+    let node = ui.on_node_with_tag(tag).fetch_semantics_snapshot();
+    let handled = ui.host().perform_semantics_action_with(
+        node.id,
+        &compose_ui::SemanticsActions::SCROLL_BY,
+        |scroll| scroll(x, y),
+    );
+    assert!(handled);
+    ui.wait_for_idle();
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/ScrollableTest.kt, scrollable_nestedScroll_childPartialConsumptionForSemantics_horizontal
+#[test]
+fn a_semantics_scroll_s_rest_scrolls_the_scrollable_around_sideways() {
+    let (mut ui, outer, inner) = half_inside_whole(Orientation::Horizontal, Some("inner"), || {});
+    semantics_scroll_by(&mut ui, "inner", 200.0, 0.0);
+    assert!(inner.get() > 0.0);
+    assert!(outer.get() > 0.0);
+    assert_eq!(inner.get(), outer.get());
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/ScrollableTest.kt, scrollable_nestedScroll_childPartialConsumptionForSemantics_vertical
+#[test]
+fn a_semantics_scroll_s_rest_scrolls_the_scrollable_around_vertically() {
+    let (mut ui, outer, inner) = half_inside_whole(Orientation::Vertical, Some("inner"), || {});
+    semantics_scroll_by(&mut ui, "inner", 0.0, 200.0);
+    assert!(inner.get() > 0.0);
+    assert!(outer.get() > 0.0);
+    assert_eq!(inner.get(), outer.get());
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/ScrollableTest.kt, scrollable_nestedScrollBelow_listensDispatches
+#[test]
+fn a_scrollable_hears_a_dispatcher_inside_it() {
+    let last_consumed = Rc::new(Cell::new(0.0f32));
+    let value = Rc::new(Cell::new(0.0f32));
+    let (consumed, total) = (last_consumed.clone(), value.clone());
+    let state = scrollable_state(move |delta| {
+        consumed.set(delta * 0.3);
+        total.set(total.get() + delta * 0.3);
+        delta * 0.3
+    });
+    let dispatcher = compose_ui::NestedScrollDispatcher::new();
+    let given = dispatcher.clone();
+    let mut ui = window(move || {
+        let given = given.clone();
+        Box!(
+            modifier = Modifier.size(300.dp()).scrollable(state.clone(), Orientation::Horizontal),
+            {
+                let none: Rc<dyn NestedScrollConnection> = Rc::new(NoConnection);
+                Box!(
+                    modifier =
+                        Modifier.size(200.dp()).nested_scroll_with(none, Some(given.clone()))
+                );
+            }
+        );
+    });
+    let source = NestedScrollSource::UserInput;
+    let pre = dispatcher.dispatch_pre_scroll(Offset::new(20.0, 20.0), source);
+    assert_eq!(pre, Offset::ZERO, "a scrollable takes no pre-scroll");
+    let taken =
+        dispatcher.dispatch_post_scroll(Offset::new(20.0, 20.0), Offset::new(50.0, 50.0), source);
+    assert!(taken.x != 0.0);
+    assert!((taken.x - last_consumed.get()).abs() < 0.001, "{taken:?}");
+    assert_eq!(taken.y, 0.0, "across its axis");
+    let before_fling = value.get();
+    let scope = dispatcher.coroutine_scope();
+    let pre_fling = Rc::new(Cell::new(None));
+    let (fling_dispatcher, heard) = (dispatcher.clone(), pre_fling.clone());
+    scope.launch(async move {
+        heard.set(Some(fling_dispatcher.dispatch_pre_fling(Offset::new(50.0, 50.0)).await));
+    });
+    ui.wait_for_idle();
+    assert_eq!(pre_fling.get(), Some(Offset::ZERO), "a scrollable takes no pre-fling");
+    scope.launch(async move {
+        dispatcher
+            .dispatch_post_fling(Offset::new(1000.0, 1000.0), Offset::new(2000.0, 2000.0))
+            .await;
+    });
+    ui.wait_for_idle();
+    assert!(value.get() > before_fling, "it flung");
+}
+
+/// Adds up the pre-scrolls it's offered along x, taking nothing.
+struct PreScrollTally(Cell<f32>);
+
+impl NestedScrollConnection for PreScrollTally {
+    fn on_pre_scroll(&self, available: Offset, _: NestedScrollSource) -> Offset {
+        self.0.set(self.0.get() + available.x);
+        Offset::ZERO
+    }
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/ScrollableTest.kt, focusScroll_nestedScroll_childPartialConsumptionForSemantics
+#[test]
+fn bringing_into_view_scrolls_through_the_connections_around() {
+    let tally = Rc::new(PreScrollTally(Cell::new(0.0)));
+    let connection: Rc<dyn NestedScrollConnection> = tally.clone();
+    let requester = BringIntoViewRequester::new();
+    let owner = ScrollState::new(0);
+    let state = *owner;
+    let given = requester.clone();
+    let mut ui = window(move || {
+        let given = given.clone();
+        Box!(modifier = Modifier.nested_scroll(connection.clone()), {
+            let given = given.clone();
+            Row!(modifier = Modifier.size(300.dp()).horizontal_scroll(state), {
+                for _ in 0..5 {
+                    Box!(modifier = Modifier.size(100.dp()));
+                }
+                Box!(modifier = Modifier.size(100.dp()).bring_into_view_requester(given.clone()));
+            });
+        });
+    });
+    crate::scroll_support::run(&mut ui, async move { requester.bring_into_view(None).await });
+    ui.wait_for_idle();
+    assert!(tally.0.get() != 0.0);
+    assert!(
+        (tally.0.get() + state.value() as f32).abs() <= 1.0,
+        "{} {}",
+        tally.0.get(),
+        state.value()
+    );
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/ScrollableTest.kt, onNestedFlingCancelled_shouldResetFlingState
+#[test]
+fn a_parent_flings_again_after_a_child_s_fling_was_cancelled() {
+    let (outer, outer_total) = consuming(1.0);
+    let (inner, _) = consuming(1.0);
+    let dispatcher = compose_ui::NestedScrollDispatcher::new();
+    let (given, given_inner) = (dispatcher.clone(), inner.clone());
+    let mut ui = window(move || {
+        let (given, inner) = (given.clone(), given_inner.clone());
+        Box!(
+            modifier = Modifier.size(400.dp()).scrollable(outer.clone(), Orientation::Vertical),
+            content_alignment = Alignment::CENTER,
+            {
+                let none: Rc<dyn NestedScrollConnection> = Rc::new(NoConnection);
+                Box!(
+                    modifier = Modifier
+                        .size(200.dp())
+                        .nested_scroll_with(none, Some(given.clone()))
+                        .scrollable(inner.clone(), Orientation::Vertical)
+                );
+            }
+        );
+    });
+    let scope = CoroutineScope::new();
+    let fling = |scope: &CoroutineScope| {
+        let (inner, dispatcher) = (inner.clone(), dispatcher.clone());
+        scope.launch(async move {
+            let _ = inner
+                .scroll(MutatePriority::Default, move |_| async move {
+                    let velocity = Offset::new(0.0, 10000.0);
+                    dispatcher.dispatch_pre_fling(velocity).await;
+                    dispatcher.dispatch_post_fling(Offset::ZERO, velocity).await;
+                })
+                .await;
+        })
+    };
+    ui.set_auto_advance(false);
+    let job = fling(&scope);
+    ui.advance_time_by(Duration::from_millis(200));
+    assert!(outer_total.get() != 0.0, "the outer one flings from its post-fling");
+    outer_total.set(0.0);
+    job.cancel();
+    fling(&scope);
+    ui.set_auto_advance(true);
+    ui.wait_for_idle();
+    assert!(outer_total.get() != 0.0, "and flings again after the first was cancelled");
+}
+
+/// A connection that takes nothing, as `object : NestedScrollConnection {}`.
+struct NoConnection;
+
+impl NestedScrollConnection for NoConnection {}

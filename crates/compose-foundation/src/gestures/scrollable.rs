@@ -788,6 +788,11 @@ pub(crate) struct ScrollableNode {
     /// requests go to the containers around it, as Compose's decorator above its scrollable
     /// asks its parents (D2017).
     field: bool,
+    /// Its place in the tree's nested-scroll chain (D1918), its node a delegate.
+    tree: crate::scroll::NestedTree,
+    delegates: compose_ui::Delegates,
+    /// Pixels per dp where it's attached, for its tree connection's flings.
+    density: f32,
 }
 
 impl<S: ScrollableState + ComposeArg + Clone + 'static> ModifierNodeElement
@@ -796,6 +801,9 @@ impl<S: ScrollableState + ComposeArg + Clone + 'static> ModifierNodeElement
     type Node = ScrollableNode;
 
     fn create(&self) -> ScrollableNode {
+        let (tree, tree_node) = crate::scroll::NestedTree::new();
+        let mut delegates = compose_ui::Delegates::new();
+        delegates.delegate(tree_node);
         ScrollableNode {
             state: Box::new(self.state.clone()),
             dyn_state: self.dyn_state.clone(),
@@ -810,6 +818,9 @@ impl<S: ScrollableState + ComposeArg + Clone + 'static> ModifierNodeElement
             content_in_view: None,
             measured: compose_ui::IntSize::ZERO,
             field: self.field,
+            tree,
+            delegates,
+            density: 1.0,
         }
     }
 
@@ -844,6 +855,7 @@ impl<S: ScrollableState + ComposeArg + Clone + 'static> ModifierNodeElement
         if let Some(content_in_view) = &node.content_in_view {
             content_in_view.set_config(node.content_in_view_config());
         }
+        node.tell_tree();
     }
 
     fn same(&self, other: &Self) -> bool {
@@ -881,7 +893,30 @@ impl ScrollableNode {
             reverse_direction: self.reverse_direction,
             spec: self.bring_into_view_spec.clone(),
             pending: None,
+            tree: Some(self.tree.clone()),
         }
+    }
+
+    /// Its driver, as its events and its tree connection scroll.
+    fn driver<'a>(
+        &'a self,
+        interaction_source: Option<&'a MutableInteractionSource>,
+    ) -> crate::scroll::ScrollDriver<'a> {
+        crate::scroll::ScrollDriver {
+            state: &self.dyn_state,
+            fling_behavior: self.fling_behavior.as_ref(),
+            interaction_source,
+            state_source: false,
+            set_outer: None,
+            overscroll: self.overscroll.as_ref(),
+        }
+    }
+
+    /// Tells its tree connection what it scrolls now.
+    fn tell_tree(&self) {
+        let target =
+            self.drag.tree_target(&self.driver(None), !self.reverse_direction, self.density);
+        self.tree.set_target(target);
     }
 
     pub(crate) fn drag_gesture(&self) -> (Option<super::Orientation>, super::GestureState) {
@@ -914,7 +949,8 @@ impl compose_ui::KeyInputModifierNode for ScrollableNode {
             set_outer: None,
             overscroll: self.overscroll.as_ref(),
         };
-        self.drag.on_key_event(event, self.vertical, !self.reverse_direction, context, &driver)
+        let reverse = !self.reverse_direction;
+        self.drag.on_key_event(event, self.vertical, reverse, context, &driver, Some(&self.tree))
     }
 }
 
@@ -983,6 +1019,20 @@ impl ModifierNode for ScrollableNode {
         }
     }
 
+    fn on_attach(&mut self, context: &mut compose_ui::NodeContext<'_>) {
+        self.density = context.require_density().density;
+        self.tell_tree();
+    }
+
+    fn on_density_change(&mut self, context: &mut compose_ui::NodeContext<'_>) {
+        self.density = context.require_density().density;
+        self.tell_tree();
+    }
+
+    fn delegates(&mut self) -> Option<&mut compose_ui::Delegates> {
+        Some(&mut self.delegates)
+    }
+
     fn as_bring_into_view_responder(
         &mut self,
     ) -> Option<&mut dyn compose_ui::BringIntoViewResponderNode> {
@@ -1026,14 +1076,15 @@ impl compose_ui::SemanticsModifierNode for ScrollableNode {
         if !self.enabled {
             return;
         }
-        let (state, vertical) = (self.dyn_state.clone(), self.vertical);
+        let (tree, vertical) = (self.tree.clone(), self.vertical);
+        let state = self.dyn_state.clone();
         config.scroll_by(None, move |x, y| {
-            // The state's own way, as Compose's `semanticsScrollBy` (its two reversals cancel);
-            // handled even where nothing moves (an edge), as Compose's action returns true
-            // (D877).
+            // The state's own way, as Compose's `semanticsScrollBy` (its two reversals cancel),
+            // through the nested-scroll nodes above (D1918); handled even where nothing moves (an
+            // edge), as Compose's action returns true (D877).
             let delta = if vertical { y } else { x };
             if delta != 0.0 {
-                state.dispatch_raw_delta(delta);
+                tree.scroll_now(&state, delta);
             }
             true
         });

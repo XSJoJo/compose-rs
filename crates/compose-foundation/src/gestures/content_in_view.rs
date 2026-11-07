@@ -40,6 +40,9 @@ pub(crate) struct ContentInViewConfig {
     /// The scroll asked for and not laid out yet, in the state's pixels: a `vertical_scroll`'s,
     /// which lays its content out itself (a scroll's bounds are read before its layout).
     pub(crate) pending: Option<Rc<dyn Fn() -> f32>>,
+    /// The container's place in the tree's nested-scroll chain: the animation's deltas go
+    /// through the nested-scroll nodes above, as Compose's through `ScrollingLogic` (D1918).
+    pub(crate) tree: Option<crate::scroll::NestedTree>,
 }
 
 impl ContentInViewConfig {
@@ -406,8 +409,15 @@ impl ContentInView {
                         .animate_to_zero(
                             frames,
                             |delta| {
-                                let multiplier = this.config.borrow().multiplier();
-                                let consumed = multiplier * scroll.scroll_by(multiplier * delta);
+                                let (multiplier, tree) = {
+                                    let config = this.config.borrow();
+                                    (config.multiplier(), config.tree.clone())
+                                };
+                                let consumed = multiplier
+                                    * match &tree {
+                                        Some(tree) => tree.scroll_in(&scroll, multiplier * delta),
+                                        None => scroll.scroll_by(multiplier * delta),
+                                    };
                                 // What the state didn't take this frame it won't take later (an
                                 // edge): the animation ends here, its requests cancelled, or it
                                 // would ask forever.
