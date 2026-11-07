@@ -119,6 +119,7 @@ mod review_api_d;
 mod review_autofill;
 mod review_autofill_2;
 mod review_basic_text_paragraphs;
+mod review_bidi_selection;
 mod review_c8;
 mod review_d470;
 mod review_d475;
