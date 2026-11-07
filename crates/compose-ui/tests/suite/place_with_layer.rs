@@ -521,3 +521,39 @@ fn a_graphics_layer_where_a_dropped_placed_layer_started_stays_a_group() {
     let [inner] = keys(&list)[..] else { panic!("one group\n{}", list.dump()) };
     assert_eq!(group(&list, inner).layer.expect("a layer").alpha, 0.75);
 }
+
+/// A node placed with a layer leaving the tree drops its layer's block, what it captured with
+/// it: the layers are kept apart from the node (`UiTree::placement_layers`), not with it.
+#[test]
+fn a_node_placed_with_a_layer_leaving_drops_its_block() {
+    let token = Rc::new(());
+    let shown = mutable_state_of(true);
+    let (handle, captured) = (shown.handle(), token.clone());
+    let mut host = host(move || {
+        if handle.get() {
+            let captured = captured.clone();
+            let policy = measure_policy(move |scope, measurables, constraints| {
+                let placeable = scope.measure(measurables[0], constraints);
+                let captured = captured.clone();
+                scope.layout_with(100, 100, move |placement| {
+                    let captured = captured.clone();
+                    placement.place_with_layer(
+                        &placeable,
+                        0,
+                        0,
+                        move |layer: &mut GraphicsLayerScope| {
+                            let _ = &captured;
+                            layer.alpha = 0.5;
+                        },
+                    );
+                })
+            });
+            Layout(Modifier, policy, callback(|| Leaf(painted("child", Color::RED).size(10.dp()))));
+        }
+    });
+    // The test's and the content's, and the policy's, its block's and the layer's.
+    assert!(Rc::strong_count(&token) > 2);
+    shown.set(false);
+    host.frame();
+    assert_eq!(Rc::strong_count(&token), 2, "what the layer's block captured is dropped");
+}
