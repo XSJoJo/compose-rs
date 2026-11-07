@@ -1126,7 +1126,11 @@ impl TextFieldNode {
             constraints.constrain(text).width
         };
         let size = IntSize::new(width, height);
-        Some(compose_ui::TextLayoutResult::new(input, measurer.paragraph(paragraph), size))
+        let multi_paragraph = compose_ui::MultiParagraph::of_paragraph(
+            input.text.clone(),
+            measurer.paragraph(paragraph),
+        );
+        Some(compose_ui::TextLayoutResult::new(input, std::rc::Rc::new(multi_paragraph), size))
     }
 
     /// A finger's later press of a multi-tap at `at`: a long press's start (D2018).

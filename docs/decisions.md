@@ -19,7 +19,7 @@ The log is split by area into the files below, one table each, rows in number or
 |---|---|---|
 | [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 182 |
 | [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 439 |
-| [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 135 |
+| [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 136 |
 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md) | Lazy lists and grids, item reuse, the policy of composing only what is in view, prefetch. | 119 |
 | [android-drawing](decisions/android-drawing.md) | The display list and its replayer, render nodes and repaint boundaries, paths, shadows, layers. | 34 |
 | [android-host-and-performance](decisions/android-host-and-performance.md) | The view and activity glue, the frame loop, the hint session, jank, startup, memory, and the optimization flags. | 31 |
@@ -665,7 +665,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1102 | [text](decisions/text.md#d1102) | current |
 | D1103 | [text](decisions/text.md#d1103) | revised by D1125 |
 | D1104 | [text](decisions/text.md#d1104) | current |
-| D1105 | [text](decisions/text.md#d1105) | revised by [D1108](decisions/text.md#d1108), [D1109](decisions/text.md#d1109), [D1110](decisions/text.md#d1110), [D1111](decisions/text.md#d1111) |
+| D1105 | [text](decisions/text.md#d1105) | revised by [D1108](decisions/text.md#d1108), [D1109](decisions/text.md#d1109), [D1110](decisions/text.md#d1110), [D1111](decisions/text.md#d1111), [D2047](decisions/text.md#d2047) |
 | D1106 | [text](decisions/text.md#d1106) | revised by [D1107](decisions/text.md#d1107) |
 | D1107 | [text](decisions/text.md#d1107) | current |
 | D1108 | [text](decisions/text.md#d1108) | revised by [D1114](decisions/text.md#d1114) |
@@ -1083,3 +1083,4 @@ The log is split by area into the files below, one table each, rows in number or
 | D2044 | [text](decisions/text.md#d2044) | current |
 | D2045 | [text](decisions/text.md#d2045) | current |
 | D2046 | [text](decisions/text.md#d2046) | current |
+| D2047 | [text](decisions/text.md#d2047) | current |

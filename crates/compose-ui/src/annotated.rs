@@ -400,6 +400,12 @@ impl AnnotatedString {
         self.span_style_ranges().next().is_some()
     }
 
+    /// Whether any paragraph style is over the text: it lays out as paragraphs of their own
+    /// (D2047).
+    pub fn has_paragraph_styles(&self) -> bool {
+        self.annotations.iter().any(|range| matches!(range.item, Annotation::ParagraphStyle(_)))
+    }
+
     pub(crate) fn span_style_ranges(&self) -> impl Iterator<Item = (&SpanStyle, usize, usize)> {
         self.annotations.iter().filter_map(|range| match &range.item {
             Annotation::SpanStyle(style) => Some((style, range.start, range.end)),

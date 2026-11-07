@@ -28,6 +28,7 @@ mod layout_coordinates;
 mod lookahead;
 mod modifier_locals;
 mod modifier_nodes;
+mod multi_paragraph;
 mod mutable_paths;
 mod node_invalidation;
 mod node_locals;
