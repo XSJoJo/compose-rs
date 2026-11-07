@@ -294,3 +294,59 @@ fn contextMenu_fullSelection_itemsMatch() {
 }
 
 // endregion Context Menu Correct Item Tests
+
+// Not Compose's: a right click on a field inside a container opens the field's menu alone, as
+// Compose's container's right click takes only a press nothing below took (`changedToDown`,
+// D2042).
+#[test]
+fn a_right_click_on_a_field_in_a_container_opens_the_fields_menu_alone() {
+    let state = **Box::leak(Box::new(compose_foundation::TextFieldState::with_selection(
+        "Text",
+        compose_ui::TextRange::new(0, 4),
+    )));
+    let mut ui = rule_with(Rc::new(MemoryClipboard::default()), move || {
+        SelectionContainer!({
+            BasicTextFieldOfState!(state, modifier = Modifier.test_tag("field"));
+        });
+    });
+    ui.on_node_with_tag("field").perform_mouse_input(|mouse| {
+        let center = mouse.center();
+        mouse.right_click(center);
+    });
+    assert_eq!(ui.on_all_nodes(is_popup()).fetch_semantics_nodes().len(), 1);
+    item(&mut ui, CUT).assert_exists();
+}
+
+// Not Compose's (its tests check the top alone): a long press's toolbar goes around the selected
+// word, in the window, its bottom four handles' heights (100 px) lower, as Compose's
+// `getContentRect` (D2041).
+#[test]
+fn the_toolbars_rect_is_the_selected_words_with_room_for_the_handles() {
+    let mut ui = container_rule();
+    ui.on_node_with_tag(TEXT_TAG).perform_touch_input(|touch| {
+        let center = touch.center();
+        let duration = touch.view_configuration().long_press_timeout_millis + 100;
+        touch.long_click_at(center, duration);
+    });
+    ui.wait_for_idle();
+    assert_eq!(selection(&mut ui), Some((5, 9)));
+    let text = ui.on_node_with_tag(TEXT_TAG).fetch_semantics_snapshot().bounds;
+    let mut results = Vec::new();
+    ui.on_node_with_tag(TEXT_TAG).perform_semantics_action_with(
+        &compose_ui::SemanticsActions::GET_TEXT_LAYOUT_RESULT,
+        |get| {
+            get(&mut results);
+        },
+    );
+    let layout = results.pop().expect("a text layout");
+    let (first, last) = (layout.get_bounding_box(5), layout.get_bounding_box(8));
+    let word = compose_ui::Rect::new(
+        first.left.min(last.left),
+        first.top.min(last.top),
+        first.right.max(last.right),
+        first.bottom.max(last.bottom),
+    )
+    .translate(Offset::new(text.left, text.top));
+    let expected = compose_ui::Rect::new(word.left, word.top, word.right, word.bottom + 100.0);
+    assert_eq!(ui.text_toolbar().content_rect(), Some(expected));
+}

@@ -208,3 +208,28 @@ fn whenFullSelection_itemsMatch() {
         &[TextContextMenuKeys::Copy],
     );
 }
+
+// Not Compose's (`isEntireContainerSelected` has no test of its own): an empty text is selected
+// whole already, so a container whose other text is wholly selected offers no "Select all"
+// (D2041).
+#[test]
+fn an_empty_text_is_selected_whole_already() {
+    let reader = DataInvoker::default();
+    let modifier = reader.reader();
+    let mut ui = ComposeTestRule::sized(IntSize::new(400, 400), move || {
+        let modifier = modifier.clone();
+        SelectionContainer!({
+            let modifier = modifier.clone();
+            Column!(modifier = modifier, {
+                BasicText!("", modifier = Modifier.test_tag("empty"));
+                BasicText!("Text", modifier = Modifier.test_tag(TEXT_TAG));
+            });
+        });
+    });
+    ui.on_node_with_tag(TEXT_TAG).perform_touch_input(|touch| touch.long_click());
+    ui.wait_for_idle();
+    assert_eq!(selection(&mut ui), Some((0, 4)));
+    let keys: Vec<TextContextMenuKey> =
+        reader.invoke_traversal().components.iter().map(|it| it.key()).collect();
+    assert_eq!(keys, vec![TextContextMenuKeys::Copy.key()]);
+}
