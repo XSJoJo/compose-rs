@@ -156,8 +156,11 @@ impl UiTree {
         } else {
             self.draw_pass::<true>()
         };
+        // Only drawing code changes a layer in a pass, so a pass that told drawings drew: what
+        // the second one draws doesn't change what `draw` returns.
         if crate::graphics_layer_object::take_pass_told() {
-            return self.draw_again() || drew;
+            debug_assert!(drew, "a pass drawing nothing told drawings of a layer");
+            self.draw_again();
         }
         drew
     }
@@ -167,17 +170,16 @@ impl UiTree {
     /// once, as Compose's render node is current at once (D1331).
     #[cold]
     #[inline(never)]
-    fn draw_again(&mut self) -> bool {
+    fn draw_again(&mut self) {
         // The layers' versions were written outside a snapshot: their readers hear of it now.
         compose_runtime::snapshots::Snapshot::send_apply_notifications();
-        let drew = if self.placed_layer_nodes == 0 {
-            self.draw_pass::<false>()
+        if self.placed_layer_nodes == 0 {
+            self.draw_pass::<false>();
         } else {
-            self.draw_pass::<true>()
-        };
+            self.draw_pass::<true>();
+        }
         // A layer changing again in that pass draws its drawings in the next frame.
         crate::graphics_layer_object::take_pass_told();
-        drew
     }
 
     /// `draw`, `P` saying whether a node has a layer placed with one (D1909).
