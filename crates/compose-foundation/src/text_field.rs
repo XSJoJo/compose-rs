@@ -1154,8 +1154,9 @@ impl TextFieldNode {
             constraints.constrain(text).width
         };
         let size = IntSize::new(width, height);
-        let multi_paragraph = compose_ui::MultiParagraph::of_paragraph(
-            input.text.clone(),
+        // Painted, it lays its input out again (D2053).
+        let multi_paragraph = compose_ui::MultiParagraph::of_paragraph_of(
+            &input,
             measurer.paragraph(paragraph),
             input.max_lines,
         );

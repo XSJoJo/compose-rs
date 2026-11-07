@@ -1045,6 +1045,26 @@ impl DrawScope<'_> {
         }
     }
 
+    /// Draws `multi_paragraph` at the origin in `style`'s paint, each paragraph at its top, a
+    /// gradient spanning them all: a text node's drawing of its layout (`BasicText`'s of a text
+    /// with paragraph styles, laid out by [`MultiParagraph::new_in_paint_of`], D2053), as
+    /// Compose's `TextAnnotatedStringNode` paints its `MultiParagraph` in its style. A paragraph
+    /// laid out in that paint draws as it is; in another (the style's paint changed since), a copy
+    /// in it is made once and kept, as a measurer's result drawn in another color (D1116).
+    #[doc(hidden)]
+    pub fn draw_multi_paragraph(&mut self, multi_paragraph: &MultiParagraph, style: &TextStyle) {
+        let parts = multi_paragraph.parts();
+        let whole = Size::new(multi_paragraph.width(), multi_paragraph.height());
+        let paint = TextPaint::of(style);
+        for part in parts {
+            let paint = spanning(&paint, parts.len(), whole, part.top);
+            let paragraph =
+                self.drawable_of_part(part).in_paint(&paint, &part.style, part.source());
+            self.list.laid_out_paragraphs.push(paragraph.keeper().clone());
+            self.draw_paragraph(paragraph.handle(), Offset::new(0.0, part.top));
+        }
+    }
+
     /// The paragraph of a multi-paragraph text this drawing's renderer can draw, as
     /// [`drawable_of`](Self::drawable_of) a text's.
     fn drawable_of_part(&self, part: &StackedParagraph) -> LaidOutParagraph {

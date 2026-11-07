@@ -3,6 +3,8 @@
 //! style or constraints change.
 
 use compose_runtime::{Callback, composable};
+use std::rc::Rc;
+
 use compose_ui::{
     AnnotatedString, Constraints, DrawModifierNode, DrawScope, IntrinsicMeasureScope, Layout,
     LayoutModifierNode, Measurable, MeasureResult, MeasureScope, Modifier, ModifierNode,
@@ -356,6 +358,7 @@ impl ModifierNodeElement for TextElement {
             selectable: self.selectable,
             selection_color: self.selection_color,
             version: 0,
+            paragraphs: Paragraphs::of(&self.text),
         }
     }
 
@@ -380,6 +383,9 @@ impl ModifierNodeElement for TextElement {
             let probe = node.probe.take().map(|probe| probe.paragraph);
             node.stale.extend(node.paragraph.take().into_iter().chain(probe));
             node.constraints = None;
+            // Laid out anew, as paragraphs if it has paragraph styles (their platform paragraphs
+            // go back to the measurer once dropped).
+            node.paragraphs = Paragraphs::of(&node.text);
         } else if node.style != self.style {
             // Only its paint changed (its color, its decoration): the layout is kept and drawn
             // again in the new paint, as Compose's `updateDraw` (`hasSameDrawAffectingAttributes`).
@@ -456,6 +462,62 @@ pub(crate) struct TextNode {
     selection_color: compose_ui::Color,
     /// Bumped when the text changes.
     version: u64,
+    /// A text with paragraph styles: laid out as paragraphs, each its own platform paragraph,
+    /// where `paragraph` and `probe` stay `None` (D2053). A text without them has none, and lays
+    /// out as one platform paragraph.
+    paragraphs: Option<Box<Paragraphs>>,
+}
+
+/// A text with paragraph styles laid out as Compose's `MultiParagraphLayoutCache` lays it out
+/// (D2053): split into paragraphs (`MultiParagraphIntrinsics`), each in its style, laid out one
+/// below the other (`MultiParagraph`) at the width Compose's `finalMaxWidth` gives, kept while
+/// Compose's `newLayoutWillBeDifferent` says so.
+#[derive(Default)]
+struct Paragraphs {
+    intrinsics: Option<KeptIntrinsics>,
+    layout: Option<ParagraphsLayout>,
+    /// The last intrinsic height asked for, and its width, from `intrinsics`.
+    intrinsic_height: Option<(i32, i32)>,
+}
+
+/// The text's paragraphs and their widths, and what they were made in.
+#[derive(Clone)]
+struct KeptIntrinsics {
+    intrinsics: Rc<compose_ui::MultiParagraphIntrinsics>,
+    density: compose_ui::Density,
+    direction: compose_ui::LayoutDirection,
+    resolver: compose_ui::FontFamilyResolver,
+    locales: compose_ui::LocaleList,
+}
+
+impl KeptIntrinsics {
+    /// Whether they're the text's in `scope`'s setting: its density, layout direction, font
+    /// resolver and locales, and no font they resolved to arrived since.
+    fn hold_in(&self, scope: &IntrinsicMeasureScope<'_>) -> bool {
+        self.density == scope.density()
+            && self.direction == scope.layout_direction()
+            && self.resolver == scope.current_value_of(&compose_ui::LOCAL_FONT_FAMILY_RESOLVER)
+            && self.locales == scope.current_value_of(&compose_ui::LOCAL_LOCALE_LIST)
+            && !self.intrinsics.has_stale_resolved_fonts()
+    }
+}
+
+/// The text laid out at `constraints` from `from`'s paragraphs, `size` big: kept through other
+/// paragraphs made since for another setting (intrinsics asked in another direction), as Compose's
+/// layout cache keeps its result.
+struct ParagraphsLayout {
+    multi_paragraph: Rc<compose_ui::MultiParagraph>,
+    from: KeptIntrinsics,
+    constraints: Constraints,
+    size: compose_ui::IntSize,
+}
+
+impl Paragraphs {
+    /// Paragraphs to lay `text` out as, if it has paragraph styles: a text without them lays out
+    /// as one platform paragraph, its node's fast path.
+    fn of(text: &AnnotatedString) -> Option<Box<Paragraphs>> {
+        text.has_paragraph_styles().then(Box::default)
+    }
 }
 
 /// A paragraph laid out for the intrinsics, at `constraints`, in `density` and `direction`.
@@ -495,6 +557,10 @@ impl ModifierNode for TextNode {
         let paragraphs = self.paragraph.take().into_iter().chain(self.stale.drain(..));
         for paragraph in paragraphs.chain(probe) {
             context.release_paragraph(paragraph);
+        }
+        // Its paragraphs' platform paragraphs go back once dropped (at the end of the next draw).
+        if let Some(paragraphs) = &mut self.paragraphs {
+            **paragraphs = Paragraphs::default();
         }
     }
 }
@@ -646,6 +712,261 @@ impl TextNode {
     }
 }
 
+/// The most lines a text is laid out with, as Compose's `finalMaxLines`: one for an ellipsis
+/// without wrapping.
+fn final_max_lines_of(options: TextLayoutOptions) -> u32 {
+    if !options.soft_wrap && options.overflow.is_ellipsis() { 1 } else { options.max_lines }
+}
+
+/// `intrinsics`' paragraphs laid out for `constraints`, as Compose's `MultiParagraphLayoutCache`
+/// (`layoutText`): at Compose's `finalMaxWidth` (their widest paragraph's width kept within the
+/// constraints), with Compose's `finalMaxLines`; known as drawn in `paint`'s paint when given (a
+/// layout to draw), else in each paragraph's own (one only measured).
+fn lay_out_paragraphs(
+    intrinsics: &Rc<compose_ui::MultiParagraphIntrinsics>,
+    options: TextLayoutOptions,
+    constraints: Constraints,
+    paint: Option<&TextStyle>,
+) -> compose_ui::MultiParagraph {
+    let width = final_max_width(constraints, options, intrinsics.max_intrinsic_width());
+    let constraints = Constraints::fit_prioritizing_width(0, width, 0, constraints.max_height);
+    let max_lines = final_max_lines_of(options);
+    let intrinsics = intrinsics.clone();
+    match paint {
+        Some(style) => compose_ui::MultiParagraph::new_in_paint_of(
+            intrinsics,
+            constraints,
+            max_lines,
+            options.overflow,
+            style,
+        ),
+        None => {
+            compose_ui::MultiParagraph::new(intrinsics, constraints, max_lines, options.overflow)
+        }
+    }
+}
+
+/// Whether `layout` must be laid out again for `new`, as Compose's `MultiParagraphLayoutCache`
+/// decides (`newLayoutWillBeDifferent`), as [`new_layout_will_be_different`] for one paragraph:
+/// with `reuse_at_same_width` (D551), another width bound keeps it when its width
+/// (`finalMaxWidth`, from the paragraphs' own widths) stays the same.
+fn paragraphs_layout_will_be_different(
+    reuse_at_same_width: bool,
+    options: TextLayoutOptions,
+    layout: &ParagraphsLayout,
+    new: Constraints,
+) -> bool {
+    let old = layout.constraints;
+    if new == old {
+        return false;
+    }
+    if new.min_width != old.min_width || new.max_width != old.max_width {
+        let own = layout.from.intrinsics.max_intrinsic_width();
+        let same_width = final_max_width(old, options, own) == final_max_width(new, options, own);
+        if !(reuse_at_same_width && same_width) {
+            return true;
+        }
+    }
+    let multi_paragraph = &layout.multi_paragraph;
+    (new.max_height as f32) < multi_paragraph.height() || multi_paragraph.did_exceed_max_lines()
+}
+
+impl TextNode {
+    /// What the text is laid out from, as Compose's `TextLayoutInput`.
+    fn layout_input(
+        &self,
+        constraints: Constraints,
+        density: compose_ui::Density,
+        direction: compose_ui::LayoutDirection,
+        font_family_resolver: compose_ui::FontFamilyResolver,
+        default_locale_list: compose_ui::LocaleList,
+    ) -> compose_ui::TextLayoutInput {
+        compose_ui::TextLayoutInput {
+            text: self.text.clone(),
+            style: self.style.clone(),
+            max_lines: self.options.max_lines,
+            soft_wrap: self.options.soft_wrap,
+            overflow: self.options.overflow,
+            density,
+            layout_direction: direction,
+            font_family_resolver,
+            default_locale_list,
+            constraints,
+            placeholders: None,
+        }
+    }
+
+    /// The text's paragraphs in this scope's density, layout direction, font resolver and
+    /// locales: those kept, else made anew (Compose's `setLayoutDirection`, its style's defaults
+    /// resolved in the direction), and what was measured of the old ones forgotten. Made anew too
+    /// once a font one of them resolved to arrives (the read of its state: the node measuring, or
+    /// the parent asking its intrinsics, is told when one does).
+    fn paragraph_intrinsics(&mut self, scope: &IntrinsicMeasureScope<'_>) -> KeptIntrinsics {
+        let paragraphs = self.paragraphs.as_mut().expect("a text of paragraphs");
+        if let Some(kept) = &paragraphs.intrinsics
+            && kept.hold_in(scope)
+        {
+            return kept.clone();
+        }
+        paragraphs.intrinsic_height = None;
+        // What the lines of "H" measured may have been in another font.
+        self.min_height = None;
+        let (density, direction) = (scope.density(), scope.layout_direction());
+        let resolver = scope.current_value_of(&compose_ui::LOCAL_FONT_FAMILY_RESOLVER);
+        let locales = scope.current_value_of(&compose_ui::LOCAL_LOCALE_LIST);
+        let style = TextStyle::resolve_defaults(&self.style, direction);
+        let intrinsics = Rc::new(compose_ui::MultiParagraphIntrinsics::new(
+            self.text.clone(),
+            &style,
+            &[],
+            density,
+            resolver.clone(),
+            self.options.soft_wrap,
+            locales.clone(),
+        ));
+        let kept = KeptIntrinsics { intrinsics, density, direction, resolver, locales };
+        paragraphs.intrinsics = Some(kept.clone());
+        kept
+    }
+
+    /// Measures a text with paragraph styles, as Compose's `TextAnnotatedStringNode` with its
+    /// `MultiParagraphLayoutCache` (D2053): its paragraphs laid out again only when Compose's rule
+    /// says they'd differ, its size their width (the widest's own, at most the width laid out at)
+    /// and height in the constraints, at least `min_lines` high.
+    fn measure_paragraphs(
+        &mut self,
+        scope: &mut MeasureScope<'_>,
+        content: Measurable,
+        constraints: Constraints,
+    ) -> MeasureResult {
+        let density = scope.density();
+        let direction = scope.layout_direction();
+        let min_height = self.min_lines_height(scope, density);
+        let reuse = reuses_at_same_width(scope);
+        let options = self.options;
+        // Its layout kept as Compose's cache keeps it: in the same setting, where the new
+        // constraints wouldn't change it.
+        let kept = self.paragraphs_layout().is_some_and(|layout| {
+            layout.from.hold_in(scope)
+                && !paragraphs_layout_will_be_different(reuse, options, layout, constraints)
+        });
+        if !kept {
+            let from = self.paragraph_intrinsics(scope);
+            let multi_paragraph =
+                lay_out_paragraphs(&from.intrinsics, options, constraints, Some(&self.style));
+            let paragraphs = self.paragraphs.as_mut().expect("a text of paragraphs");
+            paragraphs.layout = Some(ParagraphsLayout {
+                multi_paragraph: Rc::new(multi_paragraph),
+                from,
+                constraints,
+                size: compose_ui::IntSize::ZERO,
+            });
+        }
+        let relaid = !kept;
+        let paragraphs = self.paragraphs.as_mut().expect("a text of paragraphs");
+        let layout = paragraphs.layout.as_mut().expect("laid out");
+        let multi_paragraph = layout.multi_paragraph.clone();
+        // As Compose's: as wide as its widest paragraph, within the width it's laid out at.
+        let own_width = layout.from.intrinsics.max_intrinsic_width();
+        let width = own_width.min(multi_paragraph.width());
+        let natural =
+            compose_ui::IntSize::new(width.ceil() as i32, multi_paragraph.height().ceil() as i32);
+        let size = constraints
+            .constrain(compose_ui::IntSize::new(natural.width, natural.height.max(min_height)));
+        layout.constraints = constraints;
+        layout.size = size;
+        // Compose's `hasVisualOverflow`: clipped where it's larger than the node, or cut by its
+        // maximum lines.
+        self.overflows = (size.width as f32) < multi_paragraph.width()
+            || (size.height as f32) < multi_paragraph.height()
+            || multi_paragraph.did_exceed_max_lines();
+        if relaid {
+            // The highlight follows the new layout.
+            self.selection_rects = match &self.selection {
+                Some(range) => multi_paragraph.selection_rects(range.clone()),
+                None => Vec::new(),
+            };
+        }
+        let (first_baseline, last_baseline) =
+            (multi_paragraph.first_baseline(), multi_paragraph.last_baseline());
+        if let Some(callback) = &self.on_text_layout {
+            let metrics = compose_ui::platform::ParagraphMetrics {
+                size: natural,
+                first_baseline,
+                last_baseline,
+                line_count: multi_paragraph.line_count() as u32,
+            };
+            let did_exceed_max_lines = multi_paragraph.did_exceed_max_lines();
+            let heard = HeardLayout { size, metrics, did_exceed_max_lines };
+            if relaid || self.last_layout != Some(heard) {
+                self.last_layout = Some(heard);
+                let input = self.layout_input(
+                    constraints,
+                    density,
+                    direction,
+                    scope.current_value_of(&compose_ui::LOCAL_FONT_FAMILY_RESOLVER),
+                    scope.current_value_of(&compose_ui::LOCAL_LOCALE_LIST),
+                );
+                let result = TextLayoutResult::new(input, multi_paragraph, size);
+                let callback = callback.clone();
+                scope.run_after_layout(move || callback(result));
+            }
+        }
+        let placeable = scope.measure(content, Constraints::fixed(size.width, size.height));
+        scope.place(&placeable, 0, 0);
+        let baselines = (first_baseline.round() as i32, last_baseline.round() as i32);
+        if self.baselines != Some(baselines) {
+            self.baselines = Some(baselines);
+            scope.baselines_changed();
+        }
+        scope.layout(size.width, size.height)
+    }
+
+    /// A text with paragraph styles' height laid out at `width`, at least `min_lines` high, as
+    /// Compose's `MultiParagraphLayoutCache.intrinsicHeight`: the last width's kept; the measured
+    /// layout's when the width wouldn't lay it out again, else its paragraphs laid out apart.
+    fn paragraphs_intrinsic_height(
+        &mut self,
+        scope: &mut IntrinsicMeasureScope<'_>,
+        width: i32,
+    ) -> i32 {
+        let density = scope.density();
+        let intrinsics = self.paragraph_intrinsics(scope).intrinsics;
+        let min_height = self.min_lines_height(scope, density);
+        let reuse = reuses_at_same_width(scope);
+        let options = self.options;
+        let paragraphs = self.paragraphs.as_mut().expect("a text of paragraphs");
+        if let Some((at, height)) = paragraphs.intrinsic_height
+            && at == width
+        {
+            return height.max(min_height);
+        }
+        let constraints = Constraints::new(0, width, 0, Constraints::INFINITY);
+        let height = match &paragraphs.layout {
+            Some(layout)
+                if Rc::ptr_eq(&layout.from.intrinsics, &intrinsics)
+                    && !paragraphs_layout_will_be_different(
+                        reuse,
+                        options,
+                        layout,
+                        constraints,
+                    ) =>
+            {
+                layout.multi_paragraph.height()
+            }
+            _ => lay_out_paragraphs(&intrinsics, options, constraints, None).height(),
+        };
+        let height = height.ceil() as i32;
+        paragraphs.intrinsic_height = Some((width, height));
+        height.max(min_height)
+    }
+
+    /// The layout of a text with paragraph styles, once measured.
+    fn paragraphs_layout(&self) -> Option<&ParagraphsLayout> {
+        self.paragraphs.as_ref()?.layout.as_ref()
+    }
+}
+
 impl LayoutModifierNode for TextNode {
     fn measure(
         &mut self,
@@ -655,6 +976,9 @@ impl LayoutModifierNode for TextNode {
     ) -> MeasureResult {
         for paragraph in self.stale.drain(..) {
             scope.text_measurer().release(paragraph);
+        }
+        if self.paragraphs.is_some() {
+            return self.measure_paragraphs(scope, content, constraints);
         }
         let density = scope.density();
         let direction = scope.layout_direction();
@@ -691,26 +1015,18 @@ impl LayoutModifierNode for TextNode {
             if relaid || self.last_layout != Some(heard) {
                 self.last_layout = Some(heard);
                 // The paragraph's queries, asked for only when there's a callback to hear them.
-                let input = compose_ui::TextLayoutInput {
-                    text: self.text.clone(),
-                    style: self.style.clone(),
-                    max_lines: self.options.max_lines,
-                    soft_wrap: self.options.soft_wrap,
-                    overflow: self.options.overflow,
-                    density,
-                    layout_direction: direction,
-                    font_family_resolver: scope
-                        .current_value_of(&compose_ui::LOCAL_FONT_FAMILY_RESOLVER),
-                    default_locale_list: scope.current_value_of(&compose_ui::LOCAL_LOCALE_LIST),
+                let input = self.layout_input(
                     constraints,
-                    placeholders: None,
-                };
-                let paragraph = scope.text_measurer().paragraph(paragraph);
-                let multi_paragraph = compose_ui::MultiParagraph::of_paragraph(
-                    input.text.clone(),
-                    paragraph,
-                    final_max_lines(&input),
+                    density,
+                    direction,
+                    scope.current_value_of(&compose_ui::LOCAL_FONT_FAMILY_RESOLVER),
+                    scope.current_value_of(&compose_ui::LOCAL_LOCALE_LIST),
                 );
+                let paragraph = scope.text_measurer().paragraph(paragraph);
+                // Painted, it lays its input out again (D2053).
+                let max_lines = final_max_lines(&input);
+                let multi_paragraph =
+                    compose_ui::MultiParagraph::of_paragraph_of(&input, paragraph, max_lines);
                 let result = TextLayoutResult::new(input, std::rc::Rc::new(multi_paragraph), size);
                 let callback = callback.clone();
                 scope.run_after_layout(move || callback(result));
@@ -796,6 +1112,12 @@ impl TextNode {
     /// minimum width gives the maximum for it; one that doesn't know either, the width laid out
     /// unbounded.
     fn intrinsic_widths(&mut self, scope: &mut IntrinsicMeasureScope<'_>) -> (i32, i32) {
+        if self.paragraphs.is_some() {
+            // Its widest paragraph's, as Compose's `MultiParagraphIntrinsics`.
+            let intrinsics = self.paragraph_intrinsics(scope).intrinsics;
+            let min = intrinsics.min_intrinsic_width().ceil() as i32;
+            return (min, intrinsics.max_intrinsic_width().ceil() as i32);
+        }
         let density = scope.density();
         let direction = scope.layout_direction();
         let measured = self
@@ -825,6 +1147,9 @@ impl TextNode {
     /// The text's height laid out at `width`, at least `min_lines` high, as Compose's
     /// `intrinsicHeight`.
     fn intrinsic_height(&mut self, scope: &mut IntrinsicMeasureScope<'_>, width: i32) -> i32 {
+        if self.paragraphs.is_some() {
+            return self.paragraphs_intrinsic_height(scope, width);
+        }
         let density = scope.density();
         let direction = scope.layout_direction();
         let constraints = Constraints::new(0, width, 0, Constraints::INFINITY);
@@ -836,7 +1161,18 @@ impl TextNode {
 
 impl DrawModifierNode for TextNode {
     fn draw(&mut self, scope: &mut DrawScope<'_>) {
-        let Some(paragraph) = self.paragraph else { return };
+        // One platform paragraph, or a text's paragraphs (D2053).
+        let multi_paragraph = match &self.paragraphs {
+            Some(paragraphs) => match &paragraphs.layout {
+                Some(layout) => Some(&layout.multi_paragraph),
+                None => return,
+            },
+            None => None,
+        };
+        let paragraph = self.paragraph;
+        if multi_paragraph.is_none() && paragraph.is_none() {
+            return;
+        }
         // Clipped as the text is, its selection's highlight included.
         let clipped = self.overflows && self.options.overflow != compose_ui::TextOverflow::Visible;
         if clipped {
@@ -846,7 +1182,12 @@ impl DrawModifierNode for TextNode {
         for rect in &self.selection_rects {
             scope.draw_rect(*rect, compose_ui::Paint::fill(self.selection_color));
         }
-        scope.draw_paragraph(paragraph, Offset::ZERO);
+        match (multi_paragraph, paragraph) {
+            // In its style's paint, as Compose's node paints its `MultiParagraph`.
+            (Some(multi_paragraph), _) => scope.draw_multi_paragraph(multi_paragraph, &self.style),
+            (None, Some(paragraph)) => scope.draw_paragraph(paragraph, Offset::ZERO),
+            (None, None) => {}
+        }
         if clipped {
             scope.restore();
         }
@@ -866,27 +1207,25 @@ impl SemanticsModifierNode for TextNode {
         &mut self,
         context: &mut compose_ui::EventContext<'_>,
     ) -> Option<TextLayoutResult> {
+        let resolver = context.current_value_of(&compose_ui::LOCAL_FONT_FAMILY_RESOLVER);
+        let locales = context.current_value_of(&compose_ui::LOCAL_LOCALE_LIST);
+        if let Some(paragraphs) = &self.paragraphs {
+            // The text's paragraphs, as laid out: what Compose's semantics hear.
+            let layout = paragraphs.layout.as_ref()?;
+            let (density, direction) = (layout.from.density, layout.from.direction);
+            let input =
+                self.layout_input(layout.constraints, density, direction, resolver, locales);
+            return Some(TextLayoutResult::new(input, layout.multi_paragraph.clone(), layout.size));
+        }
         let (paragraph, constraints) = (self.paragraph?, self.constraints?);
-        let input = compose_ui::TextLayoutInput {
-            text: self.text.clone(),
-            style: self.style.clone(),
-            max_lines: self.options.max_lines,
-            soft_wrap: self.options.soft_wrap,
-            overflow: self.options.overflow,
-            density: self.density?,
-            layout_direction: self.direction,
-            font_family_resolver: context.current_value_of(&compose_ui::LOCAL_FONT_FAMILY_RESOLVER),
-            default_locale_list: context.current_value_of(&compose_ui::LOCAL_LOCALE_LIST),
-            constraints,
-            placeholders: None,
-        };
+        let input =
+            self.layout_input(constraints, self.density?, self.direction, resolver, locales);
         let measurer = context.text_measurer();
         let size = constraints.constrain(measurer.metrics(paragraph).size);
-        let multi_paragraph = compose_ui::MultiParagraph::of_paragraph(
-            input.text.clone(),
-            measurer.paragraph(paragraph),
-            final_max_lines(&input),
-        );
+        let max_lines = final_max_lines(&input);
+        let paragraph = measurer.paragraph(paragraph);
+        let multi_paragraph =
+            compose_ui::MultiParagraph::of_paragraph_of(&input, paragraph, max_lines);
         Some(TextLayoutResult::new(input, std::rc::Rc::new(multi_paragraph), size))
     }
 }
@@ -898,6 +1237,12 @@ impl TextNode {
         measurer: &compose_ui::platform::SharedTextMeasurer,
         ask: impl FnOnce(&dyn compose_ui::Paragraph, compose_ui::Size) -> R,
     ) -> Option<R> {
+        if self.paragraphs.is_some() {
+            // Its paragraphs' queries, over the whole text (Compose's `MultiParagraph`'s).
+            let layout = self.paragraphs_layout()?;
+            let size = compose_ui::Size::new(layout.size.width as f32, layout.size.height as f32);
+            return Some(ask(&*layout.multi_paragraph, size));
+        }
         let (paragraph, constraints) = (self.paragraph?, self.constraints?);
         let measurer = measurer.borrow();
         let size = constraints.constrain(measurer.metrics(paragraph).size);
@@ -937,9 +1282,14 @@ impl compose_ui::Selectable for TextNode {
         position: Offset,
         measurer: &compose_ui::platform::SharedTextMeasurer,
     ) -> Option<usize> {
-        let paragraph = self.paragraph?;
         let text = self.text.as_str();
-        let mut offset = measurer.borrow().hit_test(paragraph, position).offset.min(text.len());
+        let offset = if self.paragraphs.is_some() {
+            // The paragraph at its height's, as Compose's `MultiParagraph.getOffsetForPosition`.
+            self.paragraphs_layout()?.multi_paragraph.get_offset_for_position(position)
+        } else {
+            measurer.borrow().hit_test(self.paragraph?, position).offset
+        };
+        let mut offset = offset.min(text.len());
         while !text.is_char_boundary(offset) {
             offset -= 1;
         }
@@ -960,8 +1310,10 @@ impl compose_ui::Selectable for TextNode {
         if range == self.selection {
             return false;
         }
-        self.selection_rects = match (&range, self.paragraph) {
-            (Some(range), Some(paragraph)) => {
+        self.selection_rects = match (&range, self.paragraph, self.paragraphs_layout()) {
+            // Each paragraph's highlight, below the ones above it (D2053).
+            (Some(range), _, Some(layout)) => layout.multi_paragraph.selection_rects(range.clone()),
+            (Some(range), Some(paragraph), None) => {
                 measurer.borrow().selection_rects(paragraph, range.clone())
             }
             _ => Vec::new(),
@@ -1072,6 +1424,10 @@ impl compose_ui::Selectable for TextNode {
         offset: usize,
         measurer: &compose_ui::platform::SharedTextMeasurer,
     ) -> compose_ui::ResolvedTextDirection {
+        if let Some(layout) = self.paragraphs_layout() {
+            let offset = offset.min(self.text.len());
+            return layout.multi_paragraph.get_bidi_run_direction(offset);
+        }
         match self.paragraph {
             Some(paragraph) => {
                 measurer.borrow().paragraph(paragraph).get_bidi_run_direction(offset)

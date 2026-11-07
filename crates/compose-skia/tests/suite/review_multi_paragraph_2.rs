@@ -90,7 +90,6 @@ fn painted_with_brush(
 /// drawing, while `draw_text_layout` of the same result draws (it lays the text out again from
 /// the result's input).
 #[test]
-#[ignore = "review: `MultiParagraph::paint` panics on the result `BasicText` hands `on_text_layout` (a query-only paragraph); Compose paints it, and `draw_text_layout` of the same result draws"]
 fn a_text_s_own_multi_paragraph_paints_after_on_text_layout() {
     let kept: Rc<RefCell<Option<TextLayoutResult>>> = Rc::default();
     let heard_owner = mutable_state_of(0);

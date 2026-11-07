@@ -608,6 +608,10 @@ pub struct MultiParagraph {
 struct SingleParagraph {
     paragraph: Rc<dyn Paragraph>,
     info: OnceCell<ParagraphInfo>,
+    /// What it was laid out from, when `paragraph` only answers queries (a text node's own,
+    /// whose node keeps its layout): laid out again from it, once, when first painted (D2053).
+    source: Option<Box<crate::paragraph::TextLayoutInput>>,
+    drawable: OnceCell<Rc<StackedParagraph>>,
 }
 
 impl MultiParagraph {
@@ -743,6 +747,45 @@ impl MultiParagraph {
         }
     }
 
+    /// As [`new`](Self::new), each paragraph known as drawn in `style`'s paint (unresolved: an
+    /// unspecified color stays so), what [`DrawScope::draw_multi_paragraph`] draws it in: a text
+    /// node's layout, `BasicText`'s of a text with paragraph styles (D2053).
+    #[doc(hidden)]
+    pub fn new_in_paint_of(
+        intrinsics: Rc<MultiParagraphIntrinsics>,
+        constraints: Constraints,
+        max_lines: u32,
+        overflow: TextOverflow,
+        style: &TextStyle,
+    ) -> MultiParagraph {
+        let paint = TextPaint::of(style);
+        MultiParagraph::lay_out(intrinsics, constraints, max_lines, overflow, Some(&paint))
+    }
+
+    /// The highlight of a selection of bytes `range`, as each paragraph's platform draws one
+    /// (`TextMeasurer::selection_rects`), below the paragraphs above it: a text node's selection
+    /// over many paragraphs, as over one (D2053). Nothing in the paragraphs the maximum lines left
+    /// out.
+    #[doc(hidden)]
+    pub fn selection_rects(&self, range: std::ops::Range<usize>) -> Vec<Rect> {
+        let mut rects = Vec::new();
+        if range.is_empty() {
+            return rects;
+        }
+        let range = TextRange::new(range.start, range.end);
+        for (info, part) in self.infos.iter().zip(&self.parts) {
+            if info.end_index <= range.min() || info.start_index >= range.max() {
+                continue;
+            }
+            let start = info.to_local_index(info.start_index.max(range.min()));
+            let end = info.to_local_index(info.end_index.min(range.max()));
+            let platform = part.measured.platform().borrow();
+            let local = platform.selection_rects(part.measured.handle(), start..end);
+            rects.extend(local.into_iter().map(|rect| info.to_global_rect(rect)));
+        }
+        rects
+    }
+
     /// `text` laid out as one `paragraph`, the whole text's (a text without paragraph styles),
     /// with at most `max_lines` lines: its numbers are the paragraph's, and nothing is asked of
     /// it until a query is. It allocates nothing (D2049).
@@ -761,8 +804,32 @@ impl MultiParagraph {
             height: 0.0,
             line_count: 0,
             did_exceed_max_lines: false,
-            single: Some(SingleParagraph { paragraph, info: OnceCell::new() }),
+            single: Some(SingleParagraph {
+                paragraph,
+                info: OnceCell::new(),
+                source: None,
+                drawable: OnceCell::new(),
+            }),
         }
+    }
+
+    /// As [`of_paragraph`](Self::of_paragraph) of `input`'s text, `paragraph` its layout: one
+    /// that only answers queries (a text node's, `BasicText`'s or a field's `on_text_layout`
+    /// result, whose node keeps the platform paragraph) painted all the same, `input` laid out
+    /// again on the platform when first painted, once, as `draw_text_layout` draws such a result.
+    /// Nothing more is asked until it's painted (D2053).
+    #[doc(hidden)]
+    pub fn of_paragraph_of(
+        input: &crate::paragraph::TextLayoutInput,
+        paragraph: Rc<dyn Paragraph>,
+        max_lines: u32,
+    ) -> MultiParagraph {
+        let mut multi_paragraph =
+            MultiParagraph::of_paragraph(input.text.clone(), paragraph, max_lines);
+        if let Some(single) = &mut multi_paragraph.single {
+            single.source = Some(Box::new(input.clone()));
+        }
+        multi_paragraph
     }
 
     /// The paragraphs and texts it was laid out from (none for a single paragraph wrapped).
@@ -1193,8 +1260,18 @@ impl MultiParagraph {
     }
 
     fn paint_with(&self, scope: &mut DrawScope<'_>, overrides: &PaintOverrides, blend: BlendMode) {
-        if let Some(single) = self.single() {
-            return single.paint_overriding(scope, overrides, blend);
+        if let Some(single) = &self.single {
+            let Some(input) = &single.source else {
+                return single.paragraph.paint_overriding(scope, overrides, blend);
+            };
+            // Its text laid out again to paint, once, as the measurer lays a text out.
+            let part = single.drawable.get_or_init(|| {
+                let platform = input.font_family_resolver.platform();
+                let laid_out = LaidOutParagraph::lay_out(platform, input.source(), &input.style);
+                Rc::new(StackedParagraph::new(0.0, laid_out, &input.style, input.source()))
+            });
+            let parts = std::slice::from_ref(part);
+            return scope.paint_parts(parts, Size::ZERO, overrides, blend, true);
         }
         let size = Size::new(self.width, self.height);
         scope.paint_parts(&self.parts, size, overrides, blend, false);
