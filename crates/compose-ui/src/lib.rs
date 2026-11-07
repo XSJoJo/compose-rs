@@ -163,6 +163,8 @@ pub mod platform {
     pub use crate::modifier::shared_custom_modifier;
     pub use crate::nested_scroll::NestedScrollChain;
     #[doc(hidden)]
+    pub use crate::nested_scroll::nested_scroll_tree_node;
+    #[doc(hidden)]
     pub use crate::node_chain::{NodeKinds, chain_entry_kinds_for_test};
     pub use crate::optimizations::{Optimization, Optimizations};
     pub use crate::paragraph::{
@@ -315,7 +317,8 @@ pub use motion::{
     set_motion_duration_scale_source, with_motion_duration_scale,
 };
 pub use nested_scroll::{
-    LocalBoxFuture, NestedScrollConnection, NestedScrollSource, nested_scroll_modifier_node,
+    LocalBoxFuture, NestedScrollConnection, NestedScrollDispatcher, NestedScrollSource,
+    nested_scroll_modifier_node,
 };
 pub use node_context::{NodeContext, NodeHandle};
 pub use observer_node::ObserverModifierNode;

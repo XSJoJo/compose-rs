@@ -6,14 +6,23 @@
 //! A scrollable finds the connections around it from the pointer's hit path: each nested-scroll
 //! node on it adds its connection as an event starts (the initial pass runs from the outside
 //! in), and the scrollable takes the ones before it when a gesture or a wheel turn reaches it
-//! ([`NestedScrollChain::current`]), then dispatches through them as Compose's
-//! `NestedScrollDispatcher`: the outermost first before the scroll, the innermost first after.
+//! ([`NestedScrollChain::current`]), then dispatches through them: the outermost first before
+//! the scroll, the innermost first after.
+//!
+//! The nested-scroll nodes are also linked through the tree, each to the nearest one above it,
+//! as Compose's `NestedScrollNode`s: a [`NestedScrollDispatcher`] given to
+//! `Modifier.nested_scroll_with` dispatches from its node through them, from any code
+//! (docs/parity/design/nested-scroll-dispatcher.md, D1917).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+
+use smallvec::SmallVec;
 
 use crate::input::{EventContext, PointerEvent, PointerEventPass, PointerEventType};
 use crate::modifier::{Modifier, ModifierNode, ModifierNodeElement, PointerInputModifierNode};
+use crate::node_context::{NodeContext, NodeHandle};
+use crate::traversal::{TraversableNode, TraverseKey};
 use crate::unit::{IntSize, Offset};
 
 /// Where a scroll comes from, as Compose's `NestedScrollSource`.
@@ -146,38 +155,261 @@ impl NestedScrollChain {
         }
         taken
     }
+
+    /// The connections of `links`, given innermost first.
+    fn of_links(links: &[Rc<Link>]) -> NestedScrollChain {
+        let connections: Vec<_> = links.iter().rev().map(|link| link.connection()).collect();
+        NestedScrollChain { connections: connections.into() }
+    }
+}
+
+thread_local! {
+    /// Counts the nested-scroll nodes attached and detached on this thread: a link resolved
+    /// before the last of them is resolved again at its next use.
+    static EPOCH: Cell<u64> = const { Cell::new(1) };
+    /// A scope that's never active, for a dispatcher without a node, as Compose's
+    /// `CancelledScope`.
+    static CANCELLED: compose_runtime::CoroutineScope = {
+        let scope = compose_runtime::CoroutineScope::new();
+        scope.cancel();
+        *scope
+    };
+}
+
+fn next_epoch() -> u64 {
+    EPOCH.with(|epoch| {
+        epoch.set(epoch.get() + 1);
+        epoch.get()
+    })
+}
+
+/// What traversals find the nested-scroll nodes by.
+static NESTED_SCROLL: TraverseKey = TraverseKey::new("NestedScrollNode");
+
+/// A nested-scroll node as the nodes inside it and its dispatcher reach it: its connection and
+/// the node above it, shared out of the tree so a dispatch needs no tree.
+struct Link {
+    connection: RefCell<Rc<dyn NestedScrollConnection>>,
+    /// The nearest nested-scroll node above, as last resolved.
+    parent: RefCell<Option<Rc<Link>>>,
+    /// The epoch `parent` was resolved in.
+    epoch: Cell<u64>,
+    /// The node's handle, while it's attached.
+    handle: Cell<Option<NodeHandle>>,
+    /// The nearest attached nested-scroll node above when the node was detached, as Compose's
+    /// `lastKnownParentNode`.
+    last_parent: RefCell<Option<Rc<Link>>>,
+}
+
+impl Link {
+    fn connection(&self) -> Rc<dyn NestedScrollConnection> {
+        self.connection.borrow().clone()
+    }
+
+    fn is_attached(&self) -> bool {
+        self.handle.get().is_some()
+    }
+
+    /// The nearest attached nested-scroll node above, as `parentNestedScrollNode`: resolved
+    /// through the tree again if one was attached or detached since, when the tree is free;
+    /// otherwise the last one found, past those that left.
+    fn parent(&self) -> Option<Rc<Link>> {
+        let handle = self.handle.get()?;
+        let epoch = EPOCH.with(Cell::get);
+        if self.epoch.get() != epoch
+            && let Some(found) =
+                handle.with_node(|_: &mut NestedScrollNode, context| parent_link(context))
+        {
+            *self.parent.borrow_mut() = found;
+            self.epoch.set(epoch);
+        }
+        let mut parent = self.parent.borrow().clone();
+        while let Some(link) = parent.as_ref().filter(|link| !link.is_attached()) {
+            let above = link.last_parent.borrow().clone();
+            parent = above;
+        }
+        parent
+    }
+
+    /// Where a fling's end goes on from this node, as `NestedScrollNode.onPostFling`: its parent,
+    /// or the last one it knew once it's detached.
+    fn post_fling_parent(&self) -> Option<Rc<Link>> {
+        if self.is_attached() { self.parent() } else { self.last_parent.borrow().clone() }
+    }
+
+    /// The outermost active scope of the nested-scroll nodes from this one up, as
+    /// `nestedCoroutineScope`; `None` once detached.
+    fn nested_scope(&self) -> Option<compose_runtime::CoroutineScope> {
+        let parent = self.parent().and_then(|parent| parent.nested_scope());
+        match parent {
+            Some(scope) if scope.is_active() => Some(scope),
+            _ => self.handle.get()?.coroutine_scope(),
+        }
+    }
+}
+
+/// The link of the nearest nested-scroll node above the one of `context`.
+fn parent_link(context: &mut NodeContext<'_>) -> Option<Rc<Link>> {
+    context.find_nearest_ancestor::<NestedScrollNode>().map(|node| node.link.clone())
+}
+
+/// `start` and the links above it, innermost first.
+fn links_from(start: Option<Rc<Link>>) -> SmallVec<[Rc<Link>; 4]> {
+    let mut links = SmallVec::new();
+    let mut next = start;
+    while let Some(link) = next {
+        next = link.post_fling_parent();
+        links.push(link);
+    }
+    links
+}
+
+/// How a node that isn't a pointer gesture takes part in nested scrolling, as Compose's
+/// `NestedScrollDispatcher`: given to [`Modifier::nested_scroll_with`] (or
+/// [`nested_scroll_modifier_node`]), it dispatches through the nested-scroll nodes above that
+/// node, never to the node's own connection. A clone is the same dispatcher. Velocities are
+/// `Offset`s, as the connection's (pixels per second).
+#[derive(Clone, Default)]
+pub struct NestedScrollDispatcher {
+    inner: Rc<DispatcherInner>,
+}
+
+#[derive(Default)]
+struct DispatcherInner {
+    /// The node it's given to, while that's attached.
+    node: RefCell<Option<Rc<Link>>>,
+    /// The node above its node when that was detached, for a fling's end, as Compose's
+    /// `lastKnownParentNode`.
+    last_known_parent: RefCell<Option<Rc<Link>>>,
+}
+
+impl PartialEq for NestedScrollDispatcher {
+    fn eq(&self, other: &NestedScrollDispatcher) -> bool {
+        Rc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
+impl std::fmt::Debug for NestedScrollDispatcher {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("NestedScrollDispatcher")
+    }
+}
+
+impl NestedScrollDispatcher {
+    pub fn new() -> NestedScrollDispatcher {
+        NestedScrollDispatcher::default()
+    }
+
+    /// The connections above its node, outermost first, as a chain to dispatch through (none
+    /// without a node): what a scrollable dispatches through when no pointer started a scroll.
+    pub fn chain(&self) -> NestedScrollChain {
+        let parent = self.inner.node.borrow().as_ref().and_then(|node| node.parent());
+        NestedScrollChain::of_links(&links_from(parent))
+    }
+
+    /// Offers `available` to the nodes above before scrolling, the outermost first; returns
+    /// what they consumed, as `dispatchPreScroll`.
+    pub fn dispatch_pre_scroll(&self, available: Offset, source: NestedScrollSource) -> Offset {
+        self.chain().pre_scroll(available, source)
+    }
+
+    /// Tells the nodes above what this node consumed and offers what's left, the innermost
+    /// first; returns what they consumed, as `dispatchPostScroll`.
+    pub fn dispatch_post_scroll(
+        &self,
+        consumed: Offset,
+        available: Offset,
+        source: NestedScrollSource,
+    ) -> Offset {
+        self.chain().post_scroll(consumed, available, source)
+    }
+
+    /// Offers a fling's velocity to the nodes above before it starts, the outermost first, as
+    /// `dispatchPreFling`.
+    pub async fn dispatch_pre_fling(&self, available: Offset) -> Offset {
+        self.chain().pre_fling(available).await
+    }
+
+    /// Tells the nodes above a fling's end, the innermost first, as `dispatchPostFling`. Its node
+    /// gone, it goes to the node that was above it, so a fling started before it left ends its
+    /// cycle.
+    pub async fn dispatch_post_fling(&self, consumed: Offset, available: Offset) -> Offset {
+        let node = self.inner.node.borrow().clone();
+        let parent = node.as_ref().and_then(|node| node.parent());
+        let links = match parent {
+            Some(parent) => links_from(Some(parent)),
+            None => links_from(self.inner.last_known_parent.borrow().clone()),
+        };
+        NestedScrollChain::of_links(&links).post_fling(consumed, available).await
+    }
+
+    /// Where to launch a fling's dispatch so it outlives its node, as `coroutineScope`: the
+    /// outermost active scope of the nested-scroll nodes from its node up. Never active
+    /// without a node.
+    pub fn coroutine_scope(&self) -> compose_runtime::CoroutineScope {
+        let node = self.inner.node.borrow().clone();
+        node.and_then(|node| node.nested_scope()).unwrap_or_else(|| CANCELLED.with(|scope| *scope))
+    }
+
+    /// Whether its node is `link`'s.
+    fn is_on(&self, link: &Rc<Link>) -> bool {
+        self.inner.node.borrow().as_ref().is_some_and(|node| Rc::ptr_eq(node, link))
+    }
 }
 
 impl Modifier {
     /// Lets `connection` take part in the scrolls of the scrollables inside, as
     /// `Modifier.nestedScroll(connection)`.
     pub fn nested_scroll(self, connection: Rc<dyn NestedScrollConnection>) -> Modifier {
-        self.then_custom(NestedScrollElement { connection })
+        self.nested_scroll_with(connection, None)
+    }
+
+    /// As [`nested_scroll`](Modifier::nested_scroll), with a dispatcher through which code here
+    /// scrolls the nested-scroll nodes above, as `Modifier.nestedScroll(connection, dispatcher)`.
+    pub fn nested_scroll_with(
+        self,
+        connection: Rc<dyn NestedScrollConnection>,
+        dispatcher: Option<NestedScrollDispatcher>,
+    ) -> Modifier {
+        self.then_custom(NestedScrollElement { connection, dispatcher })
     }
 }
 
-/// The node of `Modifier::nested_scroll`, for a node to delegate to, as
-/// `nestedScrollModifierNode(connection, null)`: there's no dispatcher here.
+/// The node of `Modifier::nested_scroll_with`, for a node to delegate to, as
+/// `nestedScrollModifierNode(connection, dispatcher)`.
 pub fn nested_scroll_modifier_node(
     connection: Rc<dyn NestedScrollConnection>,
+    dispatcher: Option<NestedScrollDispatcher>,
 ) -> impl ModifierNode {
-    NestedScrollNode { connection }
+    NestedScrollNode::new(connection, dispatcher, true)
+}
+
+/// As [`nested_scroll_modifier_node`], for a scrollable that adds its own connection on the
+/// pointer's path: its connection is found through the tree only.
+#[doc(hidden)]
+pub fn nested_scroll_tree_node(
+    connection: Rc<dyn NestedScrollConnection>,
+    dispatcher: Option<NestedScrollDispatcher>,
+) -> impl ModifierNode {
+    NestedScrollNode::new(connection, dispatcher, false)
 }
 
 struct NestedScrollElement {
     connection: Rc<dyn NestedScrollConnection>,
+    dispatcher: Option<NestedScrollDispatcher>,
 }
 
 impl ModifierNodeElement for NestedScrollElement {
     type Node = NestedScrollNode;
     fn create(&self) -> NestedScrollNode {
-        NestedScrollNode { connection: self.connection.clone() }
+        NestedScrollNode::new(self.connection.clone(), self.dispatcher.clone(), true)
     }
     fn update(&self, node: &mut NestedScrollNode) {
-        node.connection = self.connection.clone();
+        *node.link.connection.borrow_mut() = self.connection.clone();
+        node.set_dispatcher(self.dispatcher.clone());
     }
     fn same(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&other.connection, &self.connection)
+        Rc::ptr_eq(&other.connection, &self.connection) && other.dispatcher == self.dispatcher
     }
     fn name(&self) -> &'static str {
         "nested_scroll"
@@ -185,16 +417,90 @@ impl ModifierNodeElement for NestedScrollElement {
 }
 
 struct NestedScrollNode {
-    connection: Rc<dyn NestedScrollConnection>,
+    link: Rc<Link>,
+    dispatcher: Option<NestedScrollDispatcher>,
+    /// It adds its connection on the pointer's path.
+    on_pointer_path: bool,
+}
+
+impl NestedScrollNode {
+    fn new(
+        connection: Rc<dyn NestedScrollConnection>,
+        dispatcher: Option<NestedScrollDispatcher>,
+        on_pointer_path: bool,
+    ) -> NestedScrollNode {
+        let link = Rc::new(Link {
+            connection: RefCell::new(connection),
+            parent: RefCell::new(None),
+            epoch: Cell::new(0),
+            handle: Cell::new(None),
+            last_parent: RefCell::new(None),
+        });
+        NestedScrollNode { link, dispatcher, on_pointer_path }
+    }
+
+    /// A new dispatcher (or none), as `updateDispatcher`: the old one lets go of this node,
+    /// unless it was given to another since; an attached node gives the new one itself.
+    fn set_dispatcher(&mut self, dispatcher: Option<NestedScrollDispatcher>) {
+        if self.dispatcher == dispatcher {
+            return;
+        }
+        if let Some(old) = self.dispatcher.take()
+            && old.is_on(&self.link)
+        {
+            *old.inner.node.borrow_mut() = None;
+        }
+        self.dispatcher = dispatcher;
+        if self.link.is_attached() {
+            self.give_dispatcher_the_node();
+        }
+    }
+
+    fn give_dispatcher_the_node(&self) {
+        if let Some(dispatcher) = &self.dispatcher {
+            *dispatcher.inner.node.borrow_mut() = Some(self.link.clone());
+            *dispatcher.inner.last_known_parent.borrow_mut() = None;
+        }
+    }
+}
+
+impl TraversableNode for NestedScrollNode {
+    fn traverse_key(&self) -> &'static TraverseKey {
+        &NESTED_SCROLL
+    }
 }
 
 impl ModifierNode for NestedScrollNode {
     fn as_pointer_input(&mut self) -> Option<&mut dyn PointerInputModifierNode> {
-        Some(self)
+        if self.on_pointer_path { Some(self) } else { None }
     }
     /// Not hit itself: it hears the events of what's hit inside it.
     fn is_pointer_observer(&self) -> bool {
         true
+    }
+    fn as_traversable(&mut self) -> Option<&mut dyn TraversableNode> {
+        Some(self)
+    }
+    /// Links to the nested-scroll node above, and gives its dispatcher this node.
+    fn on_attach(&mut self, context: &mut NodeContext<'_>) {
+        self.link.handle.set(Some(context.handle()));
+        *self.link.parent.borrow_mut() = parent_link(context);
+        self.link.epoch.set(next_epoch());
+        *self.link.last_parent.borrow_mut() = None;
+        self.give_dispatcher_the_node();
+    }
+    /// Keeps the node above for a fling's end, and lets its dispatcher go.
+    fn on_detach(&mut self, context: &mut NodeContext<'_>) {
+        let above = parent_link(context);
+        *self.link.last_parent.borrow_mut() = above.clone();
+        self.link.handle.set(None);
+        next_epoch();
+        if let Some(dispatcher) = &self.dispatcher {
+            *dispatcher.inner.last_known_parent.borrow_mut() = above;
+            if dispatcher.is_on(&self.link) {
+                *dispatcher.inner.node.borrow_mut() = None;
+            }
+        }
     }
 }
 
@@ -211,7 +517,7 @@ impl PointerInputModifierNode for NestedScrollNode {
         if pass == PointerEventPass::Initial
             && matches!(event.kind, PointerEventType::Press | PointerEventType::Scroll)
         {
-            let connection = self.connection.clone();
+            let connection = self.link.connection();
             PASSED.with(|passed| passed.borrow_mut().push(connection));
         }
     }

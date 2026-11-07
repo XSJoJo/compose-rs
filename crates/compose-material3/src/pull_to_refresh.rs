@@ -254,7 +254,7 @@ impl ModifierNodeElement for PullToRefreshElement {
             vertical_offset: Cell::new(0.0),
         });
         let mut delegates = Delegates::new();
-        delegates.delegate(compose_ui::nested_scroll_modifier_node(connection.clone()));
+        delegates.delegate(compose_ui::nested_scroll_modifier_node(connection.clone(), None));
         PullToRefreshNode { connection, delegates }
     }
     fn update(&self, node: &mut PullToRefreshNode) {
