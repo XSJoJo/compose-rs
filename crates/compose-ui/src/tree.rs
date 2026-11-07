@@ -551,6 +551,9 @@ pub struct UiTree {
     /// Nodes may be measured from their callbacks now (`NodeContext::remeasure_sync`): the tree
     /// is free of passes (a frame's start, a handle's `with_node`).
     pub(crate) remeasure_allowed: bool,
+    /// A task borrows the tree through a node handle, free of any pass (`with_free_tree`): what
+    /// its nodes invalidate asks for a frame (D2025). Not inside a frame's own steps.
+    pub(crate) borrowed_by_handle: bool,
     /// Layout nodes whose modifier nodes asked `remeasure_sync` in a callback: measured once it
     /// returns, the entry back in its chain.
     pub(crate) remeasure_after: Vec<NodeId>,
@@ -701,6 +704,7 @@ impl UiTree {
             paused_lifecycle: Vec::new(),
             side_effects: Vec::new(),
             remeasure_allowed: false,
+            borrowed_by_handle: false,
             remeasure_after: Vec::new(),
             removed_parents: Vec::new(),
             modifier_local_changes: Vec::new(),

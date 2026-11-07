@@ -285,10 +285,10 @@ impl NodeContext<'_> {
         }
         let (node, index) = (self.node, self.index);
         self.tree.enter().invalidate_entry_at(node, index, what);
-        // From where the tree is free (a task's `NodeHandle::with_node`, which Android's tick runs
-        // between frames): it asks for a frame, as a handle's own requests do (D2025). In a
-        // frame, the host's wake does nothing: that frame lays out and draws it.
-        if self.tree.remeasure_allowed {
+        // From a task's `NodeHandle::with_node` (which Android's tick runs between frames): it
+        // asks for a frame, as a handle's own requests do (D2025). Not from a frame's own steps
+        // (its nodes' requests applied, its observers told), which that frame lays out and draws.
+        if self.tree.borrowed_by_handle {
             self.tree.focus_requests.wake();
         }
     }
@@ -509,8 +509,10 @@ pub(crate) fn with_free_tree(key: u32, f: &mut dyn FnMut(&mut UiTree)) -> bool {
     };
     borrow(&mut |tree: &mut UiTree| {
         let allowed = std::mem::replace(&mut tree.remeasure_allowed, true);
+        let borrowed = std::mem::replace(&mut tree.borrowed_by_handle, true);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(tree)));
         tree.remeasure_allowed = allowed;
+        tree.borrowed_by_handle = borrowed;
         result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     })
 }

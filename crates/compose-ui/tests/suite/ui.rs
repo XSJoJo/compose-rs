@@ -1430,3 +1430,53 @@ fn a_tasks_invalidation_from_a_handle_asks_for_a_frame() {
     host.frame();
     assert_eq!(measured.get(), before + 1, "the frame measures the node again");
 }
+
+/// A node observing a state and drawing again when it changes.
+struct DrawsOnChange(MutableState<i32>);
+
+struct DrawsOnChangeNode(MutableState<i32>);
+
+impl ModifierNodeElement for DrawsOnChange {
+    type Node = DrawsOnChangeNode;
+    fn create(&self) -> DrawsOnChangeNode {
+        DrawsOnChangeNode(self.0)
+    }
+    fn update(&self, _: &mut DrawsOnChangeNode) {}
+    fn same(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl ModifierNode for DrawsOnChangeNode {
+    fn on_attach(&mut self, context: &mut NodeContext<'_>) {
+        let observed = self.0;
+        context.observe_reads(|| observed.get());
+    }
+    fn as_observer(&mut self) -> Option<&mut dyn ObserverModifierNode> {
+        Some(self)
+    }
+}
+
+impl ObserverModifierNode for DrawsOnChangeNode {
+    fn on_observed_reads_changed(&mut self, context: &mut NodeContext<'_>) {
+        let observed = self.0;
+        context.observe_reads(|| observed.get());
+        context.invalidate_draw();
+    }
+}
+
+/// An invalidation in a frame (an observer told of a write, where the frame applies its nodes'
+/// requests) is that frame's: it asks for no other (D2025's wake is for the tree free between
+/// frames only).
+#[test]
+fn an_invalidation_in_a_frame_asks_for_no_other() {
+    let observed = mutable_state_of(0);
+    let handle = observed.handle();
+    let mut host = host(move || {
+        Leaf(Modifier.size(20.dp()).then_custom(DrawsOnChange(handle)));
+    });
+    host.settle(10);
+    observed.set(1);
+    host.frame();
+    assert_eq!(host.settle(10), 0, "no frame after the one that drew it");
+}

@@ -193,10 +193,7 @@ fn pinnedItemAfterVisibleOnesIsComposedAndPlacedWhenScrolledOut() {
             // As Compose's: another pass ahead, which keeps what the last one composed.
             pins.scroll_to(0);
         }
-        let composed = pins.composed.clone();
-        wait_until(&mut pins.ui, move || {
-            [2, 3, 5].iter().all(|it| !composed.borrow().contains(it))
-        });
+        wait_until(&mut pins.ui, missing(&pins.composed, 5));
         let expected = [(0, true), (1, true), (2, false), (3, false), (4, true), (5, false)];
         for (index, expected) in expected {
             assert_eq!(has(&pins.composed, index), expected, "{index} ({lookahead})");
@@ -406,7 +403,8 @@ fn pinnedItemIsRemovedWhenVisible() {
         ui.wait_for_idle();
         list.set(vec![0, 2]);
         wait_until(&mut ui, missing(&composed, 1));
-        ui.on_node_with_tag("1").assert_does_not_exist();
+        // Compose's `assertIsNotPlaced`: gone, or there and not placed.
+        assert!(!crate::lazy_lookahead_support::is_placed(&mut ui, "1"));
     }
 }
 
