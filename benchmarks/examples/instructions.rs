@@ -23,6 +23,7 @@ fn phone(content: fn()) -> UiHost {
         Box::new(FixedTextMeasurer::new()),
     );
     host.set_optimizations(Optimizations::NONE);
+    with_autofill(&mut host);
     host.set_content(content);
     host
 }
@@ -102,12 +103,28 @@ fn service_reads(content: fn(), n: usize) {
         Box::new(FixedTextMeasurer::new()),
     );
     host.set_optimizations(Optimizations::NONE);
+    with_autofill(&mut host);
     host.set_content(content);
     host.settle(10);
     for _ in 0..n {
         std::hint::black_box(host.accessibility_tree());
     }
 }
+
+/// With the `bench-autofill` feature (`compare_instructions.py --autofill`): a platform autofill
+/// manager on `host` that does nothing with what it's told, as Android installs on every view
+/// while autofill is on (D1688). The rules have a recording one (`use_autofill`, in `main`).
+#[cfg(feature = "bench-autofill")]
+fn with_autofill(host: &mut UiHost) {
+    struct Nothing;
+    impl compose::ui::platform::PlatformAutofillManager for Nothing {
+        fn call(&self, _call: compose::ui::platform::PlatformAutofillCall) {}
+    }
+    host.with_tree(|tree| tree.set_platform_autofill_manager(Some(std::rc::Rc::new(Nothing))));
+}
+
+#[cfg(not(feature = "bench-autofill"))]
+fn with_autofill(_host: &mut UiHost) {}
 
 /// `n` first frames of `content`: the host's making and dropping counted.
 fn first_frames(content: fn(), n: usize) {
@@ -511,6 +528,8 @@ fn main() {
     };
     let n: usize = n.parse().expect("a number of iterations");
     use_optimizations(Optimizations::NONE);
+    #[cfg(feature = "bench-autofill")]
+    use_autofill(true);
     match scenario.as_str() {
         "service_flat" => service_reads(ServiceFlat, n),
         "service_padded" => service_reads(ServicePadded, n),

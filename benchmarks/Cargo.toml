@@ -9,6 +9,11 @@ publish.workspace = true
 [dependencies]
 compose-runtime.workspace = true
 
+[features]
+# Every host of `examples/instructions.rs` with a platform autofill manager that does nothing, as
+# Android installs on every view while autofill is on (`compare_instructions.py --autofill`, D1688).
+bench-autofill = []
+
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false }
 compose = { path = "../crates/compose", features = ["test"] }
