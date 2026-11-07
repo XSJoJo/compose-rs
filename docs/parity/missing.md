@@ -1,16 +1,36 @@
 # What's missing for parity with Compose
 
-A short overview, written on 2026-10-31. The [ledgers](README.md) have the detail. Numbers are the Compose tests the ledgers count as waiting on a feature, tallied roughly: they show size, not exact remaining work, and some ledger tags lag behind what's done.
+A short overview, refreshed on 2026-11-07. The [ledgers](README.md) have the detail, and [handoff.md](handoff.md) says what is in flight and why each ignored test is ignored. Numbers are the Compose tests the ledgers count as waiting on a feature, tallied roughly: they show size, not exact remaining work, and some ledger tags lag behind what's done.
 
 Out of scope, by decision: Material 2, Wear, TV, Glance, remote, Navigation Compose. iOS and WASM are paused.
 
-## Written, not on main yet
+## By size
 
-These are on local branches, so they're not lost, but each still has to finish its review or fixes:
+The largest `feature:` gaps in the ledgers on 2026-11-07 (`python3 tools/parity/ledger_count.py docs/parity/<ledger>.md`), in Compose tests waiting:
 
-| Work | Branch | State |
-|---|---|---|
-| Stretch and glow overscroll | `worktree-agent-ad25708f190fdec81` | Built (D1473 to D1476), reviewed, the review's fixes in (a finger going back in one batch, a drop guard); checked on a phone at API 37. To merge. Design and what held: [stretch-overscroll.md](design/stretch-overscroll.md). |
+| Gap | Tests | Ledger | Notes |
+|---|---|---|---|
+| Android view interop (`AndroidView`, hosting) | ~279 | ui-input | |
+| Android IME bridge details | ~170, and ~68 platform text input | foundation-text-misc, ui-input | |
+| Autofill | ~166 | ui-input | Built (D1680–D1687) on `autofill-2`, held off main until its per-frame cost is fixed (handoff.md) |
+| `TextFieldState` remainder | ~118, and ~67 text field styles | foundation-text-misc | Styles in the state, an output transformation's styles |
+| AndroidParagraphTest (paragraph API) | ~115 | ui-text-and-test | The rest of the paragraph API is in (D2047–D2052); `BasicText` and the fields don't split a text by its paragraph styles yet |
+| Carousel (Material 3) | ~99 | material3 | Big Material components come last |
+| Handwriting | ~84 | foundation-text-misc | |
+| Floating toolbar (Material 3) | ~82 | material3 | |
+| Border parity | ~79 | foundation-text-misc | Mostly in (D1050–D1054); the tag lags, its semantics are left |
+| Magnifier | ~78 | foundation-text-misc | |
+| Android text device tests | ~68 | ui-text-and-test | |
+| Search bar (Material 3) | ~66 | material3 | |
+| Polygon shapes | ~64 | foundation-text-misc | |
+| Progressive blur | ~60 | ui-core | |
+| Fonts | ~60 | ui-text-and-test | |
+| Text links | ~56 | foundation-text-misc | |
+| Scroll capture | ~44 | ui-input | |
+| Media queries | ~42 | ui-core, ui-input | |
+| Brush extras | ~42 | ui-core | |
+
+Beyond these, many files are `partial`: the feature exists and some of their tests aren't ported (over a thousand tests in each of ui-core, ui-input, foundation text and Material 3).
 
 ## The big missing things
 
