@@ -991,3 +991,39 @@ fn pinning_an_item_pins_the_container_around_it_and_leaving_lets_both_go() {
     assert!(pinned.is_empty());
     assert_eq!(parent_pins.get(), 0);
 }
+
+// Release builds only: a debug build's times are too far from a release build's to bound.
+/// A measurement composing thousands of items beside thousands composed takes time in proportion
+/// to them: trimming the items' contents once per item, each trim going over all those composed,
+/// made it take hundreds of times the first measurement (D1477).
+#[cfg(not(debug_assertions))]
+#[test]
+fn a_measurement_composing_thousands_beside_thousands_takes_time_in_proportion() {
+    let more = mutable_state_of(false);
+    let handle = more.handle();
+    let policy = lazy_layout_measure_policy(move |scope, _| {
+        // Those composed first, from the last, and as many new.
+        let order: Vec<usize> = if handle.get() {
+            (0..4000).rev().chain(4000..8000).collect()
+        } else {
+            (0..4000).collect()
+        };
+        for index in order {
+            let _ = scope.compose(index);
+        }
+        scope.layout(10, 10)
+    });
+    let items = provider(|| 8000, |_| Box!(modifier = Modifier.size(1.dp())));
+    let start = std::time::Instant::now();
+    let mut ui = ComposeTestRule::sized(IntSize::new(100, 100), move || {
+        let items = items.clone();
+        LazyLayout!(move || items.clone(), measure_policy = policy.clone());
+    });
+    ui.wait_for_idle();
+    let first = start.elapsed();
+    more.set(true);
+    let start = std::time::Instant::now();
+    ui.wait_for_idle();
+    let again = start.elapsed();
+    assert!(again < 10 * first, "{again:?} for a first measurement of {first:?}");
+}

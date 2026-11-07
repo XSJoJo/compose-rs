@@ -1092,17 +1092,30 @@ impl UiTree {
         if from == to {
             return;
         }
-        let node = self.node(host).virtual_children[from];
-        let (_, offset, _) = self.host_of(node);
+        let value = self.node(host);
+        let node = value.virtual_children[from];
         let count = self.node(node).children.len();
-        let moved: SmallVec<[Measurable; 8]> =
-            self.node_mut(host).children.drain(offset..offset + count).collect();
+        // Where its children are and go, from the children before it there and here, in one pass
+        // (a lazy layout's jump moves thousands, D1477).
+        let (low, high) = (from.min(to), from.max(to));
+        let (mut before_low, mut through_high) = (0, 0);
+        for (at, other) in value.virtual_children[..=high].iter().enumerate() {
+            if at == low {
+                before_low = through_high;
+            }
+            through_high += self.node(*other).children.len();
+        }
+        let (old, new) = if from < to {
+            (before_low, through_high - count)
+        } else {
+            let at_high = self.node(value.virtual_children[high]).children.len();
+            (through_high - at_high, before_low)
+        };
         let value = self.node_mut(host);
+        let moved: SmallVec<[Measurable; 8]> = value.children.drain(old..old + count).collect();
         value.virtual_children.remove(from);
         value.virtual_children.insert(to, node);
-        let (_, offset, _) = self.host_of(node);
-        let value = self.node_mut(host);
-        value.children.splice(offset..offset, moved);
+        value.children.splice(new..new, moved);
         self.invalidate_measure(host);
     }
 
@@ -1118,6 +1131,44 @@ impl UiTree {
             self.invalidate_measure(host);
         }
         self.free_subtree(node);
+    }
+
+    /// `host`'s virtual nodes `nodes` go, with what's still under them: in one pass over its
+    /// children, where one at a time looks for each one's place among them (a lazy layout's jump
+    /// letting thousands of items go, D1477).
+    pub(crate) fn remove_virtual_nodes(&mut self, host: NodeId, nodes: &[NodeId]) {
+        if nodes.len() < 2 || self.get(host).is_none() {
+            for &node in nodes {
+                self.remove_virtual_node(host, node);
+            }
+            return;
+        }
+        let mut gone: std::collections::HashSet<NodeId> =
+            nodes.iter().copied().filter(|node| self.get(*node).is_some()).collect();
+        let value = self.node_mut(host);
+        let virtual_children = std::mem::take(&mut value.virtual_children);
+        let children = std::mem::take(&mut value.children);
+        let mut kept_virtual = Vec::with_capacity(virtual_children.len());
+        let mut kept = Vec::with_capacity(children.len());
+        let mut offset = 0;
+        for node in virtual_children {
+            let count = self.node(node).children.len();
+            if !gone.contains(&node) {
+                kept_virtual.push(node);
+                kept.extend_from_slice(&children[offset..offset + count]);
+            }
+            offset += count;
+        }
+        kept.extend_from_slice(&children[offset..]);
+        let value = self.node_mut(host);
+        value.virtual_children = kept_virtual;
+        value.children = kept;
+        self.invalidate_measure(host);
+        for &node in nodes {
+            if gone.remove(&node) {
+                self.free_subtree(node);
+            }
+        }
     }
 
     /// The first node of a virtual node not deactivated, as a measurable.
