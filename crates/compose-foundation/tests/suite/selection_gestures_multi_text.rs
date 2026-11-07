@@ -614,6 +614,7 @@ fn drag_below_text(overflow: TextOverflow) {
     assert!(moves() >= 1);
     up(&mut ui);
     assert_clipped_selection(&mut ui, 0, 4);
+    assert!(ui.text_toolbar().is_shown(), "the text toolbar shown (D2041)");
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/ClippedTextSelectionGesturesTest.kt, whenDragBelowText_withOverflowClip_entireTextSelected
@@ -646,10 +647,12 @@ fn whenDragEndHandleOutOfBounds_selectionAndHandleUpdates() {
     assert_eq!(handles_shown(&mut ui), (true, true));
     up(&mut ui);
     assert_clipped_selection(&mut ui, 0, 4);
+    assert!(ui.text_toolbar().is_shown(), "the text toolbar shown (D2041)");
     moves();
 
     let handle = Handle::SelectionEnd;
     let mut gesture = press_handle(&mut ui, handle);
+    assert!(!ui.text_toolbar().is_shown(), "the text toolbar hidden while the handle's held");
     let to = Offset::new(bounds.right - 1.0, bounds.bottom - 1.0);
     move_handle_to(&mut ui, handle, &mut gesture, to);
     assert_clipped_selection(&mut ui, 0, clipped_text().len());
@@ -662,6 +665,7 @@ fn whenDragEndHandleOutOfBounds_selectionAndHandleUpdates() {
     release_handle(&mut ui, handle);
     assert_clipped_selection(&mut ui, 0, 4);
     assert_eq!(handles_shown(&mut ui), (true, true));
+    assert!(ui.text_toolbar().is_shown(), "the text toolbar shown (D2041)");
 }
 
 // ---- MultiTextMinTouchBoundsSelectionGesturesTest ------------------------------------------

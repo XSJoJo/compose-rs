@@ -58,17 +58,26 @@ pub fn SelectionContainer(
     let handles =
         compose_runtime::remember(|| std::rc::Rc::new(compose_ui::ContainerHandles::new()));
     handles.set_haptic_feedback(compose_ui::LOCAL_HAPTIC_FEEDBACK.current());
+    // Its toolbar and right-click menu (D2041).
+    let menu = compose_runtime::remember(|| {
+        std::rc::Rc::new(crate::text_context_menu::container::ContainerMenu::new(handles.clone()))
+    });
     // Selectable again below a `DisableSelection`, as Compose's.
     compose_runtime::CompositionLocalProvider(LOCAL_SELECTION_REGISTRAR.provides(true), || {
         let content = content.clone();
         let shown = handles.clone();
+        let menu = menu.clone();
         crate::layout::Box(
-            modifier.clone().selection_container_with_handles(handles.clone()),
+            modifier
+                .clone()
+                .selection_container_with_handles(handles.clone())
+                .then(menu.modifier()),
             crate::Alignment::TOP_START,
             false,
             compose_runtime::callback(move |_| {
                 content();
                 crate::selection_handles::SelectionContainerHandles(shown.clone());
+                crate::text_context_menu::container::ContainerDropdownMenu(menu.clone());
             }),
         );
     });

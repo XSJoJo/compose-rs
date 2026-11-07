@@ -9,8 +9,8 @@
 //! (the cursor there, its handle shown). Each check is the asserter's: the text and the selection
 //! (by touch, its ends in order: the field never reverses a finger's selection), the handles
 //! shown, and at least as many `TextHandleMove` and `LongPress` haptics as expected since the last
-//! check (D2027). The toolbar's checks wait on `text-context-menu`; no magnifier shows (Compose's
-//! checks are skipped where the platform has none).
+//! check (D2027), and the text toolbar shown or not on the test rule's toolbar (D2043); no
+//! magnifier shows (Compose's checks are skipped where the platform has none).
 
 #![allow(non_snake_case)]
 
@@ -71,6 +71,8 @@ struct FieldGestures {
     cursor_handle_shown: bool,
     moves: u32,
     long_presses: u32,
+    /// The text toolbar expected shown, as the asserter's `textToolbarShown` (D2041).
+    toolbar_shown: bool,
 }
 
 /// As Compose's `setTextFieldTestContent` around `Content()`, then its `@Before`: a finger's tap
@@ -141,6 +143,7 @@ fn field_gestures(rtl: bool) -> FieldGestures {
         cursor_handle_shown: false,
         moves: 0,
         long_presses: 0,
+        toolbar_shown: false,
     };
     let at = it.character(0);
     it.touch(|touch| touch.click_at(at));
@@ -401,6 +404,9 @@ impl FieldGestures {
         } else {
             cursor.assert_does_not_exist();
         }
+        // The test rule's toolbar, as the spy's `assertShown` (D2041).
+        let toolbar = self.ui.text_toolbar().is_shown();
+        assert_eq!(toolbar, self.toolbar_shown, "the text toolbar shown");
         let (moves, long) = HAPTICS.with(|count| count.replace((0, 0)));
         assert!(moves >= self.moves, "{moves} TextHandleMove haptics, expected {}", self.moves);
         assert!(
@@ -451,6 +457,9 @@ fn whenTouch_withNoTextThenLongPress_noSelection() {
         it.set_content("");
         it.touch(|touch| touch.click());
         it.expect(|it| it.text = String::new());
+        // "Paste will show up if clipboard is not empty": a clip on it, the toolbar's only item
+        // where Compose's shows autofill too, which compose-rs hasn't (D2035, D2041).
+        it.ui.host().with_tree(|tree| tree.clipboard().set_text("clip"));
         it.touch(|touch| {
             let timeout = touch.view_configuration().double_tap_timeout_millis;
             touch.advance_event_time(timeout * 2);
@@ -458,6 +467,7 @@ fn whenTouch_withNoTextThenLongPress_noSelection() {
             let duration = touch.view_configuration().long_press_timeout_millis + 100;
             touch.long_click_at(center, duration);
         });
+        it.toolbar_shown = true;
         it.expect(|it| it.long_presses += 1);
     }
 }
@@ -470,6 +480,8 @@ fn whenTouch_withNoTextThenLongPressAndDrag_noSelection() {
         it.set_content("");
         it.touch(|touch| touch.click());
         it.expect(|it| it.text = String::new());
+        // "Paste will show up if clipboard is not empty" (D2035, D2041).
+        it.ui.host().with_tree(|tree| tree.clipboard().set_text("clip"));
         it.touch(|touch| {
             let timeout = touch.view_configuration().double_tap_timeout_millis;
             touch.advance_event_time(timeout * 2);
@@ -481,6 +493,7 @@ fn whenTouch_withNoTextThenLongPressAndDrag_noSelection() {
         it.touch_drag_to(to);
         it.check();
         it.up();
+        it.toolbar_shown = true;
         it.check();
     }
 }
@@ -492,6 +505,7 @@ fn whenTouch_withLongPressThenClear_noSelection() {
         let mut it = field_gestures(rtl);
         let at = it.character(13);
         it.long_click(at);
+        it.toolbar_shown = true;
         it.expect(|it| {
             it.by_touch(12, 17);
             it.handles_shown = true;
@@ -499,6 +513,7 @@ fn whenTouch_withLongPressThenClear_noSelection() {
         });
         let at = it.character(14);
         it.touch(|touch| touch.click_at(at));
+        it.toolbar_shown = false;
         it.expect(|it| {
             it.by_touch(14, 14);
             it.handles_shown = false;
@@ -582,6 +597,7 @@ fn whenTouch_withLongPress_selectsSingleWord() {
         let mut it = field_gestures(rtl);
         let at = it.character(13);
         it.long_click(at);
+        it.toolbar_shown = true;
         it.expect(|it| {
             it.by_touch(12, 17);
             it.handles_shown = true;
@@ -596,6 +612,7 @@ fn whenTouch_withLongPressesOnMultipleWords_selectsSingleWords() {
     for rtl in DIRECTIONS {
         let mut it = field_gestures(rtl);
         it.handles_shown = true;
+        it.toolbar_shown = true;
         for (offset, start, end) in
             [(2, 0, 5), (8, 6, 11), (13, 12, 17), (20, 18, 23), (26, 24, 29)]
         {
@@ -634,6 +651,7 @@ fn long_press_then_drag_forward_and_back(
     it.touch_drag_to(to);
     it.check();
     it.up();
+    it.toolbar_shown = true;
     it.expect(|it| it.handles_shown = true);
 }
 
@@ -704,6 +722,7 @@ fn long_press_then_drag_to_end_padding(rtl: bool, place: Place, expected: (usize
         it.moves += 1;
     });
     it.up();
+    it.toolbar_shown = true;
     it.expect(|it| it.handles_shown = true);
 }
 
@@ -746,6 +765,7 @@ fn whenTouch_withLongPressInEndPadding_entersSelectionMode() {
         it.touch_drag_by(Offset::new(-1.0, 0.0));
         it.check();
         it.up();
+        it.toolbar_shown = true;
         it.expect(|it| it.cursor_handle_shown = true);
     }
 }
@@ -773,6 +793,7 @@ fn whenTouch_withLongPressInEndPaddingOfEmptyLine_entersSelectionMode() {
         it.touch_drag_by(Offset::new(-1.0, 0.0));
         it.check();
         it.up();
+        it.toolbar_shown = true;
         it.expect(|it| it.cursor_handle_shown = true);
     }
 }
@@ -795,6 +816,7 @@ fn whenTouch_withLongPressInEndPaddingThenDragToUpperEndPadding_selectsParagraph
             it.moves += 1;
         });
         it.up();
+        it.toolbar_shown = true;
         it.expect(|it| it.handles_shown = true);
     }
 }
@@ -817,6 +839,7 @@ fn whenTouch_withLongPressInEndPaddingThenDragToLowerEndPadding_selectsNewLineAn
             it.moves += 1;
         });
         it.up();
+        it.toolbar_shown = true;
         it.expect(|it| it.handles_shown = true);
     }
 }
@@ -835,6 +858,7 @@ fn whenTouch_withLongPressInEndPaddingOfFinalLine_entersSelectionMode() {
         it.touch_drag_by(Offset::new(-1.0, 0.0));
         it.check();
         it.up();
+        it.toolbar_shown = true;
         it.expect(|it| it.cursor_handle_shown = true);
     }
 }
@@ -857,6 +881,7 @@ fn whenTouch_withLongPressThanDragAcrossSingleWord_onlySelectsSingleWordAndNoOth
         it.touch_drag_to(to);
         it.expect(|it| it.by_touch(12, 17));
         it.up();
+        it.toolbar_shown = true;
         it.expect(|it| it.handles_shown = true);
     }
 }
@@ -884,6 +909,7 @@ fn whenTouch_withLongPressInEndPaddingOfEmptyFinalLine_entersSelectionMode() {
         it.touch_drag_by(Offset::new(-1.0, 0.0));
         it.check();
         it.up();
+        it.toolbar_shown = true;
         it.expect(|it| it.cursor_handle_shown = true);
     }
 }
@@ -904,6 +930,7 @@ fn whenTouch_withDoubleClick_selectsWord() {
         let mut it = field_gestures(rtl);
         let at = it.character(13);
         taps(&mut it, 2, at);
+        it.toolbar_shown = true;
         it.expect(|it| {
             it.handles_shown = true;
             it.by_touch(12, 17);
@@ -918,6 +945,7 @@ fn whenTouch_withTripleClick_selectsParagraph() {
         let mut it = field_gestures(rtl);
         let at = it.character(13);
         taps(&mut it, 3, at);
+        it.toolbar_shown = true;
         it.expect(|it| {
             it.handles_shown = true;
             it.by_touch(6, 23);
@@ -947,6 +975,7 @@ fn taps_then_drag(rtl: bool, taps: u32, end: usize, first: (usize, usize), last:
     it.touch_drag_to(to);
     it.expect(|it| it.by_touch(last.0, last.1));
     it.up();
+    it.toolbar_shown = true;
     it.expect(|it| it.handles_shown = true);
 }
 
@@ -1254,6 +1283,7 @@ fn whenMouse_thenTouch_touchBehaviorsAppear() {
         });
         it.expect(|it| it.by_mouse(12, 17));
         it.enter_touch_mode();
+        it.toolbar_shown = true;
         it.expect(|it| it.handles_shown = true);
     }
 }
@@ -1265,12 +1295,14 @@ fn whenTouch_thenMouse_touchBehaviorsDisappear() {
         let mut it = field_gestures(rtl);
         let at = it.character(13);
         it.long_click(at);
+        it.toolbar_shown = true;
         it.expect(|it| {
             it.by_touch(12, 17);
             it.handles_shown = true;
             it.long_presses += 1;
         });
         it.enter_cursor_mode(kind);
+        it.toolbar_shown = false;
         it.expect(|it| it.handles_shown = false);
     }
 }
@@ -1344,6 +1376,7 @@ fn whenReadOnly_touchLongPress_startsSelection() {
             it.long_presses += 1;
         });
         it.up();
+        it.toolbar_shown = true;
         it.expect(|it| it.handles_shown = true);
     }
 }
@@ -1471,12 +1504,14 @@ fn a_mouses_tap_shows_the_cursor_handle_once_a_finger_comes_back() {
         let mut it = field_gestures(false);
         let at = it.character(13);
         it.long_click(at);
+        it.toolbar_shown = true;
         it.expect(|it| {
             it.by_touch(12, 17);
             it.handles_shown = true;
             it.long_presses += 1;
         });
         it.cursor(kind, |cursor| cursor.click(at));
+        it.toolbar_shown = false;
         it.expect(|it| {
             it.by_mouse(13, 13);
             it.handles_shown = false;
@@ -1493,6 +1528,7 @@ fn a_mouse_entering_the_field_hides_the_handles() {
     let mut it = field_gestures(false);
     let at = it.character(13);
     it.long_click(at);
+    it.toolbar_shown = true;
     it.expect(|it| {
         it.by_touch(12, 17);
         it.handles_shown = true;
@@ -1501,6 +1537,7 @@ fn a_mouse_entering_the_field_hides_the_handles() {
     let center = it.center();
     it.ui.on_node_with_tag(TAG).perform_mouse_input(|mouse| mouse.enter(center));
     it.ui.wait_for_idle();
+    it.toolbar_shown = false;
     it.expect(|it| it.handles_shown = false);
 }
 

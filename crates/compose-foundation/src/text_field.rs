@@ -3014,6 +3014,7 @@ impl TextFieldNode {
                     initial = self.unit_at(unit, offset);
                     self.anchor = initial.start;
                     self.cursor = initial.end;
+                    self.mouse_selected();
                     context.invalidate_measure();
                 }
                 // A mouse's first press puts the cursor there and focuses the field at once, as
@@ -3105,6 +3106,9 @@ impl TextFieldNode {
                             self.cursor = reached.start;
                         }
                     }
+                }
+                if !touch {
+                    self.mouse_selected();
                 }
                 self.preferred_x = None;
                 context.invalidate_measure();

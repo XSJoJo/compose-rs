@@ -135,6 +135,15 @@ impl TextFieldNode {
             (state != ToolbarState::None).then(|| self.shown_text_now().to_owned());
     }
 
+    /// A mouse's multi-click or drag selected: the selection's toolbar is asked for, as Compose's
+    /// `TextFieldMouseSelectionObserver.updateSelection` sets `Selection`; it shows once a finger
+    /// touches the field again (D2041).
+    pub(super) fn mouse_selected(&mut self) {
+        if self.touch.toolbar.state != ToolbarState::Selection {
+            self.set_toolbar_state(ToolbarState::Selection);
+        }
+    }
+
     fn shown_text_now(&self) -> &str {
         self.shown_text.as_deref().unwrap_or(&self.text)
     }

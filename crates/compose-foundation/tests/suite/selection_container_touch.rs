@@ -963,3 +963,32 @@ fn a_second_finger_neither_drags_nor_clears_a_long_press() {
     assert_anchor(&mut ui, Some(start), TEXT.find('D').unwrap(), TAG1);
     assert_anchor(&mut ui, Some(end), TEXT.len(), TAG1);
 }
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/SelectionContainerFocusTest.kt, leavingComposition_hidesTextToolbar_newContextMenu
+#[test]
+fn leavingComposition_hidesTextToolbar_newContextMenu() {
+    use compose_foundation::text_context_menu::platform_toolbar::ProvidePlatformTextContextMenuToolbar;
+    let in_composition = Box::leak(Box::new(compose_runtime::mutable_state_of(true))).handle();
+    let measurer = FixedTextMeasurer::with_metrics(FixedFontMetrics::SAMPLE_FONT);
+    let size = IntSize::new(400, 400);
+    let mut ui = compose_test_with(size, Density::new(1.0), Box::new(measurer), move || {
+        ProvidePlatformTextContextMenuToolbar!(Modifier, {
+            if in_composition.get() {
+                SelectionContainer!(modifier = Modifier.test_tag("SelectionContainer"), {
+                    BasicText!(TEXT, modifier = Modifier.fill_max_width(), style = style());
+                });
+            }
+        });
+    });
+    ui.host().set_input_mode(InputMode::Touch);
+    let toolbar = ui.text_toolbar();
+
+    ui.on_node_with_tag("SelectionContainer").perform_touch_input(|touch| touch.long_click());
+    ui.wait_for_idle();
+    assert!(toolbar.is_shown(), "Text toolbar status should be shown.");
+
+    in_composition.set(false);
+
+    ui.wait_for_idle();
+    assert!(!toolbar.is_shown(), "Text toolbar status should not be shown.");
+}

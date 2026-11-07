@@ -4,6 +4,7 @@
 //! (docs/parity/design/text-context-menu.md, D2031).
 
 pub mod builder;
+pub(crate) mod container;
 pub mod data;
 pub mod default_providers;
 pub mod dropdown;
