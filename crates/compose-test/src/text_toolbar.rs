@@ -31,6 +31,8 @@ struct Shown {
     callback: Rc<dyn TextActionModeCallback>,
     menu: TextActionMenu,
     rect: Rect,
+    /// The rect it started with.
+    first_rect: Rect,
 }
 
 struct Mode {
@@ -106,7 +108,7 @@ impl compose_ui::TextActionModes for TestTextToolbar {
         let id = self.inner.next_id.get() + 1;
         self.inner.next_id.set(id);
         self.inner.started.set(self.inner.started.get() + 1);
-        *self.inner.shown.borrow_mut() = Some(Shown { id, callback, menu, rect });
+        *self.inner.shown.borrow_mut() = Some(Shown { id, callback, menu, rect, first_rect: rect });
         Some(Rc::new(Mode { inner: Rc::downgrade(&self.inner), id }))
     }
 }
@@ -144,6 +146,12 @@ impl TestTextToolbar {
     /// Where the shown toolbar goes, as its callback last said (in the root).
     pub fn content_rect(&self) -> Option<Rect> {
         self.inner.shown.borrow().as_ref().map(|shown| shown.rect)
+    }
+
+    /// Where the shown toolbar went when it started: what Android's floating toolbar keeps when
+    /// told of a new place before it first shows (D2033).
+    pub fn first_content_rect(&self) -> Option<Rect> {
+        self.inner.shown.borrow().as_ref().map(|shown| shown.first_rect)
     }
 
     /// How many toolbars started since the rule began.

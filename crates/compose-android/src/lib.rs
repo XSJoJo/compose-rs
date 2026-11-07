@@ -31,6 +31,7 @@ mod logging;
 mod performance_hint;
 mod pointer_icon;
 mod services;
+mod text_toolbar;
 
 pub use jni;
 

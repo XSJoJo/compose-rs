@@ -83,7 +83,10 @@ pub(crate) fn with_main_env<T>(f: impl FnOnce(&mut Env) -> T) -> T {
 
 /// Runs a native method's body with its environment. A panic isn't caught: it aborts at the JNI
 /// boundary (D361).
-fn with_env<'local, T>(env: &mut EnvUnowned<'local>, f: impl FnOnce(&mut Env<'local>) -> T) -> T {
+pub(crate) fn with_env<'local, T>(
+    env: &mut EnvUnowned<'local>,
+    f: impl FnOnce(&mut Env<'local>) -> T,
+) -> T {
     match env.with_env_no_catch(|env| Ok::<T, jni::errors::Error>(f(env))).into_outcome() {
         Outcome::Ok(value) => value,
         Outcome::Err(_) | Outcome::Panic(_) => unreachable!("the body returns Ok and isn't caught"),
@@ -769,6 +772,18 @@ impl compose_ui::ClipboardManager for JniClipboard {
         })
     }
 
+    /// Whether it holds text, from the clip's description: reading the clip itself would show
+    /// Android's "pasted from your clipboard" notice, as Compose's `ClipboardPasteState` avoids
+    /// (D2033).
+    fn has_text(&self) -> bool {
+        with_main_env(|env| {
+            let has =
+                env.call_method(&**self.view, jni_str!("clipboardHasText"), jni_sig!("()Z"), &[]);
+            check(env, "ComposeRsView.clipboardHasText");
+            has.and_then(|value| value.z()).unwrap_or(false)
+        })
+    }
+
     fn set_text(&self, text: &str) {
         with_main_env(|env| {
             if let Ok(text) = env.new_string(text) {
@@ -1004,6 +1019,8 @@ fn create(
         ui.set_retained_view_model_store(store);
     }
     crate::services::install(env, view, &view_ref, &ui);
+    let text_action_modes = crate::text_toolbar::JniTextActionModes::new(env, view, &view_ref);
+    ui.with_tree(|tree| tree.set_text_action_modes(Some(Rc::new(text_action_modes))));
     if rtl {
         ui.set_layout_direction(LayoutDirection::Rtl);
     }

@@ -22,10 +22,13 @@ import android.os.SystemClock
 import android.os.Trace
 import android.text.TextUtils
 import android.util.Log
+import android.view.ActionMode
 import android.view.Choreographer
 import android.view.HapticFeedbackConstants
 import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.Menu
+import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.PointerIcon
 import android.view.View
@@ -1397,9 +1400,93 @@ class ComposeRsView @JvmOverloads constructor(
         return clipboard.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
     }
 
+    /**
+     * Whether the clipboard holds text, from its clip's description: reading the clip would show
+     * the system's "pasted from your clipboard" notice, as Compose's `ClipboardPasteState`
+     * avoids (D2033).
+     */
+    fun clipboardHasText(): Boolean {
+        val clipboard = context.getSystemService(ClipboardManager::class.java)
+        return clipboard.hasPrimaryClip() &&
+            clipboard.primaryClipDescription?.hasMimeType("text/*") == true
+    }
+
     fun setClipboardText(text: String) {
         val clipboard = context.getSystemService(ClipboardManager::class.java)
         clipboard.setPrimaryClip(ClipData.newPlainText("text", text))
+    }
+
+    // ---- The floating text toolbar (Rust calls these: `text_toolbar.rs`, D2033) ----------------
+
+    /** The floating text toolbars shown, by Rust's id. */
+    private val textActionModes = HashMap<Int, ActionMode>()
+
+    /**
+     * Starts the floating text toolbar [id], as Compose's `AndroidTextContextMenuToolbarProvider`:
+     * an `ActionMode` of `TYPE_FLOATING` whose menu, place and clicks are Rust's. Whether it
+     * started (it doesn't with an empty menu).
+     */
+    fun startTextActionMode(id: Int): Boolean {
+        val callback =
+            object : ActionMode.Callback2() {
+                override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean =
+                    fillTextActionMenu(id, menu, create = true)
+
+                override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean =
+                    fillTextActionMenu(id, menu, create = false)
+
+                override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean = false
+
+                override fun onDestroyActionMode(mode: ActionMode) {
+                    textActionModes.remove(id)
+                    ComposeRsNative.textActionModeDestroyed(id)
+                }
+
+                override fun onGetContentRect(mode: ActionMode, view: View?, outRect: Rect) {
+                    val rect = ComposeRsNative.textActionModeRect(id)
+                    outRect.set(
+                        Math.round(rect[0]),
+                        Math.round(rect[1]),
+                        Math.round(rect[2]),
+                        Math.round(rect[3]),
+                    )
+                }
+            }
+        val mode = startActionMode(callback, ActionMode.TYPE_FLOATING) ?: return false
+        textActionModes[id] = mode
+        return true
+    }
+
+    /** Fills [menu] with Rust's items of the toolbar [id]: Rust's result. */
+    private fun fillTextActionMenu(id: Int, menu: Menu, create: Boolean): Boolean {
+        val values = ComposeRsNative.textActionModeMenu(id, create)
+        menu.clear()
+        val count = (values.size - 1) / 3
+        for (index in 0 until count) {
+            val group = values[1 + index * 3]
+            val itemId = values[2 + index * 3]
+            val order = values[3 + index * 3]
+            val title = ComposeRsNative.textActionModeTitle(id, index)
+            val item = menu.add(group, itemId, order, title)
+            item.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
+            item.setOnMenuItemClickListener {
+                ComposeRsNative.textActionModeClick(id, index)
+                true
+            }
+        }
+        return values.isNotEmpty() && values[0] != 0
+    }
+
+    fun invalidateTextActionMode(id: Int) {
+        textActionModes[id]?.invalidate()
+    }
+
+    fun invalidateTextActionModeRect(id: Int) {
+        textActionModes[id]?.invalidateContentRect()
+    }
+
+    fun finishTextActionMode(id: Int) {
+        textActionModes[id]?.finish()
     }
 
     // ---- Links and haptics (Rust calls these: `LOCAL_URI_HANDLER`, `LOCAL_HAPTIC_FEEDBACK`) --

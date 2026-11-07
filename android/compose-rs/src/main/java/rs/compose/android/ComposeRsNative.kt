@@ -159,6 +159,25 @@ internal object ComposeRsNative {
      */
     @JvmStatic external fun pointerIconTypes(): IntArray
 
+    /**
+     * The menu of the floating text toolbar [id] (`text_toolbar.rs`, D2033), filled on its
+     * creation ([create]) or again: its result (whether it shows, or changed), then each item's
+     * group, id and order.
+     */
+    @JvmStatic external fun textActionModeMenu(id: Int, create: Boolean): IntArray
+
+    /** The title of item [index] of the floating text toolbar [id]'s menu. */
+    @JvmStatic external fun textActionModeTitle(id: Int, index: Int): String
+
+    /** Item [index] of the floating text toolbar [id]'s menu was clicked. */
+    @JvmStatic external fun textActionModeClick(id: Int, index: Int)
+
+    /** Where the floating text toolbar [id] goes, in the view: left, top, right, bottom. */
+    @JvmStatic external fun textActionModeRect(id: Int): FloatArray
+
+    /** The floating text toolbar [id] closed. */
+    @JvmStatic external fun textActionModeDestroyed(id: Int)
+
     /** [pointerIcon] for no icon: a stylus over none (the view's own then). */
     const val POINTER_ICON_NONE = -1
 

@@ -91,10 +91,7 @@ fn run_test(options: Options) -> Scope {
         ProvidePlatformTextContextMenuToolbar!(Modifier, {
             let (requester, transformation) = (requester, transformation.clone());
             Column!({
-                Box!(
-                    modifier =
-                        Modifier.focus_requester(requester).focusable().size(100.dp())
-                );
+                Box!(modifier = Modifier.focus_requester(requester).focusable().size(100.dp()));
                 if show_text_field.get() {
                     BasicTextFieldOfState!(
                         state.get(),
@@ -700,4 +697,18 @@ fn the_cursor_s_toolbar_goes_around_the_cursor() {
         (rect.left - 20.0).abs() <= 1.0 && rect.top == 100.0 && rect.bottom == 110.0,
         "{rect:?}"
     );
+}
+
+/// A long press on a field not focused yet: the toolbar goes around the selected word, in the
+/// root, once the field is focused and placed.
+#[test]
+fn a_long_press_s_toolbar_goes_around_the_word() {
+    let mut it = run_test(Options::default());
+    it.long_click_offset(1);
+    it.assert_selection((0, 5));
+    it.assert_shown();
+    let rect = it.toolbar.content_rect().unwrap();
+    assert!(rect.top == 100.0 && rect.bottom == 110.0 && rect.right >= 49.0, "{rect:?}");
+    // There from the start (D2033).
+    assert_eq!(it.toolbar.first_content_rect(), Some(rect));
 }

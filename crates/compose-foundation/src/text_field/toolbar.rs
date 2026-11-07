@@ -4,8 +4,6 @@
 //!
 //! A field whose toolbar state is `None` and shows none pays a branch at each measurement.
 
-use std::rc::Rc;
-
 use compose_runtime::OwnedState;
 use compose_ui::platform::{ParagraphHandle, TextMeasurer};
 use compose_ui::{EventContext, LayoutCoordinates, NodeContext, Offset, Rect, text_action_labels};
@@ -14,9 +12,11 @@ use super::TextFieldNode;
 use crate::key_mapping::KeyCommand;
 use crate::selection_handles::{TouchHandles, selection_handle_coordinates};
 use crate::text_context_menu::modifier::{
-    TextContextMenuBuilder, ToolbarHandler, ToolbarHost, translate_root_to_destination,
+    ToolbarHandler, ToolbarHost, translate_root_to_destination,
 };
-use crate::text_context_menu::{TextContextMenuKeys, TextContextMenuSession};
+use crate::text_context_menu::{
+    TextContextMenuBuilderScope, TextContextMenuKeys, TextContextMenuSession,
+};
 
 /// Which toolbar the user asked for, as Compose's `TextToolbarState`: the cursor's (a tap on its
 /// handle), the selection's (a long press, a double tap, `SetSelection`), or none.
@@ -148,13 +148,9 @@ impl TextFieldNode {
             Rect::new(left, top(start).min(top(end)), right, start_point.y.max(end_point.y))
                 .translate(Offset::ZERO - scroll)
         };
-        let size = self.size;
-        let visible = self.touch.handles_visible().unwrap_or(Rect::new(
-            0.0,
-            0.0,
-            size.width as f32,
-            size.height as f32,
-        ));
+        // Placed first, as Compose's needs `textLayoutCoordinates`: the inner field's visible
+        // bounds and its place in the root are known once it's placed with handles possible.
+        let visible = self.touch.handles_visible()?;
         content.overlaps(visible).then(|| content.intersect(visible))
     }
 
@@ -314,12 +310,12 @@ impl ToolbarHost for TextFieldNode {
             destination,
         ))
     }
-}
 
-/// The field's items, as Compose's `addBasicTextFieldTextContextMenuComponents`: cut, copy,
-/// paste, select all and autofill, each only when it applies, between separators.
-pub(crate) fn field_menu_builder(handles: Rc<TouchHandles>) -> TextContextMenuBuilder {
-    Rc::new(move |scope| {
+    /// The field's items, as Compose's `addBasicTextFieldTextContextMenuComponents`: cut, copy,
+    /// paste, select all and autofill, each only when it applies, between separators. What
+    /// applies is a state the field writes, so the toolbar follows it.
+    fn own_text_context_menu_components(&mut self, scope: &mut TextContextMenuBuilderScope) {
+        let Some(handles) = self.touch.handles().cloned() else { return };
         let menu = handles.field_toolbar().menu.get();
         scope.separator();
         let items = [
@@ -352,5 +348,5 @@ pub(crate) fn field_menu_builder(handles: Rc<TouchHandles>) -> TextContextMenuBu
             });
         }
         scope.separator();
-    })
+    }
 }

@@ -110,28 +110,18 @@ pub fn BasicTextField(
         handles: Some(handles.clone()),
     });
     let press_source = interaction_source_for_press;
-    let menu = field_menu(&handles);
     let inner_text_field = inner_field(element, handles);
     crate::layout::Box(
         // An I-beam over the field, as Compose Desktop's text fields.
-        crate::text_context_menu::modifier::append_shared(
-            modifier
-                .semantics_with(true, |config| config.parts_host())
-                .then_custom(FocusOnTap { interaction_source: press_source })
-                .pointer_hover_icon(compose_ui::PointerIcon::TEXT),
-            menu,
-        ),
+        modifier
+            .semantics_with(true, |config| config.parts_host())
+            .then_custom(FocusOnTap { interaction_source: press_source })
+            .pointer_hover_icon(compose_ui::PointerIcon::TEXT),
         crate::Alignment::TOP_START,
         // The decoration's size is the field's: a field given a size passes it on.
         true,
         compose_runtime::callback(move |_| decoration_box(inner_text_field.clone())),
     );
-}
-
-/// The field's context menu items, the same while the field is composed (D2032).
-fn field_menu(handles: &Rc<TouchHandles>) -> crate::text_context_menu::TextContextMenuBuilder {
-    let handles = handles.clone();
-    compose_runtime::remember(move || toolbar::field_menu_builder(handles))
 }
 
 /// The inner field: the field's node, and its handles' popups inside, as Compose composes them in
@@ -266,7 +256,6 @@ pub fn BasicTextFieldOfState(
         handles: Some(handles.clone()),
     });
     let press_source = interaction_source_for_press;
-    let menu = field_menu(&handles);
     let inner_text_field = inner_field(element, handles);
     // Dragged and wheeled along its lines, the content following the finger, as Compose's
     // `scrollable(scrollState, …, reverseDirection)` (D1138).
@@ -294,13 +283,10 @@ pub fn BasicTextFieldOfState(
         None => modifier,
     };
     crate::layout::Box(
-        crate::text_context_menu::modifier::append_shared(
-            modifier
-                .semantics_with(true, |config| config.parts_host())
-                .then_custom(FocusOnTap { interaction_source: press_source })
-                .pointer_hover_icon(compose_ui::PointerIcon::TEXT),
-            menu,
-        ),
+        modifier
+            .semantics_with(true, |config| config.parts_host())
+            .then_custom(FocusOnTap { interaction_source: press_source })
+            .pointer_hover_icon(compose_ui::PointerIcon::TEXT),
         crate::Alignment::TOP_START,
         true,
         compose_runtime::callback(move |_| decorator(inner_text_field.clone())),

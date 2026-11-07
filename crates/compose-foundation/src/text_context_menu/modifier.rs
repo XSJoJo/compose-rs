@@ -61,12 +61,6 @@ impl TextContextMenuModifiers for Modifier {
     }
 }
 
-/// `append_text_context_menu_components` with a builder already shared: the same builder makes
-/// the same element (a field's, remembered).
-pub(crate) fn append_shared(modifier: Modifier, builder: TextContextMenuBuilder) -> Modifier {
-    modifier.then_custom(AppendElement(builder))
-}
-
 struct AppendElement(TextContextMenuBuilder);
 
 struct AppendNode(TextContextMenuBuilder);
@@ -136,6 +130,14 @@ impl TraversableNode for FilterNode {
 /// filters above it.
 #[doc(hidden)]
 pub fn collect_text_context_menu_data(context: &mut NodeContext<'_>) -> TextContextMenuData {
+    collect_into(TextContextMenuBuilderScope::new(), context)
+}
+
+/// The same, after what `scope` has: the node's own components, nearest of all.
+fn collect_into(
+    mut scope: TextContextMenuBuilderScope,
+    context: &mut NodeContext<'_>,
+) -> TextContextMenuData {
     let mut builders: Vec<TextContextMenuBuilder> = Vec::new();
     let mut filters: Vec<TextContextMenuFilter> = Vec::new();
     context.traverse_ancestors_with_key(&TEXT_CONTEXT_MENU_DATA, |node, _| {
@@ -146,7 +148,6 @@ pub fn collect_text_context_menu_data(context: &mut NodeContext<'_>) -> TextCont
         }
         true
     });
-    let mut scope = TextContextMenuBuilderScope::new();
     for builder in builders {
         builder(&mut scope);
     }
@@ -353,6 +354,10 @@ pub(crate) trait ToolbarHost: ModifierNode {
         destination: &LayoutCoordinates,
         context: &mut NodeContext<'_>,
     ) -> Option<Rect>;
+
+    /// Its own components, before its ancestors' (a field's: Compose's are a builder on its
+    /// decoration box, the nearest; a node's own costs nothing at each composition, D2032).
+    fn own_text_context_menu_components(&mut self, _scope: &mut TextContextMenuBuilderScope) {}
 }
 
 /// A toolbar's showing, as Compose's `TextContextMenuToolbarHandlerNode`'s job: a node holding
@@ -451,7 +456,11 @@ impl<N: ToolbarHost> TextContextMenuDataProvider for NodeDataProvider<N> {
     fn data(&self) -> TextContextMenuData {
         // Gone, it has nothing, as Compose's (it may be asked while it's disposed).
         self.handle
-            .with_node::<N, _>(|_, context| collect_text_context_menu_data(context))
+            .with_node::<N, _>(|node, context| {
+                let mut scope = TextContextMenuBuilderScope::new();
+                node.own_text_context_menu_components(&mut scope);
+                collect_into(scope, context)
+            })
             .unwrap_or_default()
     }
 }
