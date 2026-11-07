@@ -58,7 +58,8 @@ impl Entry {
         self.property.vtable.lerp(&self.start.borrow(), &self.end.borrow(), fraction)
     }
 
-    /// Runs the animation from 0 to 1 again, with the velocity it had, as `animate`.
+    /// Runs the animation from 0 to 1 again, as `animate`. From rest: the velocity it reads is
+    /// none, the cancelled run having ended as `Animatable.endAnimation` (D1587), as Compose's.
     fn animate(self: &Rc<Self>, scope: Option<CoroutineScope>, animations: Weak<AnimationsInner>) {
         if let Some(job) = self.job.take() {
             job.cancel();

@@ -213,8 +213,9 @@ impl StyleState {
         }
     }
 
-    /// The source whose interactions set its pressed, hovered and focused flags.
-    pub fn interaction_source(&self) -> Option<&InteractionSource> {
+    /// The source whose interactions set its pressed, hovered and focused flags (internal in
+    /// Compose).
+    pub(crate) fn interaction_source(&self) -> Option<&InteractionSource> {
         self.0.interaction_source.as_ref()
     }
 
@@ -224,31 +225,42 @@ impl StyleState {
 
     /// Updates the flags from `source`'s interactions until the returned listener is dropped,
     /// as `processInteractions`: pressed, hovered and focused as long as one of each is under
-    /// way (they start false), the others given to the custom keys set in the state.
+    /// way (they start false; each written only by an interaction of its kind), the others given
+    /// to the custom keys set in the state.
     pub(crate) fn listen(&self, source: &InteractionSource) -> Rc<compose_ui::Listener> {
         let state = MutableStyleState(self.clone());
         state.set_flags(PRESSED | HOVERED | FOCUSED, 0);
         let ongoing = RefCell::new(Ongoing::default());
         source.listen(move |interaction| {
             let mut ongoing = ongoing.borrow_mut();
-            match interaction {
+            // Only the flag the interaction is about is written, as `processInteractions`: a
+            // flag set by hand stays until an interaction of its kind (D1587).
+            let (mask, on) = match interaction {
                 Interaction::Press(PressInteraction::Press(press)) => {
                     ongoing.presses.push(*press);
+                    (PRESSED, true)
                 }
                 Interaction::Press(
                     PressInteraction::Release(press) | PressInteraction::Cancel(press),
-                ) => ongoing.presses.retain(|ongoing| ongoing != press),
+                ) => {
+                    ongoing.presses.retain(|ongoing| ongoing != press);
+                    (PRESSED, !ongoing.presses.is_empty())
+                }
                 Interaction::Hover(HoverInteraction::Enter(enter)) => {
                     ongoing.hovers.push(*enter);
+                    (HOVERED, true)
                 }
                 Interaction::Hover(HoverInteraction::Exit(enter)) => {
                     ongoing.hovers.retain(|ongoing| ongoing != enter);
+                    (HOVERED, !ongoing.hovers.is_empty())
                 }
                 Interaction::Focus(FocusInteraction::Focus(focus)) => {
                     ongoing.focuses.push(*focus);
+                    (FOCUSED, true)
                 }
                 Interaction::Focus(FocusInteraction::Unfocus(focus)) => {
                     ongoing.focuses.retain(|ongoing| ongoing != focus);
+                    (FOCUSED, !ongoing.focuses.is_empty())
                 }
                 _ => {
                     drop(ongoing);
@@ -260,13 +272,9 @@ impl StyleState {
                     }
                     return;
                 }
-            }
-            let flag = |on: bool, mask: u32| if on { mask } else { 0 };
-            let values = flag(!ongoing.presses.is_empty(), PRESSED)
-                | flag(!ongoing.hovers.is_empty(), HOVERED)
-                | flag(!ongoing.focuses.is_empty(), FOCUSED);
+            };
             drop(ongoing);
-            state.set_flags(PRESSED | HOVERED | FOCUSED, values);
+            state.set_flag(mask, on);
         })
     }
 }

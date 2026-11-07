@@ -230,6 +230,10 @@ struct ResolverInner {
     parent: RefCell<Option<Rc<ResolverRef>>>,
     bound: Cell<bool>,
     resolved_at_least_once: Cell<bool>,
+    /// Whether it was read (by its readers, or a descendant's collection) since it was first
+    /// collected: until then a collection is its first, as Compose's lazy one at the first
+    /// read, and animates nothing (D1587).
+    read: Cell<bool>,
     /// The last collection's context: the density its readers convert with.
     context: RefCell<Option<CollectContext>>,
 }
@@ -265,6 +269,7 @@ impl StyleResolver {
             parent: RefCell::new(None),
             bound: Cell::new(false),
             resolved_at_least_once: Cell::new(false),
+            read: Cell::new(false),
             context: RefCell::new(None),
         }))
     }
@@ -274,13 +279,8 @@ impl StyleResolver {
         StyleResolver::new(style, super::MutableStyleState::new(None))
     }
 
-    /// Its style.
-    pub fn style(&self) -> &CommonStyle {
-        &self.0.style
-    }
-
-    /// Its state.
-    pub fn style_state(&self) -> &StyleState {
+    /// Its state (internal in Compose).
+    pub(crate) fn style_state(&self) -> &StyleState {
         &self.0.state
     }
 
@@ -303,6 +303,7 @@ impl StyleResolver {
             "Unresolved style properties. A style resolved property cannot be used until it is \
              both bound and resolved."
         );
+        self.0.read.set(true);
         let density = self.0.context.borrow().as_ref().map(|context| context.density);
         block(&StyleResolverScope { resolver: self, density: density.unwrap_or(Density::new(1.0)) })
     }
@@ -350,6 +351,7 @@ impl StyleResolver {
     pub fn collect_for_test(&self, density: Density) {
         self.0.bound.set(true);
         self.collect(CollectContext { density, locals: None, scope: None });
+        self.0.read.set(true);
     }
 
     /// Collects as [`collect_for_test`](Self::collect_for_test), with its animations run in
@@ -358,6 +360,7 @@ impl StyleResolver {
     pub fn collect_for_test_in(&self, density: Density, scope: CoroutineScope) {
         self.0.bound.set(true);
         self.collect(CollectContext { density, locals: None, scope: Some(scope) });
+        self.0.read.set(true);
     }
 
     /// Makes `parent` its parent, as `bindParent`. For tests.
@@ -373,9 +376,13 @@ impl StyleResolver {
     }
 
     /// The resolvers above, nearest first, until `f` returns false, as `traverseAncestors`.
+    /// Each one collected is read (Compose's traversal resolves each one it reaches).
     fn traverse_ancestors(&self, mut f: impl FnMut(&StyleResolver) -> bool) {
         let mut current = self.0.parent.borrow().as_ref().map(|parent| parent.get());
         while let Some(resolver) = current {
+            if resolver.0.resolved_at_least_once.get() {
+                resolver.0.read.set(true);
+            }
             if !f(&resolver) {
                 return;
             }
@@ -598,6 +605,15 @@ impl Collector {
         let context = self.context.take();
         self.layers.clear();
         resolver.update_properties(&self.properties, &self.nested_style_keys);
+        // Compose collects at the first read, with no previous collection: it animates nothing.
+        // compose-rs collects eagerly (D1583), maybe more than once before that read (a child
+        // attached before its parent collects again once the parent has), so each collection
+        // before the first read is a first one: no animation, and what it didn't set is dropped
+        // (D1587).
+        if !resolver.0.read.get() {
+            resolver.discard_unneeded_properties(&self.properties, &StyleProperties::default());
+            return;
+        }
         let animations = &resolver.0.animations;
         if !animations.is_empty()
             || !self.animating.is_empty()
@@ -731,7 +747,9 @@ impl CommonStyleScope for Collector {
 
     fn provide_nested_style(&mut self, key: &NestedStyleKey, style: &CommonStyle) {
         if self.nested_style_key.as_ref() != Some(key) {
-            if !self.nested_style_keys.contains(key) {
+            // The keys this style gives are those of its own style: not those of an ancestor's
+            // style it applies for another key (D1587).
+            if self.nested_style_key.is_none() && !self.nested_style_keys.contains(key) {
                 self.nested_style_keys.push(*key);
             }
         } else {

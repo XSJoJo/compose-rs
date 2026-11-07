@@ -37,8 +37,9 @@ fn style(block: impl Fn(&mut dyn CommonStyleScope) + 'static) -> CommonStyle {
 /// unspecified that's NaN, rounded to 0, so `left` alone moves the content without growing the
 /// node (as `offset`). compose-rs zeroes each unspecified side before adding (`placement.rs`),
 /// so the node grows by the offset.
+///
+/// Fixed by D1587.
 #[test]
-#[ignore = "review: a lone left/top offset grows the node; Compose's NaN sum adds nothing"]
 fn a_lone_left_offset_moves_the_content_without_growing_the_node() {
     let mut ui = ComposeTestRule::sized(IntSize::new(500, 500), || {
         Box!(
@@ -85,8 +86,9 @@ fn left_and_right_offsets_add_to_the_size() {
 static DESIGN_SYSTEM_BACKGROUND: ProvidableStyleProperty<Fill> =
     style_property_of("background", || Fill::None);
 
+///
+/// Fixed by D1587.
 #[test]
-#[ignore = "review: a property named as a predefined one (same type) is the predefined one"]
 fn a_property_named_as_a_predefined_one_is_another_property() {
     let resolver = StyleResolver::of(style(|s| {
         s.provide(&DESIGN_SYSTEM_BACKGROUND, Fill::Color(Color::RED));
@@ -130,8 +132,9 @@ fn only_the_nested_style_writes_into_the_child_wherever_it_is() {
 /// child's style, which applies A into the grandchild. Only the nested style for B should
 /// reach it: the keys a style gives are the ones its own style provides, not those of an
 /// ancestor's style it applies.
+///
+/// Fixed by D1587.
 #[test]
-#[ignore = "review: a child advertises the nested keys of the ancestor style it applies"]
 fn an_ancestor_s_other_nested_keys_are_not_given_by_the_child() {
     let parent = StyleResolver::of(style(|s| {
         s.provide_nested_style(&KEY_A, &style(|s| s.provide(&FLOAT, 1.0)));
@@ -227,8 +230,9 @@ fn bound(style: CommonStyle, state: &MutableStyleState) -> ComposeTestRule {
 /// `isPressed`); compose-rs's listener writes all three flags from its own counts on every
 /// interaction (`state.rs`, `listen`), so a focus the component set by hand (the setters are
 /// public) is cleared by a press.
+///
+/// Fixed by D1587.
 #[test]
-#[ignore = "review: a press clears a focused flag set by hand; Compose sets only isPressed"]
 fn a_press_leaves_a_focus_set_by_hand() {
     let source = MutableInteractionSource::new();
     let state = MutableStyleState::new(Some(source.as_source().clone()));
@@ -431,8 +435,9 @@ fn first_frames(resolver: StyleResolver, content: impl Fn(&StyleResolver) + 'sta
 /// null in the first, `doneCollect` skips them): a style showing up with a value inside
 /// `animate { }` shows it at once. compose-rs's collector starts with an empty `previous`, so
 /// every animated property of the first collection animates in from its default.
+///
+/// Fixed by D1587.
 #[test]
-#[ignore = "review: a resolver's first collection animates its animated properties in from their defaults"]
 fn a_first_collection_shows_animated_values_at_once() {
     let resolver = StyleResolver::of(style(|s| {
         s.animate_with(tween(1000), |s| s.provide(&FLOAT, 100.0));
@@ -448,8 +453,9 @@ fn a_first_collection_shows_animated_values_at_once() {
 /// value is new, and animates in from the default. Compose collects the child at its first read,
 /// after the parent's modifiers have read (and collected) the parent: its first collection has
 /// the nested style, and animates nothing.
+///
+/// Fixed by D1587.
 #[test]
-#[ignore = "review: a child collected before its parent animates its parent's nested style in"]
 fn a_child_shows_its_parent_s_animated_nested_style_at_once() {
     let child = StyleResolver::of(style(|s| s.apply_nested_style(&KEY_A)));
     let values = first_frames(child, |child| {

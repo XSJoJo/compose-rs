@@ -2,12 +2,10 @@
 //! `ProvidableStyleProperty`, `stylePropertyOf`, `styleLocalOf`, `Fill`, `Breadth`, `Shadows`
 //! and the style `lerp`s.
 
-use std::any::{Any, TypeId};
+use std::any::Any;
 use std::fmt;
-use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-use compose_runtime::{KeyHasher, key_of};
 use compose_ui::shadow::Shadow;
 use compose_ui::{Brush, Color, Dp, FontStyle, FontWeight, Shape, TextUnit};
 
@@ -18,9 +16,9 @@ pub(crate) type Value = Rc<dyn Any>;
 /// whether it's a *local* (a resolver's descendants inherit it, read through their own resolver
 /// when they don't set it), its value when no style sets it, and how it animates (`lerp`).
 ///
-/// Declared as a `static` (D1581), as a composition local is, and identified by its name, its
-/// value type and whether it's local, which must be unique together (an address isn't an
-/// identity: a `const` has a new one at each use):
+/// Declared as a `static` (D1581) and identified by its address (D1587), as Compose's property
+/// is its object: two properties of the same name are two properties. Not a `const`, which is a
+/// new value (so a new property) at each use:
 ///
 /// ```ignore
 /// static CORNER: ProvidableStyleProperty<Dp> = style_property_of("corner", || Dp(4.0));
@@ -82,11 +80,10 @@ impl<T: Clone + PartialEq + 'static> StyleProperty<T> {
         (self.lerp)(start, stop, fraction)
     }
 
-    /// Its identity: its name, its value type and whether it's local.
-    pub(crate) fn key(&self) -> u64 {
-        let mut hasher = KeyHasher::default();
-        TypeId::of::<T>().hash(&mut hasher);
-        key_of(self.name) ^ hasher.finish().rotate_left(29) ^ u64::from(self.is_local)
+    /// Its identity: its address, as Compose's object identity (D1587). A `static`'s is fixed
+    /// and its own: a property of the same name (a predefined one's) is another property.
+    pub(crate) fn key(&'static self) -> u64 {
+        std::ptr::from_ref(self) as usize as u64
     }
 }
 
