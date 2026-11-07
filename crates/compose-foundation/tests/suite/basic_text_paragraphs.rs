@@ -892,7 +892,7 @@ fn selectable(second: ParagraphStyle) -> ComposeTestRule {
     rule(move || {
         SelectionContainer!({
             BasicAnnotatedText!(
-                hello_world(second.clone()),
+                hello_world(second),
                 modifier = Modifier.test_tag(TAG).width(200.dp()),
                 style = style()
             );
