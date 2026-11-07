@@ -25,14 +25,22 @@ impl Remeasurement {
 
     /// Measures the node now, with its last constraints, even if nothing asked, as
     /// `forceRemeasure`: its measurement and its content's placement are done when this
-    /// returns, if the tree is free (between frames, a task, a side effect). Where the tree is
-    /// busy (in a pass, a callback, an event handler), the node is measured in the next layout
-    /// instead, before anything is drawn.
+    /// returns, if the tree is free (between frames, a task, a side effect, an event handler's
+    /// action), and the layout callbacks (`on_placed`, `on_globally_positioned`, …) told, as
+    /// Compose's `measureAndLayout(node)` tells them when no other layout is pending (D1480).
+    /// Where the tree is busy (in a pass, a composition, a layout callback), the node is
+    /// measured in the next layout instead, before anything is drawn.
     pub fn force_remeasure(&self) {
         let node = self.node;
+        let mut callbacks = Vec::new();
         let ran = crate::node_context::with_free_tree(self.tree, &mut |tree: &mut UiTree| {
             tree.remeasure_now(node);
+            if !tree.has_pending_layout() {
+                callbacks = tree.take_layout_callbacks();
+            }
         });
+        // Application code: run with the tree free again.
+        crate::input::run_actions(callbacks);
         if !ran && let Some(requests) = crate::node_context::requests_of(self.tree) {
             requests.measure_requests.borrow_mut().push(node);
             requests.wake();

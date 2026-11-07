@@ -469,11 +469,9 @@ fn unsatisfied_runs(
 
 /// Compose's bound is two viewports' worth along the axis (`itemsPerViewport`: a grid's lines
 /// per viewport, a staggered grid's items per lane's viewport): three lines in view, six steps.
-/// compose-rs's grid steps by lines, but counts its bound from the items per viewport (the
-/// per-item extent `layout_info_written` holds): three times as many lines, 18 steps, 54 items
-/// beyond its bounds where Compose's lays out 6.
+/// compose-rs's grid counted its bound from the items per viewport (the per-item extent
+/// `layout_info_written` holds): three times as many lines, 18 steps (fixed by D1480).
 #[test]
-#[ignore = "review: a grid's two-viewport bound counts items per viewport, not lines (cells x too many lines)"]
 fn a_grid_of_three_columns_lays_out_at_most_two_viewports_of_lines() {
     let (mut ui, captured) = grid(false, 3, 300, 30, 31);
     let layout = captured.borrow().clone().expect("found");
@@ -484,10 +482,9 @@ fn a_grid_of_three_columns_lays_out_at_most_two_viewports_of_lines() {
 }
 
 /// As above for a staggered grid of three lanes: Compose's bound is the viewport over the
-/// average item size, three, so six items; compose-rs's divides by the lanes too (`per_item` is
-/// the average over the lanes), 18 items.
+/// average item size, three, so six items; compose-rs's divided by the lanes too (`per_item` is
+/// the average over the lanes), 18 items (fixed by D1480).
 #[test]
-#[ignore = "review: a staggered grid's two-viewport bound is multiplied by its lanes"]
 fn a_staggered_grid_of_three_lanes_lays_out_at_most_two_viewports() {
     let (mut ui, captured) = grid(true, 3, 300, 30, 31);
     let layout = captured.borrow().clone().expect("found");
@@ -575,10 +572,9 @@ fn a_layout_whose_node_left_with_its_state_kept_is_told_nothing_more() {
 
 /// Compose's lazy layouts take `lazyLayoutBeyondBoundsModifier` only while the user can scroll
 /// them: turning it off detaches the node, and a layout found before is told nothing more. Here
-/// the node stays (only `beyond_bounds_layout` answers `None`), so the layout found before still
-/// lays out items beyond the bounds.
+/// the node stays (only `beyond_bounds_layout` answered `None`), so the layout found before
+/// still laid out items beyond the bounds (fixed by D1480: it's withdrawn).
 #[test]
-#[ignore = "review: a BeyondBoundsLayout found before user scrolling went off still lays out items"]
 fn a_layout_found_before_user_scrolling_went_off_lays_out_nothing() {
     let owner = LazyListState::new(5, 0);
     let toggles = toggles();
@@ -701,12 +697,12 @@ fn a_layout_asked_for_in_a_composition_does_not_panic() {
     let _ = captured;
 }
 
-/// From an event handler (a busy tree), Compose's block sees the item laid out beyond the bounds
-/// (its focus search runs there). compose-rs measures the steps at the next layout, after the
-/// block ran (D1479): the block runs two viewports' worth of times, told each time there's more,
-/// never seeing an item beyond.
+/// From an event handler, Compose's block sees the item laid out beyond the bounds (its focus
+/// search runs there). compose-rs's click actions run with the tree free, and the step was
+/// measured and placed at once, but its `on_placed` was told only at the next layout, after the
+/// block ran: the block ran two viewports' worth of times, never seeing item 8 placed (fixed by
+/// D1480: `force_remeasure` tells the layout callbacks, as Compose's `measureAndLayout(node)`).
 #[test]
-#[ignore = "review: from a busy tree (an event handler) the block never sees an item beyond the bounds, and is told there's more each time"]
 fn a_layout_from_a_click_sees_the_item_beyond() {
     let owner = LazyListState::new(5, 0);
     let state = *owner;
@@ -715,7 +711,9 @@ fn a_layout_from_a_click_sees_the_item_beyond() {
     // Item 8 placed: it's laid out beyond the bounds.
     let placed_8 = Rc::new(Cell::new(false));
     let placing = placed_8.clone();
-    let result: Rc<RefCell<Option<(usize, Vec<bool>, bool)>>> = Rc::default();
+    // Runs, what it was told, whether it found it.
+    type Clicked = Rc<RefCell<Option<(usize, Vec<bool>, bool)>>>;
+    let result: Clicked = Rc::default();
     let into = result.clone();
     let mut ui = window(400, move || {
         let (capturing, placing, into) = (capturing.clone(), placing.clone(), into.clone());

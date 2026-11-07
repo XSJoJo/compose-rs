@@ -1844,7 +1844,7 @@ impl ItemsMeasurePolicy for LazyGridLayout {
                 state.room_forward.set(0.0);
                 state.publish_can_scroll();
                 state.room_estimated.set((false, false));
-                state.beyond_more.set((false, false));
+                state.tell_beyond((false, false), 0);
             }
             drop(measurer);
             // As large as its padding, as a list's (D865).
@@ -2097,7 +2097,7 @@ impl ItemsMeasurePolicy for LazyGridLayout {
                 0
             };
         // And the lines a focus search asked for beyond those (D477).
-        let (beyond_before, beyond_after) = state.beyond_bounds.get();
+        let (beyond_before, beyond_after) = state.beyond_wanted();
         let wanted_start = lead.saturating_sub(beyond + beyond_before + wanted_before);
         let mut wanted_end =
             m.lines.at_most_last((end_index + beyond + beyond_after).saturating_sub(1)) + 1;
@@ -2411,7 +2411,11 @@ impl ItemsMeasurePolicy for LazyGridLayout {
         }
         let header = headers.map(|(header, _)| header);
         if tells {
-            state.beyond_more.set((placed_start.min(lead) > 0, m.lines.exists(placed_end)));
+            // A line's average size, as Compose's `visibleLinesAverageMainAxisSize`.
+            state.tell_beyond(
+                (placed_start.min(lead) > 0, m.lines.exists(placed_end)),
+                m.line_sizes.average() + spacing,
+            );
             state.room_forward.set(if reaches_end {
                 (extent_end.max(content_end) - main_max).max(0) as f32 - pending
             } else {

@@ -369,6 +369,72 @@ fn force_remeasure_at_a_new_size_measures_the_parent_again() {
     assert_eq!(parent_measures.get(), 2);
 }
 
+/// A parent placing its child `x` pixels in, the child telling where it's placed to `seen`; the
+/// parent keeps its `Remeasurement` in `held`.
+fn moving_child(
+    held: &HeldRemeasurement,
+    x: &Rc<Cell<i32>>,
+    seen: &Rc<Cell<Option<f32>>>,
+) -> impl Fn() + 'static {
+    let (modifier, x, seen) = (keeping(held), x.clone(), seen.clone());
+    move || {
+        let (x, seen) = (x.clone(), seen.clone());
+        let policy = measure_policy(move |scope, measurables, constraints| {
+            for &measurable in measurables {
+                let placeable = scope.measure(measurable, constraints);
+                scope.place(&placeable, x.get(), 0);
+            }
+            scope.layout(50, 10)
+        });
+        Layout(
+            modifier.clone(),
+            policy,
+            callback(move || {
+                let seen = seen.clone();
+                Leaf(Modifier.size(10.dp()).on_placed(move |coordinates: LayoutCoordinates| {
+                    seen.set(Some(coordinates.position_in_parent().x))
+                }));
+            }),
+        );
+    }
+}
+
+/// `force_remeasure` with the tree free (an event handler's action, a task) tells the layout
+/// callbacks before it returns, when nothing else waits for a layout, as Compose's
+/// `measureAndLayout(node)` dispatches them (D1480): what a `BeyondBoundsLayout`'s block reads.
+#[test]
+fn force_remeasure_tells_the_layout_callbacks_before_it_returns() {
+    let (held, x, seen) = (HeldRemeasurement::default(), Rc::new(Cell::new(0)), Rc::default());
+    let mut host = parity_host(moving_child(&held, &x, &seen));
+    assert_eq!(seen.get(), Some(0.0));
+    x.set(5);
+    held.get().expect("given when attached").force_remeasure();
+    assert_eq!(seen.get(), Some(5.0), "told at once");
+    host.frame();
+    assert_eq!(seen.get(), Some(5.0));
+}
+
+/// As Compose's: with another node waiting for a layout, the callbacks wait for that layout,
+/// which tells them once for both.
+#[test]
+fn force_remeasure_leaves_the_callbacks_to_a_layout_still_to_come() {
+    let (held, x, seen) = (HeldRemeasurement::default(), Rc::new(Cell::new(0)), Rc::default());
+    let content = moving_child(&held, &x, &seen);
+    let other = Rc::new(Cell::new(0));
+    let other_policy = counted(&other);
+    let mut host = parity_host(move || {
+        content();
+        Layout(Modifier.size(10.dp()), other_policy.clone(), callback(|| {}));
+    });
+    let other_node = host.with_tree(|tree| tree.children_of(tree.root_id()).nth(1).expect("two"));
+    host.with_tree(|tree| tree.invalidate_measure(other_node));
+    x.set(5);
+    held.get().expect("given when attached").force_remeasure();
+    assert_eq!(seen.get(), Some(0.0), "the layout to come tells it");
+    host.frame();
+    assert_eq!(seen.get(), Some(5.0));
+}
+
 /// A layout node whose `on_attach` asks `remeasure_sync` from a task: measured when the call
 /// returns, its own entry back in its chain.
 #[test]

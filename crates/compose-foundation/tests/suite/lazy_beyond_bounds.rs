@@ -683,3 +683,127 @@ fn a_list_the_user_cannot_scroll_provides_none() {
         assert_eq!(captured.borrow().is_some(), enabled);
     }
 }
+
+// ---- D1480 --------------------------------------------------------------------------------------
+
+type Told = Rc<RefCell<Vec<bool>>>;
+type Found = Rc<RefCell<Option<Rc<dyn BeyondBoundsLayout>>>>;
+
+/// A `LazyColumn` of 100 focusable 10 px rows tagged `item{index}` in 30 px at item 5, item 5
+/// finding the layout; with `asking`, a block never satisfied asks for it in a composition once
+/// the state is set, what it's told kept.
+fn focusable_column(asking: Option<(MutableState<bool>, Told)>) -> (ComposeTestRule, Found) {
+    let captured: Found = Rc::default();
+    let capturing = captured.clone();
+    let owner = Rc::new(LazyListState::new(5, 0));
+    let state = **owner;
+    let ui = window(move || {
+        let _ = &owner;
+        let (capturing, asking) = (capturing.clone(), asking.clone());
+        Column!({
+            let listed = capturing.clone();
+            LazyColumn!(
+                modifier = Modifier.size((10.dp(), 30.dp())),
+                state = state,
+                move |scope: LazyListScope| {
+                    let listed = listed.clone();
+                    scope.items(100, move |index| {
+                        let mut modifier =
+                            Modifier.size(10.dp()).test_tag(item_tag(index)).clickable(|| {});
+                        if index == 5 {
+                            modifier = modifier.then_custom(Capturing(listed.clone()));
+                        }
+                        Box!(modifier = modifier);
+                    });
+                }
+            );
+            if let Some((asking, told)) = &asking
+                && asking.get()
+                && let Some(layout) = capturing.borrow().clone()
+            {
+                let found: Option<()> = layout.layout(After, |scope| {
+                    told.borrow_mut().push(scope.has_more_content());
+                    None
+                });
+                assert_eq!(found, None);
+            }
+        });
+    });
+    (ui, captured)
+}
+
+fn placed_items(ui: &mut ComposeTestRule) -> Vec<usize> {
+    let owner = ui.host().semantics_owner();
+    let mut placed: Vec<usize> = owner
+        .get_all_semantics_nodes(false, true)
+        .into_iter()
+        .filter(|node| node.layout_info().is_placed() && node.layout_info().is_attached())
+        .filter_map(|node| {
+            let config = node.unmerged_config();
+            config.get(&SemanticsProperties::TEST_TAG)?.strip_prefix("item")?.parse().ok()
+        })
+        .collect();
+    placed.sort_unstable();
+    placed
+}
+
+/// From a busy tree (a composition) the steps are laid out at the next layout, after the block
+/// ran: rather than two viewports' worth of steps told there's more, never showing anything, the
+/// block is told what there is once, then that there's nothing more, once (D1480).
+#[test]
+fn a_layout_from_a_busy_tree_ends_told_there_is_nothing_more() {
+    let asking_owner = Rc::new(mutable_state_of(false));
+    let asking = asking_owner.handle();
+    let told: Told = Rc::default();
+    let (mut ui, _captured) = focusable_column(Some((asking, told.clone())));
+    asking.set(true);
+    ui.wait_for_idle();
+    asking.set(false);
+    ui.wait_for_idle();
+    assert_eq!(*told.borrow(), vec![true, false]);
+    assert_eq!(placed_items(&mut ui), vec![5, 6, 7], "nothing kept beyond the bounds");
+}
+
+/// A layout ending while a focus search waits for the item it asked for (D477): the search's
+/// item stays laid out, the two asking for the most of either each way, as Compose's intervals
+/// share `beyondBoundsInfo`; the search then moves the focus to it (D1480).
+#[test]
+fn a_layout_ending_keeps_what_a_waiting_focus_search_asked_for() {
+    let (mut ui, captured) = focusable_column(None);
+    let layout = captured.borrow().clone().expect("found");
+    ui.on_node_with_tag("item7").request_focus();
+    ui.wait_for_idle();
+    // The search finds nothing more in view and waits for item 8, at the next layout.
+    ui.host().send_key(compose_ui::KeyEvent::down(compose_ui::Key::Tab));
+    assert!(ui.host().with_tree(|tree| tree.has_beyond_bounds_moves()));
+    let mut seen = Vec::new();
+    layout.layout(After, |_| {
+        seen = placed_items(&mut ui);
+        Some(())
+    });
+    assert_eq!(seen, vec![5, 6, 7, 8]);
+    assert_eq!(placed_items(&mut ui), vec![5, 6, 7, 8], "the search's item stays");
+    ui.wait_for_idle();
+    ui.on_node_with_tag("item8").assert_is_focused();
+}
+
+/// A block panicking lets go of what its layout asked for: the next layout lays out nothing
+/// beyond the bounds, and a layout after it starts afresh (D1480).
+#[test]
+fn a_block_panicking_leaves_nothing_beyond_the_bounds() {
+    let (mut ui, captured) = focusable_column(None);
+    let layout = captured.borrow().clone().expect("found");
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        layout.layout(After, |_| -> Option<()> { panic!("the block's own") });
+    }));
+    assert!(panicked.is_err());
+    ui.wait_for_idle();
+    assert_eq!(placed_items(&mut ui), vec![5, 6, 7]);
+    let mut seen = Vec::new();
+    layout.layout(After, |_| {
+        seen = placed_items(&mut ui);
+        Some(())
+    });
+    assert_eq!(seen, vec![5, 6, 7, 8], "one item beyond, as the first step of any layout");
+    assert_eq!(placed_items(&mut ui), vec![5, 6, 7]);
+}
