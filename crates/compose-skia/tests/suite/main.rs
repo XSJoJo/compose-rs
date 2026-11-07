@@ -9,6 +9,7 @@ mod color_filters;
 mod context_menu_colors;
 mod graphics_layers;
 mod line_height;
+mod multi_paragraph;
 mod offscreen;
 mod painter;
 mod paragraph;

@@ -70,6 +70,7 @@ mod measure;
 mod modifier;
 mod modifier_local;
 mod motion;
+mod multi_paragraph;
 mod nested_scroll;
 mod node_chain;
 mod node_context;
@@ -94,6 +95,7 @@ mod pointer_event;
 mod pointer_icon;
 mod pointer_input;
 mod prefetch;
+mod range_for_rect;
 mod relocation;
 mod remeasurement;
 mod render;
@@ -170,6 +172,9 @@ pub mod platform {
     pub use crate::layout::{NO_INTRINSICS_MESSAGE, StackMeasurePolicy};
     pub use crate::logging::{LogFilter, StderrLogger, default_max_level, install_stderr_logger};
     pub use crate::modifier::shared_custom_modifier;
+    pub use crate::multi_paragraph::{
+        ParagraphInfo, find_paragraph_by_index, find_paragraph_by_line_index, find_paragraph_by_y,
+    };
     pub use crate::nested_scroll::NestedScrollChain;
     #[doc(hidden)]
     pub use crate::nested_scroll::NestedScrollParticipant;
@@ -332,6 +337,7 @@ pub use motion::{
     await_positive_motion_duration_scale, motion_duration_scale, set_motion_duration_scale,
     set_motion_duration_scale_source, with_motion_duration_scale,
 };
+pub use multi_paragraph::{MultiParagraph, MultiParagraphIntrinsics};
 pub use nested_scroll::{
     LocalBoxFuture, NestedScrollConnection, NestedScrollDispatcher, NestedScrollSource,
     nested_scroll_modifier_node,
@@ -370,6 +376,7 @@ pub use prefetch::{
     LOCAL_PREFETCH_SCHEDULER, PrefetchClock, PrefetchRequest, PrefetchRequestScope,
     PrefetchScheduler, prefetch_now,
 };
+pub use range_for_rect::{TextGranularity, TextInclusionStrategy};
 pub use relocation::{
     BoundsRead, BringIntoViewBounds, BringIntoViewResponderNode, BringIntoViewScope,
 };

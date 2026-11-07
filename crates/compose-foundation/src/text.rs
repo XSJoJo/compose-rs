@@ -699,8 +699,10 @@ impl LayoutModifierNode for TextNode {
                     constraints,
                     placeholders: None,
                 };
-                let result =
-                    TextLayoutResult::new(input, scope.text_measurer().paragraph(paragraph), size);
+                let paragraph = scope.text_measurer().paragraph(paragraph);
+                let multi_paragraph =
+                    compose_ui::MultiParagraph::of_paragraph(input.text.clone(), paragraph);
+                let result = TextLayoutResult::new(input, std::rc::Rc::new(multi_paragraph), size);
                 let callback = callback.clone();
                 scope.run_after_layout(move || callback(result));
             }
@@ -868,7 +870,11 @@ impl SemanticsModifierNode for TextNode {
         };
         let measurer = context.text_measurer();
         let size = constraints.constrain(measurer.metrics(paragraph).size);
-        Some(TextLayoutResult::new(input, measurer.paragraph(paragraph), size))
+        let multi_paragraph = compose_ui::MultiParagraph::of_paragraph(
+            input.text.clone(),
+            measurer.paragraph(paragraph),
+        );
+        Some(TextLayoutResult::new(input, std::rc::Rc::new(multi_paragraph), size))
     }
 }
 

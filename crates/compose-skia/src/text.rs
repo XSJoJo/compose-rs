@@ -554,6 +554,10 @@ impl TextMeasurer for SkiaTextMeasurer {
         self.entry(paragraph).metrics
     }
 
+    fn height(&self, paragraph: ParagraphHandle) -> f32 {
+        self.entry(paragraph).paragraph.height()
+    }
+
     fn did_exceed_max_lines(&self, paragraph: ParagraphHandle) -> bool {
         let entry = self.entry(paragraph);
         entry.paragraph.did_exceed_max_lines() || entry.ellipsis_start.is_some()

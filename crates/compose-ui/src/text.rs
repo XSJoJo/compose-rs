@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use compose_runtime::ComposeArg;
 
 use crate::constraints::Constraints;
+use crate::multi_paragraph::MultiParagraph;
 use crate::paragraph::{Paragraph, TextLayoutInput};
 use crate::path::Path;
 use crate::text_attributes::{ResolvedTextDirection, TextOverflow};
@@ -145,9 +146,9 @@ pub struct ParagraphMetrics {
 #[derive(Clone)]
 pub struct TextLayoutResult {
     pub layout_input: TextLayoutInput,
-    /// The text laid out: one paragraph for the whole text (the measurers lay a text's
-    /// paragraphs out together), as Compose's `MultiParagraph`.
-    pub multi_paragraph: Rc<dyn Paragraph>,
+    /// The text laid out, as Compose's `MultiParagraph`: a paragraph for each run of its
+    /// paragraph styles, or the whole text's when it has none (D2047).
+    pub multi_paragraph: Rc<MultiParagraph>,
     /// The text's size: the paragraph's, coerced into the constraints.
     pub size: IntSize,
     /// The lines laid out (at most `max_lines`).
@@ -168,7 +169,7 @@ impl TextLayoutResult {
     /// the paragraph is larger than `size` or had more lines than its maximum.
     pub fn new(
         layout_input: TextLayoutInput,
-        multi_paragraph: Rc<dyn Paragraph>,
+        multi_paragraph: Rc<MultiParagraph>,
         size: IntSize,
     ) -> TextLayoutResult {
         TextLayoutResult {
@@ -382,6 +383,12 @@ pub trait TextMeasurer: std::any::Any {
         self.layout_annotated(text, style, options, constraints, density)
     }
     fn metrics(&self, paragraph: ParagraphHandle) -> ParagraphMetrics;
+    /// The paragraph's height unrounded, as Compose's `Paragraph.height`: what a text of many
+    /// paragraphs stacks them by (D2047). The default is the metrics' whole pixels, which is
+    /// Android's (`Layout` heights are whole pixels).
+    fn height(&self, paragraph: ParagraphHandle) -> f32 {
+        self.metrics(paragraph).size.height as f32
+    }
     /// Whether the text had more lines than its `max_lines` (cut or ellipsized), as
     /// `Paragraph.didExceedMaxLines`. The default says no (a measurer that can't tell).
     fn did_exceed_max_lines(&self, _paragraph: ParagraphHandle) -> bool {
