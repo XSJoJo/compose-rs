@@ -61,10 +61,12 @@ Never merge the `ime-logging` branch (it records everything typed) or `parked/na
 
 ## In flight
 
-As of 2026-11-07, `origin/main` is at 48996705 (13,217 tests; 11,800 with the runtime feature off; 13,217 with `COMPOSE_TEST_AUTOFILL=1`). Nothing is in flight: every branch below is merged. Two were merged without the usual review because the weekly quota ran short; review them first.
+As of 2026-11-07, `origin/main` is at 6e12fd99 (13,329 tests; the same with `COMPOSE_TEST_AUTOFILL=1`; 11,912 with the runtime feature off). The branches below marked merged are on main. Two were merged without the usual review because the weekly quota ran short; review them first.
 
 | Branch | What | State |
 |---|---|---|
+| `bidi-selection` | `TextSelectionGesturesBidiTest` (39) and the fixes it needs (D2062 and up) | In progress |
+| `a11y-cut-text` | Android accessibility line and page traversal safe on a text cut by its maximum lines (D2054's open hazard) | In progress |
 | `multi-paragraph-2` | **Merged without a review** (the weekly quota was short): the paragraph API review's findings (D2049), `fillPathForRange` (D2050), the constructors and `ParagraphIntrinsics` (D2051), `paint` with a gradient spanning paragraphs (D2052). Worth a review: D2049's locale-direction table, D2052's paint (it panics on a paragraph that only answers queries, such as `BasicText`'s `on_text_layout` result). Next: `BasicText` and the fields laying out paragraph styles as a `MultiParagraph` (D2053 and up), then AndroidParagraphTest (115) | Merged, review pending |
 | `autofill-2` | **Merged without a second review** (the weekly quota was short): Compose's autofill (D1680–D1688). After its first review's blocker, it tracks only changed nodes and is switched off while Android's `AutofillManager.isEnabled()` is false. Cost with a manager on, against none: `list_scroll` +1.8 %, `feed_step` +2.3 %, `field_keystroke_direct` +3.5 %, `first_frame_list_items` +4.3 % (the first frame's scan); scroll frames on the pixel screens within 0.2 %. Worth a review: D1688's semantics observation (reads while computing semantics go to their own observer; a write in a frame invalidates them in that frame) and `UiTree::semantics_tree` applying pending writes first. `COMPOSE_TEST_AUTOFILL=1` runs the suite with a manager installed. Not run on a phone | Merged, review pending |
 
