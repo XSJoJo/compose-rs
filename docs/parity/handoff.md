@@ -35,14 +35,15 @@ Moving to a newer androidx means re-checking the ledgers' test lists and `api/cu
   CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
     python3 benchmarks/compare_instructions.py <base> list_scroll:3000 first_frame_list_items:100 --rounds 5
   ```
-  and separately with `--dumps` to compare the display lists. Iteration counts are in the script's SCENARIOS table. A change past its spread needs a reason in its decision.
+  and separately with `--dumps` to compare the display lists. Iteration counts are in the script's SCENARIOS table. A change past its spread needs a reason in its decision. Android installs an autofill manager on every view: `--autofill` builds this side with one on every host (`compose-benchmarks`' `bench-autofill` feature), and `compare_instructions.py . --autofill` compares this checkout with and without it, which should stay within about 1% on the frame scenarios (D1688).
+- **Autofill's sync**, when the tree, semantics, the lifecycle or autofill change: the whole suite once with a recording manager in every rule, as on a phone (`COMPOSE_TEST_AUTOFILL=1 cargo test --workspace --no-fail-fast`, [docs/09-testing.md](../09-testing.md)).
 - **Miri**, when compose-ui's tree code or anything `unsafe` changes: the slice listed in [docs/09-testing.md](../09-testing.md), under Stacked Borrows and again with `-Zmiri-tree-borrows`. Keep `unsafe` to a minimum.
 - **Disk:** builds per worktree are large. Use `CARGO_INCREMENTAL=0` in worktrees, and delete a worktree's `target/` when its branch is merged.
 - **Ledger totals:** `python3 tools/parity/ledger_count.py docs/parity/<ledger>.md` recounts statuses from the rows.
 
 ## Ignored tests
 
-Every `#[ignore]` carries its reason in its attribute; `grep -rn -A1 '#\[ignore' crates benchmarks` lists them, and `cargo test -p <crate> --test suite <name> -- --ignored` runs one. A test is ignored only for one of the reasons below; a bug found in review gets `#[ignore = "review: <bug>"]` and a fix on the next branch. On `main` there are 30, 21 once `autofill` merges (its 9 text toolbar and menu tests pass, D1684; review findings fixed since: lazy beyond-bounds layouts, D1480; a `GraphicsLayer`'s readers and its first drawing's send, D1339; a container's toolbar after a cancelled handle press or a text changed in place, D2045, D2046):
+Every `#[ignore]` carries its reason in its attribute; `grep -rn -A1 '#\[ignore' crates benchmarks` lists them, and `cargo test -p <crate> --test suite <name> -- --ignored` runs one. A test is ignored only for one of the reasons below; a bug found in review gets `#[ignore = "review: <bug>"]` and a fix on the next branch. On `main` there are 30, 21 once `autofill-2` merges (`autofill`'s 9 text toolbar and menu tests pass, D1684, and its review's 5 since D1688; review findings fixed since: lazy beyond-bounds layouts, D1480; a `GraphicsLayer`'s readers and its first drawing's send, D1339; a container's toolbar after a cancelled handle press or a text changed in place, D2045, D2046):
 
 | Tests | Why ignored | To make them pass |
 |---|---|---|
@@ -69,7 +70,7 @@ As of 2026-11-07, `origin/main` is at 23c5d9f7 (12,726 tests).
 |---|---|---|
 | `moved-node-fixes` | The moved-node review's findings (nested movable content, detach orders, a panic guard) and a moved shared element's start position | In progress |
 | `multi-paragraph-2` | The paragraph API's review findings, then `fillPathForRange`, `paint`, the constructors and the horizontal-position tests, then `BasicText` honouring paragraph styles (D2049 and up) | In progress |
-| `autofill` | Autofill (D1680–D1699): the API, the semantics and the platform side's logic (step 1), the text fields' semantics, "Autofill" item and highlight (step 2), Android's `AutofillManager` bridge (step 3) | Done, to review (step 3 not run on a phone) |
+| `autofill-2` | Autofill (D1680–D1699): the API, the semantics and the platform side's logic (step 1), the text fields' semantics, "Autofill" item and highlight (step 2), Android's `AutofillManager` bridge (step 3), with its review's tests (`review-autofill`) and fixes: the tree looks only at the nodes noted since the last frame, nothing while the platform's autofill is off, a focused node removed exits, a semantics read between frames fresh (D1688) | Done, to merge (not run on a phone) |
 | `style-api` | Foundation's experimental Style API (`androidx.compose.foundation.style`), design note first (D1580–D1599) | In progress |
 
 Next, once those land: `DeferredSharedElementTest`, the moved shared element that doesn't animate from its old place, and the shared elements of `LookaheadScopeTest` and Navigation 3; touch selection's bidi tests (`TextSelectionGesturesBidiTest`); graphics leftovers (`ImageShader`, BrushPainter, FilterQuality); place-with-layer leftovers (zIndex, hit testing through layer transforms); style API, border parity, AndroidView interop, magnifier. missing.md has the full list.

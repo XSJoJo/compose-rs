@@ -56,7 +56,6 @@ These are on local branches, so they're not lost, but each still has to finish i
 
 ### 6. Input and platform
 - **Indirect pointer input** is in (D1675): the events to the focus's path, the cancels, the navigation gesture; left the Android host's touch-navigation events and about 20 tests (delegates, deeper trees). **Pointer icons** are in (D1676, D1677): `PointerIcon` with Android's types and bitmaps, `pointer_hover_icon_with(icon, override_descendants)`, a stylus's hover and `stylus_hover_icon`, the desktop's cursor and the Android view's (D1678, not yet run on a device); left `stylusHoverIcon`'s touch bounds expansion. Scroll capture (about 45), clipboard API (about 30), content capture, drag and drop, rotary input, media queries.
-- **A selection handle's semantics kept stale:** its `SelectionHandleInfo` position isn't invalidated when a scroll moves the handle (found by computing semantics at each frame, D1682: `selection_container_touch::a_long_press_dragged_in_a_scrolling_column_selects_and_does_not_scroll` fails the cache check then). A test reading the handles after such a scroll would see the old position.
 - **Locale and device data:** the date and time pickers use small tables for a few languages. Real data needs `icu4x`, a decision for the user.
 
 ### 7. The test framework
@@ -66,7 +65,7 @@ These are on local branches, so they're not lost, but each still has to finish i
 
 Written and tested on the host, but not yet confirmed on a phone:
 
-- **Autofill** (D1687): the Android host's bridge to `AutofillManager` builds and lints; the virtual structure, the notifications and filling haven't been tried with a service on a phone.
+- **Autofill** (D1687, D1688): the Android host's bridge to `AutofillManager` builds and lints; the virtual structure, the notifications, filling and the switch following `AutofillManager.isEnabled` (read when the view gets its host and when its window takes the focus) haven't been tried with a service on a phone.
 - **TalkBack's speech and announcements.** The accessibility tree was read directly, but no agent can enable a service.
 - **A keyboard that really composes.** Gboard on the test phone doesn't compose, so long-lived composition hasn't run on a real keyboard (D1671).
 - A real D-pad and a real mouse, rotation, voice typing.
