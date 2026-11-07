@@ -907,3 +907,147 @@ fn shared_transition_scope_is_invalidated() {
         ui.wait_for_idle();
     }
 }
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testRenderInSharedTransitionOverlayPlacementIsInvalidated
+/// A box rendered in the overlay follows its parent's offset, read while placing, during a
+/// transition.
+#[test]
+fn render_in_shared_transition_overlay_placement_is_invalidated() {
+    set_capture_renderer(compose_skia::raster_colors);
+    let state = mutable_state_of(0);
+    let offset = mutable_state_of(0);
+    let render_in_overlay = mutable_state_of(false);
+    let (s, o, r) = (state.handle(), offset.handle(), render_in_overlay.handle());
+    let mut ui = ComposeTestRule::sized(IntSize::new(200, 200), move || {
+        SharedTransitionLayout!(
+            modifier = Modifier.size(100.dp()).test_tag("STL").background(Color::WHITE),
+            move |scope: SharedTransitionScope| {
+                let overlay = scope.clone();
+                Box!(
+                    modifier = Modifier
+                        .offset_with(move |_| compose::ui::IntOffset::new(o.get(), o.get())),
+                    move |_| {
+                        Box!(
+                            modifier = overlay
+                                .render_in_shared_transition_scope_overlay_with(0.0, move || r
+                                    .get())
+                                .size(20.dp())
+                                .background(Color::RED)
+                        );
+                    }
+                );
+                let scope = scope.clone();
+                AnimatedContent!(
+                    s.get(),
+                    transition_spec = |_| {
+                        fade_in_with(snap(0), 0.0).together_with(fade_out_with(snap(500), 0.0))
+                    },
+                    move |content: AnimatedContentScope, _: i32| {
+                        let state = scope.remember_shared_content_state("key");
+                        let options = SharedOptions {
+                            enter: fade_in_with(tween(500), 0.0),
+                            exit: fade_out_with(tween(500), 0.0),
+                            ..Default::default()
+                        };
+                        Box!(
+                            modifier =
+                                scope.shared_bounds_with(&state, &content, options).fill_max_size()
+                        );
+                    }
+                );
+            }
+        );
+    });
+    render_in_overlay.set(true);
+    ui.wait_for_idle();
+    ui.set_auto_advance(false);
+    ui.on_node_with_tag("STL")
+        .capture_to_image()
+        .assert_pixels(None, |at| (at.x < 20 && at.y < 20).then_some(Color::RED));
+    ui.advance_time_by_frame();
+    ui.wait_for_idle();
+    offset.set(10);
+    ui.advance_time_by_frame();
+    ui.wait_for_idle();
+    ui.on_node_with_tag("STL").capture_to_image().assert_pixels(None, |at| {
+        ((10..30).contains(&at.x) && (10..30).contains(&at.y)).then_some(Color::RED)
+    });
+    ui.set_auto_advance(true);
+    ui.wait_for_idle();
+}
+
+/// A white 20 × 20 layout tagged "STL" holding a red 10 × 10 box rendered in the overlay while
+/// `render_in_overlay`, after `before` in its chain.
+fn overlay_box(
+    render_in_overlay: MutableState<bool>,
+    seen: Rc<RefCell<Option<SharedTransitionScope>>>,
+    before: fn() -> Modifier,
+) -> ComposeTestRule {
+    set_capture_renderer(compose_skia::raster_colors);
+    ComposeTestRule::sized(IntSize::new(100, 100), move || {
+        let seen = seen.clone();
+        SharedTransitionLayout!(
+            modifier = Modifier.size(20.dp()).test_tag("STL").background(Color::WHITE),
+            move |scope: SharedTransitionScope| {
+                *seen.borrow_mut() = Some(scope.clone());
+                Box!(
+                    modifier = before()
+                        .then(
+                            scope.render_in_shared_transition_scope_overlay_with(0.0, move || {
+                                render_in_overlay.get()
+                            },)
+                        )
+                        .size(10.dp())
+                        .background(Color::RED)
+                );
+            }
+        );
+    })
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testLayerLazilyCreatedForRenderInSharedTransitionScopeOverlay
+/// A box rendered in the overlay only while asked holds a layer only then, drawing the same.
+#[test]
+fn layer_lazily_created_for_render_in_shared_transition_scope_overlay() {
+    let render_in_overlay = mutable_state_of(false);
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let mut ui = overlay_box(render_in_overlay.handle(), seen.clone(), || Modifier);
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    let red_corner = |ui: &mut ComposeTestRule| {
+        ui.on_node_with_tag("STL").capture_to_image().assert_pixels(None, |at| {
+            Some(if at.x < 10 && at.y < 10 { Color::RED } else { Color::WHITE })
+        });
+    };
+    assert!(!scope.has_render_in_overlay_layer());
+    red_corner(&mut ui);
+    assert!(!scope.has_render_in_overlay_layer());
+    render_in_overlay.set(true);
+    ui.wait_for_idle();
+    red_corner(&mut ui);
+    assert!(scope.has_render_in_overlay_layer());
+    render_in_overlay.set(false);
+    ui.wait_for_idle();
+    red_corner(&mut ui);
+    assert!(!scope.has_render_in_overlay_layer());
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testLayerCreatedByOverlayWhenContentDrawIsSkipped
+/// A box whose drawing is skipped by the node before it still gets its overlay layer once asked:
+/// the overlay makes it.
+#[test]
+fn layer_created_by_overlay_when_content_draw_is_skipped() {
+    let render_in_overlay = mutable_state_of(false);
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let mut ui = overlay_box(render_in_overlay.handle(), seen.clone(), || {
+        Modifier.draw_with_content(|_| {})
+    });
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    ui.on_node_with_tag("STL").capture_to_image();
+    assert!(!scope.has_render_in_overlay_layer());
+    render_in_overlay.set(true);
+    ui.wait_for_idle();
+    ui.on_node_with_tag("STL").capture_to_image();
+    assert!(scope.has_render_in_overlay_layer());
+}
