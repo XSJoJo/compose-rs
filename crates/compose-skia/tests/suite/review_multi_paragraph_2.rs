@@ -141,7 +141,6 @@ fn a_text_s_own_multi_paragraph_paints_after_on_text_layout() {
 /// with `Src` as a whole: the layer's transparent pixels replace everything around the glyphs too.
 /// Likewise `Clear`, `SrcIn`, `DstIn`, `SrcOut` and `DstATop`.
 #[test]
-#[ignore = "review: a non-SrcOver blend mode composites a layer the drawing's size, so `Src` (and Clear, SrcIn, DstIn, SrcOut, DstATop) wipes what's around the glyphs; Compose blends each glyph's paint only where it covers"]
 fn painting_with_src_replaces_only_what_the_glyphs_cover() {
     let picture = draw_with((100, 80), (100, 80), 1.0, 0, move |scope, measurer| {
         scope.draw_rect(Rect::new(0.0, 0.0, 100.0, 80.0), Paint::fill(Color::RED));
@@ -275,7 +274,6 @@ fn a_shadow_painted_replaces_the_style_s() {
 /// color, which an unspecified one leaves as it was (`setColor` ignores it), so the style's red
 /// stays.
 #[test]
-#[ignore = "review: `paint_with_brush` with `Brush::Solid(Color::UNSPECIFIED)` paints over the paragraph's own color with an unspecified one (drawn black); Android's `setColor` ignores an unspecified color"]
 fn an_unspecified_solid_brush_keeps_the_paragraph_s_color() {
     let style = TextStyle { color: Color::RED, ..TextStyle::DEFAULT };
     let picture = painted_with_brush(
@@ -423,7 +421,9 @@ fn a_locale_s_direction_reads_its_tag_in_any_case_and_separator() {
     {
         assert_eq!(direction_in(locale), ResolvedTextDirection::Rtl, "{locale}");
     }
-    for locale in ["SD_in", "ks-Deva", "uz-Cyrl-AF", "az-Latn-IR", "ku_TR", "EN_ae"] {
+    // `UG_kz`: Uyghur of Kazakhstan, Cyrillic in ICU 68's likely subtags (`sd_IN` isn't one
+    // there: Sindhi of India is Arabic, D2061).
+    for locale in ["UG_kz", "ks-Deva", "uz-Cyrl-AF", "az-Latn-IR", "ku_TR", "EN_ae"] {
         assert_eq!(direction_in(locale), ResolvedTextDirection::Ltr, "{locale}");
     }
 }
@@ -434,7 +434,6 @@ fn a_locale_s_direction_reads_its_tag_in_any_case_and_separator() {
 /// `ku_IR`), Kazakh of Mongolia (`kk_MN`), Adamawa Fulfulde (`fub_Arab_CM`), and the
 /// macro-regions of North Africa and Western Asia (`und_015`, `und_145`).
 #[test]
-#[ignore = "review: the likely-script table misses zdj, wni, fub, ku-LB, ku-IR, kk-MN, und-015, und-145 (right to left in ICU's likely subtags)"]
 fn locales_right_to_left_in_icu_s_likely_subtags_are_right_to_left() {
     for locale in ["zdj", "wni", "fub", "ku-LB", "ku-IR", "kk-MN", "und-015", "und-145"] {
         assert_eq!(direction_in(locale), ResolvedTextDirection::Rtl, "{locale}");
@@ -446,7 +445,6 @@ fn locales_right_to_left_in_icu_s_likely_subtags_are_right_to_left() {
 /// script properties are 0 in `uscript_props.cpp` (ICU 68.2; `Aran` isn't even a script code
 /// there). So `ur-Aran` is left to right on Android; D2049 lists them as right to left.
 #[test]
-#[ignore = "review: Aran, Syre, Syrj, Syrn and Phlv are right to left here; ICU's `UScript.isRightToLeft` says not (no script properties), so Android lays a Content paragraph in `ur-Aran` out left to right"]
 fn script_variants_without_properties_are_left_to_right_as_icu_s() {
     for locale in ["ur-Aran", "syr-Syre", "syr-Syrj", "syr-Syrn", "pal-Phlv"] {
         assert_eq!(direction_in(locale), ResolvedTextDirection::Ltr, "{locale}");

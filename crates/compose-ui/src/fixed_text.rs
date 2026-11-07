@@ -972,7 +972,12 @@ impl TextMeasurer for FixedTextMeasurer {
     }
 
     /// A copy of the layout: its paragraphs have no paint.
-    fn painted(&mut self, handle: ParagraphHandle, _style: &TextStyle) -> Option<ParagraphHandle> {
+    fn painted(
+        &mut self,
+        handle: ParagraphHandle,
+        _style: &TextStyle,
+        _blend_mode: crate::color_filter::BlendMode,
+    ) -> Option<ParagraphHandle> {
         let kept = self.paragraphs.get(handle.0 as usize)?.as_ref()?;
         let copy = FixedParagraph {
             measured: kept.measured.clone(),

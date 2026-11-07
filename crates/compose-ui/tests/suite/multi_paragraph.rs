@@ -538,7 +538,7 @@ fn a_locale_s_direction_is_its_script_s_or_its_likely_script_s() {
     // Scripts given, right to left in ICU's script data, historic ones too.
     for locale in [
         "en-Arab", "tr-Hebr", "arc-Armi", "arc-Nbat", "arc-Palm", "pal-Phlp", "grc-Cprt",
-        "hu-Hung", "ku-Yezi", "sy-Syrj", "ff-Adlm", "men-Mend",
+        "hu-Hung", "ku-Yezi", "sy-Syrc", "ff-Adlm", "men-Mend",
     ] {
         assert_eq!(neutral_direction_in(locale), Rtl, "{locale}");
     }
@@ -553,8 +553,11 @@ fn a_locale_s_direction_is_its_script_s_or_its_likely_script_s() {
     for locale in ["en-IR", "en-SA", "fr-MA", "tr-IQ", "ru-IL"] {
         assert_eq!(neutral_direction_in(locale), Ltr, "{locale}");
     }
-    // Likely scripts by language.
-    for locale in ["ur", "ps", "sd", "ckb", "ug", "dv", "yi", "syr", "nqo", "rhg", "phn", "ae"] {
+    // Likely scripts by language. `sd-IN` is Sindhi's (Arabic): ICU 68's likely subtags have no
+    // `sd_IN` (D2061).
+    for locale in
+        ["ur", "ps", "sd", "sd-IN", "ckb", "ug", "dv", "yi", "syr", "nqo", "rhg", "phn", "ae"]
+    {
         assert_eq!(neutral_direction_in(locale), Rtl, "{locale}");
     }
     for locale in ["ku", "pa", "az", "uz", "kk", "ha", "ms", "hi", "sw", "am", "xyz", "und"] {
@@ -564,7 +567,24 @@ fn a_locale_s_direction_is_its_script_s_or_its_likely_script_s() {
     for locale in ["pa-PK", "az-IQ", "kk-CN", "ky-CN", "ha-CM", "ms-CC", "und-EG", "und-IL"] {
         assert_eq!(neutral_direction_in(locale), Rtl, "{locale}");
     }
-    for locale in ["sd-IN", "ug-KZ", "pa-IN", "az-AZ", "und-US"] {
+    for locale in ["ug-KZ", "pa-IN", "az-AZ", "und-US"] {
+        assert_eq!(neutral_direction_in(locale), Ltr, "{locale}");
+    }
+}
+
+/// ICU 68.2's likely subtags (CLDR 38, androidx-main's `external/icu`), the reference (D2061):
+/// languages of no known region (`_ZZ`) written in Arabic, Ancient Greek's likely script Cypriot
+/// and uncoded languages' Hatran are right to left; Old Uyghur and Garay have no script data in
+/// ICU 68 (Unicode 13), so a locale naming them is left to right there.
+#[test]
+fn a_locale_s_direction_is_icu_68_s() {
+    for locale in [
+        "dgl", "gwc", "gwt", "kzh", "mde", "oru", "phl", "scl", "kby", "kdh", "grc", "mis",
+        "ku-IR", "und-015", "und-145", "UND-145", "zdj-KM",
+    ] {
+        assert_eq!(neutral_direction_in(locale), Rtl, "{locale}");
+    }
+    for locale in ["oui-Ougr", "ff-Gara", "ur-Aran", "grc-Linb", "kk-KZ", "und-419", "und-150"] {
         assert_eq!(neutral_direction_in(locale), Ltr, "{locale}");
     }
 }

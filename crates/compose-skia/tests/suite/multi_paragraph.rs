@@ -298,3 +298,57 @@ fn a_blend_mode_composites_the_paint() {
     // Behind the white already there: nothing shows.
     assert!(cleared.is_blank());
 }
+
+/// A blend mode is on each glyph's paint, a span's too (D2060): `Src` replaces the red under a
+/// glyph with its half transparent color, where `SrcOver` would mix them, and leaves the red
+/// around the glyphs.
+#[test]
+fn a_blend_mode_is_on_each_glyph_s_paint_a_span_s_too() {
+    let half_blue = Color::BLUE.with_alpha(0.5);
+    let painted = |blend_mode: BlendMode| {
+        draw_with((100, 60), (100, 60), 1.0, 0, move |scope, measurer| {
+            scope.draw_rect(
+                compose::ui::Rect::new(0.0, 0.0, 100.0, 60.0),
+                compose::ui::Paint::fill(Color::RED),
+            );
+            let span = SpanStyle { color: half_blue, ..Default::default() };
+            let text = AnnotatedString::build(|builder| {
+                builder.with_paragraph_style(ParagraphStyle::DEFAULT, |builder| {
+                    builder.append("Lorem");
+                });
+                builder.with_paragraph_style(ParagraphStyle::DEFAULT, |builder| {
+                    builder.with_style(span, |builder| {
+                        builder.append("Ipsum");
+                    });
+                });
+            });
+            let style = TextStyle { color: half_blue, font_size: 20.sp(), ..TextStyle::DEFAULT };
+            let paragraph = measured(measurer, text, style, 100);
+            paragraph.paint(scope, Color::UNSPECIFIED, None, None, None, blend_mode);
+        })
+    };
+    let replaced = painted(BlendMode::Src);
+    let mixed = painted(BlendMode::SrcOver);
+    // Inside the first character of each paragraph (the test font's glyph is its em square).
+    for (x, y) in [(10, 10), (10, 30)] {
+        assert_ne!(replaced.pixel(x, y), Color::RED, "{x}, {y}");
+        assert_ne!(replaced.pixel(x, y), mixed.pixel(x, y), "{x}, {y}");
+        assert!(replaced.pixel(x, y).alpha() < 0.6, "{x}, {y}: {:?}", replaced.pixel(x, y));
+    }
+    // Below the text, still red.
+    assert_eq!(replaced.pixel(50, 50), Color::RED);
+}
+
+/// A paragraph of the list painted alone in a blend mode draws all of it, wider than the drawing:
+/// nothing clips it to the drawing's size.
+#[test]
+fn a_paragraph_painted_alone_in_a_blend_mode_is_not_clipped_to_the_drawing() {
+    let style = TextStyle { font_size: 20.sp(), ..TextStyle::DEFAULT };
+    let alone = draw_with((100, 60), (10, 10), 1.0, 0, move |scope, measurer| {
+        let paragraph = measured(measurer, lorem_ipsum(), style.clone(), 100);
+        let info = &paragraph.paragraph_info_list()[1];
+        info.paragraph.paint(scope, Color::RED, None, None, None, BlendMode::Src);
+    });
+    // "Ipsum" is 100 px wide, the drawing 10.
+    assert!(!alone.is_empty_from(50, 0));
+}

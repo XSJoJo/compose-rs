@@ -1224,8 +1224,8 @@ impl MultiParagraph {
     /// Paints it in `scope` at its origin, as Compose's `MultiParagraph.paint(canvas, color,
     /// shadow, textDecoration, drawStyle, blendMode)`: each paragraph at its top, in `color`,
     /// `shadow`, `text_decoration` and `draw_style` over its own (an unspecified color or `None`
-    /// keeps the paragraph's), composited with `blend_mode`. Panics for a text a measurer didn't
-    /// lay out to draw (a text's own, from `on_text_layout`): its result draws (D2052).
+    /// keeps the paragraph's), each glyph blending in `blend_mode`. Panics for a text a measurer
+    /// didn't lay out to draw (a text's own, from `on_text_layout`): its result draws (D2052).
     pub fn paint(
         &self,
         scope: &mut DrawScope<'_>,

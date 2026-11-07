@@ -9,8 +9,8 @@
 //! Compose's `ParagraphIntrinsics` (D550).
 
 use compose_ui::{
-    AnnotatedString, Brush, Color, Constraints, Density, DrawStyle, FontFamily, LayoutDirection,
-    Offset, Rect, TextAlign, TextOverflow, TextStyle, TileMode,
+    AnnotatedString, BlendMode, Brush, Color, Constraints, Density, DrawStyle, FontFamily,
+    LayoutDirection, Offset, Rect, TextAlign, TextOverflow, TextStyle, TileMode,
     platform::{
         NoFontLoader, ParagraphHandle, ParagraphMetrics, PlatformFontLoader, PlatformFonts,
         ResolvedFonts, TextLayoutOptions, TextMeasurer, TextPosition,
@@ -62,7 +62,8 @@ pub trait TextBackend: 'static {
         false
     }
     /// Gives paragraph `handle`, just restyled or painted, what `extras` encodes
-    /// ([`encode_paint_extras`]): what its paint has beyond a color and decoration.
+    /// ([`encode_paint_extras`], then with flag 64 a blend mode's number): what its paint has
+    /// beyond a color and decoration.
     fn paint_extras(&mut self, _handle: u32, _extras: &[u8]) {}
 
     /// Gives paragraph `previous`'s layout, as paragraph `handle` too, the paint of `color` (ARGB)
@@ -217,12 +218,18 @@ impl<B: TextBackend> AndroidTextMeasurer<B> {
     }
 
     /// Gives paragraph `handle` `style`'s gradient, shadow and stroke, if it has any.
-    fn send_paint_extras(&mut self, handle: u32, style: &TextStyle) {
-        let flags = paragraph_paint_flags(style);
+    fn send_paint_extras(&mut self, handle: u32, style: &TextStyle, blend_mode: BlendMode) {
+        let blended = blend_mode != BlendMode::SrcOver;
+        let flags = paragraph_paint_flags(style) | u8::from(blended) << 6;
         if flags != 0 {
             self.request.bytes.clear();
             self.request.u8(flags);
             encode_paint_extras(&mut self.request, style, flags);
+            // The blend mode last, as Compose's `Paragraph.paint(…, blendMode)` sets the text
+            // paint's while it draws (D2060): its number, as a layer's (`SAVE_LAYER`).
+            if blended {
+                self.request.u8(blend_mode as u8);
+            }
             self.backend.paint_extras(handle, &self.request.bytes);
         }
     }
@@ -390,18 +397,19 @@ impl<B: TextBackend> TextMeasurer for AndroidTextMeasurer<B> {
         if !self.backend.restyle(previous, handle, color, decoration) {
             return None;
         }
-        self.send_paint_extras(handle, style);
+        self.send_paint_extras(handle, style, BlendMode::SrcOver);
         let entry = self.paragraphs.remove(&previous).expect("checked above");
         self.paragraphs.insert(handle, entry);
         Some(ParagraphHandle(handle as u64))
     }
 
-    /// A new handle for the same layout in `style`'s paint, `paragraph` staying: Kotlin draws the
-    /// one `Layout` in each paint, as Compose's `Paragraph.paint(color, …)`.
+    /// A new handle for the same layout in `style`'s paint and `blend_mode`, `paragraph` staying:
+    /// Kotlin draws the one `Layout` in each paint, as Compose's `Paragraph.paint(color, …)`.
     fn painted(
         &mut self,
         paragraph: ParagraphHandle,
         style: &TextStyle,
+        blend_mode: BlendMode,
     ) -> Option<ParagraphHandle> {
         let previous = paragraph.0 as u32;
         let entry = self.paragraphs.get(&previous)?;
@@ -416,7 +424,7 @@ impl<B: TextBackend> TextMeasurer for AndroidTextMeasurer<B> {
         if !self.backend.painted(previous, handle, color, decoration) {
             return None;
         }
-        self.send_paint_extras(handle, style);
+        self.send_paint_extras(handle, style, blend_mode);
         self.paragraphs.insert(handle, entry);
         Some(ParagraphHandle(handle as u64))
     }
@@ -1327,7 +1335,7 @@ mod tests {
         assert!(measurer.backend.extras.is_empty());
         let brushed = TextStyle::DEFAULT.with_brush(Some(gradient()), f32::NAN);
         let restyled = measurer.restyle(plain, &brushed).unwrap();
-        let painted = measurer.painted(restyled, &brushed).unwrap();
+        let painted = measurer.painted(restyled, &brushed, BlendMode::SrcOver).unwrap();
         let extras = &measurer.backend.extras;
         assert_eq!(extras.len(), 2);
         assert_eq!(extras[0].0, restyled.0 as u32);
@@ -1335,6 +1343,31 @@ mod tests {
         // Its flags, then what they say.
         assert_eq!(extras[0].1[0], 4);
         assert_eq!(extras[0].1.len(), 1 + 38);
+    }
+
+    /// A blend mode is the paint's last extra (flag 64, its number), as Compose's
+    /// `Paragraph.paint(…, blendMode)` sets the text paint's (D2060); `SrcOver` sends none.
+    #[test]
+    fn a_painted_blend_mode_is_sent_last_in_the_extras() {
+        let mut measurer = AndroidTextMeasurer::new(Fake::default());
+        let handle = measurer.layout(
+            "text",
+            &TextStyle::DEFAULT,
+            TextLayoutOptions::default(),
+            Constraints::unbounded(),
+            &Density::new(1.0),
+        );
+        measurer.painted(handle, &TextStyle::DEFAULT, BlendMode::SrcOver).unwrap();
+        assert!(measurer.backend.extras.is_empty());
+        let plain = measurer.painted(handle, &TextStyle::DEFAULT, BlendMode::Src).unwrap();
+        let brushed = TextStyle::DEFAULT.with_brush(Some(gradient()), f32::NAN);
+        let blended = measurer.painted(handle, &brushed, BlendMode::DstIn).unwrap();
+        let extras = &measurer.backend.extras;
+        assert_eq!(extras[0], (plain.0 as u32, vec![64, BlendMode::Src as u8]));
+        assert_eq!(extras[1].0, blended.0 as u32);
+        assert_eq!(extras[1].1[0], 4 | 64);
+        assert_eq!(extras[1].1.len(), 1 + 38 + 1);
+        assert_eq!(extras[1].1[39], BlendMode::DstIn as u8);
     }
 
     #[test]
