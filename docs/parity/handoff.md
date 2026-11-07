@@ -57,6 +57,7 @@ Every `#[ignore]` carries its reason in its attribute; `grep -rn -A1 '#\[ignore'
 
 Branches in flight add their own (see [In flight](#in-flight)):
 - `shared-elements-3`: `testDetachingSharedElementAndReattachingInNewPositionBeforeAnimating` (shared_transition.rs) and the review's `moved_content_detaches_and_attaches_its_modifier_nodes` wait on moved nodes being detached and attached (`moved-node-attach`, D1923). With that merged the second passes; the first still fails: a moved shared element records (0, 0) during its transition instead of animating from where it was, a shared-element gap still to diagnose (compare Compose's `SharedBoundsNode` on detach and attach). Its older `lazy_staggered_grid_jumps.rs` ignores are fixed on main (D1477) and go on merge.
+- `layer-readers-fixes`: the 3 ignores of compose-ui's `review_shared_elements_3.rs` that came with `shared-elements-3` (7d6a022e): a `GraphicsLayer` keeping a reader for every drawing that ever drew it (twice) and its first drawing by a drawing sending the global snapshot's changes mid-draw. Fixed there (D1339), which removes them.
 - `review-moved-node-attach`: 6 review findings on D1923's ordering (siblings removed together and two moved contents detached first to last where Compose's `removeAt` goes last to first; content taken out of removed or moving content never detached and attached; a panic in `on_detach` leaving the old parent set). To fix on that branch before merging.
 
 ## Priorities
@@ -72,8 +73,9 @@ As of 2026-11-07, `origin/main` is at 97e0f32e (12,371 tests).
 | Branch | What | State |
 |---|---|---|
 | `moved-node-attach` | A node movable content moves is detached and attached, as in Compose (D1923) | Reviewed (`review-moved-node-attach`); findings pending |
-| `shared-elements-3` | Shared elements: all of SharedTransitionTest (D1332–D1336), layers told per drawing (D1337), first compositions send their writes (D1338) | Under review |
+| `shared-elements-3` | Shared elements: all of SharedTransitionTest (D1332–D1336), layers told per drawing (D1337), first compositions send their writes (D1338) | Merged (7d6a022e); its review's fixes on `layer-readers-fixes` |
 | `text-context-menu-5` | Context-menu follow-ups: stale menu items, a container toolbar after a cancelled handle press or a changed text | In progress |
+| `layer-readers-fixes` | A `GraphicsLayer`'s readers bounded, its versions made without a snapshot, `set_content`'s notify as Compose's (D1339): the review of `shared-elements-3` | Ready for review |
 | `lazy-beyond-bounds-fixes` | Lazy BeyondBoundsLayout: grid limit in lines, calls from event handlers, user scrolling off (D1480) | In progress |
 
 Next, once those land: `DeferredSharedElementTest` and the moved shared element that doesn't animate from its old place; touch selection's bidi tests (`TextSelectionGesturesBidiTest`); graphics leftovers (`ImageShader`, BrushPainter, FilterQuality); place-with-layer leftovers (zIndex, hit testing through layer transforms); style API, border parity, AndroidView interop, magnifier, autofill. missing.md has the full list.

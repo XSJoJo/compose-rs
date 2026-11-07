@@ -969,8 +969,9 @@ fn a_drawing_drawing_a_layer_then_recording_it_draws_again_showing_it() {
     assert!(take_log().is_empty(), "idle");
 }
 
-/// A drawing told of a change gives its place among a layer's readers to the next new one: a
-/// layer drawn by a new node each step, changed between them, keeps two (D1337).
+/// A drawing gone leaves a layer's readers when the next new one comes (D1339; told readers gave
+/// it their place in D1337): a layer drawn by a new node each step, changed between them, keeps
+/// two at most.
 #[test]
 fn told_readers_make_room_for_new_ones() {
     let layer = GraphicsLayer::new();
