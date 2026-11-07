@@ -1671,3 +1671,49 @@ fn a_scroll_deep_in_a_chain_is_left_out_of_a_lookahead_position_if_asked() {
     assert_eq!(at(true), Offset::new(0.0, -50.0));
     assert_eq!(at(false), Offset::ZERO);
 }
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testKeyMatch (its contents leaving together)
+/// Several nodes whose lookahead blocks asked where they are leave in one frame: each reader is
+/// forgotten, the one moved into a forgotten one's place included.
+#[test]
+fn readers_of_lookahead_positions_leave_together() {
+    let shown = mutable_state_of(true);
+    let read = Rc::new(Cell::new(0));
+    let (on, r) = (shown.handle(), read.clone());
+    let mut host = host(move || {
+        let r = r.clone();
+        scoped(move |lookahead| {
+            let reader = |r: Rc<Cell<i32>>| {
+                Modifier
+                    .layout(move |scope, measurable, constraints| {
+                        let placeable = scope.measure(measurable, constraints);
+                        let r = r.clone();
+                        scope.layout_with(placeable.width, placeable.height, move |placement| {
+                            if placement.is_looking_ahead() {
+                                let frame = lookahead
+                                    .lookahead_scope_coordinates(placement)
+                                    .expect("in it");
+                                let own = placement.coordinates().expect("placing");
+                                lookahead.local_lookahead_position_of(frame, own, Offset::ZERO);
+                                r.set(r.get() + 1);
+                            }
+                            placement.place(&placeable, 0, 0);
+                        })
+                    })
+                    .then(sized(5))
+            };
+            if on.get() {
+                for _ in 0..3 {
+                    leaf(reader(r.clone()));
+                }
+            }
+            leaf(reader(r.clone()));
+        });
+    });
+    assert_eq!(read.get(), 4);
+    shown.set(false);
+    host.frame();
+    shown.set(true);
+    host.frame();
+    assert!(read.get() >= 7, "{}", read.get());
+}

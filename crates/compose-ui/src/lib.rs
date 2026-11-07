@@ -292,7 +292,10 @@ pub use layout_rect_modifiers::{
     DEFAULT_LAYOUT_RECT_DEBOUNCE_MILLIS, LayoutBoundsHolder, OnVisibilityChangedNode,
     on_visibility_changed_node,
 };
-pub use lookahead::{ApproachMeasureScope, LookaheadCoordinates, LookaheadScope};
+pub use lookahead::{
+    ApproachLayoutModifierNode, ApproachMeasureScope, LookaheadCoordinates, LookaheadScope,
+    PlacementInProgress, measure_approach,
+};
 pub use math::{Lerp, lerp};
 pub use matrix::Matrix;
 pub use modifier::AlignByScope;

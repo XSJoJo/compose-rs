@@ -18,7 +18,7 @@ The log is split by area into the files below, one table each, rows in number or
 | File | Covers | Rows |
 |---|---|---|
 | [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 182 |
-| [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 421 |
+| [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 425 |
 | [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 123 |
 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md) | Lazy lists and grids, item reuse, the policy of composing only what is in view, prefetch. | 116 |
 | [android-drawing](decisions/android-drawing.md) | The display list and its replayer, render nodes and repaint boundaries, paths, shadows, layers. | 34 |
@@ -512,7 +512,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D826 | [api-and-tooling](decisions/api-and-tooling.md#d826) | revised by [D832](api-and-tooling.md#d832) |
 | D827 | [ui-and-layout](decisions/ui-and-layout.md#d827) | revised by [D836](android-host-and-performance.md#d836) |
 | D828 | [ui-and-layout](decisions/ui-and-layout.md#d828) | revised by [D830](ui-and-layout.md#d830), [D831](ui-and-layout.md#d831), [D833](ui-and-layout.md#d833), [D834](ui-and-layout.md#d834), [D1187](decisions/ui-and-layout.md#d1187) |
-| D829 | [ui-and-layout](decisions/ui-and-layout.md#d829) | current |
+| D829 | [ui-and-layout](decisions/ui-and-layout.md#d829) | revised by [D1329](decisions/ui-and-layout.md#d1329) |
 | D830 | [ui-and-layout](decisions/ui-and-layout.md#d830) | current |
 | D831 | [ui-and-layout](decisions/ui-and-layout.md#d831) | current |
 | D832 | [api-and-tooling](decisions/api-and-tooling.md#d832) | revised by [D835](api-and-tooling.md#d835) |
@@ -777,7 +777,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1219 | [ui-and-layout](decisions/ui-and-layout.md#d1219) | current |
 | D1220 | [ui-and-layout](decisions/ui-and-layout.md#d1220) | current |
 | D1221 | [ui-and-layout](decisions/ui-and-layout.md#d1221) | current |
-| D1222 | [ui-and-layout](decisions/ui-and-layout.md#d1222) | current |
+| D1222 | [ui-and-layout](decisions/ui-and-layout.md#d1222) | revised by [D1328](decisions/ui-and-layout.md#d1328) |
 | D1223 | [ui-and-layout](decisions/ui-and-layout.md#d1223) | current |
 | D1224 | [ui-and-layout](decisions/ui-and-layout.md#d1224) | current |
 | D1225 | [ui-and-layout](decisions/ui-and-layout.md#d1225) | current |
@@ -860,6 +860,10 @@ The log is split by area into the files below, one table each, rows in number or
 | D1325 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1325) | current |
 | D1326 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1326) | current |
 | D1327 | [ui-and-layout](decisions/ui-and-layout.md#d1327) | current |
+| D1328 | [ui-and-layout](decisions/ui-and-layout.md#d1328) | current |
+| D1329 | [ui-and-layout](decisions/ui-and-layout.md#d1329) | current |
+| D1330 | [ui-and-layout](decisions/ui-and-layout.md#d1330) | current |
+| D1331 | [ui-and-layout](decisions/ui-and-layout.md#d1331) | current |
 | D1350 | [ui-and-layout](decisions/ui-and-layout.md#d1350) | current |
 | D1351 | [ui-and-layout](decisions/ui-and-layout.md#d1351) | current |
 | D1352 | [ui-and-layout](decisions/ui-and-layout.md#d1352) | current |
@@ -999,7 +1003,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1900 | [android-drawing](decisions/android-drawing.md#d1900) | current |
 | D1901 | [ui-and-layout](decisions/ui-and-layout.md#d1901) | current |
 | D1902 | [ui-and-layout](decisions/ui-and-layout.md#d1902) | current |
-| D1903 | [ui-and-layout](decisions/ui-and-layout.md#d1903) | revised by [D1909](decisions/ui-and-layout.md#d1909) |
+| D1903 | [ui-and-layout](decisions/ui-and-layout.md#d1903) | revised by [D1909](decisions/ui-and-layout.md#d1909), [D1331](decisions/ui-and-layout.md#d1331) |
 | D1904 | [android-drawing](decisions/android-drawing.md#d1904) | current |
 | D1905 | [android-drawing](decisions/android-drawing.md#d1905) | current |
 | D1906 | [ui-and-layout](decisions/ui-and-layout.md#d1906) | current |

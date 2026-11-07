@@ -109,6 +109,15 @@ thread_local! {
     static PASS_DEPTH: Cell<u32> = const { Cell::new(0) };
     /// The layers changed in the current draw pass.
     static PASS_CHANGES: RefCell<Vec<std::rc::Weak<LayerCell>>> = const { RefCell::new(Vec::new()) };
+    /// A pass's end told what drew a layer that changed in it (D1331).
+    static PASS_TOLD: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether the last draw pass's end told drawings of a layer that changed in it, which then
+/// draw again in the same frame (D1331); the flag is cleared.
+#[inline]
+pub(crate) fn take_pass_told() -> bool {
+    PASS_TOLD.replace(false)
 }
 
 /// [`PASS_DEPTH`]'s flag: a layer changed in the pass, which its end looks at.
@@ -117,7 +126,8 @@ const CHANGED_IN_PASS: u32 = 1 << 31;
 /// A draw pass, as `UiTree::draw` runs one. A layer changed in it (recorded, a property set:
 /// what drawing code does) tells what drew it at the pass's end if it ends other than it
 /// started: what a drawing the pass didn't draw again shows, and what one drawing it before
-/// another drawing records it later in the pass shows. They draw again in the next frame. So a
+/// another drawing records it later in the pass shows. They draw again in the same frame, in a
+/// second pass `UiTree::draw` runs (D1331), as Compose's render nodes are current at once. So a
 /// drawing recording a layer (twice, even) and then drawing it doesn't draw itself again, nor
 /// does one recording what the layer holds already ([`GraphicsLayer::store`]); a drawing
 /// drawing it between two changes undoing each other keeps what it drew.
@@ -156,6 +166,7 @@ fn end_changed_pass() {
         let Some(start) = layer.pass_start.take() else { continue };
         if !start.is_now(&layer) {
             layer.version.handle().update(|version| version.wrapping_add(1));
+            PASS_TOLD.set(true);
         }
     }
 }

@@ -641,9 +641,12 @@ impl UiTree {
         if let Some(value) = self.get_mut(gone.node) {
             value.reader_at = u32::MAX;
         }
+        // The reader moved here may be of a node gone too: the caller's loop forgets it next.
         if let Some(moved) = self.coordinate_readers.get(at) {
             let node = moved.node;
-            self.node_mut(node).reader_at = at as u32;
+            if let Some(value) = self.get_mut(node) {
+                value.reader_at = at as u32;
+            }
         }
     }
 

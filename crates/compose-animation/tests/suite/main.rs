@@ -3,6 +3,7 @@
 
 extern crate compose_runtime as compose;
 
+mod animate_bounds;
 mod animated_content;
 mod animated_content_scope;
 mod animated_visibility;
@@ -43,6 +44,7 @@ mod review_round8;
 mod review_round9;
 mod seekable;
 mod shared_configuration;
+mod shared_transition;
 mod single_value;
 mod spline_decay;
 mod spring_estimation;
