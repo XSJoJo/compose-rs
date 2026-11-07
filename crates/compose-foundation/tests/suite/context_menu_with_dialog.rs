@@ -114,3 +114,58 @@ fn textField2_showToolbar_doesNotCrash() {
         assert_eq!(*check, [true; 3], "the menu's position and bounds aren't on the field");
     }
 }
+
+/// Compose's `TextField2TestCase` in `CustomizedContextMenu`: the field in a dialog, under a
+/// provider of both kinds checking what it's asked (D2040).
+fn field_in_dialog(checks: Rc<RefCell<Vec<[bool; 3]>>>) -> ComposeTestRule {
+    let coordinates: Rc<Cell<Option<LayoutCoordinates>>> = Rc::default();
+    let field: Rc<Cell<Option<LayoutCoordinates>>> = Rc::default();
+    let provider: Rc<dyn TextContextMenuProvider> =
+        Rc::new(Checking { coordinates: coordinates.clone(), field: field.clone(), checks });
+    let state: TextFieldState = **Box::leak(Box::new(TextFieldState::new("Dialog TextField")));
+    ComposeTestRule::sized(IntSize::new(400, 400), move || {
+        let (provider, coordinates, field) = (provider.clone(), coordinates.clone(), field.clone());
+        compose_runtime::CompositionLocalProvider(
+            (
+                LOCAL_TEXT_CONTEXT_MENU_DROPDOWN_PROVIDER.provides(Some(provider.clone())),
+                LOCAL_TEXT_CONTEXT_MENU_TOOLBAR_PROVIDER.provides(Some(provider)),
+            ),
+            move || {
+                let field = field.clone();
+                Box!(
+                    modifier = Modifier.on_globally_positioned(move |it| coordinates.set(Some(it))),
+                    {
+                        let field = field.clone();
+                        Dialog!(on_dismiss_request = || {}, {
+                            let field = field.clone();
+                            BasicTextFieldOfState!(
+                                state,
+                                modifier = Modifier
+                                    .test_tag(TAG)
+                                    .on_globally_positioned(move |it| field.set(Some(it))),
+                            );
+                        });
+                    }
+                );
+            },
+        );
+    })
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/contextmenu/ContextMenuWithDialogTest.kt, textField2_showContextMenu_doesNotCrash
+#[test]
+fn textField2_showContextMenu_doesNotCrash() {
+    let checks: Rc<RefCell<Vec<[bool; 3]>>> = Rc::default();
+    let mut ui = field_in_dialog(checks.clone());
+    // The right click's menu inside the dialog.
+    ui.on_node_with_tag(TAG).perform_mouse_input(|mouse| {
+        let center = mouse.center();
+        mouse.right_click(center);
+    });
+    ui.wait_for_idle();
+    let checks = checks.borrow();
+    assert!(!checks.is_empty(), "the menu wasn't shown");
+    for check in checks.iter() {
+        assert_eq!(*check, [true; 3], "the menu's position and bounds aren't on the field");
+    }
+}

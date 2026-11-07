@@ -1059,3 +1059,4 @@ The log is split by area into the files below, one table each, rows in number or
 | D2037 | [text](decisions/text.md#d2037) | revised by [D2039](decisions/text.md#d2039) |
 | D2038 | [text](decisions/text.md#d2038) | current |
 | D2039 | [text](decisions/text.md#d2039) | current |
+| D2040 | [text](decisions/text.md#d2040) | current |

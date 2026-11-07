@@ -14,8 +14,8 @@ use compose_ui::{
 use super::builder::{TextContextMenuBuilderScope, TextContextMenuFilter};
 use super::data::{TextContextMenuComponent, TextContextMenuData};
 use super::provider::{
-    Finally, LOCAL_TEXT_CONTEXT_MENU_TOOLBAR_PROVIDER, TextContextMenuDataProvider,
-    TextContextMenuProvider,
+    Finally, LOCAL_TEXT_CONTEXT_MENU_DROPDOWN_PROVIDER, LOCAL_TEXT_CONTEXT_MENU_TOOLBAR_PROVIDER,
+    TextContextMenuDataProvider, TextContextMenuProvider,
 };
 
 /// A builder of [`TextContextMenuModifiers::append_text_context_menu_components`].
@@ -135,9 +135,17 @@ pub fn collect_text_context_menu_data(context: &mut NodeContext<'_>) -> TextCont
 
 /// The same, after what `scope` has: the node's own components, nearest of all.
 fn collect_into(
-    mut scope: TextContextMenuBuilderScope,
+    scope: TextContextMenuBuilderScope,
     context: &mut NodeContext<'_>,
 ) -> TextContextMenuData {
+    let (builders, filters) = collect_modifiers(context);
+    build_with(scope, &builders, &filters)
+}
+
+/// The builders above `context`'s node, nearest first, and the filters above it.
+fn collect_modifiers(
+    context: &mut NodeContext<'_>,
+) -> (Vec<TextContextMenuBuilder>, Vec<TextContextMenuFilter>) {
     let mut builders: Vec<TextContextMenuBuilder> = Vec::new();
     let mut filters: Vec<TextContextMenuFilter> = Vec::new();
     context.traverse_ancestors_with_key(&TEXT_CONTEXT_MENU_DATA, |node, _| {
@@ -148,11 +156,20 @@ fn collect_into(
         }
         true
     });
+    (builders, filters)
+}
+
+/// What `builders` add after what `scope` has, `filters` applied.
+fn build_with(
+    mut scope: TextContextMenuBuilderScope,
+    builders: &[TextContextMenuBuilder],
+    filters: &[TextContextMenuFilter],
+) -> TextContextMenuData {
     for builder in builders {
         builder(&mut scope);
     }
     for filter in filters {
-        scope.add_filter(filter);
+        scope.add_filter(filter.clone());
     }
     scope.build()
 }
@@ -454,14 +471,80 @@ impl<N: ToolbarHost> TextContextMenuDataProvider for NodeDataProvider<N> {
     }
 
     fn data(&self) -> TextContextMenuData {
-        // Gone, it has nothing, as Compose's (it may be asked while it's disposed).
-        self.handle
-            .with_node::<N, _>(|node, context| {
-                let mut scope = TextContextMenuBuilderScope::new();
-                node.own_text_context_menu_components(&mut scope);
-                collect_into(scope, context)
-            })
-            .unwrap_or_default()
+        host_menu_data::<N>(self.handle)
+    }
+}
+
+/// The menu collected from a host's node: its own components, then its ancestors'. Gone, it has
+/// nothing, as Compose's (it may be asked while it's disposed).
+fn host_menu_data<N: ToolbarHost>(handle: NodeHandle) -> TextContextMenuData {
+    handle
+        .with_node::<N, _>(|node, context| {
+            let mut scope = TextContextMenuBuilderScope::new();
+            node.own_text_context_menu_components(&mut scope);
+            collect_into(scope, context)
+        })
+        .unwrap_or_default()
+}
+
+/// Shows the dropdown of the menu collected from `context`'s node at `click`, in its
+/// coordinates, `own` its own components, as Compose's
+/// `TextContextMenuGestureNode.tryShowContextMenu`: through
+/// `LOCAL_TEXT_CONTEXT_MENU_DROPDOWN_PROVIDER`'s provider, else `default`'s (D2040), in the node's
+/// coroutine scope, so it closes when the node leaves.
+///
+/// The builders and filters above the node are collected now, where the tree can be traversed:
+/// the dropdown reads its data in composition, where it can't (Compose's traverses at each read;
+/// what they add still follows the state they read).
+pub(crate) fn show_text_context_menu_at(
+    context: &mut NodeContext<'_>,
+    click: Offset,
+    own: Option<TextContextMenuBuilder>,
+    default: impl FnOnce(LayoutCoordinates) -> Option<Rc<dyn TextContextMenuProvider>>,
+) {
+    if !context.is_attached() {
+        return;
+    }
+    let coordinates = context.require_layout_coordinates();
+    let provider = context.current_value_of(&LOCAL_TEXT_CONTEXT_MENU_DROPDOWN_PROVIDER);
+    let Some(provider) = provider.or_else(|| default(coordinates)) else { return };
+    let (mut builders, filters) = collect_modifiers(context);
+    if let Some(own) = own {
+        builders.insert(0, own);
+    }
+    let data: Rc<dyn TextContextMenuDataProvider> =
+        Rc::new(ClickDataProvider { coordinates, click, builders, filters });
+    // Its job isn't kept: a new menu replaces it through the provider, as Compose's.
+    context.coroutine_scope().launch(async move { provider.show_text_context_menu(data).await });
+}
+
+/// A right click's menu: at the click, around nothing, its data the node's, as Compose's
+/// `ClickTextContextMenuDataProvider`.
+struct ClickDataProvider {
+    /// The node's coordinates, the click's.
+    coordinates: LayoutCoordinates,
+    click: Offset,
+    builders: Vec<TextContextMenuBuilder>,
+    filters: Vec<TextContextMenuFilter>,
+}
+
+impl TextContextMenuDataProvider for ClickDataProvider {
+    /// Through the screen: the destination may be in another window (a dialog's field,
+    /// b/441759435). Zero once the node's gone.
+    fn position(&self, destination: &LayoutCoordinates) -> Offset {
+        if !self.coordinates.is_attached() {
+            return Offset::ZERO;
+        }
+        destination.screen_to_local(self.coordinates.local_to_screen(self.click))
+    }
+
+    fn content_bounds(&self, destination: &LayoutCoordinates) -> Rect {
+        let position = self.position(destination);
+        Rect::from_corners(position, position)
+    }
+
+    fn data(&self) -> TextContextMenuData {
+        build_with(TextContextMenuBuilderScope::new(), &self.builders, &self.filters)
     }
 }
 

@@ -35,6 +35,57 @@ fn open_context_menu() -> ContextMenuBlock {
     OPEN_CONTEXT_MENU.with(Rc::clone)
 }
 
+/// A field's or a container's default dropdown where none is provided (D2040): made at its first
+/// right click, its menu composed by [`DefaultDropdownMenu`] in the handles' composable, anchored
+/// at the node the click was on.
+pub(crate) struct DefaultDropdown {
+    provider: Rc<BasicTextContextMenuProvider>,
+    anchor: Cell<Option<compose_ui::LayoutCoordinates>>,
+}
+
+/// A [`DefaultDropdown`] in a state, equal to itself only.
+#[derive(Clone)]
+pub(crate) struct DropdownSlot(Rc<DefaultDropdown>);
+
+impl compose_runtime::ComposeArg for DropdownSlot {
+    fn same(&self, other: &DropdownSlot) -> bool {
+        self == other
+    }
+}
+
+impl PartialEq for DropdownSlot {
+    fn eq(&self, other: &DropdownSlot) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// The default dropdown in `slot`, made at the first call, anchored at `anchor`.
+pub(crate) fn default_dropdown(
+    slot: &compose_runtime::OwnedState<Option<DropdownSlot>>,
+    anchor: compose_ui::LayoutCoordinates,
+) -> Rc<dyn super::TextContextMenuProvider> {
+    let made = slot.get().unwrap_or_else(|| {
+        let made = DropdownSlot(Rc::new(DefaultDropdown {
+            provider: Rc::new(BasicTextContextMenuProvider::new(open_context_menu())),
+            anchor: Cell::new(None),
+        }));
+        slot.set(Some(made.clone()));
+        made
+    });
+    made.0.anchor.set(Some(anchor));
+    made.0.provider.clone()
+}
+
+/// The open menu of a default dropdown, if any: composed where its anchor's handles are.
+#[composable]
+#[allow(non_snake_case)]
+pub(crate) fn DefaultDropdownMenu(slot: Option<DropdownSlot>) {
+    let Some(slot) = slot else { return };
+    let anchored = slot.0.clone();
+    let anchor: AnchorCoordinates = Rc::new(move || anchored.anchor.get());
+    slot.0.provider.context_menu(anchor);
+}
+
 /// Provides `LOCAL_TEXT_CONTEXT_MENU_DROPDOWN_PROVIDER` with the default dropdown over `content`,
 /// in a box (`propagate_min_constraints`) its menus are anchored to, as Compose's
 /// `ProvideDefaultTextContextMenuDropdown(modifier, content)`.
