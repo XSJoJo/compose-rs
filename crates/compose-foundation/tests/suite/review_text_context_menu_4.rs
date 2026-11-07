@@ -58,7 +58,6 @@ fn char_box(ui: &mut ComposeTestRule, tag: &str, offset: usize) -> Rect {
 // tap (a release) or the end of a drag that passed the slop: a cancel before the slop leaves the
 // toolbar hidden for good (`HandleNode::on_cancel_pointer_input` -> `end_drag`, `origin` None).
 #[test]
-#[ignore = "review: a handle's press cancelled before the slop leaves the container's toolbar hidden"]
 fn a_handles_cancelled_press_shows_the_toolbar_again() {
     let mut ui = rule_with(|| {
         SelectionContainer!({
@@ -111,7 +110,6 @@ fn a_handles_tap_shows_the_toolbar_again() {
 // selection's texts): a text changed to one of the same size keeps a stale toolbar shown, its
 // "Copy" copying nothing.
 #[test]
-#[ignore = "review: a selected text changed in place (same size) leaves the container's toolbar shown"]
 fn the_toolbar_hides_when_the_selected_text_changes() {
     let text = Box::leak(Box::new(compose_runtime::mutable_state_of("Text Text Text".to_string())))
         .handle();

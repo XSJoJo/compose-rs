@@ -288,17 +288,34 @@ impl ContainerHandles {
         context.tree.enter().container_menu_items(container)
     }
 
+    /// The same, read from its tree where no context is (a menu built in composition, as
+    /// Compose's builder reads the selection while its menu shows); `None` while the tree can't
+    /// be read. A read of the selection's changes too.
+    pub fn current_menu_items(&self) -> Option<ContainerMenuItems> {
+        self.toolbar_states().changes.get();
+        let Some(container) = self.container.get() else {
+            return Some(ContainerMenuItems::default());
+        };
+        let key = self.tree.get()?;
+        let mut items = None;
+        crate::node_context::peek_tree(key, &mut |tree| {
+            items = Some(tree.container_menu_items(container));
+        });
+        items
+    }
+
     /// Runs its menu's `action`, as Compose's container's items: copy copies, then lets go of the
     /// selection in touch mode (`onRelease`); select all selects every text, asks for the
     /// focus and the toolbar. Returns whether the menu closes: always for copy, for select all
     /// only while no toolbar is asked for in touch mode (`!showToolbar || !isInTouchMode`).
-    /// Nothing while its tree is busy.
+    /// Asked where the tree can be lent (an item's click); asked while it's busy, it would do
+    /// nothing and close the menu, which a debug build asserts against.
     pub fn run_menu_action(&self, action: ContainerMenuAction) -> bool {
         let (Some(key), Some(container)) = (self.tree.get(), self.container.get()) else {
             return true;
         };
         let mut close = true;
-        crate::node_context::with_free_tree(key, &mut |tree| {
+        let ran = crate::node_context::with_free_tree(key, &mut |tree| {
             let Some(found) = tree.container_handles(container) else { return };
             match action {
                 ContainerMenuAction::Copy => {
@@ -309,7 +326,11 @@ impl ContainerHandles {
                 }
                 ContainerMenuAction::SelectAll => {
                     tree.handle_selection(SelectionRequest::SelectAll { container });
-                    if !found.focused {
+                    // The focus asked for once something's selected, as Compose's `selectAll`.
+                    let selected = tree
+                        .text_selection
+                        .is_some_and(|selection| selection.container == container);
+                    if selected && !found.focused {
                         let direction = crate::focus_manager::FocusDirection::Enter;
                         tree.request_focus_at_or_below(container, direction);
                     }
@@ -317,6 +338,7 @@ impl ContainerHandles {
                 }
             }
         });
+        debug_assert!(ran, "compose-ui: a container's menu action asked while its tree was busy");
         close
     }
 
@@ -349,6 +371,12 @@ impl ContainerHandles {
 
     /// A handle was tapped (pressed and lifted before the touch slop), as Compose's `onUp`.
     pub fn handle_tapped(&self) {
+        self.handle_released();
+    }
+
+    /// A handle's press was cancelled before the touch slop: the toolbar shows again, as
+    /// Compose's `onUp` (a cancel ends the press with an up there), then `done()`.
+    pub fn handle_press_cancelled(&self) {
         self.handle_released();
     }
 
@@ -707,6 +735,23 @@ impl UiTree {
         self.refresh_handles(container);
     }
 
+    /// After a layout: a selection whose end's text changed or left is let go of, as Compose's
+    /// `onSelectableChangeCallback` (`onRelease`, then `selection = null`), so its handles,
+    /// toolbar and menu follow at once; it was dropped only when next asked for before.
+    pub(crate) fn release_selection_if_its_texts_changed(&mut self) {
+        let Some(selection) = self.text_selection else { return };
+        let holds = |tree: &mut UiTree, point: &Point| {
+            let version = tree.get_mut(point.node).and_then(|value| {
+                value.chain.get_mut(point.index)?.selectable().map(|text| text.version())
+            });
+            version == Some(point.version)
+        };
+        if holds(self, &selection.anchor) && holds(self, &selection.focus) {
+            return;
+        }
+        self.handle_selection(SelectionRequest::Clear { container: selection.container });
+    }
+
     /// Sets whether `container`'s toolbar should show, as Compose's `showSelectionToolbar` and
     /// `hideSelectionToolbar`; the handles' refresh then shows or hides it.
     fn set_show_toolbar(&mut self, container: NodeId, show: bool) {
@@ -786,8 +831,7 @@ impl UiTree {
                 self.bring_dragged_into_view(container, &entries, position, point);
             }
             SelectionRequest::SelectAll { container } => {
-                // As Compose's `selectAll`: `showSelectionToolbar`.
-                self.set_show_toolbar(container, true);
+                // Nothing to select: nothing done, as Compose's `selectAll` returns first.
                 let entries = self.selectables(container);
                 let (Some(first), Some(last)) = (entries.first(), entries.last()) else { return };
                 let length = self.selectable_text(last.node, last.index).len();
@@ -795,6 +839,8 @@ impl UiTree {
                 self.text_selection =
                     Some(TextSelection { container, anchor, focus, unit: Unit::Character });
                 self.show_selection(&entries);
+                // As Compose's `selectAll` then: `showSelectionToolbar`.
+                self.set_show_toolbar(container, true);
             }
             SelectionRequest::Copy { container } => {
                 if self.text_selection.is_some_and(|selection| selection.container == container)
@@ -1996,5 +2042,60 @@ impl TextSelection {
     /// The container it's in.
     pub(crate) fn container(&self) -> NodeId {
         self.container
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A container's menu action asked while its tree is busy would do nothing and close the
+    /// menu: a bug in what calls it, loud in a debug build.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "while its tree was busy")]
+    fn a_menu_action_asked_while_the_tree_is_busy_is_a_bug() {
+        let host = crate::host::UiHost::new(
+            IntSize::new(10, 10),
+            crate::unit::Density::new(1.0),
+            Box::new(crate::fixed_text::FixedTextMeasurer::new()),
+        );
+        host.set_content(|| {});
+        let handles = ContainerHandles::new();
+        host.with_tree(|tree| {
+            handles.tree.set(Some(tree.key));
+            handles.container.set(Some(tree.root_id()));
+            handles.run_menu_action(ContainerMenuAction::Copy);
+        });
+    }
+
+    /// Select all over a container with nothing to select does nothing, as Compose's
+    /// `selectAll()` returns before `showSelectionToolbar()` and its focus request: no toolbar
+    /// asked for, no focus taken.
+    #[test]
+    fn select_all_with_nothing_to_select_asks_for_nothing() {
+        let mut host = crate::host::UiHost::new(
+            IntSize::new(10, 10),
+            crate::unit::Density::new(1.0),
+            Box::new(crate::fixed_text::FixedTextMeasurer::new()),
+        );
+        let handles = Rc::new(ContainerHandles::new());
+        let given = handles.clone();
+        host.set_content(move || {
+            let modifier = Modifier.selection_container_with_handles(given.clone()).focusable();
+            crate::layout::Layout(
+                modifier,
+                crate::layout::measure_policy(|scope, _, _| scope.layout(10, 10)),
+                compose_runtime::callback(|| {}),
+            );
+        });
+        host.frame();
+        assert!(handles.container.get().is_some(), "attached");
+        assert!(handles.run_menu_action(ContainerMenuAction::SelectAll));
+        assert!(!handles.show_toolbar.get(), "no toolbar asked for");
+        let container = handles.container.get().expect("attached");
+        let focused = host
+            .with_tree(|tree| tree.focused().is_some_and(|it| tree.is_at_or_below(it, container)));
+        assert!(!focused, "no focus taken");
     }
 }

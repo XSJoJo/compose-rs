@@ -604,11 +604,11 @@ fn whenTouch_withLongPressInEndPaddingOfEmptyFinalLine_entersSelectionMode() {
             it.haptics += 1;
         });
         it.up();
-        // Compose's last check finds the toolbar shown with the finger still down, after no
-        // action since the check before, which found it hidden, over several texts too, where
-        // the selection holds no character (its `getContentRect` is null there); here it shows
+        // Compose's test ends at the lift, unchecked; each check before, with the finger down,
+        // finds the toolbar hidden, as here. This check is the port's own: the toolbar shows
         // once the long press lifts (`onStop`) over a selected character, as in the file's other
-        // tests (D2041).
+        // tests (D2041); over several texts the selection holds no character (Compose's
+        // `getContentRect` is null there), so none shows (D2043).
         it.toolbar_shown = !multi;
         it.check();
     }

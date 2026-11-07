@@ -264,6 +264,8 @@ pub(crate) trait HandleSource {
     fn drag_ended(&self, handle: Handle);
     /// It was tapped (a press lifted before the touch slop).
     fn tapped(&self, _handle: Handle) {}
+    /// Its press was cancelled before the touch slop (no tap, no drag).
+    fn press_cancelled(&self, _handle: Handle) {}
     /// It was pressed.
     fn pressed(&self, _handle: Handle) {}
     /// A mouse's (or a touchpad's) event reached it.
@@ -316,6 +318,11 @@ impl HandleSource for ContainerSource {
     /// Its toolbar shows again, as Compose's handle observer's `onUp` (D2041).
     fn tapped(&self, _handle: Handle) {
         self.0.handle_tapped();
+    }
+    /// Its toolbar shows again, as Compose's handle observer's `onUp`: a cancelled press ends
+    /// with an up there, and `done()` shows the toolbar.
+    fn press_cancelled(&self, _handle: Handle) {
+        self.0.handle_press_cancelled();
     }
     /// Its toolbar hides while it's held, as Compose's handle observer's `onDown` (D2041).
     fn pressed(&self, handle: Handle) {
@@ -810,6 +817,10 @@ impl PointerInputModifierNode for HandleNode {
     }
 
     fn on_cancel_pointer_input(&mut self) {
+        // A press cancelled before the slop is neither a tap nor a drag's end.
+        if self.down.is_some() && self.origin.is_none() {
+            self.source.press_cancelled(self.handle);
+        }
         self.end_drag();
     }
 }

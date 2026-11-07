@@ -303,8 +303,11 @@ impl UiTree {
                 value.layer_moved = false;
             }
         }
-        // A selection's handles follow its container and texts, as Compose's
-        // `updateHandleOffsets` when their positions change.
+        // A selection whose end's text changed goes; its handles follow its container and
+        // texts, as Compose's `updateHandleOffsets` when their positions change.
+        if laid_out && self.text_selection.is_some() {
+            self.release_selection_if_its_texts_changed();
+        }
         if let Some(selection) = self.text_selection.filter(|_| laid_out || !moved.is_empty()) {
             self.refresh_handles_if_moved(&selection, &moved);
         }

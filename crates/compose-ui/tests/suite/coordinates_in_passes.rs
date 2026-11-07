@@ -986,3 +986,52 @@ fn a_measure_reads_where_a_block_put_a_child() {
     assert_eq!(measures.get(), 2);
     assert_eq!(seen.get(), Offset::new(30.0, 0.0));
 }
+
+/// D2039: a popup's position provider asks where its anchor's node is as the popup is placed,
+/// the tree open to read there, as a text context menu's dropdown asks its data provider: shown
+/// over a node placed before, then that node moved (the popup's anchor with it), asked again.
+#[test]
+fn a_popup_s_position_provider_asks_where_its_anchor_is() {
+    struct AtAnchor(Kept, Rc<Cell<u32>>);
+    impl PopupPositionProvider for AtAnchor {
+        fn position(&self, _: Rect, _: IntSize, _: LayoutDirection, _: IntSize) -> IntOffset {
+            self.1.set(self.1.get() + 1);
+            let at = ask(&self.0);
+            IntOffset::new(at.x as i32, at.y as i32 + 5)
+        }
+    }
+    let (offset, shown) = (mutable_state_of(3), mutable_state_of(false));
+    let (anchor, content): (Kept, Kept) = (Rc::default(), Rc::default());
+    let asked = Rc::new(Cell::new(0));
+    let (o, s, a, c, n) =
+        (offset.handle(), shown.handle(), anchor.clone(), content.clone(), asked.clone());
+    let mut host = host(move || {
+        let (a, c, n) = (a.clone(), c.clone(), n.clone());
+        let placed = Modifier.offset_with(move |_| IntOffset::new(o.get(), 4)).then(keep(&a));
+        Stack!(modifier = placed.then(sized_px(10)), {
+            if !s.get() {
+                return;
+            }
+            let (a, c, n) = (a.clone(), c.clone(), n.clone());
+            let provider = remember(move || {
+                Rc::new(AtAnchor(a.clone(), n.clone())) as Rc<dyn PopupPositionProvider>
+            });
+            PopupWithPositionProvider(
+                provider,
+                None,
+                PopupProperties::default(),
+                callback(move || leaf(keep(&c))),
+            );
+        });
+    });
+    shown.set(true);
+    host.frame();
+    let in_window = |kept: &Kept| kept.get().expect("placed").position_in_window();
+    let asked_first = asked.get();
+    assert!(asked_first > 0);
+    assert_eq!(in_window(&content), Offset::new(3.0, 9.0));
+    offset.set(20);
+    host.frame();
+    assert!(asked.get() > asked_first);
+    assert_eq!(in_window(&content), Offset::new(20.0, 9.0));
+}
