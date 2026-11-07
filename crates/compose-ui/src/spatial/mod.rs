@@ -448,7 +448,7 @@ impl UiTree {
         let mut point = point + layer_origin(value, layer);
         // With layers placed with one, those too (D1909), but layer 0's: the outer layer is in it.
         if value.has_placed_layers() {
-            for (graphics, at, placed) in value.layers_out_with_placed(layer, before_entry) {
+            for (graphics, at, placed) in self.layers_out_with_placed(node, layer, before_entry) {
                 if placed && at == 0 {
                     continue;
                 }

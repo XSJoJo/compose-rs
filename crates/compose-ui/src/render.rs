@@ -68,7 +68,7 @@ pub(crate) struct InnerLayer {
     /// which it holds (D1909).
     pub(crate) entry: u16,
     /// The layer of its node a placement placed with it (`place_with_layer`), its block the
-    /// node's `placement_layers`'; `None` for a graphics layer of the chain.
+    /// node's in `UiTree::placement_layers`; `None` for a graphics layer of the chain.
     pub(crate) placement: Option<u16>,
     /// Its group's key (`INNER_LAYER_KEY` set).
     pub(crate) key: u64,
@@ -857,7 +857,7 @@ impl UiTree {
                 let value = tree.node(node);
                 let size: crate::unit::Size = value.layers[layer].measured.into();
                 let direction = value.layout_direction;
-                let Some(graphics) = value.placed_layer(layer) else { return };
+                let Some(graphics) = tree.placed_layer(node, layer) else { return };
                 let bounds = crate::unit::Rect::from_offset_size(origins[layer], size);
                 let open = tree.focus_requests.window.open_to_read(tree);
                 let properties = match ahead {
@@ -919,7 +919,7 @@ impl UiTree {
     #[cold]
     #[inline(never)]
     fn note_layer_transparency_placed(&mut self, node: NodeId, properties: &LayerProperties) {
-        let graphics = self.node(node).group_graphics_node();
+        let graphics = self.group_graphics_node(node);
         if graphics.is_some_and(|graphics| graphics.note_transparency(properties)) {
             self.semantics_changed = true;
         }
@@ -951,7 +951,7 @@ impl UiTree {
         retained.layer_ahead.as_ref()?;
         let (properties, density, direction) = retained.layer_ahead.take()?;
         let value = self.node(node);
-        let (_, layer) = value.group_graphics()?;
+        let (_, layer) = self.group_graphics(node)?;
         let bounds = crate::unit::Rect::from_offset_size(
             self.layer_origins(node)[layer],
             value.layers[layer].measured.into(),
@@ -998,7 +998,7 @@ impl UiTree {
         observer: Option<&compose_runtime::platform::ReadObserver>,
     ) -> Option<LayerProperties> {
         let value = self.node(node);
-        let (graphics, layer) = value.group_graphics()?;
+        let (graphics, layer) = self.group_graphics(node)?;
         let origin = self.layer_origins(node)[layer];
         let size = value.layers[layer].measured.into();
         let (density, direction) = (value.density, value.layout_direction);

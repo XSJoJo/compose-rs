@@ -208,10 +208,9 @@ pub struct LayoutNode {
     /// Its graphics layers that aren't its first drawing modifier, each a group of its own
     /// inside its drawing (render.rs), by chain index.
     pub(crate) inner_layers: Vec<crate::render::InnerLayer>,
-    /// The layers placed with a layer (`place_with_layer`), by layer: most nodes have none, and
-    /// pay a pointer for it (a `Vec` would be three words in every node).
-    #[allow(clippy::box_collection)]
-    pub(crate) placement_layers: Option<Box<Vec<crate::placement_layer::PlacementLayer>>>,
+    /// A layer of it was placed with a layer (`place_with_layer`): its layers are in
+    /// `UiTree::placement_layers` (a byte the node's padding had, where most nodes have none).
+    pub(crate) has_placement_layers: bool,
     /// The sum of its `z_index` modifiers: siblings are drawn, and hit, in its order.
     pub(crate) z_index: f32,
     /// It's ordered among its siblings by its children's largest `z_index` instead (D1452).
@@ -289,7 +288,7 @@ impl LayoutNode {
             place_order: 0,
             retained: None,
             inner_layers: Vec::new(),
-            placement_layers: None,
+            has_placement_layers: false,
             z_index: 0.0,
             z_index_of_children: false,
             deactivated: false,
@@ -535,6 +534,10 @@ pub struct UiTree {
     /// How many nodes have layers placed with one: while none has, the walks through a node's
     /// layers take the code they had before (D1909).
     pub(crate) placed_layer_nodes: u32,
+    /// The layers each of those nodes was placed with, by layer (`place_with_layer`): a table
+    /// apart, as most nodes have none (`LayoutNode::has_placement_layers` says which have).
+    pub(crate) placement_layers:
+        std::collections::HashMap<NodeId, Vec<crate::placement_layer::PlacementLayer>>,
     /// The tree's key in the thread's registry of trees, which its nodes' handles name it by.
     pub(crate) key: u32,
     /// A `SubcomposeLayout` composing its slots while it's measured: what they change of its
@@ -703,6 +706,7 @@ impl UiTree {
             next_inner_layer: 0,
             recording_placed: None,
             placed_layer_nodes: 0,
+            placement_layers: std::collections::HashMap::new(),
             key,
             lifecycle: Vec::new(),
             semantics_changed: false,
@@ -1974,9 +1978,13 @@ impl UiTree {
             for layer in &value.inner_layers {
                 self.inner_layer_owners.remove(&layer.key);
             }
-            if value.placement_layers.is_some() {
+            // Its layers placed with one, dropped with it (application code's captures).
+            let placed = if value.has_placement_layers {
                 self.placed_layer_nodes -= 1;
-            }
+                self.placement_layers.remove(&id)
+            } else {
+                None
+            };
             if !self.ruler_readers.is_empty() {
                 self.ruler_readers.retain(|(_, reader, _), _| *reader != id);
             }
@@ -1997,6 +2005,7 @@ impl UiTree {
                 entry.node.on_release(&mut context);
             }
             drop(value);
+            drop(placed);
             drop(open);
         }
     }

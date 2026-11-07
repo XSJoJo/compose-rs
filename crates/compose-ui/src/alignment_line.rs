@@ -675,7 +675,7 @@ impl UiTree {
         // and the layers placed with one around it (D1909).
         let end = value.entries_of_layer(layer).end;
         if value.has_placed_layers() {
-            for (graphics, at, _) in value.layers_out_with_placed(layer, end) {
+            for (graphics, at, _) in self.layers_out_with_placed(node, layer, end) {
                 let map =
                     graphics.layer_map(layer_origin(value, at), value.layers[at].measured.into());
                 point = map.map(point);

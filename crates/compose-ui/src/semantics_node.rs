@@ -1504,7 +1504,7 @@ impl UiTree {
         // bounds if it clips.
         let placed = |tree: &Self, index: usize, local: &mut Offset, in_clips: &mut bool| {
             let value = tree.node(node);
-            if let Some((graphics, at)) = value.placed_layer_at(index, usize::MAX) {
+            if let Some((graphics, at)) = tree.placed_layer_starting_at(node, index, usize::MAX) {
                 let origin = crate::layout_callbacks::layer_origin(value, at);
                 let size = value.layers[at].measured;
                 *local = graphics.layer_map(origin, size.into()).unmap(*local);

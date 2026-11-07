@@ -393,13 +393,13 @@ impl UiTree {
             return;
         }
         let group_layer = value.retained.as_ref().and_then(|retained| retained.layer_entry);
-        let (placed_count, length) = (value.placed_layers().len(), value.chain.len());
+        let (placed_count, length) = (self.placed_layers(node).len(), value.chain.len());
         let listeners = self.position_listeners;
         let mut moved = false;
         // The layers it was placed with (D1909): its group's is layer 0's.
         for slot in 0..placed_count {
             let value = self.node(node);
-            let placed = &value.placed_layers()[slot];
+            let placed = &self.placed_layers(node)[slot];
             let layer = placed.layer as usize;
             if !placed.graphics.told_a_node(listeners) || layer >= value.layers.len() {
                 continue;
@@ -411,14 +411,13 @@ impl UiTree {
                     continue;
                 };
                 let value = self.node(node);
-                moved |= value.placed_layers()[slot].graphics.transform_changed(&properties);
+                moved |= self.placed_layers(node)[slot].graphics.transform_changed(&properties);
                 let (density, direction) = (value.density, value.layout_direction);
                 let retained = self.node_mut(node).retained.as_mut().expect("its group");
                 retained.layer_ahead = Some((properties, density, direction));
             } else {
                 let properties = self.properties_of_placed_layer(node, slot);
-                moved |=
-                    self.node(node).placed_layers()[slot].graphics.transform_changed(&properties);
+                moved |= self.placed_layers(node)[slot].graphics.transform_changed(&properties);
             }
         }
         for index in 0..length {
@@ -577,9 +576,9 @@ impl UiTree {
     #[inline(never)]
     fn run_new_placed_layers(&mut self, node: NodeId) {
         let observer = self.observer.clone();
-        for slot in 0..self.node(node).placed_layers().len() {
+        for slot in 0..self.placed_layers(node).len() {
             let value = self.node(node);
-            let layer = value.placed_layers()[slot].layer;
+            let layer = self.placed_layers(node)[slot].layer;
             if layer as usize >= value.layers.len() {
                 continue;
             }
@@ -617,7 +616,7 @@ impl UiTree {
     /// from the node's first layer.
     pub(crate) fn properties_of_placed_layer(&self, node: NodeId, slot: usize) -> LayerProperties {
         let value = self.node(node);
-        let placed = &value.placed_layers()[slot];
+        let placed = &self.placed_layers(node)[slot];
         let layer = placed.layer as usize;
         let _open = self.focus_requests.window.open_to_read(self);
         placed.graphics.properties(
@@ -1099,7 +1098,7 @@ impl UiTree {
         let mut layer_of_entry = 0;
         let placed_clip = |tree: &Self, index: usize| {
             let value = tree.node(id);
-            let (graphics, layer) = value.placed_layer_at(index, usize::MAX)?;
+            let (graphics, layer) = tree.placed_layer_starting_at(id, index, usize::MAX)?;
             graphics
                 .clips()
                 .then(|| tree.rect_in_root(id, layer, Some(index), value.layers[layer].measured))
@@ -1181,8 +1180,8 @@ impl UiTree {
                 }
             }
             // The layers it was placed with, those around the entry (D1909).
-            for slot in 0..value.placed_layers().len() {
-                let layer = value.placed_layers()[slot].layer as usize;
+            for slot in 0..self.placed_layers(current).len() {
+                let layer = self.placed_layers(current)[slot].layer as usize;
                 if layer < value.layers.len() && value.start_of_layer(layer) <= end {
                     alpha *= self.properties_of_placed_layer(current, slot).alpha;
                 }
@@ -1315,7 +1314,7 @@ impl UiTree {
         // The layers placed with one that clip, around the entry (D1909).
         if value.has_placed_layers() {
             let end = before_entry.unwrap_or(value.chain.len());
-            for placed in value.placed_layers() {
+            for placed in self.placed_layers(id) {
                 let layer = placed.layer as usize;
                 if layer < value.layers.len()
                     && placed.graphics.clips()
@@ -1483,7 +1482,7 @@ impl UiTree {
             let end = before.unwrap_or(value.chain.len());
             // The innermost first; with layers placed with one, those too (D1909).
             if value.has_placed_layers() {
-                for (graphics, at, _) in value.layers_out_with_placed(layer, end) {
+                for (graphics, at, _) in self.layers_out_with_placed(current, layer, end) {
                     let map = graphics
                         .layer_map(layer_origin(value, at), value.layers[at].measured.into());
                     graphics.note_transform(&map, self.position_listeners);
@@ -1558,7 +1557,7 @@ impl UiTree {
         let mut point = point + layer_origin(value, layer);
         // With layers placed with one, those too (D1909).
         if value.has_placed_layers() {
-            for (graphics, at, _) in value.layers_out_with_placed(layer, value.chain.len()) {
+            for (graphics, at, _) in self.layers_out_with_placed(node, layer, value.chain.len()) {
                 let map =
                     graphics.layer_map(layer_origin(value, at), value.layers[at].measured.into());
                 graphics.note_transform(&map, self.position_listeners);

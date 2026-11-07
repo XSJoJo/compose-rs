@@ -281,6 +281,47 @@ fn a_graphics_layer_inside_a_placement_s_layer_is_a_group_inside_it() {
     assert!(group(&list, inner).end <= group(&list, outer).end);
 }
 
+/// A child already a group (its first drawing modifier a graphics layer) placed with a layer
+/// later: its parent draws it again though it was a group before, as the group now holds its
+/// graphics layer inside the placement's, and the same once it's placed without it again.
+#[test]
+fn a_child_already_a_group_placed_with_a_layer_later_nests_its_own_inside() {
+    let layered = mutable_state_of(false);
+    let handle = layered.handle();
+    let measures = Count::default();
+    let block = LayerBlock::new(|layer| layer.alpha = 0.5);
+    let policy = placing(&measures, || (0, 0), move || handle.get().then(|| block.clone()));
+    let mut host = host(move || {
+        Layout(
+            Modifier,
+            policy.clone(),
+            callback(|| {
+                Leaf(
+                    Modifier
+                        .graphics_layer(|layer| layer.scale_x = 3.0)
+                        .then(painted("child", Color::RED))
+                        .size(10.dp()),
+                )
+            }),
+        )
+    });
+    let list = host.display_list();
+    let [own] = keys(&list)[..] else { panic!("one group\n{}", list.dump()) };
+    assert_eq!(group(&list, own).layer.expect("a layer").scale, (3.0, 1.0));
+    layered.set(true);
+    host.frame();
+    let list = host.display_list();
+    let [outer, inner] = keys(&list)[..] else { panic!("two groups\n{}", list.dump()) };
+    assert_eq!(group(&list, outer).layer.expect("a layer").alpha, 0.5);
+    assert_eq!(group(&list, inner).layer.expect("a layer").scale, (3.0, 1.0));
+    layered.set(false);
+    host.frame();
+    let list = host.display_list();
+    let [own] = keys(&list)[..] else { panic!("one group\n{}", list.dump()) };
+    let own = group(&list, own).layer.expect("a layer");
+    assert_eq!((own.alpha, own.scale), (1.0, (3.0, 1.0)));
+}
+
 /// A `GraphicsLayer` placed with gives its properties; setting one changes the group's, drawing
 /// nothing again.
 #[test]

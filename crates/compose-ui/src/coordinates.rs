@@ -704,7 +704,7 @@ impl UiTree {
         whole: bool,
     ) -> Option<LayerMap> {
         let value = self.node(node);
-        let (graphics, layer) = value.placed_layer_at(index, inner)?;
+        let (graphics, layer) = self.placed_layer_starting_at(node, index, inner)?;
         if layer <= outer && !(whole && layer == 0) {
             return None;
         }
@@ -898,7 +898,7 @@ impl UiTree {
         // `whole`): those of the layers placed with one too (D1909).
         let mut clips_of = |node: NodeId, entries: std::ops::Range<usize>, whole: bool| {
             let value = self.node(node);
-            for placed in value.placed_layers() {
+            for placed in self.placed_layers(node) {
                 let layer = placed.layer as usize;
                 if layer >= value.layers.len() || !placed.graphics.clips() {
                     continue;
