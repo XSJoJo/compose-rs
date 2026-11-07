@@ -124,10 +124,12 @@ pub(crate) enum SelectionRequest {
         container: NodeId,
     },
     /// A finger's long press at `position` (in the root) selects the word of the text under it,
-    /// as Compose's `SelectionController`'s `longPressDragObserver`.
+    /// as Compose's `SelectionController`'s `longPressDragObserver`; a later press of a multi-tap
+    /// selects its word or more (`unit`) at once.
     LongPress {
         container: NodeId,
         position: Offset,
+        unit: Unit,
     },
     /// The container's focus or touch mode changed: its handles follow.
     RefreshHandles {
@@ -163,9 +165,10 @@ pub struct ContainerHandles {
     positions: OwnedState<[Option<Offset>; 2]>,
     /// The container's node, once its handles were first refreshed.
     container: Cell<Option<NodeId>>,
-    /// The handle dragged (the start's?) and where its drag began, in the container's
-    /// coordinates, as `handleDragObserver`'s `dragBeginPosition`.
-    drag: Cell<Option<(bool, Offset)>>,
+    /// The handle dragged (the start's?), where its drag began and where it was when the
+    /// selection last followed it, in the container's coordinates, as `handleDragObserver`'s
+    /// first and later `dragBeginPosition`.
+    drag: Cell<Option<(bool, Offset, Offset)>>,
     /// What a selection's change vibrates with in touch mode (`LocalHapticFeedback`'s where the
     /// container is composed), as `SelectionManager.hapticFeedBack`.
     haptics: std::cell::RefCell<Option<Rc<dyn crate::platform_services::HapticFeedback>>>,
@@ -219,7 +222,7 @@ impl ContainerHandles {
 
     /// The handle dragged, if any (`SelectionManager.draggingHandle`).
     pub fn dragging(&self) -> Option<bool> {
-        self.drag.get().map(|(start, _)| start)
+        self.drag.get().map(|(start, _, _)| start)
     }
 }
 
@@ -359,14 +362,12 @@ impl UiTree {
         }
         let row: Vec<&Entry> = entries.iter().filter(|entry| within(entry)).collect();
         if let Some(first) = row.first() {
-            return Some(match row.iter().rev().find(|entry| entry.origin.x <= position.x) {
-                // Past its end (or in a gap after it): its end.
-                Some(entry) => {
-                    let length = self.selectable_text(entry.node, entry.index).len();
-                    entry.point(length)
-                }
-                None => first.point(0),
-            });
+            // Past its end (or in a gap after it), or before the first: the offset there on the
+            // line beside it, as Compose's `getOffsetForPosition` (that line's end, or start).
+            let found = row.iter().rev().find(|entry| entry.origin.x <= position.x);
+            let entry = **found.unwrap_or(first);
+            let offset = self.offset_in(&entry, position);
+            return Some(entry.point(offset));
         }
         if let Some(entry) = entries.iter().find(|entry| position.y < entry.origin.y) {
             return Some(entry.point(0));
@@ -525,7 +526,7 @@ impl UiTree {
                     self.show_selection(&entries);
                 }
             }
-            SelectionRequest::LongPress { container, position } => {
+            SelectionRequest::LongPress { container, position, unit } => {
                 // On a text only: Compose's long press is each text's (`SelectionController`).
                 let entries = self.selectables(container);
                 let on_text = entries.iter().any(|entry| {
@@ -536,7 +537,6 @@ impl UiTree {
                         && local.y < entry.size.height as f32
                 });
                 if on_text {
-                    let unit = Unit::Word;
                     self.apply_selection_request(SelectionRequest::Start {
                         container,
                         position,
@@ -553,8 +553,9 @@ impl UiTree {
 
     /// A handle of `container` dragged by `moved` since its drag began (`None`: it ended), as
     /// Compose's `handleDragObserver`: the drag begins where the handle points, a pixel up
-    /// (`getAdjustedCoordinates`), and its end goes to the point under the finger, by characters,
-    /// never collapsing the selection.
+    /// (`getAdjustedCoordinates`), and its end follows the point under the finger by
+    /// `CharacterWithWordAccelerate` across the texts (`accelerated`), never collapsing the
+    /// selection.
     fn drag_handle(&mut self, container: NodeId, start: bool, moved: Option<Offset>) {
         let Some(found) = self.container_handles(container) else { return };
         let handles = found.handles;
@@ -567,8 +568,8 @@ impl UiTree {
         else {
             return;
         };
-        let begin = match handles.drag.get() {
-            Some((dragged, begin)) if dragged == start => begin,
+        let (begin, previous) = match handles.drag.get() {
+            Some((dragged, begin, previous)) if dragged == start => (begin, previous),
             _ => {
                 let pointed =
                     compose_runtime::snapshots::Snapshot::without_read_observation(|| {
@@ -576,24 +577,139 @@ impl UiTree {
                     });
                 // A hidden handle isn't dragged, as Compose's `onDown`.
                 let Some(pointed) = pointed else { return };
-                Offset::new(pointed.x, pointed.y - 1.0)
+                let begin = Offset::new(pointed.x, pointed.y - 1.0);
+                (begin, begin)
             }
         };
-        handles.drag.set(Some((start, begin)));
         let origin = self.layer_origin(container, found.layer);
         let entries = self.selectables(container);
-        let Some(point) = self.point_at(&entries, origin + begin + moved) else { return };
-        if start {
-            if point != selection.focus {
-                selection.anchor = point;
+        let target = origin + begin + moved;
+        let Some(point) = self.point_at(&entries, target) else { return };
+        // The selection follows the finger when its place in the texts changed, as Compose's
+        // `shouldRecomputeSelection`; the place it was then is the next move's previous one.
+        if self.point_at(&entries, origin + previous) == Some(point) {
+            handles.drag.set(Some((start, begin, previous)));
+            return;
+        }
+        handles.drag.set(Some((start, begin, begin + moved)));
+        let (end, other) = if start {
+            (selection.anchor, selection.focus)
+        } else {
+            (selection.focus, selection.anchor)
+        };
+        let moved_to =
+            self.accelerated(&entries, start, point, target, origin + previous, end, other);
+        // Never collapsed by a handle, as Compose's `ensureAtLeastOneChar` keeps a character.
+        if moved_to != other {
+            if start {
+                selection.anchor = moved_to;
+            } else {
+                selection.focus = moved_to;
             }
-        } else if point != selection.anchor {
-            selection.focus = point;
         }
         selection.initial = (selection.anchor, selection.focus);
         selection.unit = Unit::Character;
         self.text_selection = Some(selection);
         self.show_selection(&entries);
+    }
+
+    /// Where a handle's drag moves its end (`end`, the other being `other`) when the finger is at
+    /// `target` (in the root), over `point`, having been at `previous`, as Compose's
+    /// `SelectionAdjustment.CharacterWithWordAccelerate`: between texts, the point; into another
+    /// text or onto another line, the word under it (`snapped`); shrinking, the point; growing
+    /// from a word's boundary, by words, and from inside a word, by characters.
+    #[allow(clippy::too_many_arguments)]
+    fn accelerated(
+        &mut self,
+        entries: &[Entry],
+        start: bool,
+        point: Point,
+        target: Offset,
+        previous: Offset,
+        end: Point,
+        other: Point,
+    ) -> Point {
+        let Some(entry) = entries.iter().find(|entry| entry.holds(&point)).copied() else {
+            return point;
+        };
+        let inside = |entry: &Entry| {
+            let local = target - entry.origin;
+            local.x >= 0.0
+                && local.y >= 0.0
+                && local.x < entry.size.width as f32
+                && local.y < entry.size.height as f32
+        };
+        // Between texts (none under the finger): the point, as `updateSelectionBoundary`.
+        if !entries.iter().any(inside) {
+            return point;
+        }
+        let order = |at: &Point| Self::order_of(entries, at);
+        let crossed =
+            if start { order(&point) > order(&other) } else { order(&other) > order(&point) };
+        // The other end in this text, or this text's edge toward it (`rawEndHandleOffset`).
+        let other_raw = if entry.holds(&other) {
+            other.offset
+        } else if order(&other) > order(&point) {
+            self.selectable_text(point.node, point.index).len()
+        } else {
+            0
+        };
+        let line = |tree: &mut UiTree, offset: usize| tree.line_of(&entry, offset);
+        let snapped = |tree: &mut UiTree| {
+            // The word under the finger, kept to its line (a word broken across lines).
+            let word = tree.word(point);
+            let current = line(tree, point.offset);
+            let word_start = if line(tree, word.start).start == current.start {
+                word.start
+            } else {
+                current.start
+            };
+            let word_end =
+                if line(tree, word.end).start == current.start { word.end } else { current.end };
+            let offset = if word_start == other_raw {
+                word_end
+            } else if word_end == other_raw {
+                word_start
+            } else if start != crossed {
+                if point.offset <= word_end { word_start } else { word_end }
+            } else if point.offset >= word_start {
+                word_end
+            } else {
+                word_start
+            };
+            Point { offset, ..point }
+        };
+        if !entry.holds(&end) {
+            // Into another text: by words.
+            return snapped(self);
+        }
+        let previous_raw = self.offset_in(&entry, previous);
+        if point.offset == previous_raw {
+            return end;
+        }
+        if line(self, previous_raw).start != line(self, point.offset).start {
+            return snapped(self);
+        }
+        let expanding = if start != crossed {
+            point.offset < previous_raw
+        } else {
+            point.offset > previous_raw
+        };
+        if !expanding {
+            return point;
+        }
+        let word = self.word(end);
+        if end.offset == word.start || end.offset == word.end { snapped(self) } else { point }
+    }
+
+    /// The line around `offset` in `entry`'s text, as `getLineForOffset` and its bounds.
+    fn line_of(&mut self, entry: &Entry, offset: usize) -> Range<usize> {
+        self.node_and_measurer(entry.node)
+            .and_then(|(value, (measurer, _))| {
+                let text = value.chain[entry.index].selectable()?;
+                Some(text.range_of_line_containing(offset, measurer))
+            })
+            .unwrap_or(offset..offset)
     }
 
     /// `container`'s node, if it has handles: they, its touch mode and focus, its chain index
@@ -921,6 +1037,9 @@ pub(crate) struct SelectionContainerNode {
     touch: Option<bool>,
     /// A finger's press: where it went down, its long-press timer, whether it became one.
     finger: Option<FingerPress>,
+    /// The last finger's down, when (the event's time) and where, and how many came in a row,
+    /// as Compose's `ClicksCounter`.
+    last_down: Option<(u64, Offset, u32)>,
 }
 
 struct FingerPress {
@@ -929,7 +1048,14 @@ struct FingerPress {
     pointer: crate::input::PointerId,
     at: Offset,
     job: Option<compose_runtime::Job>,
+    /// A long press, or a later press of a multi-tap: its moves drag the selection.
     long: bool,
+    /// A later press of a multi-tap whose finger hasn't passed the touch slop yet, nor been held
+    /// past the long-press timeout (Compose's `touchSelectionSubsequentPress`).
+    slop_pending: bool,
+    /// What the drag leaves out of the finger's place: the touch slop a later press passed
+    /// (Compose's over-slop).
+    slop: Offset,
 }
 
 impl SelectionContainerNode {
@@ -950,6 +1076,7 @@ impl ModifierNodeElement for SelectionContainerElement {
             handles: self.0.clone(),
             touch: None,
             finger: None,
+            last_down: None,
         }
     }
     fn update(&self, node: &mut SelectionContainerNode) {
@@ -974,6 +1101,7 @@ impl ModifierNode for SelectionContainerNode {
         self.focused = false;
         self.last_press = None;
         self.touch = None;
+        self.last_down = None;
         self.end_finger();
     }
     fn on_detach(&mut self, _context: &mut crate::node_context::NodeContext<'_>) {
@@ -1001,12 +1129,16 @@ impl PointerInputModifierNode for SelectionContainerNode {
         if pass == PointerEventPass::Initial {
             // A long press's drag is the selection's before what's inside sees it, as Compose's
             // texts take it ahead of the scrollables around them (a lazy column's items).
-            let long = self
-                .finger
-                .as_ref()
-                .is_some_and(|finger| finger.long && finger.pointer == event.pointer);
-            if long && event.kind == PointerEventType::Move && event.pressed && !event.consumed {
+            let dragging = self.finger.as_ref().filter(|finger| {
+                finger.long && !finger.slop_pending && finger.pointer == event.pointer
+            });
+            if let Some(finger) = dragging
+                && event.kind == PointerEventType::Move
+                && event.pressed
+                && !event.consumed
+            {
                 let Some(position) = context.pointer_position() else { return };
+                let position = position - finger.slop;
                 event.consume();
                 let container = context.node;
                 context.requests.selection.push(SelectionRequest::Extend { container, position });
@@ -1101,9 +1233,36 @@ impl SelectionContainerNode {
                     context.requests.selection.push(SelectionRequest::Clear { container });
                     return;
                 }
+                // As Compose's `ClicksCounter`: a down soon after the last and near it is the
+                // next of a multi-tap.
+                let configuration = context.view_configuration();
+                let clicks = match self.last_down {
+                    Some((time, at, clicks))
+                        if event.time_nanos.saturating_sub(time)
+                            < configuration.double_tap_timeout_millis * 1_000_000
+                            && (position - at).x.hypot((position - at).y)
+                                < configuration.touch_slop =>
+                    {
+                        clicks + 1
+                    }
+                    _ => 1,
+                };
+                self.last_down = Some((event.time_nanos, position, clicks));
+                let later = clicks > 1;
+                if later {
+                    // Compose's `touchSelectionSubsequentPress`: its word (or its text, for a
+                    // third tap) at once, on a text; dragged once past the slop or held.
+                    let unit = if clicks == 2 { Unit::Word } else { Unit::Text };
+                    context.request_focus();
+                    context.requests.selection.push(SelectionRequest::LongPress {
+                        container,
+                        position,
+                        unit,
+                    });
+                }
                 let handle = context.handle();
                 let job = handle.coroutine_scope().map(|scope| {
-                    let timeout = context.view_configuration().long_press_timeout_millis;
+                    let timeout = configuration.long_press_timeout_millis;
                     scope.launch(async move {
                         compose_runtime::delay(std::time::Duration::from_millis(timeout)).await;
                         let key = handle.tree_key();
@@ -1113,12 +1272,37 @@ impl SelectionContainerNode {
                     })
                 });
                 let pointer = event.pointer;
-                self.finger = Some(FingerPress { pointer, at: position, job, long: false });
+                self.finger = Some(FingerPress {
+                    pointer,
+                    at: position,
+                    job,
+                    long: later,
+                    slop_pending: later,
+                    slop: Offset::ZERO,
+                });
             }
             PointerEventType::Move if event.pressed => {
                 let Some(finger) = &mut self.finger else { return };
-                // A long press's moves were taken in the initial pass.
-                if !finger.long {
+                if finger.slop_pending {
+                    // A later press's drag starts past the slop, the slop left out of it.
+                    let moved = position - finger.at;
+                    let distance = moved.x.hypot(moved.y);
+                    let slop = context.view_configuration().touch_slop;
+                    if !event.consumed && distance > slop {
+                        finger.slop_pending = false;
+                        finger.slop = moved * (slop / distance);
+                        if let Some(job) = finger.job.take() {
+                            job.cancel();
+                        }
+                        event.consume();
+                        let position = position - finger.slop;
+                        context
+                            .requests
+                            .selection
+                            .push(SelectionRequest::Extend { container, position });
+                    }
+                } else if !finger.long {
+                    // A long press's moves were taken in the initial pass.
                     let moved = position - finger.at;
                     let slop = context.view_configuration().touch_slop;
                     if event.consumed || moved.x.hypot(moved.y) > slop {
@@ -1151,16 +1335,23 @@ impl UiTree {
         let mut at = None;
         for entry in value.chain.iter_mut() {
             if let Some(node) = entry.node.downcast_mut::<SelectionContainerNode>() {
-                if let Some(finger) = node.finger.as_mut().filter(|finger| !finger.long) {
-                    finger.long = true;
+                if let Some(finger) = node.finger.as_mut() {
                     finger.job = None;
-                    at = Some(finger.at);
+                    if finger.long {
+                        // A later press held past the timeout drags without the slop, as
+                        // Compose's `DownResolution.Timeout`.
+                        finger.slop_pending = false;
+                    } else {
+                        finger.long = true;
+                        at = Some(finger.at);
+                    }
                 }
                 break;
             }
         }
         if let Some(position) = at {
-            self.handle_selection(SelectionRequest::LongPress { container, position });
+            let unit = Unit::Word;
+            self.handle_selection(SelectionRequest::LongPress { container, position, unit });
             // The container takes the focus as its selection starts (`startSelection`).
             if self.text_selection.is_some_and(|selection| selection.container == container) {
                 let direction = crate::focus_manager::FocusDirection::Enter;

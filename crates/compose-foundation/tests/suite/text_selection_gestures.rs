@@ -127,7 +127,7 @@ pub(crate) struct Gestures {
 }
 
 /// As Compose's `setTextFieldTestContent` around `Content()`: the container inset by 32 dp in a
-/// window of 400 px square, wrapping its text.
+/// window of 400 by 800 px (a phone's shape), wrapping its text.
 pub(crate) fn gestures(rtl: bool) -> Gestures {
     // `SingleTextSelectionGesturesTest`'s, or `SingleTextSelectionGesturesRtlTest`'s: words of
     // five letters, laid out right to left.
@@ -141,7 +141,7 @@ pub(crate) fn gestures(rtl: bool) -> Gestures {
     let measurer = FixedTextMeasurer::with_metrics(FixedFontMetrics::SAMPLE_FONT);
     HAPTICS.with(|count| count.set(0));
     let mut ui = compose_test_with(
-        IntSize::new(400, 400),
+        IntSize::new(400, 800),
         Density::new(1.0),
         Box::new(measurer),
         move || {
@@ -287,6 +287,19 @@ impl Gestures {
         let rect = self.layout().get_bounding_box(byte);
         let side = Offset::new(if self.rtl { rect.right } else { rect.left }, rect.center().y);
         self.nudge(side, Some(true), None)
+    }
+
+    /// Character `offset`'s box in the text (the container's coordinates).
+    pub fn character_box(&mut self, offset: usize) -> Rect {
+        let byte = self.byte(offset);
+        self.layout().get_bounding_box(byte)
+    }
+
+    /// Character `offset`'s box at its left side's middle, as the handle tests'
+    /// `characterPosition`.
+    pub fn character_center_left(&mut self, offset: usize) -> Offset {
+        let rect = self.character_box(offset);
+        Offset::new(rect.left, rect.center().y)
     }
 
     pub fn touch(&mut self, block: impl FnOnce(&mut TouchInjectionScope<'_>)) {
@@ -1083,4 +1096,271 @@ fn whenMouse_thenSingleClickAndDragUpToEndPadding_selectsCharacters() {
 #[test]
 fn whenMouse_thenDoubleClickAndDragUpToEndPadding_selectsWords() {
     clicks_then_drag_up_to_end_padding(2, (17, 0));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withDoubleClick_selectsWord
+#[test]
+fn whenTouch_withDoubleClick_selectsWord() {
+    for rtl in [false, true] {
+        let mut it = gestures(rtl);
+        let at = it.character(13);
+        it.touch(|touch| {
+            touch.click_at(at);
+            touch.click_at(at);
+        });
+        it.expect(|it| {
+            it.selection = Some((12, 17));
+            it.handles_shown = true;
+        });
+    }
+}
+
+/// As the tests' `touchTapsThenDragTest` of two taps: the second held past the long-press
+/// timeout, then dragged.
+fn double_tap_then_drag(end: usize, last: (usize, usize)) {
+    for rtl in [false, true] {
+        let mut it = gestures(rtl);
+        let at = it.character(13);
+        it.touch(|touch| {
+            touch.down(at);
+            touch.advance_event_time(touch.event_period_millis());
+            touch.up();
+            touch.advance_event_time(touch.event_period_millis());
+            touch.down(at);
+        });
+        it.ui.advance_time_by(std::time::Duration::from_millis(1000));
+        it.expect(|it| {
+            it.selection = Some((12, 17));
+            it.handles_shown = true;
+        });
+        let to = it.character(end);
+        it.touch_drag_to(to);
+        it.expect(|it| it.selection = Some(last));
+        it.up();
+        it.expect(|it| it.handles_shown = true);
+    }
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withDoubleClickThenDragLeft_selectsWords
+#[test]
+fn whenTouch_withDoubleClickThenDragLeft_selectsWords() {
+    double_tap_then_drag(8, (17, 6));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withDoubleClickThenDragUp_selectsWords
+#[test]
+fn whenTouch_withDoubleClickThenDragUp_selectsWords() {
+    double_tap_then_drag(2, (17, 0));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withDoubleClickThenDragRight_selectsWords
+#[test]
+fn whenTouch_withDoubleClickThenDragRight_selectsWords() {
+    double_tap_then_drag(20, (12, 23));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withDoubleClickThenDragDown_selectsWords
+#[test]
+fn whenTouch_withDoubleClickThenDragDown_selectsWords() {
+    double_tap_then_drag(26, (12, 29));
+}
+
+// Not one of Compose's: a second tap dragged at once, before the long-press timeout, drags its
+// word once past the touch slop (Compose's `touchSelectionSubsequentPress`, `DownResolution.Drag`).
+#[test]
+fn a_second_tap_dragged_at_once_selects_by_words() {
+    let mut it = gestures(false);
+    let at = it.character(13);
+    it.touch(|touch| {
+        touch.click_at(at);
+        touch.down(at);
+    });
+    it.expect(|it| {
+        it.selection = Some((12, 17));
+        it.handles_shown = true;
+    });
+    let to = it.character(20);
+    it.touch_drag_to(to);
+    it.expect(|it| it.selection = Some((12, 23)));
+    it.up();
+    it.check();
+}
+
+/// A handle pressed, as Compose's `withHandlePressed`: down at its center; the gesture's place is
+/// where the handle points, in the container's coordinates (`HandlePressedScope`).
+fn press_handle(it: &mut Gestures, handle: Handle) -> Offset {
+    it.ui.on_node(is_selection_handle(Some(handle))).perform_touch_input(|touch| {
+        let center = touch.center();
+        touch.down(center);
+    });
+    it.ui.wait_for_idle();
+    handle_info(&mut it.ui, handle).position
+}
+
+/// The pressed handle's finger moved so the gesture goes to `to`, as `moveHandleTo`: the
+/// injection keeps the finger's place in the root, so the popup's own move needs no correction.
+fn move_handle_to(it: &mut Gestures, handle: Handle, gesture: &mut Offset, to: Offset) {
+    let delta = to - *gesture;
+    it.ui.on_node(is_selection_handle(Some(handle))).perform_touch_input(|touch| {
+        touch.move_by(delta);
+    });
+    it.ui.wait_for_idle();
+    *gesture = to;
+}
+
+/// As `moveHandleToCharacter`: the end handle to the bottom left of the character nudged to its
+/// start, the start handle nudged to its end.
+fn move_handle_to_character(
+    it: &mut Gestures,
+    handle: Handle,
+    gesture: &mut Offset,
+    offset: usize,
+) {
+    let corner = it.character_box(offset).bottom_left();
+    let to = it.nudge(corner, Some(handle == Handle::SelectionStart), None);
+    move_handle_to(it, handle, gesture, to);
+}
+
+fn release_handle(it: &mut Gestures, handle: Handle) {
+    it.ui.on_node(is_selection_handle(Some(handle))).perform_touch_input(|touch| touch.up());
+    it.ui.wait_for_idle();
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionHandlesGesturesTest.kt, whenTouchHandle_verifyOneCharStaysSelected_withinLine
+#[test]
+fn whenTouchHandle_verifyOneCharStaysSelected_withinLine() {
+    let mut it = gestures(false);
+    let at = it.character_center_left(14);
+    it.long_click(at);
+    it.expect(|it| {
+        it.selection = Some((12, 17));
+        it.handles_shown = true;
+        it.haptics += 1;
+    });
+    let handle = Handle::SelectionEnd;
+    let mut gesture = press_handle(&mut it, handle);
+    move_handle_to_character(&mut it, handle, &mut gesture, 13);
+    it.expect(|it| {
+        it.selection = Some((12, 13));
+        it.haptics += 1;
+    });
+    move_handle_to_character(&mut it, handle, &mut gesture, 12);
+    // Never collapsed: the character before stays selected.
+    it.check();
+    move_handle_to_character(&mut it, handle, &mut gesture, 11);
+    it.expect(|it| {
+        it.selection = Some((12, 11));
+        it.haptics += 1;
+    });
+    release_handle(&mut it, handle);
+    it.check();
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionHandlesGesturesTest.kt, whenTouchHandle_thenDragLeftOutOfBounds_keepsFirstCharSelected
+#[test]
+fn whenTouchHandle_thenDragLeftOutOfBounds_keepsFirstCharSelected() {
+    let mut it = gestures(false);
+    let at = it.character_center_left(9);
+    it.long_click(at);
+    it.expect(|it| {
+        it.selection = Some((6, 11));
+        it.handles_shown = true;
+        it.haptics += 1;
+    });
+    let handle = Handle::SelectionEnd;
+    let mut gesture = press_handle(&mut it, handle);
+    for offset in [8, 7, 6] {
+        move_handle_to_character(&mut it, handle, &mut gesture, offset);
+    }
+    it.expect(|it| {
+        it.selection = Some((6, 7));
+        it.haptics += 1;
+    });
+    // Just outside the left edge: no change, not onto the line above.
+    let y = handle_info(&mut it.ui, handle).position.y;
+    move_handle_to(&mut it, handle, &mut gesture, Offset::new(-1.0, y));
+    it.check();
+    release_handle(&mut it, handle);
+    it.check();
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionHandlesGesturesTest.kt, whenTouchHandle_withWordSpanningMultipleLines_selectionCanShrinkWithinLine
+#[test]
+fn whenTouchHandle_withWordSpanningMultipleLines_selectionCanShrinkWithinLine() {
+    let mut it = gestures(false);
+    let content = "hello".repeat(100);
+    it.set_content(&content);
+    let at = it.character_center_left(content.len() - 1);
+    it.long_click(at);
+    it.expect(|it| {
+        it.selection = Some((0, content.len()));
+        it.handles_shown = true;
+        it.haptics += 1;
+    });
+    let handle = Handle::SelectionEnd;
+    let mut gesture = press_handle(&mut it, handle);
+    move_handle_to_character(&mut it, handle, &mut gesture, 10);
+    move_handle_to_character(&mut it, handle, &mut gesture, 5);
+    it.expect(|it| {
+        it.selection = Some((0, 5));
+        it.haptics += 1;
+    });
+    release_handle(&mut it, handle);
+    it.check();
+}
+
+// Not one of Compose's: a second tap held past the long-press timeout drags without passing the
+// touch slop, as Compose's `DownResolution.Timeout`; before it, a move within the slop does
+// nothing.
+#[test]
+fn a_second_tap_held_past_the_timeout_drags_within_the_slop() {
+    let mut it = gestures(false);
+    it.ui.host().set_view_configuration(Some(compose_ui::ViewConfiguration {
+        touch_slop: 200.0,
+        minimum_touch_target_size: compose_ui::DpSize::ZERO,
+        ..compose_ui::ViewConfiguration::default()
+    }));
+    let (at, to) = (it.character(13), it.character(20));
+    it.touch(|touch| {
+        touch.click_at(at);
+        touch.down(at);
+        touch.move_to((at + to) * 0.5);
+    });
+    it.expect(|it| {
+        it.selection = Some((12, 17));
+        it.handles_shown = true;
+    });
+    it.ui.advance_time_by(std::time::Duration::from_millis(1000));
+    it.touch(|touch| touch.move_to(to));
+    it.expect(|it| it.selection = Some((12, 23)));
+    it.up();
+    it.check();
+}
+
+// Not one of Compose's (its container tests grow by words only into other texts): a handle
+// dragged on its line from a word's boundary into the next word grows by the word, then shrinks
+// by characters, as `CharacterWithWordAccelerate`.
+#[test]
+fn a_handle_grows_by_words_from_a_boundary_and_shrinks_by_characters() {
+    let mut it = gestures(false);
+    let at = it.character_center_left(14);
+    it.long_click(at);
+    it.expect(|it| {
+        it.selection = Some((12, 17));
+        it.handles_shown = true;
+        it.haptics += 1;
+    });
+    let handle = Handle::SelectionEnd;
+    let mut gesture = press_handle(&mut it, handle);
+    move_handle_to_character(&mut it, handle, &mut gesture, 20);
+    it.expect(|it| {
+        it.selection = Some((12, 23));
+        it.haptics += 1;
+    });
+    move_handle_to_character(&mut it, handle, &mut gesture, 19);
+    it.expect(|it| {
+        it.selection = Some((12, 19));
+        it.haptics += 1;
+    });
+    release_handle(&mut it, handle);
 }
