@@ -58,6 +58,7 @@ mod review_d_panic_poisoned;
 #[path = "../review_d_support/mod.rs"]
 mod review_d_support;
 mod review_groups;
+mod review_moved_node_attach;
 mod review_pwl;
 mod review_retained;
 mod rulers;
