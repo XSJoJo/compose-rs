@@ -1057,8 +1057,8 @@ impl<T: 'static> StateCell<T> {
         equivalent: fn(&T, &T) -> bool,
         merge: MergeFn<T>,
         created_at: &'static Location<'static>,
+        (id, born, version): (SnapshotId, SnapshotId, u32),
     ) -> Self {
-        let (id, born, version) = crate::snapshots::birth();
         StateCell {
             records: RefCell::new(Records::new(ValueRecord { value }, id, born, version)),
             borrowed_at: Cell::new(None),
@@ -1403,10 +1403,31 @@ fn new_state<T: 'static>(
     merge: MergeFn<T>,
     created_at: &'static Location<'static>,
 ) -> OwnedState<T> {
+    new_state_born(value, equivalent, merge, created_at, crate::snapshots::birth())
+}
+
+fn new_state_born<T: 'static>(
+    value: T,
+    equivalent: fn(&T, &T) -> bool,
+    merge: MergeFn<T>,
+    created_at: &'static Location<'static>,
+    birth: (SnapshotId, SnapshotId, u32),
+) -> OwnedState<T> {
     let cell: Rc<dyn StateObjectCell> =
-        Rc::new(StateCell::new(value, equivalent, merge, created_at));
+        Rc::new(StateCell::new(value, equivalent, merge, created_at, birth));
     let id = alloc_cell(CellValue::State(cell), created_at);
     OwnedState { handle: MutableState { id, _marker: PhantomData } }
+}
+
+/// A new state cell as [`mutable_state_of`], counted as initialized wherever it's made: its
+/// first write is a change its readers hear, in the global snapshot too, as Compose's state made
+/// outside the global snapshot, whose record is `PreexistingSnapshotId`'s. Made without taking
+/// a snapshot, which would send the global snapshot's changes (`advanceGlobalSnapshot`): for a
+/// platform object's version, made where it's read (a graphics layer's drawing, D1339).
+#[track_caller]
+pub fn preexisting_state_of<T: PartialEq + 'static>(value: T) -> OwnedState<T> {
+    let birth = crate::snapshots::preexisting_birth();
+    new_state_born(value, <T as PartialEq>::eq, no_merge, Location::caller(), birth)
 }
 
 fn alloc_cell(cell: CellValue, created_at: &'static Location<'static>) -> StateId {

@@ -150,3 +150,74 @@ fn a_state_a_child_made_written_after_it_by_its_composing_parent_recomposes_the_
         child.dispose();
     }
 }
+
+// Compose: compose/runtime/runtime/src/commonMain/kotlin/androidx/compose/runtime/Recomposer.kt, composeInitial (`composerWasComposing` is the composition's own `isComposing`)
+/// A composition whose content is set while another composes (its parent) counts what that pass
+/// made so far as initialized, as Compose's (its pass's snapshot, nested in the parent's, advances
+/// the parent's as it's taken, and `notifyObjectsInitialized` at its end advances it again): a
+/// state the parent made before it, written by the parent after it in the same pass, is a change
+/// its apply tells of (D1339).
+#[test]
+fn a_composition_set_while_its_parent_composes_initializes_what_the_parent_made() {
+    let made: Rc<RefCell<Option<MutableState<i32>>>> = Rc::default();
+    let children: Rc<RefCell<Vec<Composition>>> = Rc::default();
+    let (kept, out) = (children.clone(), made.clone());
+    let step = mutable_state_of(0);
+    let s = step.handle();
+    let parent = Composition::new(NodeTree::<()>::new());
+    parent.set_content(move || {
+        if s.get() == 0 {
+            return;
+        }
+        let state = remember(|| mutable_state_of(0));
+        *out.borrow_mut() = Some(state);
+        if kept.borrow().is_empty() {
+            let context = remember_composition_context();
+            let child = Composition::with_parent(NodeTree::<()>::new(), context);
+            child.set_content(|| {});
+            kept.borrow_mut().push(child);
+            state.set(1);
+        }
+    });
+    Snapshot::notify_objects_initialized();
+    let changed: Rc<RefCell<Vec<compose_runtime::snapshots::StateObjectId>>> = Rc::default();
+    let heard = changed.clone();
+    let _observer = Snapshot::register_apply_observer(move |states, _| {
+        heard.borrow_mut().extend(states.iter());
+    });
+    step.set(1);
+    parent.recompose();
+    Snapshot::send_apply_notifications();
+    let state = made.borrow().expect("made");
+    assert_eq!(state.get(), 1);
+    assert!(
+        changed.borrow().contains(&state.state_object_id()),
+        "the parent's write after the child's content was set is a change"
+    );
+    for child in children.borrow().iter() {
+        child.dispose();
+    }
+}
+
+/// A composition setting its own content while it composes panics before its end, as Compose's
+/// composer throws on a reentrant composition: Compose's `composeInitial` skips
+/// `notifyObjectsInitialized` there alone (`composerWasComposing`), which compose-rs needn't
+/// (D1339).
+#[test]
+#[should_panic(expected = "already running")]
+fn a_composition_setting_its_content_while_it_composes_panics() {
+    let me: Rc<RefCell<Option<Rc<Composition>>>> = Rc::default();
+    let step = mutable_state_of(0);
+    let s = step.handle();
+    let composition = Rc::new(Composition::new(NodeTree::<()>::new()));
+    *me.borrow_mut() = Some(composition.clone());
+    let inner = me.clone();
+    composition.set_content(move || {
+        if s.get() == 1 {
+            let me = inner.borrow().clone().expect("kept");
+            me.set_content(|| {});
+        }
+    });
+    step.set(1);
+    composition.recompose();
+}

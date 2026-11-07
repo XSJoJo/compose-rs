@@ -174,13 +174,14 @@ impl Composition {
         });
         self.compose_content(content);
         // What its changes wrote (a modifier node's attach) is sent, as Compose's
-        // `composeInitial` ends with `notifyObjectsInitialized`, which advances the global
-        // snapshot and sends unless it's nested in a pass (`composerWasComposing`): a measurement
-        // reading what its node's attach wrote isn't told of the write after it (a lazy list's
-        // last item composed in its measurement was measured and placed again, D1338).
-        if !with_runtime(|runtime| runtime.is_composing()) {
-            crate::snapshots::Snapshot::notify_objects_initialized();
-        }
+        // `composeInitial` ends with `notifyObjectsInitialized`: a measurement reading what its
+        // node's attach wrote isn't told of the write after it (a lazy list's last item composed
+        // in its measurement was measured and placed again, D1338). In the global snapshot that
+        // advances it and sends; nested in another composition's pass, it advances the pass's
+        // snapshot, sending nothing. Compose skips it when the composition itself was composing
+        // (`composerWasComposing`, its own `isComposing`): a reentrant call, which panics here
+        // before (`compose_content`), as Compose's composer throws (D1339).
+        crate::snapshots::Snapshot::notify_objects_initialized();
     }
 
     /// [`set_content`](Self::set_content), also below a root that's gone, as what deactivates
