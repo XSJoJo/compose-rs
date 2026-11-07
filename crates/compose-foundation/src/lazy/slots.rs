@@ -51,19 +51,25 @@ pub(super) type IndexSet<K> = HashSet<K, std::hash::BuildHasherDefault<IndexHash
 /// When the item contents kept by key are trimmed to those of the keys still composed: past `most`
 /// and past twice what stayed the last time, so a measurement composing thousands of new items
 /// trims a few times, not once per item (trimming per item, each trim going over all those
-/// composed, a frame composing 2,000 new items beside 8,000 took 13 s in a release build, D1477).
+/// composed, a frame composing 2,000 new items beside 8,000 took 13 s in a release build, D1477),
+/// and a list showing more than half `most` doesn't trim at each measurement.
 #[derive(Default)]
-pub(super) struct TrimAt(std::cell::Cell<usize>);
+struct TrimAt {
+    at: std::cell::Cell<usize>,
+    /// How many trims there were, for tests.
+    trims: std::cell::Cell<usize>,
+}
 
 impl TrimAt {
     /// Whether `held` contents are to be trimmed now, past at least `most`.
-    pub(super) fn due(&self, held: usize, most: usize) -> bool {
-        held >= self.0.get().max(most)
+    fn due(&self, held: usize, most: usize) -> bool {
+        held >= self.at.get().max(most)
     }
 
     /// Trimmed: `left` stayed.
-    pub(super) fn trimmed(&self, left: usize) {
-        self.0.set(2 * left);
+    fn trimmed(&self, left: usize) {
+        self.at.set(2 * left);
+        self.trims.set(self.trims.get() + 1);
     }
 }
 
@@ -193,12 +199,14 @@ pub(super) struct ItemFactory {
 /// `Callback` while its key is there, so a measurement asking for it again composes nothing; it
 /// reads the items as they are when it composes (Compose's reads `itemProvider()`), so an item
 /// recomposing for a state of its own with the list's content changed sees the new items.
+/// A `LazyLayout`'s provider keeps its own (`layout::ProviderSource`).
 #[derive(Default)]
 pub(super) struct ItemContents {
-    contents: RefCell<IndexMap<u64, ItemContent>>,
-    /// Each item's content's scope, by key: run again when the list's content changes.
+    pub(super) contents: RefCell<IndexMap<u64, ItemContent>>,
+    /// Each item's content's scope, by key: run again when the items change. One per key
+    /// composed, trimmed with `contents`.
     pub(super) scopes: RefCell<IndexMap<u64, compose_runtime::RecomposeScope>>,
-    /// When `contents` is trimmed next.
+    /// When `contents` and `scopes` are trimmed next.
     trim_at: TrimAt,
 }
 
@@ -208,6 +216,30 @@ pub(super) type ItemContent = (Rc<std::cell::Cell<usize>>, Callback);
 /// The contents kept before any trim; past it and `TrimAt`'s bound, those of keys no longer
 /// composed go.
 const MOST_CONTENTS: usize = 256;
+
+impl ItemContents {
+    /// At a measurement's end: past `MOST_CONTENTS` and `TrimAt`'s bound, the contents and scopes
+    /// of the keys not in `keys()`, those it composed, go, a key's scope and content together (one
+    /// composed again takes a new content, which composes with the items as they are then). Not
+    /// while it composes: the contents of those it composed before would go too, and they'd
+    /// compose again when it moves them (D1477).
+    pub(super) fn trim(&self, keys: impl FnOnce() -> IndexSet<u64>) {
+        let mut contents = self.contents.borrow_mut();
+        let mut scopes = self.scopes.borrow_mut();
+        if !self.trim_at.due(contents.len().max(scopes.len()), MOST_CONTENTS) {
+            return;
+        }
+        let keys = keys();
+        contents.retain(|key, _| keys.contains(key));
+        scopes.retain(|key, _| keys.contains(key));
+        self.trim_at.trimmed(contents.len().max(scopes.len()));
+    }
+
+    /// How many contents and scopes are kept, and how many trims there were, for tests.
+    pub(super) fn held(&self) -> (usize, usize, usize) {
+        (self.contents.borrow().len(), self.scopes.borrow().len(), self.trim_at.trims.get())
+    }
+}
 
 impl ItemFactory {
     /// The slot id of item `index`.
@@ -257,18 +289,10 @@ impl ItemFactory {
         content
     }
 
-    /// At a measurement's end, `composed` the items it composed: past `MOST_CONTENTS` and
-    /// `TrimAt`'s bound, the contents of the others go. Not while it composes: the contents of
-    /// those it composed before would go too, and they'd compose again when it moves them (D1477).
+    /// At a measurement's end, `composed` the items it composed: the contents and scopes of the
+    /// others go, past `ItemContents::trim`'s bound.
     pub(super) fn trim_contents(&self, composed: &[usize]) {
-        let trim_at = &self.contents.trim_at;
-        let mut contents = self.contents.contents.borrow_mut();
-        if !trim_at.due(contents.len(), MOST_CONTENTS) {
-            return;
-        }
-        let keys: IndexSet<u64> = composed.iter().map(|item| self.items.0.key(*item)).collect();
-        contents.retain(|key, _| keys.contains(key));
-        trim_at.trimmed(contents.len());
+        self.contents.trim(|| composed.iter().map(|item| self.items.0.key(*item)).collect());
     }
 
     pub(super) fn count(&self) -> usize {
@@ -412,8 +436,8 @@ impl<S: SlotSource> ItemComposer<S> {
         measurables
     }
 
-    /// The keys of the items this measurement composed, in order.
-    pub(super) fn composed_keys(&self) -> Vec<u64> {
+    /// The keys of the items this measurement composed.
+    pub(super) fn composed_keys(&self) -> IndexSet<u64> {
         self.order.iter().map(|index| self.factory.key(*index)).collect()
     }
 }

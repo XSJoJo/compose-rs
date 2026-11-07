@@ -855,7 +855,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1320 | [ui-and-layout](decisions/ui-and-layout.md#d1320) | revised by [D1327](decisions/ui-and-layout.md#d1327) |
 | D1321 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1321) | revised by [D1326](decisions/lazy-and-prefetch.md#d1326) |
 | D1322 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1322) | current |
-| D1323 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1323) | current |
+| D1323 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1323) | revised by [D1477](decisions/lazy-and-prefetch.md#d1477) |
 | D1324 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1324) | current |
 | D1325 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1325) | current |
 | D1326 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md#d1326) | current |

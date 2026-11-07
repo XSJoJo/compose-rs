@@ -2997,3 +2997,145 @@ fn a_reused_slots_modifier_changed_while_paused_applies() {
     precomposition.apply();
     ui.wait_for_idle();
 }
+
+/// A small deterministic generator (SplitMix64): a failing run fails the same way again.
+struct Random(u64);
+
+impl Random {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// One of `0..n`.
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+
+    fn chance(&mut self, one_in: usize) -> bool {
+        self.below(one_in) == 0
+    }
+}
+
+/// The tags of the placed nodes `dump_tree` shows, in its order: `slot{key}.{layout}`.
+fn placed_slot_tags(ui: &ComposeTestRule) -> Vec<String> {
+    ui.dump_tree()
+        .lines()
+        .filter(|line| !line.contains("(not placed)"))
+        .filter_map(|line| {
+            let start = line.find("slot")?;
+            let tag: String = line[start..]
+                .chars()
+                .take_while(|it| it.is_ascii_alphanumeric() || *it == '.')
+                .collect();
+            Some(tag)
+        })
+        .collect()
+}
+
+/// Slots of 0 to 2 layouts each added (some precomposed first), moved, removed several at once
+/// and reversed at random, with 2 kept for reuse and a rolling 3 precomposed, against a model:
+/// the placed nodes stay in the order the measurement composed their slots (D1477's moves and
+/// removals in one pass, on a real `SubcomposeLayout`).
+#[test]
+fn random_slots_keep_the_tree_in_composition_order() {
+    let mut random = Random(1477);
+    let layouts: Rc<RefCell<std::collections::HashMap<i32, (usize, Callback)>>> = Rc::default();
+    let state = SubcomposeLayoutState::with_policy(subcompose_slot_reuse_policy(2));
+    let keys = mutable_state_of(Vec::<i32>::new());
+    let (k, l) = (keys.handle(), layouts.clone());
+    let policy = stack_policy(move |scope| {
+        let layouts = l.borrow();
+        k.get().into_iter().map(|key| scope.subcompose(key, layouts[&key].1.clone())).collect()
+    });
+    let st = state.clone();
+    let mut ui = compose_test(move || {
+        SubcomposeLayoutWithState!(st.clone(), measure_policy = policy.clone())
+    });
+    ui.wait_for_idle();
+    let mut model: Vec<i32> = Vec::new();
+    let mut precomposed: std::collections::VecDeque<(i32, PrecomposedSlotHandle)> =
+        Default::default();
+    let mut next_key = 0;
+    let mut new_key = |random: &mut Random| {
+        let key = next_key;
+        next_key += 1;
+        let count = random.below(3);
+        let content = Callback::new(move || {
+            for layout in 0..count {
+                Box!(
+                    modifier =
+                        Modifier.size((10.dp(), 10.dp())).test_tag(format!("slot{key}.{layout}"))
+                );
+            }
+        });
+        layouts.borrow_mut().insert(key, (count, content));
+        key
+    };
+    let mut shown = 0;
+    for step in 0..300 {
+        let len = model.len();
+        let kind = if len < 2 { 0 } else { random.below(6) };
+        let what = match kind {
+            0 | 1 => {
+                // A key precomposed and not taken yet, or a new one.
+                let waiting: Vec<i32> = (precomposed.iter())
+                    .map(|(key, _)| *key)
+                    .filter(|key| !model.contains(key))
+                    .collect();
+                let key = if !waiting.is_empty() && random.chance(2) {
+                    waiting[random.below(waiting.len())]
+                } else {
+                    new_key(&mut random)
+                };
+                let at = random.below(len + 1);
+                model.insert(at, key);
+                format!("add {key} at {at}")
+            }
+            2 => {
+                let (from, to) = (random.below(len), random.below(len));
+                let key = model.remove(from);
+                model.insert(to, key);
+                format!("move {from} to {to}")
+            }
+            3 => {
+                let gone: Vec<i32> = model.iter().copied().filter(|_| random.chance(2)).collect();
+                model.retain(|key| !gone.contains(key));
+                format!("remove {gone:?}")
+            }
+            4 => {
+                model.reverse();
+                "reverse".to_string()
+            }
+            _ => {
+                // The rolling set: one more precomposed, the oldest disposed past 3.
+                let key = new_key(&mut random);
+                let content = layouts.borrow()[&key].1.clone();
+                precomposed.push_back((key, state.precompose(key, content)));
+                if precomposed.len() > 3 {
+                    precomposed.pop_front().expect("past 3").1.dispose();
+                }
+                format!("precompose {key}")
+            }
+        };
+        keys.set(model.clone());
+        ui.wait_for_idle();
+        let expected: Vec<String> = (model.iter())
+            .flat_map(|key| {
+                let count = layouts.borrow()[key].0;
+                (0..count).map(move |layout| format!("slot{key}.{layout}"))
+            })
+            .collect();
+        assert_eq!(
+            placed_slot_tags(&ui),
+            expected,
+            "step {step}: {what}, {model:?}\n{}",
+            ui.dump_tree()
+        );
+        shown += expected.len();
+    }
+    assert!(shown > 1_000, "{shown} nodes checked");
+}

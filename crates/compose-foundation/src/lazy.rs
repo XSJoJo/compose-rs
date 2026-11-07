@@ -610,6 +610,13 @@ impl LazyListState {
         self.inner().map_or_else(Vec::new, |inner| inner.prefetch.units_held())
     }
 
+    /// How many item contents and their scopes are kept by key, and how many times they were
+    /// trimmed, for tests.
+    #[doc(hidden)]
+    pub fn item_contents_held(&self) -> (usize, usize, usize) {
+        self.inner().map_or((0, 0, 0), |inner| inner.contents.held())
+    }
+
     /// The window's requests under way, for tests: their items, and whether they are urgent.
     #[doc(hidden)]
     pub fn prefetch_requests(&self) -> Vec<(usize, bool)> {

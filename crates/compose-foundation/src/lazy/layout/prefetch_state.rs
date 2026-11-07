@@ -111,6 +111,13 @@ impl LazyLayoutPrefetchState {
         }
     }
 
+    /// How many item contents and their scopes the layout composed with this state keeps by key,
+    /// and how many times they were trimmed, for tests.
+    #[doc(hidden)]
+    pub fn item_contents_held(&self) -> (usize, usize, usize) {
+        self.inner.provider.borrow().as_ref().map_or((0, 0, 0), |it| it.source.contents_held())
+    }
+
     /// The layout `source` and `layout` are a lazy layout's, composed with this state.
     pub(super) fn attach(
         &self,
