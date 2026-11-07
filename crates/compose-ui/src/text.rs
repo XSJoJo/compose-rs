@@ -382,6 +382,24 @@ pub trait TextMeasurer: std::any::Any {
     ) -> ParagraphHandle {
         self.layout_annotated(text, style, options, constraints, density)
     }
+    /// Lays out as [`layout_with_placeholders`](Self::layout_with_placeholders), each glyph's
+    /// paint blending into what's below in `blend_mode`, as Compose's `Paragraph.paint(…,
+    /// blendMode)` sets its text paint's (D2060): what a measurer that can't make a painted copy
+    /// ([`painted`](Self::painted)) lays a text out anew in. The default ignores the mode (a
+    /// measurer that draws nothing).
+    #[allow(clippy::too_many_arguments)]
+    fn layout_blended(
+        &mut self,
+        text: &crate::annotated::AnnotatedString,
+        style: &TextStyle,
+        placeholders: &[crate::annotated::AnnotatedRange<crate::placeholder::Placeholder>],
+        options: TextLayoutOptions,
+        constraints: Constraints,
+        density: &Density,
+        _blend_mode: crate::color_filter::BlendMode,
+    ) -> ParagraphHandle {
+        self.layout_with_placeholders(text, style, placeholders, options, constraints, density)
+    }
     fn metrics(&self, paragraph: ParagraphHandle) -> ParagraphMetrics;
     /// The paragraph's height unrounded, as Compose's `Paragraph.height`: what a text of many
     /// paragraphs stacks them by (D2047). The default is the metrics' whole pixels, which is
@@ -462,12 +480,15 @@ pub trait TextMeasurer: std::any::Any {
     }
     /// A new paragraph with `paragraph`'s layout in `style`'s paint, as [`restyle`](Self::restyle)
     /// makes, `paragraph` staying as it is: what Compose's `Paragraph.paint(color, …)` draws of a
-    /// layout kept (a result drawn in another color, D1116). `None` (the default) when the
-    /// measurer can't: the caller lays the text out anew in that paint.
+    /// layout kept (a result drawn in another color, D1116), each glyph's paint blending into
+    /// what's below in `blend_mode` (`Paragraph.paint(…, blendMode)`, D2060). `None` (the default)
+    /// when the measurer can't: the caller lays the text out anew in that paint
+    /// ([`layout_blended`](Self::layout_blended)).
     fn painted(
         &mut self,
         _paragraph: ParagraphHandle,
         _style: &TextStyle,
+        _blend_mode: crate::color_filter::BlendMode,
     ) -> Option<ParagraphHandle> {
         None
     }

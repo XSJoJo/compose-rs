@@ -1814,7 +1814,7 @@ internal class Replayer(
         layerPaint.colorFilter = null
     }
 
-    private companion object {
+    internal companion object {
         /** About ten list items' groups: what a fling drops before drawing new ones. */
         const val NODE_POOL_CAPACITY = 32
         /**

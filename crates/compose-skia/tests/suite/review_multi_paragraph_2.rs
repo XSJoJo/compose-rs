@@ -142,7 +142,6 @@ fn a_text_s_own_multi_paragraph_paints_after_on_text_layout() {
 /// with `Src` as a whole: the layer's transparent pixels replace everything around the glyphs too.
 /// Likewise `Clear`, `SrcIn`, `DstIn`, `SrcOut` and `DstATop`.
 #[test]
-#[ignore = "review: a non-SrcOver blend mode composites a layer the drawing's size, so `Src` (and Clear, SrcIn, DstIn, SrcOut, DstATop) wipes what's around the glyphs; Compose blends each glyph's paint only where it covers"]
 fn painting_with_src_replaces_only_what_the_glyphs_cover() {
     let picture = draw_with((100, 80), (100, 80), 1.0, 0, move |scope, measurer| {
         scope.draw_rect(Rect::new(0.0, 0.0, 100.0, 80.0), Paint::fill(Color::RED));
@@ -276,7 +275,6 @@ fn a_shadow_painted_replaces_the_style_s() {
 /// color, which an unspecified one leaves as it was (`setColor` ignores it), so the style's red
 /// stays.
 #[test]
-#[ignore = "review: `paint_with_brush` with `Brush::Solid(Color::UNSPECIFIED)` paints over the paragraph's own color with an unspecified one (drawn black); Android's `setColor` ignores an unspecified color"]
 fn an_unspecified_solid_brush_keeps_the_paragraph_s_color() {
     let style = TextStyle { color: Color::RED, ..TextStyle::DEFAULT };
     let picture = painted_with_brush(

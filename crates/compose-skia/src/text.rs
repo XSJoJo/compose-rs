@@ -17,6 +17,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
 
+/// A text's own blend mode: its paints as they are.
+const SRC_OVER: compose_ui::BlendMode = compose_ui::BlendMode::SrcOver;
+
 /// The families tried first, as Compose Desktop's default `FontFamily.SansSerif`, before the
 /// font manager's fallback.
 const DEFAULT_FAMILIES: &[&str] = &[
@@ -514,7 +517,7 @@ impl TextMeasurer for SkiaTextMeasurer {
         constraints: Constraints,
         density: &Density,
     ) -> ParagraphHandle {
-        self.layout_runs(text, &[], &[], style, options, constraints, density)
+        self.layout_runs(text, &[], &[], style, options, constraints, density, SRC_OVER)
     }
 
     fn layout_annotated(
@@ -526,7 +529,7 @@ impl TextMeasurer for SkiaTextMeasurer {
         density: &Density,
     ) -> ParagraphHandle {
         let runs = text.runs(style);
-        self.layout_runs(text.as_str(), &runs, &[], style, options, constraints, density)
+        self.layout_runs(text.as_str(), &runs, &[], style, options, constraints, density, SRC_OVER)
     }
 
     fn layout_with_placeholders(
@@ -539,7 +542,42 @@ impl TextMeasurer for SkiaTextMeasurer {
         density: &Density,
     ) -> ParagraphHandle {
         let runs = text.runs(style);
-        self.layout_runs(text.as_str(), &runs, placeholders, style, options, constraints, density)
+        self.layout_runs(
+            text.as_str(),
+            &runs,
+            placeholders,
+            style,
+            options,
+            constraints,
+            density,
+            SRC_OVER,
+        )
+    }
+
+    /// The glyphs' paints in the mode, as SkParagraph can't change a paint once built (D555,
+    /// D2060): the text's and each run's foreground paint (not its decorations' or shadows').
+    fn layout_blended(
+        &mut self,
+        text: &compose_ui::AnnotatedString,
+        style: &TextStyle,
+        placeholders: &[compose_ui::AnnotatedRange<compose_ui::Placeholder>],
+        options: TextLayoutOptions,
+        constraints: Constraints,
+        density: &Density,
+        blend_mode: compose_ui::BlendMode,
+    ) -> ParagraphHandle {
+        let runs = text.runs(style);
+        let text = text.as_str();
+        self.layout_runs(
+            text,
+            &runs,
+            placeholders,
+            style,
+            options,
+            constraints,
+            density,
+            blend_mode,
+        )
     }
 
     fn fonts(&self) -> Option<Rc<PlatformFonts>> {
@@ -684,7 +722,7 @@ impl TextMeasurer for SkiaTextMeasurer {
 
 impl SkiaTextMeasurer {
     /// Lays out `text` in `style`, its `runs` (if any) each in its own style and background,
-    /// around `placeholders`.
+    /// around `placeholders`, the glyphs' paints blending in `blend_mode`.
     #[allow(clippy::too_many_arguments)]
     fn layout_runs(
         &mut self,
@@ -695,10 +733,11 @@ impl SkiaTextMeasurer {
         options: TextLayoutOptions,
         constraints: Constraints,
         density: &Density,
+        blend_mode: compose_ui::BlendMode,
     ) -> ParagraphHandle {
         let mut resolved_fonts = ResolvedFonts::default();
         let alias = self.alias_of(&mut resolved_fonts, style);
-        let mut text_style = skia_text_style(style, density, alias.as_deref());
+        let mut text_style = skia_text_style(style, density, alias.as_deref(), blend_mode);
         let mut paragraph_style = ParagraphStyle::new();
         paragraph_style.set_text_style(&text_style);
         // A trimmed line height leaves the first line's top or the last line's bottom at the
@@ -753,7 +792,7 @@ impl SkiaTextMeasurer {
         let mut run_styles: Vec<SkiaTextStyle> = Vec::with_capacity(runs.len());
         for (_, run_style, background) in runs {
             let alias = self.alias_of(&mut resolved_fonts, run_style);
-            let mut run = skia_text_style(run_style, density, alias.as_deref());
+            let mut run = skia_text_style(run_style, density, alias.as_deref(), blend_mode);
             if background.is_specified() {
                 let mut paint = skia_safe::Paint::default();
                 paint.set_color(skia_safe::Color::new(background.to_argb()));
@@ -898,9 +937,9 @@ impl SkiaTextMeasurer {
         // A gradient is over the paragraph's size, known now: built again with it. skia-safe
         // can't change a paragraph's paints (D555).
         let painted_size = compose_ui::Size::new(measured_width, paragraph.height());
-        let mut shaded = apply_gradient(&mut text_style, style, painted_size);
+        let mut shaded = apply_gradient(&mut text_style, style, painted_size, blend_mode);
         for (run, (_, run_style, _)) in run_styles.iter_mut().zip(runs) {
-            shaded |= apply_gradient(run, run_style, painted_size);
+            shaded |= apply_gradient(run, run_style, painted_size, blend_mode);
         }
         if shaded {
             paragraph = build(&paragraph_style, &shown, &text_style, &run_styles);
@@ -1123,7 +1162,12 @@ fn font_px_of(style: &TextStyle, density: &Density) -> f32 {
 }
 
 /// SkParagraph's style for `style`.
-fn skia_text_style(style: &TextStyle, density: &Density, alias: Option<&str>) -> SkiaTextStyle {
+fn skia_text_style(
+    style: &TextStyle,
+    density: &Density,
+    alias: Option<&str>,
+    blend_mode: compose_ui::BlendMode,
+) -> SkiaTextStyle {
     let font_px = font_px_of(style, density);
     let mut text_style = SkiaTextStyle::new();
     let color = compose_ui::platform::resolve_text_color(style);
@@ -1172,8 +1216,9 @@ fn skia_text_style(style: &TextStyle, density: &Density, alias: Option<&str>) ->
         let centered = alignment == compose_ui::LineHeightAlignment::CENTER;
         text_style.set_half_leading(centered);
     }
-    if let Some(compose_ui::DrawStyle::Stroke(_)) = style.draw_style {
-        text_style.set_foreground_paint(&foreground_paint(style, color));
+    let stroked = matches!(style.draw_style, Some(compose_ui::DrawStyle::Stroke(_)));
+    if stroked || blend_mode != SRC_OVER {
+        text_style.set_foreground_paint(&blended(foreground_paint(style, color), blend_mode));
     }
     if let Some(shadow) = style.shadow {
         text_style.add_shadow(skia_safe::textlayout::TextShadow::new(
@@ -1214,11 +1259,21 @@ fn foreground_paint(style: &TextStyle, color: compose_ui::Color) -> skia_safe::P
     foreground
 }
 
-/// Gives `text_style` `style`'s gradient over a paragraph of `size`: whether it has one.
+/// `paint` blending in `mode`.
+fn blended(mut paint: skia_safe::Paint, mode: compose_ui::BlendMode) -> skia_safe::Paint {
+    if mode != SRC_OVER {
+        paint.set_blend_mode(crate::render::skia_blend_mode(mode));
+    }
+    paint
+}
+
+/// Gives `text_style` `style`'s gradient over a paragraph of `size`, its paint blending in
+/// `blend_mode`: whether it has one.
 fn apply_gradient(
     text_style: &mut SkiaTextStyle,
     style: &TextStyle,
     size: compose_ui::Size,
+    blend_mode: compose_ui::BlendMode,
 ) -> bool {
     let compose_ui::TextForegroundStyle::Brush { brush, alpha } = style.foreground() else {
         return false;
@@ -1230,7 +1285,7 @@ fn apply_gradient(
     let mut foreground = foreground_paint(style, compose_ui::Color::BLACK);
     foreground.set_alpha_f(shader.alpha());
     foreground.set_shader(crate::render::skia_shader(&shader, None));
-    text_style.set_foreground_paint(&foreground);
+    text_style.set_foreground_paint(&blended(foreground, blend_mode));
     true
 }
 

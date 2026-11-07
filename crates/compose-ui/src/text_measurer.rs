@@ -394,7 +394,17 @@ impl LaidOutParagraph {
         let mut measurer = platform.borrow_mut();
         let placeholders = source.placeholders;
         check_placeholders(source.text.as_str(), placeholders);
-        let handle = if placeholders.is_empty() {
+        let handle = if paint.blend_mode != BlendMode::SrcOver {
+            measurer.layout_blended(
+                source.text,
+                &style,
+                placeholders,
+                options,
+                source.constraints,
+                source.density,
+                paint.blend_mode,
+            )
+        } else if placeholders.is_empty() {
             measurer.layout_annotated(
                 source.text,
                 &style,
@@ -488,11 +498,14 @@ impl LaidOutParagraph {
         let style = paint.over(base);
         let painted = {
             let mut measurer = platform.borrow_mut();
-            measurer.painted(self.0.keeper.handle(), &style).map(|handle| {
+            measurer.painted(self.0.keeper.handle(), &style, paint.blend_mode).map(|handle| {
                 LaidOutParagraph::of_handle(platform, &mut *measurer, handle, paint.clone())
             })
         };
-        let copy = painted.unwrap_or_else(|| LaidOutParagraph::lay_out(platform, source, &style));
+        let copy = painted.unwrap_or_else(|| {
+            let own = TextPaint { blend_mode: paint.blend_mode, ..TextPaint::of(&style) };
+            LaidOutParagraph::lay_out_in(platform, source, &style, own)
+        });
         let mut repainted = self.0.repainted.borrow_mut();
         if repainted.len() == REPAINTED_COPIES {
             repainted.remove(0);
@@ -523,14 +536,16 @@ fn spanning(
     }
 }
 
-/// What a paragraph is drawn in, of a text's style: all the draw affecting attributes but the
-/// blend mode, which is the drawing's.
+/// What a paragraph is drawn in: a text's style's draw affecting attributes, and the blend mode
+/// its glyphs' paint blends in (Compose's `Paragraph.paint(…, blendMode)` sets the text paint's,
+/// D2060; a style's own is `SrcOver`).
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct TextPaint {
     pub(crate) foreground: TextForegroundStyle,
     pub(crate) shadow: Option<Shadow>,
     pub(crate) decoration: Option<TextDecoration>,
     pub(crate) draw_style: Option<DrawStyle>,
+    pub(crate) blend_mode: BlendMode,
 }
 
 impl TextPaint {
@@ -540,6 +555,7 @@ impl TextPaint {
             shadow: style.shadow,
             decoration: style.text_decoration,
             draw_style: style.draw_style,
+            blend_mode: BlendMode::SrcOver,
         }
     }
 
@@ -870,6 +886,7 @@ impl DrawTextLayoutOptions {
             shadow: self.shadow.or(style.shadow),
             decoration: self.text_decoration.or(style.text_decoration),
             draw_style: self.draw_style.or(style.draw_style),
+            blend_mode: BlendMode::SrcOver,
         }
     }
 }
@@ -987,8 +1004,8 @@ impl DrawScope<'_> {
     }
 
     /// Paints `parts`, each at its top of a text `size` big (at the origin if `alone`), in
-    /// `overrides` over its own paint, composited with `blend_mode`: Compose's
-    /// `MultiParagraph.paint` and `Paragraph.paint` (D2052).
+    /// `overrides` over its own paint, each glyph's paint blending in `blend_mode`: Compose's
+    /// `MultiParagraph.paint` and `Paragraph.paint` (D2052, D2060).
     pub(crate) fn paint_parts(
         &mut self,
         parts: &[Rc<StackedParagraph>],
@@ -1001,7 +1018,9 @@ impl DrawScope<'_> {
         for part in parts {
             let own = part.measured.paint();
             let foreground = match &overrides.foreground {
-                None => own.foreground.clone(),
+                // An unspecified color (a solid brush of one too) keeps the paint's, as Android's
+                // `setColor` ignores it.
+                None | Some(TextForegroundStyle::Unspecified) => own.foreground.clone(),
                 // A brush at no alpha keeps the paint's, as Android's `setBrush` with NaN.
                 Some(TextForegroundStyle::Brush { brush, alpha }) if alpha.is_nan() => {
                     let alpha = match &own.foreground {
@@ -1018,6 +1037,8 @@ impl DrawScope<'_> {
                 shadow: overrides.shadow.or(own.shadow),
                 decoration: overrides.text_decoration.or(own.decoration),
                 draw_style: overrides.draw_style.or(own.draw_style),
+                // On each glyph's paint, as Compose's: Skia blends it only where a glyph covers.
+                blend_mode,
             };
             let paint = spanning(&paint, parts.len(), size, part.top);
             let paragraph =
@@ -1025,23 +1046,8 @@ impl DrawScope<'_> {
             self.list.laid_out_paragraphs.push(paragraph.keeper().clone());
             stacked.push((paragraph.handle(), if alone { 0.0 } else { part.top }));
         }
-        let layered = blend_mode != BlendMode::SrcOver;
-        if layered {
-            // The paragraphs drawn into a layer composited with the mode, as one draw with it.
-            let bounds = self.bounds();
-            let bounds = Rect::new(
-                bounds.left.min(0.0),
-                bounds.top.min(0.0),
-                bounds.right.max(size.width),
-                bounds.bottom.max(size.height),
-            );
-            self.save_layer(bounds, 1.0, None, blend_mode);
-        }
         for (handle, top) in stacked {
             self.draw_paragraph(handle, Offset::new(0.0, top));
-        }
-        if layered {
-            self.restore();
         }
     }
 
