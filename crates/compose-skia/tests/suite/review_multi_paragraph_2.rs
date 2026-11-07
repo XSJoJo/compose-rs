@@ -422,7 +422,9 @@ fn a_locale_s_direction_reads_its_tag_in_any_case_and_separator() {
     {
         assert_eq!(direction_in(locale), ResolvedTextDirection::Rtl, "{locale}");
     }
-    for locale in ["SD_in", "ks-Deva", "uz-Cyrl-AF", "az-Latn-IR", "ku_TR", "EN_ae"] {
+    // `UG_kz`: Uyghur of Kazakhstan, Cyrillic in ICU 68's likely subtags (`sd_IN` isn't one
+    // there: Sindhi of India is Arabic, D2060).
+    for locale in ["UG_kz", "ks-Deva", "uz-Cyrl-AF", "az-Latn-IR", "ku_TR", "EN_ae"] {
         assert_eq!(direction_in(locale), ResolvedTextDirection::Ltr, "{locale}");
     }
 }
@@ -433,7 +435,6 @@ fn a_locale_s_direction_reads_its_tag_in_any_case_and_separator() {
 /// `ku_IR`), Kazakh of Mongolia (`kk_MN`), Adamawa Fulfulde (`fub_Arab_CM`), and the
 /// macro-regions of North Africa and Western Asia (`und_015`, `und_145`).
 #[test]
-#[ignore = "review: the likely-script table misses zdj, wni, fub, ku-LB, ku-IR, kk-MN, und-015, und-145 (right to left in ICU's likely subtags)"]
 fn locales_right_to_left_in_icu_s_likely_subtags_are_right_to_left() {
     for locale in ["zdj", "wni", "fub", "ku-LB", "ku-IR", "kk-MN", "und-015", "und-145"] {
         assert_eq!(direction_in(locale), ResolvedTextDirection::Rtl, "{locale}");
@@ -445,7 +446,6 @@ fn locales_right_to_left_in_icu_s_likely_subtags_are_right_to_left() {
 /// script properties are 0 in `uscript_props.cpp` (ICU 68.2; `Aran` isn't even a script code
 /// there). So `ur-Aran` is left to right on Android; D2049 lists them as right to left.
 #[test]
-#[ignore = "review: Aran, Syre, Syrj, Syrn and Phlv are right to left here; ICU's `UScript.isRightToLeft` says not (no script properties), so Android lays a Content paragraph in `ur-Aran` out left to right"]
 fn script_variants_without_properties_are_left_to_right_as_icu_s() {
     for locale in ["ur-Aran", "syr-Syre", "syr-Syrj", "syr-Syrn", "pal-Phlv"] {
         assert_eq!(direction_in(locale), ResolvedTextDirection::Ltr, "{locale}");
