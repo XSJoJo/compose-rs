@@ -15,14 +15,15 @@ use crate::alignment::LayoutDirection;
 use crate::annotated::{AnnotatedRange, AnnotatedString, intersect};
 use crate::constraints::Constraints;
 use crate::font::FontFamilyResolver;
-use crate::intl::{Locale, LocaleList};
+use crate::intl::LocaleList;
+use crate::locale_direction::is_right_to_left;
 use crate::paragraph::Paragraph;
 use crate::path::Path;
 use crate::placeholder::{Placeholder, check_placeholders};
 use crate::range_for_rect::{TextGranularity, TextInclusionStrategy};
 use crate::text::TextLayoutOptions;
 use crate::text_attributes::{ResolvedTextDirection, TextDirection, TextOverflow};
-use crate::text_measurer::{LaidOutParagraph, MeasuredParagraph, ParagraphSource};
+use crate::text_measurer::{LaidOutParagraph, MeasuredParagraph, ParagraphSource, TextPaint};
 use crate::text_range::TextRange;
 use crate::text_style::TextStyle;
 use crate::unit::{Density, Offset, Rect};
@@ -200,34 +201,6 @@ fn find_paragraphs_by_range(
         .iter()
         .take_while(move |info| info.start_index < range.max())
         .filter(|info| info.start_index != info.end_index)
-}
-
-/// Whether a locale's text runs right to left, as Android's `TextUtils.getLayoutDirectionFromLocale`
-/// tells by its script (written, or its language's usual one).
-fn is_right_to_left(locale: &Locale) -> bool {
-    match locale.script().as_str() {
-        "Arab" | "Hebr" | "Syrc" | "Thaa" | "Nkoo" | "Adlm" | "Rohg" | "Mand" | "Samr" => true,
-        "" => matches!(
-            locale.language().as_str(),
-            "ar" | "fa"
-                | "he"
-                | "iw"
-                | "ur"
-                | "yi"
-                | "ji"
-                | "ps"
-                | "sd"
-                | "ug"
-                | "dv"
-                | "ckb"
-                | "ks"
-                | "ku"
-                | "syr"
-                | "nqo"
-                | "arc"
-        ),
-        _ => false,
-    }
 }
 
 /// One paragraph of a [`MultiParagraphIntrinsics`]: its text, in its style.
@@ -460,8 +433,16 @@ pub struct MultiParagraph {
     height: f32,
     line_count: usize,
     did_exceed_max_lines: bool,
-    /// One paragraph, the whole text's: its own numbers are asked of it when wanted.
-    single: bool,
+    /// One paragraph, the whole text's: its own numbers are asked of it when wanted (`infos`
+    /// is then empty).
+    single: Option<SingleParagraph>,
+}
+
+/// The one paragraph of a text without paragraph styles, and its [`ParagraphInfo`] made when
+/// first asked for (its line count and height are the paragraph's queries).
+struct SingleParagraph {
+    paragraph: Rc<dyn Paragraph>,
+    info: OnceCell<ParagraphInfo>,
 }
 
 impl MultiParagraph {
@@ -475,6 +456,19 @@ impl MultiParagraph {
         constraints: Constraints,
         max_lines: u32,
         overflow: TextOverflow,
+    ) -> MultiParagraph {
+        MultiParagraph::lay_out(intrinsics, constraints, max_lines, overflow, None)
+    }
+
+    /// As [`new`](Self::new), each paragraph known as drawn in `paint` (each its own style's
+    /// when `None`): a [`TextMeasurer`](crate::TextMeasurer)'s are its input's unresolved style's,
+    /// what drawing the result in its own style asks for (D2049).
+    pub(crate) fn lay_out(
+        intrinsics: Rc<MultiParagraphIntrinsics>,
+        constraints: Constraints,
+        max_lines: u32,
+        overflow: TextOverflow,
+        paint: Option<&TextPaint>,
     ) -> MultiParagraph {
         assert!(
             constraints.min_width == 0 && constraints.min_height == 0,
@@ -514,7 +508,8 @@ impl MultiParagraph {
                 constraints: item_constraints,
                 density: &intrinsics.density,
             };
-            let laid_out = LaidOutParagraph::lay_out(&platform, source, &info.style);
+            let paint = paint.cloned().unwrap_or_else(|| TextPaint::of(&info.style));
+            let laid_out = LaidOutParagraph::lay_out_in(&platform, source, &info.style, paint);
             let height = platform.borrow().height(laid_out.handle());
             let exceeded = laid_out.did_exceed_max_lines();
             let top = current_height;
@@ -561,33 +556,29 @@ impl MultiParagraph {
             height: current_height,
             line_count: current_lines,
             did_exceed_max_lines,
-            single: false,
+            single: None,
         }
     }
 
-    /// `text` laid out as one `paragraph`, the whole text's (a text without paragraph styles):
-    /// its numbers are the paragraph's, and nothing is asked of it until a query is.
-    pub fn of_paragraph(text: AnnotatedString, paragraph: Rc<dyn Paragraph>) -> MultiParagraph {
-        let length = text.len();
+    /// `text` laid out as one `paragraph`, the whole text's (a text without paragraph styles),
+    /// with at most `max_lines` lines: its numbers are the paragraph's, and nothing is asked of
+    /// it until a query is. It allocates nothing (D2049).
+    pub fn of_paragraph(
+        text: AnnotatedString,
+        paragraph: Rc<dyn Paragraph>,
+        max_lines: u32,
+    ) -> MultiParagraph {
         MultiParagraph {
             intrinsics: None,
             text,
-            max_lines: u32::MAX,
-            infos: vec![ParagraphInfo {
-                paragraph,
-                start_index: 0,
-                end_index: length,
-                start_line_index: 0,
-                end_line_index: usize::MAX,
-                top: 0.0,
-                bottom: f32::INFINITY,
-            }],
+            max_lines,
+            infos: Vec::new(),
             parts: Vec::new(),
             width: 0.0,
             height: 0.0,
             line_count: 0,
             did_exceed_max_lines: false,
-            single: true,
+            single: Some(SingleParagraph { paragraph, info: OnceCell::new() }),
         }
     }
 
@@ -608,7 +599,23 @@ impl MultiParagraph {
 
     /// The paragraphs laid out, in order: those the maximum lines left out aren't.
     pub fn paragraph_info_list(&self) -> &[ParagraphInfo] {
-        &self.infos
+        self.infos()
+    }
+
+    /// The paragraphs laid out; a single paragraph's info made when first asked for.
+    fn infos(&self) -> &[ParagraphInfo] {
+        match &self.single {
+            None => &self.infos,
+            Some(single) => std::slice::from_ref(single.info.get_or_init(|| ParagraphInfo {
+                paragraph: single.paragraph.clone(),
+                start_index: 0,
+                end_index: self.text.len(),
+                start_line_index: 0,
+                end_line_index: single.paragraph.line_count(),
+                top: 0.0,
+                bottom: single.paragraph.height(),
+            })),
+        }
     }
 
     /// The platform's paragraphs, for drawing (none for a single paragraph wrapped).
@@ -638,22 +645,33 @@ impl MultiParagraph {
 
     /// The paragraph with offset `offset`, the last one at the text's end.
     fn info_at(&self, offset: usize) -> &ParagraphInfo {
+        let infos = self.infos();
         let index = if offset == self.text.len() {
-            self.infos.len() - 1
+            infos.len() - 1
         } else {
-            find_paragraph_by_index(&self.infos, offset)
+            find_paragraph_by_index(infos, offset)
         };
-        &self.infos[index]
+        &infos[index]
     }
 
     /// The paragraph holding line `line`, checked.
     fn info_of_line(&self, line: usize) -> &ParagraphInfo {
         self.check_line(line);
-        &self.infos[find_paragraph_by_line_index(&self.infos, line)]
+        let infos = self.infos();
+        &infos[find_paragraph_by_line_index(infos, line)]
     }
 
-    fn first(&self) -> &ParagraphInfo {
-        &self.infos[0]
+    /// The first paragraph, asking nothing of a single one.
+    fn first(&self) -> &Rc<dyn Paragraph> {
+        match &self.single {
+            Some(single) => &single.paragraph,
+            None => &self.infos[0].paragraph,
+        }
+    }
+
+    /// The single paragraph a text without paragraph styles is.
+    fn single(&self) -> Option<&Rc<dyn Paragraph>> {
+        self.single.as_ref().map(|single| &single.paragraph)
     }
 }
 
@@ -663,6 +681,7 @@ impl fmt::Debug for MultiParagraph {
             .debug_struct("MultiParagraph")
             .field("text", &self.text.as_str())
             .field("paragraphs", &self.infos)
+            .field("single", &self.single.is_some())
             .finish()
     }
 }
@@ -673,46 +692,47 @@ impl MultiParagraph {
     }
 
     pub fn width(&self) -> f32 {
-        if self.single { self.first().paragraph.width() } else { self.width }
+        if let Some(single) = self.single() { single.width() } else { self.width }
     }
 
     pub fn height(&self) -> f32 {
-        if self.single { self.first().paragraph.height() } else { self.height }
+        if let Some(single) = self.single() { single.height() } else { self.height }
     }
 
     pub fn min_intrinsic_width(&self) -> f32 {
         match &self.intrinsics {
             Some(intrinsics) => intrinsics.min_intrinsic_width(),
-            None => self.first().paragraph.min_intrinsic_width(),
+            None => self.first().min_intrinsic_width(),
         }
     }
 
     pub fn max_intrinsic_width(&self) -> f32 {
         match &self.intrinsics {
             Some(intrinsics) => intrinsics.max_intrinsic_width(),
-            None => self.first().paragraph.max_intrinsic_width(),
+            None => self.first().max_intrinsic_width(),
         }
     }
 
     pub fn first_baseline(&self) -> f32 {
-        self.first().paragraph.first_baseline()
+        self.first().first_baseline()
     }
 
     pub fn last_baseline(&self) -> f32 {
-        let last = &self.infos[self.infos.len() - 1];
+        let infos = self.infos();
+        let last = &infos[infos.len() - 1];
         last.to_global_y_position(last.paragraph.last_baseline())
     }
 
     pub fn did_exceed_max_lines(&self) -> bool {
-        if self.single {
-            self.first().paragraph.did_exceed_max_lines()
+        if let Some(single) = self.single() {
+            single.did_exceed_max_lines()
         } else {
             self.did_exceed_max_lines
         }
     }
 
     pub fn line_count(&self) -> usize {
-        if self.single { self.first().paragraph.line_count() } else { self.line_count }
+        if let Some(single) = self.single() { single.line_count() } else { self.line_count }
     }
 
     pub fn get_line_left(&self, line: usize) -> f32 {
@@ -767,17 +787,19 @@ impl MultiParagraph {
     }
 
     pub fn get_line_for_offset(&self, offset: usize) -> usize {
+        let infos = self.infos();
         let index = if offset >= self.text.len() {
-            self.infos.len() - 1
+            infos.len() - 1
         } else {
-            find_paragraph_by_index(&self.infos, offset)
+            find_paragraph_by_index(infos, offset)
         };
-        let info = &self.infos[index];
+        let info = &infos[index];
         info.to_global_line_index(info.paragraph.get_line_for_offset(info.to_local_index(offset)))
     }
 
     pub fn get_line_for_vertical_position(&self, vertical: f32) -> usize {
-        let info = &self.infos[find_paragraph_by_y(&self.infos, vertical)];
+        let infos = self.infos();
+        let info = &infos[find_paragraph_by_y(infos, vertical)];
         if info.length() == 0 {
             return info.start_line_index;
         }
@@ -805,7 +827,8 @@ impl MultiParagraph {
     }
 
     pub fn get_offset_for_position(&self, position: Offset) -> usize {
-        let info = &self.infos[find_paragraph_by_y(&self.infos, position.y)];
+        let infos = self.infos();
+        let info = &infos[find_paragraph_by_y(infos, position.y)];
         if info.length() == 0 {
             return info.start_index;
         }
@@ -814,12 +837,13 @@ impl MultiParagraph {
 
     pub fn get_bounding_box(&self, offset: usize) -> Rect {
         self.check_index(offset);
-        let last = &self.infos[self.infos.len() - 1];
+        let infos = self.infos();
+        let last = &infos[infos.len() - 1];
         // Cut by the maximum lines: where the text stops.
         if offset >= last.end_index {
             return last.to_global_rect(last.paragraph.get_cursor_rect(last.length()));
         }
-        let info = &self.infos[find_paragraph_by_index(&self.infos, offset)];
+        let info = &infos[find_paragraph_by_index(infos, offset)];
         info.to_global_rect(info.paragraph.get_bounding_box(info.to_local_index(offset)))
     }
 
@@ -831,8 +855,9 @@ impl MultiParagraph {
         granularity: TextGranularity,
         inclusion_strategy: &TextInclusionStrategy,
     ) -> TextRange {
+        let infos = self.infos();
         let range_in = |index: usize| {
-            let info = &self.infos[index];
+            let info = &infos[index];
             let local = info.paragraph.get_range_for_rect(
                 info.to_local_rect(rect),
                 granularity,
@@ -840,12 +865,12 @@ impl MultiParagraph {
             );
             info.to_global_range(local, true)
         };
-        let mut first = find_paragraph_by_y(&self.infos, rect.top);
+        let mut first = find_paragraph_by_y(infos, rect.top);
         // The rect within one paragraph: its range.
-        if self.infos[first].bottom >= rect.bottom || first == self.infos.len() - 1 {
+        if infos[first].bottom >= rect.bottom || first == infos.len() - 1 {
             return range_in(first);
         }
-        let mut last = find_paragraph_by_y(&self.infos, rect.bottom);
+        let mut last = find_paragraph_by_y(infos, rect.bottom);
         let mut start = TextRange::ZERO;
         while start == TextRange::ZERO && first <= last {
             start = range_in(first);
@@ -869,8 +894,8 @@ impl MultiParagraph {
     /// each, as Compose's `MultiParagraph.fillBoundingBoxes`: each paragraph's, below the
     /// paragraphs above it (D2048).
     pub fn fill_bounding_boxes(&self, range: TextRange, array: &mut [f32], array_start: usize) {
-        if self.single {
-            return self.first().paragraph.fill_bounding_boxes(range, array, array_start);
+        if let Some(single) = self.single() {
+            return single.fill_bounding_boxes(range, array, array_start);
         }
         self.check_index(range.min());
         self.check_index_inclusive(range.max());
@@ -893,8 +918,8 @@ impl MultiParagraph {
     /// each paragraph's, below the paragraphs above it; none in the paragraphs the maximum lines
     /// left out (D2048).
     pub fn get_bounding_boxes_for_range(&self, start: usize, end: usize) -> Vec<Rect> {
-        if self.single {
-            return self.first().paragraph.get_bounding_boxes_for_range(start, end);
+        if let Some(single) = self.single() {
+            return single.get_bounding_boxes_for_range(start, end);
         }
         let length = self.text.len();
         assert!(
@@ -937,7 +962,7 @@ impl MultiParagraph {
         if start == end {
             return path;
         }
-        for info in find_paragraphs_by_range(&self.infos, TextRange::new(start, end)) {
+        for info in find_paragraphs_by_range(self.infos(), TextRange::new(start, end)) {
             let local = info
                 .paragraph
                 .get_path_for_range(info.to_local_index(start), info.to_local_index(end));
@@ -947,8 +972,8 @@ impl MultiParagraph {
     }
 
     pub fn placeholder_rects(&self) -> Vec<Option<Rect>> {
-        if self.single {
-            return self.first().paragraph.placeholder_rects();
+        if let Some(single) = self.single() {
+            return single.placeholder_rects();
         }
         let mut rects: Vec<Option<Rect>> = self
             .infos

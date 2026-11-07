@@ -521,6 +521,54 @@ fn content_with_a_right_to_left_locale_falls_back_to_right_to_left() {
     );
 }
 
+/// The direction a neutral paragraph whose direction is `Content` takes in `locale`.
+fn neutral_direction_in(locale: &str) -> ResolvedTextDirection {
+    let style = TextStyle {
+        text_direction: Some(TextDirection::Content),
+        locale_list: Some(LocaleList::from_language_tags(locale)),
+        ..TextStyle::DEFAULT
+    };
+    simple("1", Setup { style, ..Setup::default() }).get_paragraph_direction(0)
+}
+
+/// As ICU's `ULocale.isRightToLeft` (D2049): a script given decides; else ICU's few common
+/// languages, whatever their region; else the likely script of the language in its region.
+#[test]
+fn a_locale_s_direction_is_its_script_s_or_its_likely_script_s() {
+    // Scripts given, right to left in ICU's script data, historic ones too.
+    for locale in [
+        "en-Arab", "tr-Hebr", "arc-Armi", "arc-Nbat", "arc-Palm", "pal-Phlp", "grc-Cprt",
+        "hu-Hung", "ku-Yezi", "sy-Syrj", "ff-Adlm", "men-Mend",
+    ] {
+        assert_eq!(neutral_direction_in(locale), Rtl, "{locale}");
+    }
+    // A script given left to right wins over the language's own.
+    for locale in ["ar-Latn", "fa-Cyrl", "he-Latn", "ur-Deva"] {
+        assert_eq!(neutral_direction_in(locale), Ltr, "{locale}");
+    }
+    // ICU's fast path for common languages takes no region into account.
+    for locale in ["ar-US", "he-DE", "fa-AF"] {
+        assert_eq!(neutral_direction_in(locale), Rtl, "{locale}");
+    }
+    for locale in ["en-IR", "en-SA", "fr-MA", "tr-IQ", "ru-IL"] {
+        assert_eq!(neutral_direction_in(locale), Ltr, "{locale}");
+    }
+    // Likely scripts by language.
+    for locale in ["ur", "ps", "sd", "ckb", "ug", "dv", "yi", "syr", "nqo", "rhg", "phn", "ae"] {
+        assert_eq!(neutral_direction_in(locale), Rtl, "{locale}");
+    }
+    for locale in ["ku", "pa", "az", "uz", "kk", "ha", "ms", "hi", "sw", "am", "xyz", "und"] {
+        assert_eq!(neutral_direction_in(locale), Ltr, "{locale}");
+    }
+    // Likely scripts by region.
+    for locale in ["pa-PK", "az-IQ", "kk-CN", "ky-CN", "ha-CM", "ms-CC", "und-EG", "und-IL"] {
+        assert_eq!(neutral_direction_in(locale), Rtl, "{locale}");
+    }
+    for locale in ["sd-IN", "ug-KZ", "pa-IN", "az-AZ", "und-US"] {
+        assert_eq!(neutral_direction_in(locale), Ltr, "{locale}");
+    }
+}
+
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/MultiParagraphIntegrationTest.kt, getParagraphDirection_textDirection_ForceLtr
 #[test]
 fn a_forced_left_to_right_direction_is_every_paragraph_s() {

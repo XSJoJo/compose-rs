@@ -486,6 +486,12 @@ impl ModifierNode for TextNode {
     }
 }
 
+/// The most lines `input` is laid out with, as Compose's `finalMaxLines`: one for an ellipsis
+/// without wrapping.
+fn final_max_lines(input: &compose_ui::TextLayoutInput) -> u32 {
+    if !input.soft_wrap && input.overflow.is_ellipsis() { 1 } else { input.max_lines }
+}
+
 impl TextNode {
     /// Lays the text out for `constraints` if Compose's rule says the paragraph would differ
     /// ([`new_layout_will_be_different`]); returns whether it did.
@@ -687,8 +693,11 @@ impl LayoutModifierNode for TextNode {
                     placeholders: None,
                 };
                 let paragraph = scope.text_measurer().paragraph(paragraph);
-                let multi_paragraph =
-                    compose_ui::MultiParagraph::of_paragraph(input.text.clone(), paragraph);
+                let multi_paragraph = compose_ui::MultiParagraph::of_paragraph(
+                    input.text.clone(),
+                    paragraph,
+                    final_max_lines(&input),
+                );
                 let result = TextLayoutResult::new(input, std::rc::Rc::new(multi_paragraph), size);
                 let callback = callback.clone();
                 scope.run_after_layout(move || callback(result));
@@ -860,6 +869,7 @@ impl SemanticsModifierNode for TextNode {
         let multi_paragraph = compose_ui::MultiParagraph::of_paragraph(
             input.text.clone(),
             measurer.paragraph(paragraph),
+            final_max_lines(&input),
         );
         Some(TextLayoutResult::new(input, std::rc::Rc::new(multi_paragraph), size))
     }

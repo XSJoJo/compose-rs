@@ -945,3 +945,42 @@ fn an_evicted_layout_lives_while_a_result_keeps_it() {
     assert_eq!(first.get_line_end(0, false), 5);
     assert_eq!(live_paragraphs(&shared), 2);
 }
+
+// ---- A plain text's `MultiParagraph` (D2049) ----
+
+/// As Compose's `multiParagraph.maxLines`: the maximum lines laid out with, one for an ellipsis
+/// without wrapping (Compose's `finalMaxLines`).
+#[test]
+fn a_plain_text_s_multi_paragraph_has_the_lines_it_was_laid_out_with() {
+    let options = TextMeasureOptions { max_lines: 3, ..TextMeasureOptions::default() };
+    assert_eq!(lay_out(MULTI_LINE_TEXT, options).multi_paragraph.max_lines(), 3);
+    let options = TextMeasureOptions {
+        max_lines: 3,
+        soft_wrap: false,
+        overflow: TextOverflow::Ellipsis,
+        ..TextMeasureOptions::default()
+    };
+    assert_eq!(lay_out(MULTI_LINE_TEXT, options).multi_paragraph.max_lines(), 1);
+    let options = TextMeasureOptions {
+        max_lines: 3,
+        soft_wrap: false,
+        overflow: TextOverflow::Clip,
+        ..TextMeasureOptions::default()
+    };
+    assert_eq!(lay_out(MULTI_LINE_TEXT, options).multi_paragraph.max_lines(), 3);
+}
+
+/// Its one paragraph's info: the whole text, its lines, from the top to its height.
+#[test]
+fn a_plain_text_s_paragraph_info_is_the_whole_text() {
+    let style = TextStyle { font_size: 10.sp(), ..TextStyle::DEFAULT };
+    let options = TextMeasureOptions { style, max_lines: 3, ..TextMeasureOptions::default() };
+    let result = lay_out(MULTI_LINE_TEXT, options);
+    let infos = result.multi_paragraph.paragraph_info_list();
+    assert_eq!(infos.len(), 1);
+    let info = &infos[0];
+    assert_eq!((info.start_index, info.end_index), (0, MULTI_LINE_TEXT.len()));
+    assert_eq!((info.start_line_index, info.end_line_index), (0, 3));
+    assert_eq!((info.top, info.bottom), (0.0, 30.0));
+    assert_eq!(info.paragraph.line_count(), 3);
+}

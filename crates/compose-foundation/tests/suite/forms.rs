@@ -342,6 +342,35 @@ fn a_texts_layout_result_answers_queries_after_the_text_is_gone() {
     assert_eq!(result, result.clone());
 }
 
+/// A text's layout result's `MultiParagraph` has the maximum lines it was laid out with, one for
+/// an ellipsis without wrapping, as Compose's `finalMaxLines` (D2049).
+#[test]
+fn a_texts_layout_result_has_its_maximum_lines() {
+    let layouts = Rc::new(RefCell::new(Vec::<TextLayoutResult>::new()));
+    let (wrapped, ellipsized) = (layouts.clone(), layouts.clone());
+    let _ui = compose_test(move || {
+        let (wrapped, ellipsized) = (wrapped.clone(), ellipsized.clone());
+        BasicText!(
+            "ab\ncd\nef",
+            max_lines = 2,
+            on_text_layout = move |result: TextLayoutResult| wrapped.borrow_mut().push(result)
+        );
+        BasicText!(
+            "ab\ncd\nef",
+            max_lines = 2,
+            soft_wrap = false,
+            overflow = compose_ui::TextOverflow::Ellipsis,
+            on_text_layout = move |result: TextLayoutResult| ellipsized.borrow_mut().push(result)
+        );
+    });
+    let layouts = layouts.borrow();
+    assert_eq!(layouts.len(), 2);
+    assert_eq!(layouts[0].multi_paragraph.max_lines(), 2);
+    let info = &layouts[0].multi_paragraph.paragraph_info_list()[0];
+    assert_eq!((info.end_line_index, info.bottom), (2, layouts[0].multi_paragraph.height()));
+    assert_eq!(layouts[1].multi_paragraph.max_lines(), 1);
+}
+
 #[test]
 fn a_multi_line_field_is_between_min_lines_and_max_lines_high() {
     let value = mutable_state_of(String::new());

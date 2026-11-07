@@ -105,7 +105,6 @@ fn right_to_left_locales_by_script_or_language_are_right_to_left() {
 /// Android's `TextUtils.getLayoutDirectionFromLocale` asks ICU's `ULocale.isRightToLeft`, which
 /// takes a locale without a script in its likely script: Kurdish's is Latin (`ku_Latn_TR`).
 #[test]
-#[ignore = "review: `ku` is listed as right to left; ICU's likely script for it is Latn, so Compose lays a Content paragraph in Kurdish out left to right"]
 fn kurdish_without_a_script_is_left_to_right() {
     assert_eq!(content_direction_in("ku"), ResolvedTextDirection::Ltr);
 }
@@ -114,7 +113,6 @@ fn kurdish_without_a_script_is_left_to_right() {
 /// `az_Arab_IR`, `uz_Arab_AF`; by language: Mazanderani, Northern Luri, Ladino), and its script
 /// metadata marks Imperial Aramaic and Phoenician right to left.
 #[test]
-#[ignore = "review: the right-to-left list misses locales right to left by their region (pa-PK, az-IR, uz-AF), languages written in Arabic or Hebrew script (mzn, lrc, lad) and historic RTL scripts (Armi, Phnx); Compose asks ICU"]
 fn locales_right_to_left_by_their_likely_script_are_right_to_left() {
     for locale in ["pa-PK", "az-IR", "uz-AF", "mzn", "lrc", "lad", "arc-Armi", "phn-Phnx"] {
         assert_eq!(content_direction_in(locale), ResolvedTextDirection::Rtl, "{locale}");
@@ -125,7 +123,6 @@ fn locales_right_to_left_by_their_likely_script_are_right_to_left() {
 
 /// Compose's `multiParagraph.maxLines` is the maximum the text was laid out with.
 #[test]
-#[ignore = "review: `MultiParagraph::of_paragraph` answers `max_lines()` u32::MAX whatever the text was laid out with; Compose's `maxLines` is the given one"]
 fn a_plain_text_s_multi_paragraph_has_its_maximum_lines() {
     let options = TextMeasureOptions { max_lines: 2, ..TextMeasureOptions::default() };
     let result = measurer().measure("one\ntwo\nthree", options);
@@ -170,7 +167,6 @@ fn a_text_of_paragraphs_is_measured_as_compose_s_text_measurer_does() {
 
 /// `paragraph_info_list` is public, and documented as the paragraphs' lines and extent.
 #[test]
-#[ignore = "review: a plain text's `paragraph_info_list()` has `end_line_index` usize::MAX and `bottom` infinity (sentinels of `of_paragraph`), not its lines and height"]
 fn a_plain_text_s_paragraph_info_has_its_lines_and_height() {
     let result = measurer().measure("one\ntwo", TextMeasureOptions::default());
     let paragraph = &result.multi_paragraph;
@@ -221,12 +217,32 @@ fn drawing_a_plain_text_in_its_own_style_paints_nothing_new() {
 /// drawing's paint is the input's unresolved style: the two never match, so each paragraph is
 /// painted anew on its first drawing (a `painted` copy, a JNI call and a new handle on Android).
 #[test]
-#[ignore = "review: a text of paragraphs drawn in its own style repaints each paragraph (its layout's paint is the resolved style's, the drawing's the input's)"]
 fn drawing_a_text_of_paragraphs_in_its_own_style_paints_nothing_new() {
     let owner = mutable_state_of(1u32);
     let tick = owner.handle();
     let (mut host, counter) = counted_drawing(tick, |scope, measurer, _| {
         scope.draw_text(measurer, paragraphs(&["First", "Second"]), DrawTextOptions::default());
+    });
+    for step in 2..4 {
+        tick.set(step);
+        host.frame();
+    }
+    for text in ["First", "Second"] {
+        let counts = counter.of(text);
+        assert_eq!((counts.fresh, counts.restyled), (1, 0), "{text}: {counts:?}");
+    }
+}
+
+/// A text of paragraphs measured on a stack of its own, drawn by a host: each paragraph is laid
+/// out again there once, in the paint the drawing asks for (D2049).
+#[test]
+fn drawing_a_text_of_paragraphs_measured_elsewhere_paints_nothing_new() {
+    let result =
+        measurer().measure(paragraphs(&["First", "Second"]), TextMeasureOptions::default());
+    let owner = mutable_state_of(1u32);
+    let tick = owner.handle();
+    let (mut host, counter) = counted_drawing(tick, move |scope, _, _| {
+        compose_ui::TextPainter::paint(scope, &result);
     });
     for step in 2..4 {
         tick.set(step);

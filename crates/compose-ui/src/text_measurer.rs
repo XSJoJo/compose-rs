@@ -196,7 +196,9 @@ fn lay_out(input: TextLayoutInput) -> TextLayoutResult {
     let measured = LaidOutParagraph::lay_out(&platform, input.source(), &input.style);
     let size = input.constraints.constrain(measured.0.metrics.size);
     let queries: Rc<dyn Paragraph> = Rc::new(MeasuredParagraph::new(measured.clone()));
-    let multi_paragraph = Rc::new(MultiParagraph::of_paragraph(input.text.clone(), queries));
+    let max_lines = final_max_lines(&input);
+    let multi_paragraph =
+        Rc::new(MultiParagraph::of_paragraph(input.text.clone(), queries, max_lines));
     let drawable = Rc::new(DrawableParagraphs {
         measured: Some(measured.clone()),
         elsewhere: RefCell::default(),
@@ -224,23 +226,32 @@ fn lay_out_paragraphs(input: TextLayoutInput) -> TextLayoutResult {
     } else {
         Constraints::INFINITY
     };
-    let max_lines = if !input.soft_wrap && ellipsis { 1 } else { input.max_lines };
+    let max_lines = final_max_lines(&input);
     let width = if constraints.min_width == max_width {
         max_width
     } else {
         (intrinsics.max_intrinsic_width().ceil() as i32).clamp(constraints.min_width, max_width)
     };
-    let multi_paragraph = MultiParagraph::new(
+    // Each paragraph in the input's own paint, unresolved, what drawing it in its own style asks
+    // for: the resolved style's (black, say, for an unspecified color) would never match it.
+    let multi_paragraph = MultiParagraph::lay_out(
         Rc::new(intrinsics),
         Constraints::fit_prioritizing_width(0, width, 0, constraints.max_height),
         max_lines,
         input.overflow,
+        Some(&TextPaint::of(&input.style)),
     );
     let size = constraints.constrain(IntSize::new(
         multi_paragraph.width().ceil() as i32,
         multi_paragraph.height().ceil() as i32,
     ));
     TextLayoutResult::new(input, Rc::new(multi_paragraph), size)
+}
+
+/// The most lines `input` is laid out with, as Compose's `finalMaxLines`: one for an ellipsis
+/// without wrapping.
+fn final_max_lines(input: &TextLayoutInput) -> u32 {
+    if !input.soft_wrap && input.overflow.is_ellipsis() { 1 } else { input.max_lines }
 }
 
 /// What a draw scope draws of a [`TextLayoutResult`].
@@ -360,11 +371,21 @@ impl LaidOutParagraph {
         source: ParagraphSource<'_>,
         style: &TextStyle,
     ) -> LaidOutParagraph {
+        LaidOutParagraph::lay_out_in(platform, source, style, TextPaint::of(style))
+    }
+
+    /// `source`'s text laid out on `platform` in `style`, known as drawn in `paint` (what a
+    /// drawing in that paint finds it by).
+    pub(crate) fn lay_out_in(
+        platform: &SharedTextMeasurer,
+        source: ParagraphSource<'_>,
+        style: &TextStyle,
+        paint: TextPaint,
+    ) -> LaidOutParagraph {
         // Nothing draws what was dropped, and no measurement needs it: this keeps a measurer
         // that isn't a host's (or that draws between frames) from growing.
         platform.release_dropped();
         let options = source.options;
-        let paint = TextPaint::of(style);
         // As Compose's: a direction left unspecified is the layout's.
         let style = TextStyle::resolve_defaults(style, options.direction);
         let mut measurer = platform.borrow_mut();
@@ -417,6 +438,11 @@ impl LaidOutParagraph {
     /// A font it asked for arrived since it was laid out.
     pub(crate) fn has_stale_resolved_fonts(&self) -> bool {
         self.0.platform.borrow().has_stale_resolved_fonts(self.0.keeper.handle())
+    }
+
+    /// The paint it's drawn in.
+    pub(crate) fn paint(&self) -> &TextPaint {
+        &self.0.paint
     }
 
     fn of_handle(
@@ -484,7 +510,7 @@ pub(crate) struct TextPaint {
 }
 
 impl TextPaint {
-    fn of(style: &TextStyle) -> TextPaint {
+    pub(crate) fn of(style: &TextStyle) -> TextPaint {
         TextPaint {
             foreground: style.foreground(),
             shadow: style.shadow,
@@ -927,7 +953,8 @@ impl DrawScope<'_> {
         {
             return laid_out.clone();
         }
-        let laid_out = LaidOutParagraph::lay_out(&platform, part.source(), &part.style);
+        let paint = part.measured.paint().clone();
+        let laid_out = LaidOutParagraph::lay_out_in(&platform, part.source(), &part.style, paint);
         *elsewhere = Some(laid_out.clone());
         laid_out
     }
