@@ -285,6 +285,12 @@ impl NodeContext<'_> {
         }
         let (node, index) = (self.node, self.index);
         self.tree.enter().invalidate_entry_at(node, index, what);
+        // From where the tree is free (a task's `NodeHandle::with_node`, which Android's tick runs
+        // between frames): it asks for a frame, as a handle's own requests do (D2025). In a
+        // frame, the host's wake does nothing: that frame lays out and draws it.
+        if self.tree.remeasure_allowed {
+            self.tree.focus_requests.wake();
+        }
     }
 
     /// Draws again what the node draws in, as `DrawModifierNode.invalidateDraw`.
@@ -505,13 +511,7 @@ pub(crate) fn with_free_tree(key: u32, f: &mut dyn FnMut(&mut UiTree)) -> bool {
         let allowed = std::mem::replace(&mut tree.remeasure_allowed, true);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(tree)));
         tree.remeasure_allowed = allowed;
-        result.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-        // The tree free between frames (a task Android's tick ran, no frame under way): what
-        // was invalidated asks for a frame, as a node handle's own requests do. In a frame, the
-        // host's wake does nothing: that frame lays out and draws it.
-        if tree.wants_frame() {
-            tree.focus_requests.wake();
-        }
+        result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     })
 }
 

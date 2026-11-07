@@ -97,8 +97,8 @@ pub trait Selectable {
 pub(crate) enum Unit {
     Character,
     Word,
-    /// A whole text.
-    Text,
+    /// A paragraph of a text, between line feeds, as Compose's `SelectionAdjustment.Paragraph`.
+    Paragraph,
 }
 
 /// A selection gesture or command, handled by the tree once the event's dispatch is over.
@@ -401,6 +401,20 @@ impl UiTree {
             .unwrap_or(point.offset..point.offset)
     }
 
+    /// The paragraph around `point` in its text, between the line feeds before and after it, as
+    /// Compose's `getParagraphBoundary`.
+    fn paragraph(&mut self, point: Point) -> Range<usize> {
+        let text = self.selectable_text(point.node, point.index);
+        let at = point.offset.min(text.len());
+        let start =
+            text.as_bytes()[..at].iter().rposition(|&byte| byte == b'\n').map_or(0, |it| it + 1);
+        let end = text.as_bytes()[at..]
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .map_or(text.len(), |it| at + it);
+        start..end
+    }
+
     fn order_of(entries: &[Entry], point: &Point) -> Option<(usize, usize)> {
         entries.iter().position(|entry| entry.holds(point)).map(|order| (order, point.offset))
     }
@@ -450,9 +464,12 @@ impl UiTree {
                         let word = self.word(point);
                         (Point { offset: word.start, ..point }, Point { offset: word.end, ..point })
                     }
-                    Unit::Text => {
-                        let length = self.selectable_text(point.node, point.index).len();
-                        (Point { offset: 0, ..point }, Point { offset: length, ..point })
+                    Unit::Paragraph => {
+                        let paragraph = self.paragraph(point);
+                        (
+                            Point { offset: paragraph.start, ..point },
+                            Point { offset: paragraph.end, ..point },
+                        )
                     }
                 };
                 self.text_selection = Some(TextSelection {
@@ -481,16 +498,19 @@ impl UiTree {
                     self.show_selection(&entries);
                     return;
                 };
-                // A word selection extends by words, a text selection by texts.
+                // A word selection extends by words, a paragraph's by paragraphs.
                 let snap = |tree: &mut UiTree, forward: bool| match selection.unit {
                     Unit::Character => point,
                     Unit::Word => {
                         let word = tree.word(point);
                         Point { offset: if forward { word.end } else { word.start }, ..point }
                     }
-                    Unit::Text => {
-                        let length = tree.selectable_text(point.node, point.index).len();
-                        Point { offset: if forward { length } else { 0 }, ..point }
+                    Unit::Paragraph => {
+                        let paragraph = tree.paragraph(point);
+                        Point {
+                            offset: if forward { paragraph.end } else { paragraph.start },
+                            ..point
+                        }
                     }
                 };
                 // From the side of what the press selected away from the pointer.
@@ -1307,7 +1327,7 @@ impl PointerInputModifierNode for SelectionContainerNode {
                 let unit = match clicks {
                     1 => Unit::Character,
                     2 => Unit::Word,
-                    _ => Unit::Text,
+                    _ => Unit::Paragraph,
                 };
                 self.dragging = true;
                 context.request_focus();
@@ -1373,9 +1393,9 @@ impl SelectionContainerNode {
                 self.last_down = Some((event.time_nanos, position, clicks));
                 let later = clicks > 1;
                 if later {
-                    // Compose's `touchSelectionSubsequentPress`: its word (or its text, for a
-                    // third tap) at once, on a text; dragged once past the slop or held.
-                    let unit = if clicks == 2 { Unit::Word } else { Unit::Text };
+                    // Compose's `touchSelectionSubsequentPress`: its word (or its paragraph, for
+                    // a third tap) at once, on a text; dragged once past the slop or held.
+                    let unit = if clicks == 2 { Unit::Word } else { Unit::Paragraph };
                     context.request_focus();
                     context.requests.selection.push(SelectionRequest::LongPress {
                         container,

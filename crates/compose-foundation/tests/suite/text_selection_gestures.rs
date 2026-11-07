@@ -1364,3 +1364,122 @@ fn a_handle_grows_by_words_from_a_boundary_and_shrinks_by_characters() {
     });
     release_handle(&mut it, handle);
 }
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenMouse_withTripleClick_selectsParagraph, whenTrackpad_withTripleClick_selectsParagraph, whenTouch_withTripleClick_selectsParagraph
+#[test]
+fn whenMouse_withTripleClick_selectsParagraph() {
+    // Compose's `whenTouch_*` twin clicks with the mouse too.
+    for (rtl, kind) in directions_and_cursors() {
+        let mut it = gestures(rtl);
+        let at = it.character(13);
+        it.cursor(kind, |cursor| {
+            for _ in 0..3 {
+                cursor.click(at);
+            }
+        });
+        it.expect(|it| it.selection = Some((6, 23)));
+    }
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenMouse_withTripleClickThenDragLeft_selectsParagraphs, whenTrackpad_withTripleClickThenDragLeft_selectsParagraphs
+#[test]
+fn whenMouse_withTripleClickThenDragLeft_selectsParagraphs() {
+    clicks_then_drag(3, 8, (6, 23), (6, 23));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenMouse_withTripleClickThenDragUp_selectsParagraphs, whenTrackpad_withTripleClickThenDragUp_selectsParagraphs
+#[test]
+fn whenMouse_withTripleClickThenDragUp_selectsParagraphs() {
+    clicks_then_drag(3, 2, (6, 23), (23, 0));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenMouse_withTripleClickThenDragRight_selectsParagraphs, whenTrackpad_withTripleClickThenDragRight_selectsParagraphs
+#[test]
+fn whenMouse_withTripleClickThenDragRight_selectsParagraphs() {
+    clicks_then_drag(3, 20, (6, 23), (6, 23));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenMouse_withTripleClickThenDragDown_selectsParagraphs, whenTrackpad_withTripleClickThenDragDown_selectsParagraphs
+#[test]
+fn whenMouse_withTripleClickThenDragDown_selectsParagraphs() {
+    clicks_then_drag(3, 26, (6, 23), (6, 29));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenMouse_thenTripleClickAndDragUpToEndPadding_selectsParagraph, whenTrackpad_thenTripleClickAndDragUpToEndPadding_selectsParagraph
+#[test]
+fn whenMouse_thenTripleClickAndDragUpToEndPadding_selectsParagraph() {
+    clicks_then_drag_up_to_end_padding(3, (23, 0));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenMouse_thenTripleClickInEndPadding_selectsOnlyCurrentParagraph, whenTrackpad_thenTripleClickInEndPadding_selectsOnlyCurrentParagraph
+#[test]
+fn whenMouse_thenTripleClickInEndPadding_selectsOnlyCurrentParagraph() {
+    for (rtl, kind) in directions_and_cursors() {
+        let mut it = gestures(rtl);
+        let at = it.center_end();
+        it.cursor(kind, |cursor| {
+            cursor.move_to(at);
+            cursor.press();
+            for _ in 0..2 {
+                cursor.advance_event_time(16);
+                cursor.release();
+                cursor.advance_event_time(16);
+                cursor.press();
+            }
+            cursor.release();
+        });
+        it.expect(|it| it.selection = Some((6, 23)));
+    }
+}
+
+/// As the tests' `touchTapsThenDragTest` of three taps: the third held past the long-press
+/// timeout, then dragged.
+fn triple_tap_then_drag(end: usize, last: (usize, usize)) {
+    for rtl in [false, true] {
+        let mut it = gestures(rtl);
+        let at = it.character(13);
+        it.touch(|touch| {
+            touch.down(at);
+            for _ in 0..2 {
+                touch.advance_event_time(touch.event_period_millis());
+                touch.up();
+                touch.advance_event_time(touch.event_period_millis());
+                touch.down(at);
+            }
+        });
+        it.ui.advance_time_by(std::time::Duration::from_millis(1000));
+        it.expect(|it| {
+            it.selection = Some((6, 23));
+            it.handles_shown = true;
+        });
+        let to = it.character(end);
+        it.touch_drag_to(to);
+        it.expect(|it| it.selection = Some(last));
+        it.up();
+        it.expect(|it| it.handles_shown = true);
+    }
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withTripleClickThenDragLeft_selectsParagraphs
+#[test]
+fn whenTouch_withTripleClickThenDragLeft_selectsParagraphs() {
+    triple_tap_then_drag(8, (6, 23));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withTripleClickThenDragUp_selectsParagraphs
+#[test]
+fn whenTouch_withTripleClickThenDragUp_selectsParagraphs() {
+    triple_tap_then_drag(2, (23, 0));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withTripleClickThenDragRight_selectsParagraphs
+#[test]
+fn whenTouch_withTripleClickThenDragRight_selectsParagraphs() {
+    triple_tap_then_drag(20, (6, 23));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenTouch_withTripleClickThenDragDown_selectsParagraphs
+#[test]
+fn whenTouch_withTripleClickThenDragDown_selectsParagraphs() {
+    triple_tap_then_drag(26, (6, 29));
+}
