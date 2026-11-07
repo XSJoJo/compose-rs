@@ -1046,6 +1046,51 @@ fn a_parent_flings_again_after_a_child_s_fling_was_cancelled() {
     assert!(outer_total.get() != 0.0, "and flings again after the first was cancelled");
 }
 
+/// Adds up the post-scrolls of flings it's offered along x, taking nothing.
+struct FlingTally(Cell<f32>);
+
+impl NestedScrollConnection for FlingTally {
+    fn on_post_scroll(&self, _: Offset, available: Offset, source: NestedScrollSource) -> Offset {
+        if source == NestedScrollSource::SideEffect {
+            self.0.set(self.0.get() + available.x);
+        }
+        Offset::ZERO
+    }
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/ScrollableTest.kt, scrollable_nestedScrollBelow_listensDispatches (the fling a dispatcher inside starts offers what it leaves to the connections around, as `ScrollingLogic.doFlingAnimation`)
+#[test]
+fn a_fling_a_dispatcher_inside_starts_goes_on_to_the_connections_around() {
+    let tally = Rc::new(FlingTally(Cell::new(0.0)));
+    let around: Rc<dyn NestedScrollConnection> = tally.clone();
+    let (state, _) = consuming(0.0);
+    let dispatcher = compose_ui::NestedScrollDispatcher::new();
+    let given = dispatcher.clone();
+    let mut ui = window(move || {
+        let (state, given) = (state.clone(), given.clone());
+        Box!(modifier = Modifier.nested_scroll(around.clone()), {
+            let given = given.clone();
+            Box!(
+                modifier =
+                    Modifier.size(300.dp()).scrollable(state.clone(), Orientation::Horizontal),
+                {
+                    let none: Rc<dyn NestedScrollConnection> = Rc::new(NoConnection);
+                    Box!(
+                        modifier =
+                            Modifier.size(200.dp()).nested_scroll_with(none, Some(given.clone()))
+                    );
+                }
+            );
+        });
+    });
+    let scope = dispatcher.coroutine_scope();
+    scope.launch(async move {
+        dispatcher.dispatch_post_fling(Offset::ZERO, Offset::new(2000.0, 0.0)).await;
+    });
+    ui.wait_for_idle();
+    assert!(tally.0.get() != 0.0, "the scrollable's fling offered its deltas around");
+}
+
 /// A connection that takes nothing, as `object : NestedScrollConnection {}`.
 struct NoConnection;
 

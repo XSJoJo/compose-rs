@@ -17,9 +17,9 @@ What of Jetpack Compose's ui core compose-rs has, which of Compose's tests its o
 | Status | Files | Tests |
 |---|---|---|
 | `covered` | 3 | 11 |
-| `ported` | 86 | 1,020 |
+| `ported` | 88 | 1,034 |
 | `port` | 10 | 105 |
-| `partial` | 57 | 1,398 |
+| `partial` | 55 | 1,384 |
 | `feature:<name>` | 25 | 338 |
 | `n/a` | 55 | 298 |
 
@@ -74,8 +74,8 @@ Status in bold for the ones that need work now (`port`, `partial`, `covered`); `
 | `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/vector/compat/XmlVectorParserTest.kt` | 16 | Parsing Android VectorDrawable XML resources | `n/a: Android resources` |  |
 | `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/AlignmentLineTest.kt` | 36 | Alignment lines: querying unmeasured children, cooperation when a layout disobeys, lines from modifiers, remeasure on change, 30 scenario tests of line propagation | **ported** | `crates/compose-ui/tests/suite/alignment_lines.rs` (D1219). |
 | `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/ApproachLayoutTest.kt` | 9 | `approachLayout`/`ApproachLayoutModifierNode`: measurement/placement approach flags, nested approach nodes, default completion, forced reset, intrinsics before lookahead | `partial` | `crates/compose-ui/tests/suite/lookahead.rs` (D1222): `toggleIsMeasurementApproachInProgress`, `toggleIsPlacementApproachComplete`. The nested, scroll and intrinsics cases aren't ported. |
-| `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/BeyondBoundsLayoutProviderModifierNodeTest.kt` | 7 | `BeyondBoundsLayoutProviderModifierNode` iteration: no items, found on n-th iteration, reentrancy | **partial** | compose-rs has an internal equivalent for focus search in lazy lists (`ModifierNode::lay_out_beyond_bounds`, D477; review_parity.rs). Public API missing: feature:beyond-bounds-layout. |
-| `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/BeyondBoundsLayoutTest.kt` | 7 | `BeyondBoundsLayout` through the modifier local | **partial** | Same as above; the modifier-local route is deprecated, so port only the scenarios. |
+| `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/BeyondBoundsLayoutProviderModifierNodeTest.kt` | 7 | `BeyondBoundsLayoutProviderModifierNode` iteration: no items, found on n-th iteration, reentrancy | **ported** | `ui/beyond_bounds_layout.rs`, all 7 through a node's `find_nearest_beyond_bounds_layout_ancestor` (D1919), and one more of its own (none found without a provider). |
+| `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/BeyondBoundsLayoutTest.kt` | 7 | `BeyondBoundsLayout` through the modifier local | **ported** | `ui/beyond_bounds_layout.rs`: the same 7, each test running both routes, this one through `MODIFIER_LOCAL_BEYOND_BOUNDS_LAYOUT` (D1919). |
 | `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/ComposeViewLayoutTest.kt` | 3 | ComposeView large sizes and root view configuration | `n/a: Android View host` |  |
 | `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/IntrinsicsMeasurementTest.kt` | 11 | Intrinsics: a change remeasures the parent that asked, usage in placement, grandchildren, usage changes, too-large sizes | **partial** | Ported (`crates/compose-ui/tests/suite/intrinsics.rs`): `intrinsicsChangeCausesParentRemeasure`, `grandchildChangeCausesRemeasure`, `intrinsicsUsageChanges`, `measureWidthTooLarge`, `measureHeightTooLarge`. The five measuring or asking in a placement block wait on feature:placement-pass; `…InPlacementInLookahead` on feature:lookahead. |
 | `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/LayoutCooperationTest.kt` | 2 | A parent re-places a child whose constraints changed but size didn't; relayout skipping modifiers | **partial** | `relayoutSkippingModifiersDoesntBreakCooperation`: crates/compose-ui/tests/suite/placement_pass.rs. `whenConstraintsChangeButSizeDoesNot`: `port`, in pixels. |
@@ -339,7 +339,7 @@ From each module's `api/current.txt` (public, non-deprecated; experimental inclu
   - `WindowInsetsRulers` (13 kinds, `current`, `maximum`, `getAnimation`, `innermostOf`, `disable`), `WindowInsetsAnimation`, `getDisplayCutoutBounds`: **rulers** (the rest of it is there, D1218). `MeasureResult.rulers`, `rulerProvider`, `isRulerProvided`: `MeasureResult` is a struct holding a size here, what's provided kept by the layout call.
   - `ContentScale` as an interface (`computeScaleFactor`), `FixedScale`, `ScaleFactor` (+ `times`/`div` with `Size`, `lerp`, `isSpecified`, `takeOrElse`), and `ContentScale` in ui rather than foundation: **content-scale**.
   - **Has** (D1372, D1375): `Modifier.onLayoutRectChanged(throttleMillis, debounceMillis)` (`on_layout_rect_changed`), `registerOnLayoutRectChanged` and `registerOnGlobalLayoutListener` (on `NodeContext`), `RegistrationHandle`, `Modifier.onVisibilityChanged`, `onVisibilityChangedNode`, `LayoutBoundsHolder`, `Modifier.layoutBounds`.
-  - `BeyondBoundsLayout` (+ `BeyondBoundsScope`, `LayoutDirection`), `BeyondBoundsLayoutProviderModifierNode`: **beyond-bounds-layout** (compose-rs has an internal equivalent, D477).
+  - `BeyondBoundsLayout` (+ `BeyondBoundsScope`, `LayoutDirection`), `BeyondBoundsLayoutProviderModifierNode`: **done** (D1919: `BeyondBoundsLayoutDirection`, `ModifierNode::beyond_bounds_layout`).
   - `PinnableContainer`, `PinnedHandle`, `LocalPinnableContainer`: **pinnable-container** (compose-rs's lazy lists pin the focused item internally).
   - `LayoutInfo` (`placeOrder` and `zIndex` *experimental*, `@ExperimentalComposeUiHostApi`), `ModifierInfo`, `GraphicLayerInfo`, `calculateOuterBoundsInRoot` (*experimental*): **layout-info**.
   - Legacy element interfaces `LayoutModifier` and `ParentDataModifier`: not to port (`LayoutModifierNode`, `ParentDataModifierNode`).
@@ -353,7 +353,7 @@ From each module's `api/current.txt` (public, non-deprecated; experimental inclu
 - **Has:** `Modifier.on_placed`, `LayoutAwareModifierNode` and `MeasuredSizeAwareModifierNode` (D1186, D1188), `CompositionLocalConsumerModifierNode` and `currentValueOf` (`is_composition_local_consumer`, `current_value_of` on `NodeContext`, `MeasureScope` and `DrawScope`, D1182), `TraversableNode` (`traverse_key`), `findNearestAncestor`, `traverseAncestors`, `traverseChildren`, `traverseDescendants`, `TraverseDescendantsAction` (on `NodeContext`, D1171), `DelegatingNode` as `Delegates` (`delegate`, `undelegate`, D1169), `ModifierNodeElement` (typed as Compose's: `type Node`, `create`, `update`, `same` for `equals`, `inspectable_properties` with `InspectorInfo`), `Modifier.Node.shouldAutoInvalidate` (`should_auto_invalidate`) and auto-invalidation by node kinds, `onAttach`, `onDetach`, `onReset`, `isAttached`, `coroutineScope`, `sideEffect` (`on_attach`, `on_detach`, `on_reset`, `NodeContext::is_attached`, `coroutine_scope`, `side_effect`; `on_release` compose-rs's), `DelegatableNode.onDensityChange`, `onLayoutDirectionChange`, `requireDensity`, `requireLayoutDirection`, the invalidations `invalidateDraw`, `invalidateMeasurement`, `invalidatePlacement`, `invalidateLayer`, `invalidateSemantics`, `invalidateParentData`, `invalidateSubtree`, `invalidateMeasurementForSubtree`, `invalidateDrawForSubtree` (on `NodeContext` and `NodeHandle`, D1153, D1154), `LayoutModifierNode.remeasureSync` (`NodeContext::remeasure_sync`, D1165), `DrawModifierNode.onMeasureResultChanged` (`on_measure_result_changed`, D1166), `ObserverModifierNode` and `observeReads` (`as_observer`, `NodeContext::observe_reads`, D1167), `ParentDataModifierNode` and `invalidateParentData` (`as_parent_data`, D1168), `LayoutModifierNode.measure`, `DrawModifierNode` (`draw`, `draw_after`, `draw_with_content`), `GlobalPositionAwareModifierNode`, `PointerInputModifierNode` and `SemanticsModifierNode` (other agents), and `ModifierNode::on_reset`/`on_detach`.
 - **Missing:**
   - `DrawModifierNode.dispatchDraw` isn't there: the tree dispatches to draw delegates (D1170); `RegistrationHandle`, `requireGraphicsContext` (**graphics-layer-object**), `LayoutModifierNode.updateLayerBlock` (**place-with-layer**), `invalidateRulers` (**rulers**); `invalidatePlacement` measures a node placing inside its measurement (D1209).
-  - `findNearestBeyondBoundsLayoutAncestor`: **beyond-bounds-layout**. `dispatchOnScrollChanged`: foundation agent (scroll).
+  - `findNearestBeyondBoundsLayoutAncestor`: **done** (D1919, `NodeContext::find_nearest_beyond_bounds_layout_ancestor`). `dispatchOnScrollChanged`: foundation agent (scroll).
   - `ObservationTarget` (*experimental*, host API): **layout-info**.
   - Not to port: `Ref` (Kotlin), `RootForTest` (Android test host), `InteroperableComposeUiNode` (internal), `requireView`, `requestAutofill` (autofill agent), `TouchBoundsExpansion`/`DpTouchBoundsExpansion` and the pointer node's extras (input agent), `invalidateSemantics` (semantics agent).
 
@@ -534,7 +534,7 @@ One entry per feature, in the suggested order (below, after the entries). Sizes:
 - *Tests:* OnGlobalRectChangedTest, RectListIntegrationTest, OnGlobalLayoutListenerTest, OnVisibilityChangedTest, RectListTest, ThrottledCallbacksTest.
 - *Depends on:* 3.14; 3.4 for `register*` on nodes; the host clock for throttling.
 
-**3.23 `beyond-bounds-layout`** — S to M.
+**3.23 `beyond-bounds-layout`** — S to M. **Done** (D1919): the API; the lazy layouts answering it are foundation's beyond-bounds-api.
 - *API:* `BeyondBoundsLayout`, `BeyondBoundsLayoutProviderModifierNode`, `findNearestBeyondBoundsLayoutAncestor`.
 - *Does:* makes compose-rs's internal beyond-bounds layout (D477) public.
 - *Tests:* completes BeyondBoundsLayoutProviderModifierNodeTest, BeyondBoundsLayoutTest.

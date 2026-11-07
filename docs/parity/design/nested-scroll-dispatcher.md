@@ -30,11 +30,11 @@ What can change a parent after that is a nested-scroll node attaching above (a c
 
 ## Scrollables in the tree's chain (D1918)
 
-`Modifier.scrollable`, `vertical_scroll` and `horizontal_scroll` each delegate to a nested-scroll node (`nested_scroll_tree_node`) with a connection and a dispatcher of their own. That makes each the tree parent of the dispatchers inside it. The delegate isn't on the pointer's path, because the scrollable already enters a connection of its own there, built at each press.
+`Modifier.scrollable`, `vertical_scroll` and `horizontal_scroll` take part in the tree's chain at no cost until it's used. A first version delegated to a nested-scroll node in each scrollable, as Compose does. It cost 5.8 % more instructions on `first_frame_scrollables`: a delegate, a registered handle, an ancestor walk and a connection per scrollable.
 
-The tree connection holds the scrollable's `ScrollTarget` (its state, axis, direction, fling behavior and density). The node sets it again on attach, on each update, when its density changes, and when a horizontal scroll's layout direction does. What a dispatcher inside leaves scrolls the state, unless a scroll of the state's own is going on (Compose's `performRawScroll`). A post-fling velocity flings it, its fling's parents found through its own dispatcher.
+**As a parent.** A nested-scroll node looking for its parent visits the traversable nodes above it. A node that isn't a `NestedScrollNode` is asked `ModifierNode::as_nested_scroll_participant`. A scrollable makes its `NestedScrollParticipant` then (a link like a nested-scroll node's, with a registered handle), so only scrollables with a nested-scroll node inside pay for one. Its connection holds the scrollable's `ScrollTarget` (state, axis, direction, fling behavior, density), set again on each update, density change and layout-direction change. What a dispatcher inside leaves scrolls the state, unless a scroll of the state's own is going on (Compose's `performRawScroll`). A post-fling velocity flings it, its fling's deltas offered to the chain above it.
 
-Drags, the wheel and flings keep the pointer's path. The scrolls a pointer doesn't start take their chain from the scrollable's dispatcher, resolved when they run:
+**Its own scrolls.** At attach a scrollable keeps an unregistered handle (`NodeContext::unregistered_handle`), a copy and nothing more. Drags, the wheel and flings keep the pointer's path. The scrolls a pointer doesn't start find the chain above the scrollable through that handle when they run (`NestedScrollChain::above`, one ancestor walk with the tree free):
 
 - Page Up and Page Down, in the task the key launches;
 - the `ScrollBy` semantics action, at once as before (D491), in a scope over `dispatch_raw_delta`;

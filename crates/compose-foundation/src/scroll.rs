@@ -435,9 +435,6 @@ pub(crate) fn same_fling(
 impl ModifierNodeElement for ScrollElement {
     type Node = ScrollNode;
     fn create(&self) -> ScrollNode {
-        let (tree, tree_node) = NestedTree::new();
-        let mut delegates = compose_ui::Delegates::new();
-        delegates.delegate(tree_node);
         ScrollNode {
             state: self.state,
             dyn_state: Rc::new(self.state),
@@ -453,8 +450,7 @@ impl ModifierNodeElement for ScrollElement {
             rtl: false,
             content_in_view: None,
             measured: compose_ui::IntSize::ZERO,
-            tree,
-            delegates,
+            tree: NestedTree::default(),
             density: 1.0,
         }
     }
@@ -596,14 +592,20 @@ pub(crate) struct ScrollNode {
     measured: compose_ui::IntSize,
     /// Its place in the tree's nested-scroll chain (D1918), its node a delegate.
     tree: NestedTree,
-    delegates: compose_ui::Delegates,
-    /// Pixels per dp where it's attached, for its tree connection's flings.
+    /// Pixels per dp where it takes part in the tree's chain, for its connection's flings.
     density: f32,
 }
 
 impl ScrollNode {
-    /// Tells its tree connection what it scrolls now.
+    /// Tells its tree connection what it scrolls now, if it takes part.
     fn tell_tree(&self) {
+        if self.tree.takes_part() {
+            self.tree.set_target(self.tree_target());
+        }
+    }
+
+    /// What its tree connection scrolls.
+    fn tree_target(&self) -> ScrollTarget {
         let overscroll = self.overscroll_effect().cloned();
         let driver = ScrollDriver {
             state: &self.dyn_state,
@@ -613,8 +615,7 @@ impl ScrollNode {
             set_outer: None,
             overscroll: overscroll.as_ref(),
         };
-        let target = self.drag.tree_target(&driver, self.mirrored(self.rtl), self.density);
-        self.tree.set_target(target);
+        self.drag.tree_target(&driver, self.mirrored(self.rtl), self.density)
     }
 
     /// What gets its drags' and flings' deltas.
@@ -679,7 +680,7 @@ impl ScrollNode {
             reverse_direction: !self.mirrored(self.rtl),
             spec: None,
             pending: Some(Rc::new(move || (state.value() - laid_out.get()) as f32)),
-            tree: Some(self.tree.clone()),
+            handle: self.tree.handle(),
         }
     }
 }
@@ -702,14 +703,15 @@ impl compose_ui::SemanticsModifierNode for ScrollNode {
         if !self.enabled {
             return;
         }
-        let (state, vertical, tree) = (self.dyn_state.clone(), self.vertical, self.tree.clone());
+        let (state, vertical, handle) = (self.dyn_state.clone(), self.vertical, self.tree.handle());
+        let reverse = self.mirrored(self.rtl);
         config.scroll_by(None, move |x, y| {
             // Towards the content's end (its value growing), as Compose's (D491), through the
             // nested-scroll nodes above (D1918); handled even where nothing moves (an edge), as
             // Compose's action returns true (D877).
             let delta = if vertical { y } else { x };
             if delta != 0.0 {
-                tree.scroll_now(&state, delta);
+                semantics_scroll(&state, handle, vertical, reverse, delta);
             }
             true
         });
@@ -751,7 +753,7 @@ impl KeyInputModifierNode for ScrollNode {
             set_outer: None,
             overscroll: overscroll.as_ref(),
         };
-        self.drag.on_key_event(event, self.vertical, reverse, context, &driver, Some(&self.tree))
+        self.drag.on_key_event(event, self.vertical, reverse, context, &driver, self.tree.handle())
     }
 }
 
@@ -785,17 +787,26 @@ impl ModifierNode for ScrollNode {
         self.drag.detach();
     }
     fn on_attach(&mut self, context: &mut compose_ui::NodeContext<'_>) {
-        self.density = context.require_density().density;
-        self.tell_tree();
+        self.tree.on_attach(context);
     }
     fn on_density_change(&mut self, context: &mut compose_ui::NodeContext<'_>) {
-        self.density = context.require_density().density;
-        self.tell_tree();
+        if self.tree.takes_part() {
+            self.density = context.require_density().density;
+            self.tell_tree();
+        }
     }
-    fn delegates(&mut self) -> Option<&mut compose_ui::Delegates> {
-        Some(&mut self.delegates)
+    fn as_nested_scroll_participant(
+        &mut self,
+        context: &mut compose_ui::NodeContext<'_>,
+    ) -> Option<compose_ui::platform::NestedScrollParticipant> {
+        if !self.tree.takes_part() {
+            self.density = context.require_density().density;
+        }
+        let target = self.tree_target();
+        Some(self.tree.participant(context, || target))
     }
-    fn on_detach(&mut self, _context: &mut compose_ui::NodeContext<'_>) {
+    fn on_detach(&mut self, context: &mut compose_ui::NodeContext<'_>) {
+        self.tree.on_detach(context);
         if let Some(content_in_view) = &self.content_in_view {
             content_in_view.on_detach();
         }
@@ -1492,27 +1503,31 @@ impl NestedScrollConnection for ScrollableConnection {
 }
 
 /// A scrollable in the tree's nested-scroll chain, as Compose's `ScrollableNode` delegating to
-/// `nestedScrollModifierNode(connection, dispatcher)` (D1918): the nested-scroll parent of the
-/// dispatchers inside it, and its dispatcher for the scrolls no pointer starts (keys, semantics
-/// actions, bringing into view). Its drags and wheel keep the pointer's path (D188).
-#[derive(Clone)]
+/// `nestedScrollModifierNode(connection, dispatcher)` (D1918), at no cost until it's used: the
+/// scrolls no pointer starts (keys, semantics actions, bringing into view) find the chain above
+/// it from an unregistered handle when they run, and it becomes the nested-scroll parent of the
+/// nested-scroll nodes inside it when one of them looks for its parent. Its drags and wheel keep
+/// the pointer's path (D188).
+#[derive(Default)]
 pub(crate) struct NestedTree {
-    pub(crate) dispatcher: compose_ui::NestedScrollDispatcher,
-    connection: Rc<TreeConnection>,
+    /// Its node, unregistered: what finds the chain above it.
+    handle: Option<compose_ui::NodeHandle>,
+    /// Its participant and connection, made when a nested-scroll node inside asks.
+    participant: Option<(compose_ui::platform::NestedScrollParticipant, Rc<TreeConnection>)>,
 }
 
-/// A scrollable's connection for the dispatchers inside it, as `ScrollableNestedScrollConnection`:
-/// what they leave scrolls it, a fling's velocity flings it.
+/// A scrollable's connection for the nested-scroll nodes inside it, as
+/// `ScrollableNestedScrollConnection`: what they leave scrolls it, a velocity flings it.
 struct TreeConnection {
-    /// What it scrolls, as the node last told it (none before it's attached).
-    target: std::cell::RefCell<Option<ScrollTarget>>,
-    /// Its own, for its fling's parents.
-    dispatcher: compose_ui::NestedScrollDispatcher,
+    /// What it scrolls, as the node last told it.
+    target: std::cell::RefCell<ScrollTarget>,
+    /// Its node, for its fling's parents.
+    handle: Option<compose_ui::NodeHandle>,
 }
 
 impl NestedScrollConnection for TreeConnection {
     fn on_post_scroll(&self, _: Offset, available: Offset, _: NestedScrollSource) -> Offset {
-        let Some(target) = self.target.borrow().clone() else { return Offset::ZERO };
+        let target = self.target.borrow().clone();
         // The content scrolls the pointer's other way.
         let delta = -target.along(available);
         // Unless a scroll of its own goes on, as Compose's `performRawScroll`.
@@ -1527,8 +1542,8 @@ impl NestedScrollConnection for TreeConnection {
     /// As [`ScrollableConnection::on_post_fling`], its fling's parents found through the tree.
     fn on_post_fling(&self, _: Offset, available: Offset) -> LocalBoxFuture<'_, Offset> {
         Box::pin(async move {
-            let Some(mut target) = self.target.borrow().clone() else { return Offset::ZERO };
-            target.chain = self.dispatcher.chain();
+            let mut target = self.target.borrow().clone();
+            target.chain = chain_above(self.handle);
             let along = target.along(available);
             let left = if target.flinging.get() {
                 0.0
@@ -1546,44 +1561,96 @@ impl NestedScrollConnection for TreeConnection {
     }
 }
 
+/// The nested-scroll connections above `handle`'s node, found through the tree; none if there's
+/// no handle or the tree is busy.
+pub(crate) fn chain_above(handle: Option<compose_ui::NodeHandle>) -> NestedScrollChain {
+    handle.and_then(NestedScrollChain::above).unwrap_or_default()
+}
+
+/// Scrolls by `delta` (the state's way) in `scope`, through the nested-scroll nodes above
+/// `handle`'s node, as Compose's `ScrollingLogic.scrollBy` in a `NestedScrollScope`; `reverse` as
+/// the node's drags (the state's way against the content's). Returns what was used, the state's
+/// way.
+pub(crate) fn scroll_above(
+    scope: &ScrollScope,
+    handle: Option<compose_ui::NodeHandle>,
+    vertical: bool,
+    reverse: bool,
+    delta: f32,
+) -> f32 {
+    let chain = chain_above(handle);
+    if chain.is_empty() {
+        return scope.scroll_by(delta);
+    }
+    let sign = if reverse { -1.0 } else { 1.0 };
+    sign * scroll_through(scope, None, &chain, None, vertical, reverse, sign * delta)
+}
+
+/// Scrolls `state` by `delta` (the state's way) at once, through the nested-scroll nodes above
+/// `handle`'s node, outside any scroll of the state's: the semantics action's, as Compose's
+/// `semanticsScrollBy` (compose-rs's isn't animated, D491).
+pub(crate) fn semantics_scroll(
+    state: &Rc<dyn ScrollableState>,
+    handle: Option<compose_ui::NodeHandle>,
+    vertical: bool,
+    reverse: bool,
+    delta: f32,
+) {
+    let raw = state.clone();
+    let scope = ScrollScope::new(move |delta| raw.dispatch_raw_delta(delta));
+    scroll_above(&scope, handle, vertical, reverse, delta);
+}
+
 impl NestedTree {
-    /// Its parts and the node its scrollable delegates to.
-    pub(crate) fn new() -> (NestedTree, impl compose_ui::ModifierNode) {
-        let dispatcher = compose_ui::NestedScrollDispatcher::new();
-        let connection = Rc::new(TreeConnection {
-            target: std::cell::RefCell::new(None),
-            dispatcher: dispatcher.clone(),
+    /// Its node is attached.
+    pub(crate) fn on_attach(&mut self, context: &mut compose_ui::NodeContext<'_>) {
+        self.handle = Some(context.unregistered_handle());
+        if let Some((participant, _)) = &self.participant {
+            participant.on_attach(context);
+        }
+    }
+
+    /// Its node is detached.
+    pub(crate) fn on_detach(&mut self, context: &mut compose_ui::NodeContext<'_>) {
+        if let Some((participant, _)) = &self.participant {
+            participant.on_detach(context);
+        }
+    }
+
+    /// Its node, unregistered.
+    pub(crate) fn handle(&self) -> Option<compose_ui::NodeHandle> {
+        self.handle
+    }
+
+    /// Its participant, made now if it has none, scrolling `target`.
+    pub(crate) fn participant(
+        &mut self,
+        context: &mut compose_ui::NodeContext<'_>,
+        target: impl FnOnce() -> ScrollTarget,
+    ) -> compose_ui::platform::NestedScrollParticipant {
+        // Asked by a node inside before its own `on_attach` (children attach first).
+        let handle = *self.handle.get_or_insert_with(|| context.unregistered_handle());
+        let handle = Some(handle);
+        let (participant, _) = self.participant.get_or_insert_with(|| {
+            let connection =
+                Rc::new(TreeConnection { target: std::cell::RefCell::new(target()), handle });
+            let participant =
+                compose_ui::platform::NestedScrollParticipant::new(context, connection.clone());
+            (participant, connection)
         });
-        let node = compose_ui::platform::nested_scroll_tree_node(
-            connection.clone(),
-            Some(dispatcher.clone()),
-        );
-        (NestedTree { dispatcher, connection }, node)
+        participant.clone()
     }
 
-    /// What it scrolls now.
+    /// Whether it takes part as a parent, its target to keep current.
+    pub(crate) fn takes_part(&self) -> bool {
+        self.participant.is_some()
+    }
+
+    /// What it scrolls now, if it takes part.
     pub(crate) fn set_target(&self, target: ScrollTarget) {
-        *self.connection.target.borrow_mut() = Some(target);
-    }
-
-    /// Scrolls by `delta` (the state's way) in `scope`, through the nested-scroll nodes above,
-    /// as Compose's `ScrollingLogic.scrollBy` in a `NestedScrollScope`; returns what was used,
-    /// the state's way.
-    pub(crate) fn scroll_in(&self, scope: &ScrollScope, delta: f32) -> f32 {
-        let target = self.connection.target.borrow().clone();
-        let Some(mut target) = target else { return scope.scroll_by(delta) };
-        target.chain = self.dispatcher.chain();
-        // The target's deltas are the content's, reversed for the state's.
-        let sign = if target.reverse { -1.0 } else { 1.0 };
-        sign * target.user_scroll(scope, sign * delta)
-    }
-
-    /// Scrolls `state` by `delta` (the state's way) at once, through the nested-scroll nodes
-    /// above, outside any scroll of the state's: the semantics action's, as Compose's
-    /// `semanticsScrollBy` (compose-rs's isn't animated, D491).
-    pub(crate) fn scroll_now(&self, state: &Rc<dyn ScrollableState>, delta: f32) {
-        let state = state.clone();
-        self.scroll_in(&ScrollScope::new(move |delta| state.dispatch_raw_delta(delta)), delta);
+        if let Some((_, connection)) = &self.participant {
+            *connection.target.borrow_mut() = target;
+        }
     }
 }
 
@@ -1620,7 +1687,7 @@ impl DragScroller {
     }
 
     /// Page Up and Page Down scroll by the viewport, as `ScrollableNode.onKeyEvent`: through the
-    /// nested-scroll nodes above `tree`'s dispatcher, found when the scroll runs (D1918); none
+    /// nested-scroll nodes above `handle`'s node, found when the scroll runs (D1918); none
     /// without one.
     pub(crate) fn on_key_event(
         &mut self,
@@ -1629,7 +1696,7 @@ impl DragScroller {
         reverse: bool,
         context: &mut EventContext<'_>,
         driver: &ScrollDriver<'_>,
-        tree: Option<&NestedTree>,
+        handle: Option<compose_ui::NodeHandle>,
     ) -> bool {
         let page_up = event.key == compose_ui::Key::PageUp;
         if !(page_up || event.key == compose_ui::Key::PageDown)
@@ -1643,14 +1710,11 @@ impl DragScroller {
         // The pointer's way is the content's other: Page Down goes as a drag up.
         let delta = if page_up { -viewport } else { viewport };
         let mut target = self.tree_target(driver, reverse, context.density().density);
-        let dispatcher = tree.map(|tree| tree.dispatcher.clone());
         let state = driver.state.clone();
         context.coroutine_scope().launch(async move {
             let _ = state
                 .scroll(MutatePriority::UserInput, move |scope| async move {
-                    if let Some(dispatcher) = dispatcher {
-                        target.chain = dispatcher.chain();
-                    }
+                    target.chain = chain_above(handle);
                     target.user_scroll(&scope, delta);
                 })
                 .await;

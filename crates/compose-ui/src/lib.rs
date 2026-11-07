@@ -16,6 +16,7 @@ mod alignment;
 mod alignment_line;
 mod annotated;
 mod back;
+mod beyond_bounds;
 mod border;
 mod brush;
 pub mod canvas;
@@ -163,7 +164,7 @@ pub mod platform {
     pub use crate::modifier::shared_custom_modifier;
     pub use crate::nested_scroll::NestedScrollChain;
     #[doc(hidden)]
-    pub use crate::nested_scroll::nested_scroll_tree_node;
+    pub use crate::nested_scroll::NestedScrollParticipant;
     #[doc(hidden)]
     pub use crate::node_chain::{NodeKinds, chain_entry_kinds_for_test};
     pub use crate::optimizations::{Optimization, Optimizations};
@@ -212,6 +213,10 @@ pub use annotated::{
 pub use back::{
     BackCancelled, BackEventCompat, BackHandler, BackProgress, LOCAL_ON_BACK_PRESSED_DISPATCHER,
     OnBackPressedDispatcher, PredictiveBackHandler,
+};
+pub use beyond_bounds::{
+    BeyondBoundsLayout, BeyondBoundsLayoutDirection, BeyondBoundsScope,
+    MODIFIER_LOCAL_BEYOND_BOUNDS_LAYOUT,
 };
 pub use border::{BorderRenderer, BorderStroke};
 pub use brush::{Brush, ColorStops, TileMode};
