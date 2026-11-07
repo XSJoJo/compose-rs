@@ -905,6 +905,9 @@ impl UiTree {
         }
         if was_at != positions {
             handles.positions.set(positions);
+            // Their popups are placed where they point after a layout: a new selection where
+            // nothing moved asks for one, as Compose's popups follow their position provider.
+            self.invalidate_placement_of(container);
         }
     }
 

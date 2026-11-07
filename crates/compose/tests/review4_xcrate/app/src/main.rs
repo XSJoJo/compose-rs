@@ -21,7 +21,17 @@ fn Screen(tick: MutableState<u32>, outer: MutableState<u32>) {
     widgets::Clicker!(label = "path");
 }
 
+/// Material's secure fields with their defaults, from a crate that depends on the facade only:
+/// each default resolves through a path the facade exposes. Compiled, not run.
+#[composable]
+fn SecureFields(state: compose::foundation::TextFieldState) {
+    compose::material3::SecureTextField!(state.clone());
+    compose::material3::OutlinedSecureTextField!(state);
+}
+
 fn main() {
+    // Named, so the secure fields above are type-checked as part of the app.
+    let _ = SecureFields;
     let tick = mutable_state_of(0u32);
     let outer = mutable_state_of(0u32);
     let (tick_handle, outer_handle) = (tick.handle(), outer.handle());

@@ -735,6 +735,19 @@ impl UiTree {
     /// are held apart until it's applied or discarded (`paused_lifecycle`, D1162); a density
     /// change measures, which asks for the frame running its step. None asks the host for
     /// work by itself (they had kept `prefetch` from running).
+    /// Whether a frame would lay out or draw something: a node to measure or place, a drawing
+    /// or the semantics changed, or a node handle's requests waiting.
+    pub(crate) fn wants_frame(&self) -> bool {
+        let root = self.node(self.root_id());
+        self.needs_draw
+            || self.semantics_changed
+            || root.needs_measure
+            || root.subtree_needs_measure
+            || root.needs_placement
+            || root.subtree_needs_placement
+            || self.has_node_requests()
+    }
+
     pub(crate) fn has_node_requests(&self) -> bool {
         !self.focus_requests.node_invalidations.borrow().is_empty()
             || !self.focus_requests.measure_requests.borrow().is_empty()

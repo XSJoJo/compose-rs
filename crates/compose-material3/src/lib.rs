@@ -240,9 +240,9 @@ pub use tooltip::{
 // What the defaults of the composables name through `crate::`.
 #[doc(hidden)]
 pub use compose_foundation::{
-    ImeAction, KeyboardActions, KeyboardCapitalization, KeyboardOptions, KeyboardType,
-    PasswordVisualTransformation, ScrollState, TextFieldLineLimits, VisualTransformation,
-    remember_scroll_state,
+    DEFAULT_OBFUSCATION_CHARACTER, ImeAction, KeyboardActions, KeyboardCapitalization,
+    KeyboardOptions, KeyboardType, PasswordVisualTransformation, ScrollState, TextFieldLineLimits,
+    TextObfuscationMode, VisualTransformation, remember_scroll_state,
 };
 pub use compose_ui::{
     Alignment, AnnotatedString, Color, Dp, DpOffset, FontFamily, FontStyle, IntOffset, Modifier,

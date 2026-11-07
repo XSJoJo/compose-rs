@@ -1178,9 +1178,8 @@ pub fn SecureTextField(
     #[default(None)] supporting_text: Option<impl Fn() + 'static>,
     #[default(false)] is_error: bool,
     #[default(None)] input_transformation: Option<InputTransformation>,
-    #[default(compose_foundation::TextObfuscationMode::System)]
-    text_obfuscation_mode: TextObfuscationMode,
-    #[default(compose_foundation::DEFAULT_OBFUSCATION_CHARACTER)] text_obfuscation_character: char,
+    #[default(crate::TextObfuscationMode::System)] text_obfuscation_mode: TextObfuscationMode,
+    #[default(crate::DEFAULT_OBFUSCATION_CHARACTER)] text_obfuscation_character: char,
     #[default(crate::KeyboardOptions::SECURE_TEXT_FIELD)] keyboard_options: KeyboardOptions,
     #[default(None)] on_keyboard_action: Option<KeyboardActionHandler>,
     #[default(None)] on_text_layout: Option<impl Fn(compose_ui::TextLayoutResult) + 'static>,
@@ -1244,9 +1243,8 @@ pub fn OutlinedSecureTextField(
     #[default(None)] supporting_text: Option<impl Fn() + 'static>,
     #[default(false)] is_error: bool,
     #[default(None)] input_transformation: Option<InputTransformation>,
-    #[default(compose_foundation::TextObfuscationMode::System)]
-    text_obfuscation_mode: TextObfuscationMode,
-    #[default(compose_foundation::DEFAULT_OBFUSCATION_CHARACTER)] text_obfuscation_character: char,
+    #[default(crate::TextObfuscationMode::System)] text_obfuscation_mode: TextObfuscationMode,
+    #[default(crate::DEFAULT_OBFUSCATION_CHARACTER)] text_obfuscation_character: char,
     #[default(crate::KeyboardOptions::SECURE_TEXT_FIELD)] keyboard_options: KeyboardOptions,
     #[default(None)] on_keyboard_action: Option<KeyboardActionHandler>,
     #[default(None)] on_text_layout: Option<impl Fn(compose_ui::TextLayoutResult) + 'static>,

@@ -586,6 +586,34 @@ fn shown(ui: &mut ComposeTestRule, handle: Handle) -> bool {
     }
 }
 
+/// Where the popup of `handle` is drawn, in the root.
+fn handle_bounds(ui: &mut ComposeTestRule, handle: Handle) -> Rect {
+    ui.on_node(is_selection_handle(Some(handle))).fetch_semantics_snapshot().bounds
+}
+
+// Compose: compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/text/selection/SelectionManager.kt, updateHandleOffsets (a new selection moves the handles, nothing having moved)
+#[test]
+fn a_new_selection_moves_the_handles_where_nothing_moved() {
+    let mut ui = container(false);
+    let long_press = |ui: &mut ComposeTestRule, at: usize| {
+        let at = Offset::new(at as f32 * FONT + 1.0, 0.5 * FONT);
+        ui.on_node_with_tag(CONTAINER).perform_touch_input(|touch| touch.long_click_at(at, 600));
+        ui.advance_time_by_frame();
+        ui.wait_for_idle();
+    };
+    long_press(&mut ui, TEXT.find('m').unwrap());
+    let start = handle_bounds(&mut ui, Handle::SelectionStart);
+    let end = handle_bounds(&mut ui, Handle::SelectionEnd);
+    // The last word, five characters right of "Demo".
+    long_press(&mut ui, TEXT.rfind('x').unwrap());
+    let ((_, from), (_, to)) = selection(&mut ui).expect("a selection");
+    assert_eq!((from, to), (10, 14));
+    let start_now = handle_bounds(&mut ui, Handle::SelectionStart);
+    let end_now = handle_bounds(&mut ui, Handle::SelectionEnd);
+    assert_eq!(start_now.left - start.left, 5.0 * FONT, "{start:?} {start_now:?}");
+    assert_eq!(end_now.left - end.left, 5.0 * FONT, "{end:?} {end_now:?}");
+}
+
 const LINES: usize = 20;
 const LINE: f32 = 15.0;
 

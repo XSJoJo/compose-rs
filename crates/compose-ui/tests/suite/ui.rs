@@ -1359,3 +1359,74 @@ fn a_host_provides_its_defaults_which_have_none_for_an_unknown_key() {
     });
     assert_eq!((read.get(), asked.get()), (None, Some(true)));
 }
+
+/// A node whose task, after a `delay`, invalidates its measurement from its handle's
+/// `with_node`, as a text field's long-press timeout does; it counts its measurements.
+struct LateInvalidation(Rc<Cell<u32>>);
+
+struct LateInvalidationNode(Rc<Cell<u32>>);
+
+impl ModifierNodeElement for LateInvalidation {
+    type Node = LateInvalidationNode;
+    fn create(&self) -> LateInvalidationNode {
+        LateInvalidationNode(self.0.clone())
+    }
+    fn update(&self, _: &mut LateInvalidationNode) {}
+    fn same(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl ModifierNode for LateInvalidationNode {
+    fn on_attach(&mut self, context: &mut NodeContext<'_>) {
+        let handle = context.handle();
+        context.coroutine_scope().launch(async move {
+            compose_runtime::delay(std::time::Duration::from_millis(500)).await;
+            handle.with_node::<LateInvalidationNode, _>(|_, context| {
+                context.invalidate_measurement();
+            });
+        });
+    }
+    fn as_layout(&mut self) -> Option<&mut dyn LayoutModifierNode> {
+        Some(self)
+    }
+}
+
+impl LayoutModifierNode for LateInvalidationNode {
+    fn measure(
+        &mut self,
+        scope: &mut MeasureScope<'_>,
+        content: Measurable,
+        constraints: Constraints,
+    ) -> MeasureResult {
+        self.0.set(self.0.get() + 1);
+        let placeable = scope.measure(content, constraints);
+        scope.place(&placeable, 0, 0);
+        scope.layout(placeable.width, placeable.height)
+    }
+}
+
+/// A task's invalidation through a node's handle, with the tree free between frames (Android's
+/// tick runs the timers that ended, no frame), asks for a frame: without one, what it asked
+/// waited for something else to draw (a field's long press did nothing on a phone until an
+/// animation ran).
+#[test]
+fn a_tasks_invalidation_from_a_handle_asks_for_a_frame() {
+    set_manual_clock(0);
+    let measured = Rc::new(Cell::new(0));
+    let counted = measured.clone();
+    let mut host = host(move || {
+        Leaf(Modifier.size(20.dp()).then_custom(LateInvalidation(counted.clone())));
+    });
+    let calls = HostCalls::of(&host);
+    host.frame();
+    let before = measured.get();
+    calls.frames.set(0);
+    tick();
+    assert_eq!(calls.frames.get(), 0, "nothing before the timeout");
+    advance_clock(std::time::Duration::from_millis(500));
+    tick();
+    assert!(calls.frames.get() > 0, "the invalidation asks for a frame");
+    host.frame();
+    assert_eq!(measured.get(), before + 1, "the frame measures the node again");
+}
