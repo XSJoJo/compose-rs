@@ -156,6 +156,7 @@ mod review_scrolling;
 mod review_semantics;
 mod review_services;
 mod review_shared_elements_2;
+mod review_style_api;
 mod review_text_context_menu_4;
 mod review_text_draw;
 mod review_x575;
