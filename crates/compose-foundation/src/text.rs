@@ -1298,6 +1298,11 @@ impl compose_ui::Selectable for TextNode {
 
     /// As Compose's `getWordBoundary` (D1108).
     fn word_at(&self, offset: usize) -> std::ops::Range<usize> {
+        if let Some(layout) = self.paragraphs_layout() {
+            // Within its paragraph, as Compose's `MultiParagraph.getWordBoundary`.
+            let offset = offset.min(self.text.len());
+            return layout.multi_paragraph.get_word_boundary(offset).range();
+        }
         compose_ui::platform::word_boundary(self.text.as_str(), offset).range()
     }
 

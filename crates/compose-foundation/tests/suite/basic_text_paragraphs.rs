@@ -884,3 +884,143 @@ fn a_fields_layout_paints() {
     ui.wait_for_idle();
     assert_eq!(drawn(&mut ui).len(), before + 2);
 }
+
+// Selection and semantics: the queries are the paragraphs', over the whole text.
+
+/// "Hello", then "World" in a paragraph styled `second`, 200 px wide, in a selection container.
+fn selectable(second: ParagraphStyle) -> ComposeTestRule {
+    rule(move || {
+        SelectionContainer!({
+            BasicAnnotatedText!(
+                hello_world(second.clone()),
+                modifier = Modifier.test_tag(TAG).width(200.dp()),
+                style = style()
+            );
+        });
+    })
+}
+
+/// Asks the text's `Selectable`.
+fn ask<R>(
+    ui: &mut ComposeTestRule,
+    question: impl FnOnce(
+        &mut dyn compose_ui::Selectable,
+        &compose_ui::platform::SharedTextMeasurer,
+    ) -> R,
+) -> R {
+    let node = ui.on_node_with_tag(TAG).fetch_semantics_snapshot().id;
+    let mut question = Some(question);
+    let mut answer = None;
+    ui.host().with_tree(|tree| {
+        tree.with_selectable(node, &mut |selectable, measurer| {
+            answer = question.take().map(|question| question(selectable, measurer));
+        });
+    });
+    answer.expect("a selectable text")
+}
+
+#[test]
+fn the_semantics_layout_is_the_text_of_paragraphs() {
+    let mut ui = selectable(ParagraphStyle::DEFAULT);
+    let mut results = Vec::new();
+    ui.on_node_with_tag(TAG).perform_semantics_action_with(
+        &compose_ui::SemanticsActions::GET_TEXT_LAYOUT_RESULT,
+        |get| {
+            get(&mut results);
+        },
+    );
+    let result = results.pop().expect("a layout");
+    assert_eq!(result.multi_paragraph.paragraph_info_list().len(), 2);
+    assert_eq!(result.size, IntSize::new(200, 40));
+    assert_eq!(result.get_offset_for_position(Offset::new(25.0, 30.0)), 6);
+    assert_eq!(result.get_bounding_box(6), compose_ui::Rect::new(20.0, 20.0, 40.0, 40.0));
+    assert_eq!(result.get_line_for_offset(7), 1);
+    // The text it reads is the whole text.
+    assert_eq!(result.layout_input.text.as_str(), "HelloWorld");
+    ui.on_node_with_tag(TAG).assert_text_equals(&["HelloWorld"]);
+}
+
+#[test]
+fn a_selection_finds_offsets_and_boxes_in_each_paragraph() {
+    let mut ui = selectable(ParagraphStyle::DEFAULT);
+    let offset = ask(&mut ui, |text, measurer| text.offset_at(Offset::new(25.0, 30.0), measurer));
+    assert_eq!(offset, Some(6));
+    let first = ask(&mut ui, |text, measurer| text.offset_at(Offset::new(25.0, 5.0), measurer));
+    assert_eq!(first, Some(1));
+    let rect = ask(&mut ui, |text, measurer| text.bounding_box(6, measurer));
+    assert_eq!(rect, compose_ui::Rect::new(20.0, 20.0, 40.0, 40.0));
+    let cursor = ask(&mut ui, |text, measurer| text.cursor_rect(7, measurer));
+    assert_eq!((cursor.left, cursor.top, cursor.bottom), (40.0, 20.0, 40.0));
+    let line = ask(&mut ui, |text, measurer| text.range_of_line_containing(7, measurer));
+    assert_eq!(line, 5..10);
+    let line = ask(&mut ui, |text, measurer| text.range_of_line_containing(2, measurer));
+    assert_eq!(line, 0..5);
+    assert_eq!(ask(&mut ui, |text, measurer| text.line_height(7, measurer)), 20.0);
+    assert_eq!(ask(&mut ui, |text, measurer| text.last_visible_offset(measurer)), 10);
+    // A handle at the bottom of the line its offset is on.
+    let handle = ask(&mut ui, |text, measurer| text.handle_position(7, false, false, measurer));
+    assert_eq!(handle, Some(Offset::new(40.0, 40.0)));
+}
+
+#[test]
+fn a_word_ends_at_its_paragraph() {
+    // "HelloWorld" is one word in one paragraph; in two, "World" is a word of its own, as
+    // Compose's `MultiParagraph.getWordBoundary`.
+    let mut ui = selectable(ParagraphStyle::DEFAULT);
+    assert_eq!(ask(&mut ui, |text, _| text.word_at(7)), 5..10);
+    assert_eq!(ask(&mut ui, |text, _| text.word_at(2)), 0..5);
+    // At the end of the text.
+    assert_eq!(ask(&mut ui, |text, _| text.word_at(10)), 5..10);
+}
+
+#[test]
+fn a_selection_runs_in_each_paragraphs_direction() {
+    // "Hello", then "!!" in a right-to-left paragraph: neutral characters, which run in their
+    // paragraph's direction (the same text in one paragraph runs left to right).
+    let rtl = paragraph(|style| style.text_direction = Some(TextDirection::Rtl));
+    let text = AnnotatedString::build(|text| {
+        text.append("Hello");
+        text.with_paragraph_style(rtl, |text| {
+            text.append("!!");
+        });
+    });
+    let mut ui = rule(move || {
+        let text = text.clone();
+        SelectionContainer!({
+            BasicAnnotatedText!(text.clone(), modifier = Modifier.test_tag(TAG), style = style());
+        });
+    });
+    let direction = |ui: &mut ComposeTestRule, offset| {
+        ask(ui, |text, measurer| text.direction_at(offset, measurer))
+    };
+    assert_eq!(direction(&mut ui, 2), ResolvedTextDirection::Ltr);
+    assert_eq!(direction(&mut ui, 6), ResolvedTextDirection::Rtl);
+    // Past the end: kept to it.
+    assert_eq!(direction(&mut ui, 99), direction(&mut ui, 7));
+}
+
+#[test]
+fn a_selection_across_paragraphs_is_highlighted_in_each() {
+    let mut ui = selectable(ParagraphStyle::DEFAULT);
+    // A drag from after "Hel" to after "Wo".
+    ui.host().send_pointer(compose_ui::PointerEvent::press(Offset::new(61.0, 10.0)));
+    ui.host().send_pointer(compose_ui::PointerEvent::moved(Offset::new(39.0, 30.0), true));
+    ui.host().send_pointer(compose_ui::PointerEvent::release(Offset::new(39.0, 30.0)));
+    ui.wait_for_idle();
+    let highlights: Vec<compose_ui::Rect> = ui
+        .host()
+        .display_list()
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            DrawOp::DrawRect(rect, _) => Some(*rect),
+            _ => None,
+        })
+        .collect();
+    // "lo" on the first line, "Wo" on the second, below it.
+    assert_eq!(highlights.len(), 2, "{}", ui.host().display_list().dump());
+    assert_eq!((highlights[0].left, highlights[0].top), (60.0, 0.0));
+    assert_eq!((highlights[0].right, highlights[0].bottom), (100.0, 20.0));
+    assert_eq!((highlights[1].left, highlights[1].top), (0.0, 20.0));
+    assert_eq!((highlights[1].right, highlights[1].bottom), (40.0, 40.0));
+}
