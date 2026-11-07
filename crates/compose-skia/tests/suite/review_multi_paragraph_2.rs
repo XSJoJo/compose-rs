@@ -423,7 +423,7 @@ fn a_locale_s_direction_reads_its_tag_in_any_case_and_separator() {
         assert_eq!(direction_in(locale), ResolvedTextDirection::Rtl, "{locale}");
     }
     // `UG_kz`: Uyghur of Kazakhstan, Cyrillic in ICU 68's likely subtags (`sd_IN` isn't one
-    // there: Sindhi of India is Arabic, D2060).
+    // there: Sindhi of India is Arabic, D2061).
     for locale in ["UG_kz", "ks-Deva", "uz-Cyrl-AF", "az-Latn-IR", "ku_TR", "EN_ae"] {
         assert_eq!(direction_in(locale), ResolvedTextDirection::Ltr, "{locale}");
     }

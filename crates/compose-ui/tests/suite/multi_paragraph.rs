@@ -554,7 +554,7 @@ fn a_locale_s_direction_is_its_script_s_or_its_likely_script_s() {
         assert_eq!(neutral_direction_in(locale), Ltr, "{locale}");
     }
     // Likely scripts by language. `sd-IN` is Sindhi's (Arabic): ICU 68's likely subtags have no
-    // `sd_IN` (D2060).
+    // `sd_IN` (D2061).
     for locale in
         ["ur", "ps", "sd", "sd-IN", "ckb", "ug", "dv", "yi", "syr", "nqo", "rhg", "phn", "ae"]
     {
@@ -572,7 +572,7 @@ fn a_locale_s_direction_is_its_script_s_or_its_likely_script_s() {
     }
 }
 
-/// ICU 68.2's likely subtags (CLDR 38, androidx-main's `external/icu`), the reference (D2060):
+/// ICU 68.2's likely subtags (CLDR 38, androidx-main's `external/icu`), the reference (D2061):
 /// languages of no known region (`_ZZ`) written in Arabic, Ancient Greek's likely script Cypriot
 /// and uncoded languages' Hatran are right to left; Old Uyghur and Garay have no script data in
 /// ICU 68 (Unicode 13), so a locale naming them is left to right there.

@@ -1,10 +1,10 @@
 //! Whether a locale's text runs right to left, as Android's
 //! `TextUtils.getLayoutDirectionFromLocale` tells it: ICU's `ULocale.isRightToLeft`, which asks the
 //! locale's script, or its likely script when it names none (CLDR's likely subtags), whether that
-//! script is written right to left (D2049, D2060).
+//! script is written right to left (D2049, D2061).
 //!
 //! The tables are ICU 68.2's (androidx-main's `external/icu`, CLDR 38), generated from its data
-//! (D2060): the scripts with ICU's `RTL` property, the languages whose likely script has it, and
+//! (D2061): the scripts with ICU's `RTL` property, the languages whose likely script has it, and
 //! the language and region pairs whose likely script differs in direction from the language's.
 //! Every other language is left to right, as ICU says of a language it has no likely subtags for.
 
@@ -106,7 +106,7 @@ impl Tag {
 
 // ---- Generated once from ICU 68.2's data in androidx-main's external/icu (CLDR 38):
 // `icu4c/source/common/uscript_props.cpp`'s scripts with `RTL`, and
-// `icu4c/source/data/misc/likelySubtags.txt`'s entries without a script, as D2060 says;
+// `icu4c/source/data/misc/likelySubtags.txt`'s entries without a script, as D2061 says;
 // for another ICU, generated again the same way, not edited. ----
 
 /// The scripts ICU's `UScript.isRightToLeft` says are written right to left (their

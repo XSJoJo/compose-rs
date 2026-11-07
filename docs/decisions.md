@@ -19,7 +19,7 @@ The log is split by area into the files below, one table each, rows in number or
 |---|---|---|
 | [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 182 |
 | [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 458 |
-| [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 141 |
+| [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 143 |
 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md) | Lazy lists and grids, item reuse, the policy of composing only what is in view, prefetch. | 120 |
 | [android-drawing](decisions/android-drawing.md) | The display list and its replayer, render nodes and repaint boundaries, paths, shadows, layers. | 34 |
 | [android-host-and-performance](decisions/android-host-and-performance.md) | The view and activity glue, the frame loop, the hint session, jank, startup, memory, and the optimization flags. | 31 |
@@ -1105,7 +1105,9 @@ The log is split by area into the files below, one table each, rows in number or
 | D2046 | [text](decisions/text.md#d2046) | current |
 | D2047 | [text](decisions/text.md#d2047) | revised by [D2049](decisions/text.md#d2049), [D2052](decisions/text.md#d2052) |
 | D2048 | [text](decisions/text.md#d2048) | revised by [D2049](decisions/text.md#d2049) |
-| D2049 | [text](decisions/text.md#d2049) | current |
+| D2049 | [text](decisions/text.md#d2049) | revised by [D2061](decisions/text.md#d2061) |
 | D2050 | [text](decisions/text.md#d2050) | current |
 | D2051 | [text](decisions/text.md#d2051) | current |
-| D2052 | [text](decisions/text.md#d2052) | current |
+| D2052 | [text](decisions/text.md#d2052) | revised by [D2060](decisions/text.md#d2060) |
+| D2060 | [text](decisions/text.md#d2060) | current |
+| D2061 | [text](decisions/text.md#d2061) | current |
