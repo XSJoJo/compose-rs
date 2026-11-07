@@ -2243,9 +2243,6 @@ fn user_modifier_in_shared_transition_layout() {
 /// A lazy list of shared elements with no match places its items as often as the same list
 /// without them, scrolled alike.
 #[test]
-#[ignore = "compose-ui doesn't tell a lazy item moved by a scroll `on_placed`, where Compose \
-            tells each placement; the shared items are told, through their approach node \
-            reading where it is (missing.md)"]
 fn no_additional_placement_when_no_match() {
     let state = LazyListState::new(0, 0);
     let control = LazyListState::new(0, 0);

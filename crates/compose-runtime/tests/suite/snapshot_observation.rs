@@ -659,25 +659,36 @@ fn notifying_objects_initialized_sends_what_changed() {
 }
 
 /// A state written by a pass's effect and again after the pass ended, with the global snapshot
-/// advanced in between and no send, is one change (the design's `in_global_modified`).
+/// advanced in between and no send, is one change (the design's `in_global_modified`). The pass
+/// is a recomposition: an initial composition sends at its end (D1338).
 #[test]
 fn a_change_set_holds_a_state_once() {
     let state = mutable_state_of(0);
     let handle = state.handle();
+    let step = mutable_state_of(0);
+    let s = step.handle();
     Snapshot::notify_objects_initialized();
-    let (applies, sizes, _observer) = heard();
     let composition = Composition::new(compose_runtime::platform::NodeTree::<()>::new());
     composition.set_content(move || {
-        SideEffect(move || handle.set(1));
+        let step = s.get();
+        SideEffect(move || {
+            if step > 0 {
+                handle.set(1);
+            }
+        });
     });
+    let (applies, sizes, _observer) = heard();
+    step.set(1);
+    // Sends `step` first, then runs the pass and its effect.
+    assert!(composition.recompose());
     state.set(2);
     Snapshot::send_apply_notifications();
-    assert_eq!(applies.get(), 1);
-    assert_eq!(*sizes.borrow(), [1], "the state is in the changes once");
+    assert_eq!(applies.get(), 2);
+    assert_eq!(*sizes.borrow(), [1, 1], "the state is in the changes once");
     // The next change is heard again.
     state.set(3);
     Snapshot::send_apply_notifications();
-    assert_eq!(*sizes.borrow(), [1, 1]);
+    assert_eq!(*sizes.borrow(), [1, 1, 1]);
 }
 
 /// A state a pass writes that it didn't make is a change, though nothing advanced the global

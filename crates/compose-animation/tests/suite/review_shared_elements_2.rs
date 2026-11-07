@@ -57,9 +57,6 @@ fn list(state: LazyListState, counts: Rc<RefCell<Vec<u32>>>, shared: bool) {
 /// lookahead scope. Compose-ui's missing `on_placed` for a moved lazy item affects both lists
 /// alike, so a difference here is the shared elements'.
 #[test]
-#[ignore = "review: shared elements with no match place items 9 and 10 twice (9 in the first frame, 10 as \
-            the first scroll brings it in) where plain items in the same lookahead scope are placed \
-            once: D1336's ignore of testNoAdditionalPlacementWhenNoMatch hides this"]
 fn shared_elements_with_no_match_place_as_plain_items_in_a_lookahead_scope() {
     let state = LazyListState::new(0, 0);
     let control = LazyListState::new(0, 0);
