@@ -13,12 +13,15 @@ pub trait ClipboardManager {
     fn get_text(&self) -> Option<String>;
     /// Puts `text` on the clipboard.
     fn set_text(&self, text: &str);
-    /// Whether it holds a non-empty text.
+    /// Whether it holds a non-empty text. The default reads the text: a clipboard whose platform
+    /// tells when its content is read (Android's "pasted from your clipboard" notice) overrides it
+    /// to answer without reading, as Android's host does from the clip's description (D2033).
     fn has_text(&self) -> bool {
         self.get_text().is_some_and(|text| !text.is_empty())
     }
     /// Whether it holds anything, as Android's `hasPrimaryClip` (what Compose's
-    /// `ClipboardPasteState` asks first, D2035).
+    /// `ClipboardPasteState` asks first, D2035). The default reads the text: a clipboard whose
+    /// platform tells when its content is read must override it, as Android's host does.
     fn has_clip(&self) -> bool {
         self.get_text().is_some()
     }

@@ -257,6 +257,18 @@ fn a_long_press_on_an_empty_field_shows_the_toolbar_but_no_handle() {
     it.assert_shown();
 }
 
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldTextContextMenuToolbarTest.kt, longClickOnEmptyTextField_showsToolbar_butNoHandle
+/// compose-rs's variant while it has no autofill (D2035): with text on the clipboard, the empty
+/// field's toolbar has Paste, so it shows, and still no handle.
+#[test]
+fn a_long_press_on_an_empty_field_with_a_clip_shows_the_toolbar_but_no_handle() {
+    let mut it = run_test(Options { text: "", clipboard: Some("x"), ..Options::default() });
+    it.long_click_offset(1);
+    it.cursor_handle().assert_does_not_exist();
+    it.assert_shown();
+    it.assert_has_item(PASTE);
+}
+
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/input/internal/selection/TextFieldTextContextMenuToolbarTest.kt, toolbarDisappears_whenTextStateIsUpdated
 #[test]
 fn an_edit_of_the_state_hides_it() {
