@@ -256,6 +256,42 @@ impl Brush {
         Brush::Sweep { gradient: Gradient::new(colors.into(), TileMode::Clamp), center }
     }
 
+    /// This brush over a drawing of `size`, moved by `origin`, its coordinates fixed: what paints
+    /// a part of that drawing whose top left is `-origin` as the whole drawing would (a gradient
+    /// spanning every paragraph of a text, D2052).
+    pub(crate) fn placed(&self, size: Size, origin: Offset) -> Brush {
+        let point = |offset: Offset| {
+            let x = if offset.x.is_infinite() { size.width } else { offset.x };
+            let y = if offset.y.is_infinite() { size.height } else { offset.y };
+            Offset::new(x + origin.x, y + origin.y)
+        };
+        let center = |center: Offset| {
+            if center.is_specified() {
+                point(center)
+            } else {
+                Offset::new(origin.x + size.width / 2.0, origin.y + size.height / 2.0)
+            }
+        };
+        match self {
+            Brush::Solid(color) => Brush::Solid(*color),
+            Brush::Linear { gradient, start, end } => {
+                Brush::Linear { gradient: gradient.clone(), start: point(*start), end: point(*end) }
+            }
+            Brush::Radial { gradient, center: at, radius } => Brush::Radial {
+                gradient: gradient.clone(),
+                center: center(*at),
+                radius: if radius.is_infinite() {
+                    size.width.min(size.height) / 2.0
+                } else {
+                    *radius
+                },
+            },
+            Brush::Sweep { gradient, center: at } => {
+                Brush::Sweep { gradient: gradient.clone(), center: center(*at) }
+            }
+        }
+    }
+
     /// The shader painting this brush over a drawing of `size` whose top left is at `origin`
     /// (in the display list's coordinates), at `alpha`; `None` for a solid color.
     pub fn shader(&self, size: Size, origin: Offset, alpha: f32) -> Option<Shader> {

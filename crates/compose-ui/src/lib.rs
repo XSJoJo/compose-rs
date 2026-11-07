@@ -339,7 +339,7 @@ pub use node_context::{NodeContext, NodeHandle};
 pub use observer_node::ObserverModifierNode;
 pub use overlay::{PopupPositionProvider, WindowPosition};
 pub use painter::{BitmapPainter, ColorPainter, CustomPainter, Painter};
-pub use paragraph::{Paragraph, ParagraphIntrinsics, TextLayoutInput};
+pub use paragraph::{PaintOverrides, Paragraph, ParagraphIntrinsics, TextLayoutInput};
 pub use paragraph_style::ParagraphStyle;
 pub use parent_data::{LayoutIdParentData, ParentDataModifierNode};
 pub use path::{

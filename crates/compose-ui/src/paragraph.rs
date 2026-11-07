@@ -29,6 +29,15 @@ pub trait ParagraphIntrinsics {
     }
 }
 
+/// What a paint draws over a paragraph's own: what's `None` keeps the paragraph's.
+#[derive(Clone, Debug, Default)]
+pub struct PaintOverrides {
+    pub(crate) foreground: Option<crate::text_attributes::TextForegroundStyle>,
+    pub(crate) shadow: Option<crate::graphics::Shadow>,
+    pub(crate) text_decoration: Option<crate::text_attributes::TextDecoration>,
+    pub(crate) draw_style: Option<crate::graphics::DrawStyle>,
+}
+
 /// A laid-out paragraph's queries, as Compose's `Paragraph`. Lines are indexed from 0; offsets
 /// are bytes of [`text`](Paragraph::text). Like Compose's, the offset queries panic on an
 /// offset past the text, and the line queries on a line past `line_count`.
@@ -113,6 +122,58 @@ pub trait Paragraph {
     }
     /// The area of `start..end`'s selection, as Android's `Layout.getSelectionPath`.
     fn get_path_for_range(&self, start: usize, end: usize) -> Path;
+    /// Paints it in `scope` at its origin, as Compose's `Paragraph.paint(canvas, color, shadow,
+    /// textDecoration, drawStyle, blendMode)`: in `color`, `shadow`, `text_decoration` and
+    /// `draw_style` over its own (an unspecified color or `None` keeps its own), composited with
+    /// `blend_mode` (D2052). Panics for a paragraph that only answers queries (the platform's
+    /// snapshots): one from [`paragraph`](crate::paragraph) or a measurer paints.
+    fn paint(
+        &self,
+        scope: &mut crate::draw::DrawScope<'_>,
+        color: crate::graphics::Color,
+        shadow: Option<crate::graphics::Shadow>,
+        text_decoration: Option<crate::text_attributes::TextDecoration>,
+        draw_style: Option<crate::graphics::DrawStyle>,
+        blend_mode: crate::color_filter::BlendMode,
+    ) {
+        let foreground = color
+            .is_specified()
+            .then(|| crate::text_attributes::TextForegroundStyle::from_color(color));
+        let overrides = PaintOverrides { foreground, shadow, text_decoration, draw_style };
+        self.paint_overriding(scope, &overrides, blend_mode);
+    }
+    /// Paints it with `brush` at `alpha` (NaN: the brush's own), as Compose's
+    /// `Paragraph.paint(canvas, brush, alpha, …)`: a gradient over its own size.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_with_brush(
+        &self,
+        scope: &mut crate::draw::DrawScope<'_>,
+        brush: &crate::brush::Brush,
+        alpha: f32,
+        shadow: Option<crate::graphics::Shadow>,
+        text_decoration: Option<crate::text_attributes::TextDecoration>,
+        draw_style: Option<crate::graphics::DrawStyle>,
+        blend_mode: crate::color_filter::BlendMode,
+    ) {
+        let foreground =
+            Some(crate::text_attributes::TextForegroundStyle::from_brush(Some(brush), alpha));
+        let overrides = PaintOverrides { foreground, shadow, text_decoration, draw_style };
+        self.paint_overriding(scope, &overrides, blend_mode);
+    }
+    /// What [`paint`](Self::paint) and [`paint_with_brush`](Self::paint_with_brush) draw:
+    /// `overrides` over its own paint. Panics by default: a paragraph of queries only.
+    #[doc(hidden)]
+    fn paint_overriding(
+        &self,
+        _scope: &mut crate::draw::DrawScope<'_>,
+        _overrides: &PaintOverrides,
+        _blend_mode: crate::color_filter::BlendMode,
+    ) {
+        panic!(
+            "this paragraph only answers queries: one laid out by `paragraph` or a `TextMeasurer` \
+             paints"
+        );
+    }
     /// The range of the text in `rect`, as Compose's `getRangeForRect`: cut into pieces by
     /// `granularity`, a piece in it as `inclusion_strategy` says, from the first piece in it to
     /// the last; `TextRange::ZERO` when none is (D2048).

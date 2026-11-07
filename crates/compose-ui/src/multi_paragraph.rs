@@ -13,22 +13,29 @@ use std::rc::Rc;
 
 use crate::alignment::LayoutDirection;
 use crate::annotated::{AnnotatedRange, AnnotatedString, intersect};
+use crate::brush::Brush;
+use crate::color_filter::BlendMode;
 use crate::constraints::Constraints;
+use crate::draw::DrawScope;
 use crate::font::FontFamilyResolver;
 use crate::font_resolver::ResolvedFonts;
+use crate::graphics::{Color, DrawStyle, Shadow};
 use crate::intl::LocaleList;
 use crate::locale_direction::is_right_to_left;
+use crate::paragraph::PaintOverrides;
 use crate::paragraph::{Paragraph, ParagraphIntrinsics};
 use crate::path::Path;
 use crate::placeholder::{Placeholder, check_placeholders};
 use crate::range_for_rect::{TextGranularity, TextInclusionStrategy};
 use crate::span_style::SpanStyle;
 use crate::text::TextLayoutOptions;
-use crate::text_attributes::{ResolvedTextDirection, TextDirection, TextOverflow};
+use crate::text_attributes::{
+    ResolvedTextDirection, TextDecoration, TextDirection, TextForegroundStyle, TextOverflow,
+};
 use crate::text_measurer::{LaidOutParagraph, MeasuredParagraph, ParagraphSource, TextPaint};
 use crate::text_range::TextRange;
 use crate::text_style::TextStyle;
-use crate::unit::{Density, Offset, Rect};
+use crate::unit::{Density, Offset, Rect, Size};
 
 /// One paragraph of a [`MultiParagraph`] and where it is in the text, as Compose's
 /// `ParagraphInfo`: its offsets (`start_index..end_index`), lines
@@ -480,7 +487,13 @@ pub fn paragraph(
         density: &intrinsics.density,
     };
     let platform = intrinsics.font_family_resolver.platform();
-    Rc::new(MeasuredParagraph::new(LaidOutParagraph::lay_out(platform, source, &info.style)))
+    let laid_out = LaidOutParagraph::lay_out(platform, source, &info.style);
+    Rc::new(MeasuredParagraph::drawn(Rc::new(StackedParagraph::new(
+        0.0,
+        laid_out,
+        &info.style,
+        source,
+    ))))
 }
 
 /// `text` with `span_styles` laid out as one paragraph within `constraints`, as Compose's
@@ -540,6 +553,26 @@ pub(crate) struct StackedParagraph {
 }
 
 impl StackedParagraph {
+    /// `measured`, laid out from `source` in `style`, at `top` of its text.
+    pub(crate) fn new(
+        top: f32,
+        measured: LaidOutParagraph,
+        style: &TextStyle,
+        source: ParagraphSource<'_>,
+    ) -> StackedParagraph {
+        StackedParagraph {
+            top,
+            measured,
+            style: style.clone(),
+            text: source.text.clone(),
+            placeholders: source.placeholders.to_vec(),
+            options: source.options,
+            constraints: source.constraints,
+            density: *source.density,
+            elsewhere: RefCell::new(None),
+        }
+    }
+
     /// What it was laid out from, to lay it out again.
     pub(crate) fn source(&self) -> ParagraphSource<'_> {
         ParagraphSource {
@@ -560,7 +593,7 @@ pub struct MultiParagraph {
     text: AnnotatedString,
     max_lines: u32,
     infos: Vec<ParagraphInfo>,
-    parts: Vec<StackedParagraph>,
+    parts: Vec<Rc<StackedParagraph>>,
     width: f32,
     height: f32,
     line_count: usize,
@@ -675,8 +708,9 @@ impl MultiParagraph {
             current_height += height;
             let start_line_index = current_lines;
             current_lines += laid_out.metrics().line_count as usize;
+            let part = Rc::new(StackedParagraph::new(top, laid_out, &info.style, source));
             infos.push(ParagraphInfo {
-                paragraph: Rc::new(MeasuredParagraph::new(laid_out.clone())),
+                paragraph: Rc::new(MeasuredParagraph::drawn(part.clone())),
                 start_index: info.start,
                 end_index: info.end,
                 start_line_index,
@@ -684,17 +718,7 @@ impl MultiParagraph {
                 top,
                 bottom: current_height,
             });
-            parts.push(StackedParagraph {
-                top,
-                measured: laid_out,
-                style: info.style.clone(),
-                text: info.text.clone(),
-                placeholders: info.placeholders.clone(),
-                options,
-                constraints: item_constraints,
-                density: intrinsics.density,
-                elsewhere: RefCell::new(None),
-            });
+            parts.push(part);
             if exceeded || (current_lines == max_lines as usize && index != last) {
                 did_exceed_max_lines = true;
                 break;
@@ -778,7 +802,7 @@ impl MultiParagraph {
     }
 
     /// The platform's paragraphs, for drawing (none for a single paragraph wrapped).
-    pub(crate) fn parts(&self) -> &[StackedParagraph] {
+    pub(crate) fn parts(&self) -> &[Rc<StackedParagraph>] {
         &self.parts
     }
 
@@ -1130,6 +1154,52 @@ impl MultiParagraph {
         path
     }
 
+    /// Paints it in `scope` at its origin, as Compose's `MultiParagraph.paint(canvas, color,
+    /// shadow, textDecoration, drawStyle, blendMode)`: each paragraph at its top, in `color`,
+    /// `shadow`, `text_decoration` and `draw_style` over its own (an unspecified color or `None`
+    /// keeps the paragraph's), composited with `blend_mode`. Panics for a text a measurer didn't
+    /// lay out to draw (a text's own, from `on_text_layout`): its result draws (D2052).
+    pub fn paint(
+        &self,
+        scope: &mut DrawScope<'_>,
+        color: Color,
+        shadow: Option<Shadow>,
+        text_decoration: Option<TextDecoration>,
+        draw_style: Option<DrawStyle>,
+        blend_mode: BlendMode,
+    ) {
+        let foreground = color.is_specified().then(|| TextForegroundStyle::from_color(color));
+        let overrides = PaintOverrides { foreground, shadow, text_decoration, draw_style };
+        self.paint_with(scope, &overrides, blend_mode);
+    }
+
+    /// Paints it with `brush` at `alpha` (NaN: the brush's own), as Compose's
+    /// `MultiParagraph.paint(canvas, brush, alpha, …)`: a gradient spans the whole text, each
+    /// paragraph painted with its part (D2052).
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_with_brush(
+        &self,
+        scope: &mut DrawScope<'_>,
+        brush: &Brush,
+        alpha: f32,
+        shadow: Option<Shadow>,
+        text_decoration: Option<TextDecoration>,
+        draw_style: Option<DrawStyle>,
+        blend_mode: BlendMode,
+    ) {
+        let foreground = Some(TextForegroundStyle::from_brush(Some(brush), alpha));
+        let overrides = PaintOverrides { foreground, shadow, text_decoration, draw_style };
+        self.paint_with(scope, &overrides, blend_mode);
+    }
+
+    fn paint_with(&self, scope: &mut DrawScope<'_>, overrides: &PaintOverrides, blend: BlendMode) {
+        if let Some(single) = self.single() {
+            return single.paint_overriding(scope, overrides, blend);
+        }
+        let size = Size::new(self.width, self.height);
+        scope.paint_parts(&self.parts, size, overrides, blend, false);
+    }
+
     pub fn placeholder_rects(&self) -> Vec<Option<Rect>> {
         if let Some(single) = self.single() {
             return single.placeholder_rects();
@@ -1259,5 +1329,13 @@ impl Paragraph for MultiParagraph {
     }
     fn fill_bounding_boxes(&self, range: TextRange, array: &mut [f32], array_start: usize) {
         MultiParagraph::fill_bounding_boxes(self, range, array, array_start)
+    }
+    fn paint_overriding(
+        &self,
+        scope: &mut DrawScope<'_>,
+        overrides: &PaintOverrides,
+        blend_mode: BlendMode,
+    ) {
+        self.paint_with(scope, overrides, blend_mode)
     }
 }
