@@ -19,6 +19,7 @@
 //! in lines.
 
 mod animate_scroll;
+mod beyond_bounds;
 mod cache_window;
 mod grid;
 mod item_animator;
@@ -3553,6 +3554,10 @@ pub(crate) struct LazyScrollNode {
     /// connection.
     density: f32,
     rtl: bool,
+    /// Its `BeyondBoundsLayout`, made when a node inside asks (D1479), and what measures the
+    /// layout at once while it's attached.
+    beyond: Option<Rc<beyond_bounds::LazyBeyondBounds>>,
+    remeasurement: Option<compose_ui::Remeasurement>,
 }
 
 /// The node's `set_outer`: the parents around the deltas, with the axis and mirroring the
@@ -3591,6 +3596,8 @@ impl ModifierNodeElement for LazyScrollElement {
             tree: crate::scroll::NestedTree::default(),
             density: 1.0,
             rtl: false,
+            beyond: None,
+            remeasurement: None,
         }
     }
 
@@ -3615,6 +3622,9 @@ impl ModifierNodeElement for LazyScrollElement {
         }
         node.enabled = self.enabled;
         node.tell_tree();
+        if let Some(beyond) = &node.beyond {
+            beyond.update(node.state, node.vertical, node.reverse);
+        }
     }
 
     fn same(&self, other: &Self) -> bool {
@@ -3889,10 +3899,18 @@ impl ModifierNode for LazyScrollNode {
 
     fn on_attach(&mut self, context: &mut compose_ui::NodeContext<'_>) {
         self.tree.on_attach(context);
+        self.remeasurement = Some(context.remeasurement());
+        if let Some(beyond) = &self.beyond {
+            beyond.set_remeasurement(self.remeasurement);
+        }
     }
 
     fn on_detach(&mut self, context: &mut compose_ui::NodeContext<'_>) {
         self.tree.on_detach(context);
+        self.remeasurement = None;
+        if let Some(beyond) = &self.beyond {
+            beyond.set_remeasurement(None);
+        }
     }
 
     fn on_density_change(&mut self, context: &mut compose_ui::NodeContext<'_>) {
@@ -3933,6 +3951,21 @@ impl ModifierNode for LazyScrollNode {
 
     fn is_beyond_bounds_layout(&self) -> bool {
         true
+    }
+
+    /// Its `BeyondBoundsLayout`, as Compose's lazy layouts' `lazyLayoutBeyondBoundsModifier`
+    /// (D1479): items laid out beyond those in view, measured at once, while a block runs.
+    /// None when the user can't scroll it, as Compose's.
+    fn beyond_bounds_layout(&mut self) -> Option<Rc<dyn compose_ui::BeyondBoundsLayout>> {
+        if !self.enabled {
+            return None;
+        }
+        let (state, vertical, reverse, remeasurement) =
+            (self.state, self.vertical, self.reverse, self.remeasurement);
+        let beyond = self.beyond.get_or_insert_with(|| {
+            Rc::new(beyond_bounds::LazyBeyondBounds::new(state, vertical, reverse, remeasurement))
+        });
+        Some(beyond.clone())
     }
 
     /// One more item (a grid's line) beyond those laid out, the way `direction` goes along the

@@ -44,6 +44,7 @@ mod lazy_animate_item;
 mod lazy_animate_staggered;
 mod lazy_animate_support;
 mod lazy_api;
+mod lazy_beyond_bounds;
 mod lazy_cache_window;
 mod lazy_column_multi_text;
 mod lazy_column_row;
