@@ -18,14 +18,14 @@ use compose_ui::{Color, Dp, IntSize, UnitExt};
 
 use crate::scroll_support::run;
 
-type Live = Rc<RefCell<BTreeSet<usize>>>;
+pub(super) type Live = Rc<RefCell<BTreeSet<usize>>>;
 
 fn later() -> Instant {
     Instant::now() + Duration::from_secs(60)
 }
 
 /// The requests between frames, trims among them, until they ended.
-fn idle(ui: &mut ComposeTestRule) {
+pub(super) fn idle(ui: &mut ComposeTestRule) {
     for _ in 0..50 {
         ui.wait_for_idle();
         if !ui.host().has_prefetch_work() {
@@ -46,15 +46,15 @@ fn noting(index: usize, live: Live) {
     });
 }
 
-struct Grid {
-    ui: ComposeTestRule,
-    state: LazyStaggeredGridState,
-    live: Live,
+pub(super) struct Grid {
+    pub(super) ui: ComposeTestRule,
+    pub(super) state: LazyStaggeredGridState,
+    pub(super) live: Live,
 }
 
 /// A vertical grid of `lanes` in `size`, of `count` items of `main(index)`, each with a background,
 /// noting what's composed.
-fn grid(
+pub(super) fn grid(
     lanes: usize,
     size: (i32, i32),
     count: usize,
@@ -133,13 +133,13 @@ fn spanned_from(
     Grid { ui, state, live }
 }
 
-fn scroll_to(grid: &mut Grid, index: usize, offset: i32) {
+pub(super) fn scroll_to(grid: &mut Grid, index: usize, offset: i32) {
     let state = grid.state;
     let _ = run(&mut grid.ui, async move { state.scroll_to_item(index, offset).await });
 }
 
 /// What's in view: each item, its lane and where.
-fn laid(state: LazyStaggeredGridState) -> Vec<(usize, usize, i32)> {
+pub(super) fn laid(state: LazyStaggeredGridState) -> Vec<(usize, usize, i32)> {
     state
         .layout_info()
         .visible_items_info
@@ -229,7 +229,7 @@ fn a_jump_composes_around_its_item_only() {
 }
 
 /// Rects in the display list: what a frame shows.
-fn drawn(ui: &mut ComposeTestRule) -> usize {
+pub(super) fn drawn(ui: &mut ComposeTestRule) -> usize {
     ui.host().display_list().dump().lines().filter(|line| line.contains("rect")).count()
 }
 
@@ -645,7 +645,11 @@ fn a_lane_info_goes_back_to_what_it_was() {
 }
 
 /// Each of `frames` frames, after `start`, shows something.
-fn frames_show(grid: &mut Grid, frames: usize, start: impl FnOnce(LazyStaggeredGridState)) {
+pub(super) fn frames_show(
+    grid: &mut Grid,
+    frames: usize,
+    start: impl FnOnce(LazyStaggeredGridState),
+) {
     grid.ui.wait_for_idle();
     idle(&mut grid.ui);
     grid.ui.set_auto_advance(false);

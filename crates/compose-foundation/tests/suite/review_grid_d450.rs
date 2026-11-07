@@ -419,7 +419,8 @@ fn Tracked(key: usize) {
 /// Scrolling one way with prefetch between frames: each item is composed once (none composed
 /// by prefetch, dropped by a frame, and composed again), but those of a line whose requests the
 /// window refills: Compose's refill cancels them, their slots kept for reuse, and requests them
-/// again, which composes them again from those kept (D1312).
+/// again, which composes them again from those kept (D1312). Those composed twice are whole lines,
+/// and few.
 #[test]
 fn review_grid_scrolling_one_way_composes_each_item_once() {
     for spans in [false, true] {
@@ -454,13 +455,42 @@ fn review_grid_scrolling_one_way_composes_each_item_once() {
         }
         let times = TIMES.with(|times| times.borrow().clone());
         let mut again: Vec<(usize, usize)> =
-            times.into_iter().filter(|(_, times)| *times > 2).collect();
+            times.iter().filter(|(_, times)| **times > 2).map(|(k, t)| (*k, *t)).collect();
         again.sort_unstable();
         assert!(
             again.is_empty(),
             "spans {spans}: composed again {:?}",
             &again[..again.len().min(20)]
         );
+        // Composed twice: only whole lines, a refill requesting each item of a line again, and
+        // few of them (today 1 line without spans, 4 full lines with them).
+        let line_of = |index: usize| -> Vec<usize> {
+            if !spans {
+                let first = index / 3 * 3;
+                (first..first + 3).collect()
+            } else if index.is_multiple_of(4) {
+                vec![index]
+            } else {
+                let first = index / 4 * 4 + 1;
+                (first..first + 3).collect()
+            }
+        };
+        let mut refilled: Vec<Vec<usize>> = times
+            .iter()
+            .filter(|(_, times)| **times == 2)
+            .map(|(index, _)| line_of(*index))
+            .collect();
+        refilled.sort_unstable();
+        refilled.dedup();
+        for line in &refilled {
+            let of_line: Vec<usize> =
+                line.iter().map(|index| times.get(index).copied().unwrap_or(0)).collect();
+            assert!(
+                of_line.iter().all(|times| *times == 2),
+                "spans {spans}: line {line:?} composed {of_line:?} times, not each item again"
+            );
+        }
+        assert!(refilled.len() <= 4, "spans {spans}: lines composed again {refilled:?}");
     }
 }
 

@@ -69,6 +69,7 @@ mod lazy_reuse;
 mod lazy_scroll;
 mod lazy_staggered_grid;
 mod lazy_staggered_grid_in_lookahead;
+mod lazy_staggered_grid_jumps;
 mod lazy_staggered_grid_keys;
 mod lazy_staggered_grid_pins;
 mod lazy_staggered_grid_stops;
