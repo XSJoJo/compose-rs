@@ -26,6 +26,7 @@ mod review_text;
 mod sample_font;
 mod selection_handles;
 mod shadows;
+mod shared_transition;
 mod skia;
 mod text_brush;
 mod text_field_cursor;

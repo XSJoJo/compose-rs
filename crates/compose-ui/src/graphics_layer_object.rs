@@ -6,6 +6,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use smallvec::SmallVec;
+
 use crate::color_filter::{BlendMode, ColorFilter};
 use crate::display_list::{Boundary, DisplayList, DrawOp};
 use crate::draw::DrawScope;
@@ -37,11 +39,38 @@ struct Properties {
     outline: Option<Outline>,
 }
 
+/// Parts of a layer, a bit each: its content (recording, origin, size, density, release) and
+/// each property. A drawing that set one itself before drawing the layer isn't told of its
+/// changes (D1337).
+type Fields = u32;
+
+mod field {
+    use super::Fields;
+    pub(super) const CONTENT: Fields = 1;
+    pub(super) const TOP_LEFT: Fields = 1 << 1;
+    pub(super) const PIVOT_OFFSET: Fields = 1 << 2;
+    pub(super) const ALPHA: Fields = 1 << 3;
+    pub(super) const SCALE_X: Fields = 1 << 4;
+    pub(super) const SCALE_Y: Fields = 1 << 5;
+    pub(super) const TRANSLATION_X: Fields = 1 << 6;
+    pub(super) const TRANSLATION_Y: Fields = 1 << 7;
+    pub(super) const ROTATION_Z: Fields = 1 << 8;
+    pub(super) const SHADOW_ELEVATION: Fields = 1 << 9;
+    pub(super) const AMBIENT_SHADOW_COLOR: Fields = 1 << 10;
+    pub(super) const SPOT_SHADOW_COLOR: Fields = 1 << 11;
+    pub(super) const BLEND_MODE: Fields = 1 << 12;
+    pub(super) const COLOR_FILTER: Fields = 1 << 13;
+    pub(super) const CLIP: Fields = 1 << 14;
+    pub(super) const COMPOSITING_STRATEGY: Fields = 1 << 15;
+    pub(super) const OUTLINE: Fields = 1 << 16;
+}
+
 impl Properties {
-    /// Whether they're equal, their floats bit for bit: an unspecified pivot (`NaN`, the
-    /// default) equal to itself, without copying either.
-    fn same(&self, other: &Properties) -> bool {
+    /// The properties that differ, their floats compared bit for bit: an unspecified pivot
+    /// (`NaN`, the default) equal to itself, without copying either.
+    fn changes(&self, other: &Properties) -> Fields {
         let same = |a: f32, b: f32| a.to_bits() == b.to_bits();
+        let bit = |differs: bool, bit: Fields| if differs { bit } else { 0 };
         let Properties {
             top_left,
             pivot_offset,
@@ -60,23 +89,24 @@ impl Properties {
             compositing_strategy,
             outline,
         } = self;
-        *top_left == other.top_left
-            && same(pivot_offset.x, other.pivot_offset.x)
-            && same(pivot_offset.y, other.pivot_offset.y)
-            && same(*alpha, other.alpha)
-            && same(*scale_x, other.scale_x)
-            && same(*scale_y, other.scale_y)
-            && same(*translation_x, other.translation_x)
-            && same(*translation_y, other.translation_y)
-            && same(*rotation_z, other.rotation_z)
-            && same(*shadow_elevation, other.shadow_elevation)
-            && *ambient_shadow_color == other.ambient_shadow_color
-            && *spot_shadow_color == other.spot_shadow_color
-            && *blend_mode == other.blend_mode
-            && *color_filter == other.color_filter
-            && *clip == other.clip
-            && *compositing_strategy == other.compositing_strategy
-            && *outline == other.outline
+        let pivot = !same(pivot_offset.x, other.pivot_offset.x)
+            || !same(pivot_offset.y, other.pivot_offset.y);
+        bit(*top_left != other.top_left, field::TOP_LEFT)
+            | bit(pivot, field::PIVOT_OFFSET)
+            | bit(!same(*alpha, other.alpha), field::ALPHA)
+            | bit(!same(*scale_x, other.scale_x), field::SCALE_X)
+            | bit(!same(*scale_y, other.scale_y), field::SCALE_Y)
+            | bit(!same(*translation_x, other.translation_x), field::TRANSLATION_X)
+            | bit(!same(*translation_y, other.translation_y), field::TRANSLATION_Y)
+            | bit(!same(*rotation_z, other.rotation_z), field::ROTATION_Z)
+            | bit(!same(*shadow_elevation, other.shadow_elevation), field::SHADOW_ELEVATION)
+            | bit(*ambient_shadow_color != other.ambient_shadow_color, field::AMBIENT_SHADOW_COLOR)
+            | bit(*spot_shadow_color != other.spot_shadow_color, field::SPOT_SHADOW_COLOR)
+            | bit(*blend_mode != other.blend_mode, field::BLEND_MODE)
+            | bit(*color_filter != other.color_filter, field::COLOR_FILTER)
+            | bit(*clip != other.clip, field::CLIP)
+            | bit(*compositing_strategy != other.compositing_strategy, field::COMPOSITING_STRATEGY)
+            | bit(*outline != other.outline, field::OUTLINE)
     }
 }
 
@@ -124,13 +154,16 @@ pub(crate) fn take_pass_told() -> bool {
 const CHANGED_IN_PASS: u32 = 1 << 31;
 
 /// A draw pass, as `UiTree::draw` runs one. A layer changed in it (recorded, a property set:
-/// what drawing code does) tells what drew it at the pass's end if it ends other than it
-/// started: what a drawing the pass didn't draw again shows, and what one drawing it before
-/// another drawing records it later in the pass shows. They draw again in the same frame, in a
-/// second pass `UiTree::draw` runs (D1331), as Compose's render nodes are current at once. So a
-/// drawing recording a layer (twice, even) and then drawing it doesn't draw itself again, nor
-/// does one recording what the layer holds already ([`GraphicsLayer::store`]); a drawing
-/// drawing it between two changes undoing each other keeps what it drew.
+/// what drawing code does) tells, at the pass's end, each drawing that drew it and would draw it
+/// otherwise if it ran again (D1337): one that drew it after a change in the pass if something
+/// it didn't set itself changed after it drew it; any other (drawn before the pass, or in it
+/// before its first change) if the pass ends with something it didn't set itself other than
+/// the pass found it. They draw again in the same frame, in a second pass `UiTree::draw` runs
+/// (D1331), as Compose's render nodes are current at once. So a drawing recording a layer
+/// (twice, even) and then drawing it doesn't draw itself again, nor does one recording what
+/// the layer holds already ([`GraphicsLayer::store`]); a drawing drawing it after changes
+/// undoing each other keeps what it drew; and drawings each setting a property and drawing the
+/// layer (placing one layer twice, or drawing it at two alphas) go idle.
 pub(crate) struct DrawPass;
 
 impl DrawPass {
@@ -155,8 +188,8 @@ impl Drop for DrawPass {
     }
 }
 
-/// The end of the outermost draw pass a layer changed in: what drew one that ends it other
-/// than it started draws again.
+/// The end of the outermost draw pass a layer changed in: the drawings it leaves stale draw
+/// again.
 #[cold]
 #[inline(never)]
 fn end_changed_pass() {
@@ -164,8 +197,8 @@ fn end_changed_pass() {
     let changed = PASS_CHANGES.with(|changes| std::mem::take(&mut *changes.borrow_mut()));
     for layer in changed.iter().filter_map(std::rc::Weak::upgrade) {
         let Some(start) = layer.pass_start.take() else { continue };
-        if !start.is_now(&layer) {
-            layer.version.handle().update(|version| version.wrapping_add(1));
+        let net = start.changes(&layer);
+        if layer.end_pass(net) {
             PASS_TOLD.set(true);
         }
     }
@@ -183,17 +216,65 @@ struct PassStart {
 }
 
 impl PassStart {
-    /// Whether `layer` is as it was.
-    fn is_now(&self, layer: &LayerCell) -> bool {
-        self.released == layer.released.get()
-            && self.recorded_origin == layer.recorded_origin.get()
-            && self.size == layer.size.get()
-            && self.density == layer.density.get()
-            && self.properties.same(&layer.properties.borrow())
-            && self
+    /// What of `layer` isn't as it was.
+    fn changes(&self, layer: &LayerCell) -> Fields {
+        let content = self.released != layer.released.get()
+            || self.recorded_origin != layer.recorded_origin.get()
+            || self.size != layer.size.get()
+            || self.density != layer.density.get()
+            || self
                 .recording
                 .as_ref()
-                .is_none_or(|recording| same_recording(recording, &layer.recording.borrow()))
+                .is_some_and(|recording| !same_recording(recording, &layer.recording.borrow()));
+        let content = if content { field::CONTENT } else { 0 };
+        content | self.properties.changes(&layer.properties.borrow())
+    }
+}
+
+/// An observation run: a drawing running (its observer and key), and which run of it.
+type Run = compose_runtime::platform::ObservationRun;
+
+/// A drawing that drew a layer (an observation: its observer and key), with the version it
+/// reads, which is bumped to tell it alone.
+struct Reader {
+    /// Who, and the run of it that last drew the layer; `None` for reads outside an
+    /// observation (one reader for them all).
+    who: Option<Run>,
+    version: compose_runtime::OwnedState<u64>,
+    /// What that run set itself before drawing the layer (each time, if it drew it more than
+    /// once): their changes don't tell it, as running again it sets them again.
+    own: Fields,
+    /// What the layer was when that run first drew it, if after the layer's first change in
+    /// the current pass: the pass's end compares the layer with it, not with what the pass
+    /// found. (Running again, the drawing starts from what the pass ends with, and its own
+    /// changes after drawing the layer are what they were.)
+    seen: Option<Box<Seen>>,
+    /// Its version was bumped since it drew the layer: nothing more to tell it, and the next
+    /// new reader takes its place (the send of the bump may then tell that one too, once).
+    told: bool,
+}
+
+/// What a reader saw of a layer, drawing it after its first change in a pass.
+struct Seen {
+    properties: Properties,
+    /// The layer's `content` then.
+    content: u64,
+}
+
+impl Seen {
+    /// What of `layer` isn't as it was: its content compared by its count of changes.
+    fn changes(&self, layer: &LayerCell) -> Fields {
+        let content = if self.content == layer.content.get() { 0 } else { field::CONTENT };
+        content | self.properties.changes(&layer.properties.borrow())
+    }
+}
+
+/// Whether reads by `a` and by `b` are one reader's.
+fn same_reader(a: Option<Run>, b: Option<Run>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a.same_reader(&b),
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -205,13 +286,133 @@ struct LayerCell {
     density: Cell<f32>,
     properties: RefCell<Properties>,
     released: Cell<bool>,
+    /// How many times its content changed (wrapping).
+    content: Cell<u64>,
     /// What it was when the current draw pass first changed it.
     pass_start: RefCell<Option<PassStart>>,
-    /// Read where it's drawn and bumped when it changes, so what draws it draws again.
-    version: compose_runtime::OwnedState<u64>,
+    /// What drew it and isn't told yet (and told ones, whose places new readers take), each
+    /// with a version of its own (D1337).
+    readers: RefCell<Vec<Reader>>,
+    /// The observation run that last set something on it (`None`: code outside one), and
+    /// what it set.
+    writer: Cell<Option<Run>>,
+    written: Cell<Fields>,
     /// The block a placement placing with it runs, made once so placing again with it is the
     /// same block (D1909).
     placement_block: RefCell<Option<crate::graphics_layer::LayerBlock>>,
+}
+
+impl LayerCell {
+    /// What observation run `run` set itself, if it's the last that set something.
+    fn own(&self, run: Option<Run>) -> Fields {
+        match run {
+            Some(run) if self.writer.get() == Some(run) => self.written.get(),
+            _ => 0,
+        }
+    }
+
+    /// `fields` are set (changed or not) by the code running now.
+    fn note_set(&self, fields: Fields) {
+        let run = compose_runtime::platform::current_observation();
+        if run.is_some() && self.writer.get() == run {
+            self.written.set(self.written.get() | fields);
+        } else {
+            self.writer.set(run);
+            self.written.set(if run.is_some() { fields } else { 0 });
+        }
+    }
+
+    /// Reads the version of the drawing drawing it now, so a change it would draw otherwise
+    /// draws it again: what it set itself before is noted, and what it saw if it's after the
+    /// layer's first change in a draw pass (D1337).
+    fn read_version(&self) {
+        let run = compose_runtime::platform::current_observation();
+        let own = self.own(run);
+        let after_change = self.pass_start.borrow().is_some();
+        let mut readers = self.readers.borrow_mut();
+        let index = match readers.iter().position(|reader| same_reader(reader.who, run)) {
+            Some(index) => index,
+            None => match readers.iter().position(|reader| reader.told) {
+                Some(index) => index,
+                None => {
+                    readers.push(Reader {
+                        who: run,
+                        version: new_version(),
+                        own,
+                        seen: None,
+                        told: true,
+                    });
+                    readers.len() - 1
+                }
+            },
+        };
+        let reader = &mut readers[index];
+        if reader.told || reader.who != run {
+            // A new run, or a new reader: what it drew before is replaced.
+            reader.who = run;
+            reader.own = own;
+            reader.seen = after_change.then(|| {
+                let properties = self.properties.borrow().clone();
+                Box::new(Seen { properties, content: self.content.get() })
+            });
+            reader.told = false;
+        } else {
+            // Drawn again in the run, which goes on from what it saw first: told of what either
+            // drawing didn't set.
+            reader.own &= own;
+        }
+        let version = reader.version.handle();
+        drop(readers);
+        version.get();
+    }
+
+    /// `fields` changed outside a draw pass: the readers that didn't set them are told.
+    fn tell(&self, fields: Fields) {
+        let mut told: SmallVec<[compose_runtime::MutableState<u64>; 4]> = SmallVec::new();
+        for reader in self.readers.borrow_mut().iter_mut() {
+            if !reader.told && fields & !reader.own != 0 {
+                reader.told = true;
+                told.push(reader.version.handle());
+            }
+        }
+        bump(&told);
+    }
+
+    /// The end of a draw pass that changed it, `net` what it ends other than it started: the
+    /// readers that saw it other than it ends, in what they didn't set, are told. Whether any
+    /// is.
+    fn end_pass(&self, net: Fields) -> bool {
+        let mut told: SmallVec<[compose_runtime::MutableState<u64>; 4]> = SmallVec::new();
+        for reader in self.readers.borrow_mut().iter_mut().filter(|reader| !reader.told) {
+            let changed = reader.seen.take().map_or(net, |seen| seen.changes(self));
+            if changed & !reader.own != 0 {
+                reader.told = true;
+                told.push(reader.version.handle());
+            }
+        }
+        bump(&told);
+        !told.is_empty()
+    }
+}
+
+/// A reader's version, made in a snapshot so that its first write is a change its readers hear:
+/// one made in the global snapshot (in a draw, where readers are met) isn't changed by a write
+/// there until that snapshot advances (as Compose's, which takes such a write for its
+/// initialization), so a reader met in a pass with nothing else written since wouldn't hear
+/// of its first change.
+#[cold]
+fn new_version() -> compose_runtime::OwnedState<u64> {
+    let snapshot = compose_runtime::snapshots::Snapshot::take_snapshot(None);
+    let version = snapshot.enter(|| compose_runtime::mutable_state_of(0));
+    snapshot.dispose();
+    version
+}
+
+/// Tells what read `versions`.
+fn bump(versions: &[compose_runtime::MutableState<u64>]) {
+    for version in versions {
+        version.update(|version| version.wrapping_add(1));
+    }
 }
 
 /// A graphics layer, as Compose's `GraphicsLayer`: shared as a Kotlin reference is (a clone is
@@ -223,7 +424,7 @@ struct LayerCell {
 pub struct GraphicsLayer(Rc<LayerCell>);
 
 macro_rules! properties {
-    ($($(#[$doc:meta])* $field:ident, $set:ident: $ty:ty;)*) => {
+    ($($(#[$doc:meta])* $field:ident, $set:ident: $ty:ty = $bit:ident;)*) => {
         $(
             $(#[$doc])*
             pub fn $field(&self) -> $ty {
@@ -231,7 +432,7 @@ macro_rules! properties {
             }
             #[doc = concat!("Sets [`", stringify!($field), "`](GraphicsLayer::", stringify!($field), ").")]
             pub fn $set(&self, $field: $ty) {
-                self.update(|properties| properties.$field = $field);
+                self.update(field::$bit, |properties| properties.$field = $field);
             }
         )*
     };
@@ -253,33 +454,39 @@ impl GraphicsLayer {
             density: Cell::new(1.0),
             properties: RefCell::default(),
             released: Cell::new(false),
+            content: Cell::new(0),
             pass_start: RefCell::new(None),
-            version: compose_runtime::mutable_state_of(0),
+            readers: RefCell::new(Vec::new()),
+            writer: Cell::new(None),
+            written: Cell::new(0),
             placement_block: RefCell::new(None),
         }))
     }
 
-    /// It's about to change, `properties` giving its properties until then: in a draw pass,
-    /// what it was when the pass started is kept the first time, for the pass's end
-    /// ([`DrawPass`]); outside one, what drew it draws again. Whether it's in a draw pass.
-    fn will_change(&self, properties: impl FnOnce() -> Properties) -> bool {
+    /// `fields` are about to change, `properties` giving its properties until then: in a draw
+    /// pass, what it was when the pass started is kept the first time, for the pass's end
+    /// ([`DrawPass`]); outside one, the readers that didn't set them are told. Whether it's in
+    /// a draw pass.
+    fn will_change(&self, fields: Fields, properties: impl FnOnce() -> Properties) -> bool {
         let cell = &self.0;
         if PASS_DEPTH.with(|depth| depth.get() & !CHANGED_IN_PASS == 0) {
-            cell.version.handle().update(|version| version.wrapping_add(1));
+            cell.tell(fields);
             return false;
         }
-        let mut start = cell.pass_start.borrow_mut();
-        if start.is_none() {
-            PASS_CHANGES.with(|changes| changes.borrow_mut().push(Rc::downgrade(cell)));
-            PASS_DEPTH.with(|depth| depth.set(depth.get() | CHANGED_IN_PASS));
-            *start = Some(PassStart {
-                recording: None,
-                recorded_origin: cell.recorded_origin.get(),
-                size: cell.size.get(),
-                density: cell.density.get(),
-                released: cell.released.get(),
-                properties: properties(),
-            });
+        {
+            let mut start = cell.pass_start.borrow_mut();
+            if start.is_none() {
+                PASS_CHANGES.with(|changes| changes.borrow_mut().push(Rc::downgrade(cell)));
+                PASS_DEPTH.with(|depth| depth.set(depth.get() | CHANGED_IN_PASS));
+                *start = Some(PassStart {
+                    recording: None,
+                    recorded_origin: cell.recorded_origin.get(),
+                    size: cell.size.get(),
+                    density: cell.density.get(),
+                    released: cell.released.get(),
+                    properties: properties(),
+                });
+            }
         }
         true
     }
@@ -295,14 +502,17 @@ impl GraphicsLayer {
         }
     }
 
-    fn update(&self, change: impl FnOnce(&mut Properties)) {
+    /// Sets property `field` with `change`: set by the code running now, changed or not.
+    fn update(&self, field: Fields, change: impl FnOnce(&mut Properties)) {
+        self.0.note_set(field);
         let mut next = self.0.properties.borrow().clone();
         change(&mut next);
-        if next.same(&self.0.properties.borrow()) {
+        let fields = next.changes(&self.0.properties.borrow());
+        if fields == 0 {
             return;
         }
         let before = self.0.properties.replace(next);
-        self.will_change(|| before);
+        self.will_change(fields, || before);
     }
 
     /// Records `block` at `size`, in the layer's coordinates, with `scope`'s density and
@@ -333,6 +543,7 @@ impl GraphicsLayer {
     /// the layer, again.
     fn store(&self, recording: DisplayList, origin: Offset, size: IntSize, density: f32) {
         let cell = &self.0;
+        cell.note_set(field::CONTENT);
         let same = !cell.released.get()
             && cell.recorded_origin.get() == origin
             && cell.size.get() == size
@@ -341,7 +552,8 @@ impl GraphicsLayer {
         if same {
             return;
         }
-        let in_pass = self.will_change(|| cell.properties.borrow().clone());
+        let in_pass = self.will_change(field::CONTENT, || cell.properties.borrow().clone());
+        cell.content.set(cell.content.get().wrapping_add(1));
         self.replace_recording(recording, in_pass);
         cell.recorded_origin.set(origin);
         cell.size.set(size);
@@ -356,29 +568,29 @@ impl GraphicsLayer {
 
     properties! {
         /// Where it's drawn in what draws it, as `topLeft`.
-        top_left, set_top_left: IntOffset;
+        top_left, set_top_left: IntOffset = TOP_LEFT;
         /// What it scales and rotates around, in its own coordinates; `Offset::UNSPECIFIED`
         /// (the default) for its center, as `pivotOffset`.
-        pivot_offset, set_pivot_offset: Offset;
+        pivot_offset, set_pivot_offset: Offset = PIVOT_OFFSET;
         /// Its opacity, as `alpha`.
-        alpha, set_alpha: f32;
-        scale_x, set_scale_x: f32;
-        scale_y, set_scale_y: f32;
-        translation_x, set_translation_x: f32;
-        translation_y, set_translation_y: f32;
+        alpha, set_alpha: f32 = ALPHA;
+        scale_x, set_scale_x: f32 = SCALE_X;
+        scale_y, set_scale_y: f32 = SCALE_Y;
+        translation_x, set_translation_x: f32 = TRANSLATION_X;
+        translation_y, set_translation_y: f32 = TRANSLATION_Y;
         /// Degrees, clockwise, as `rotationZ`.
-        rotation_z, set_rotation_z: f32;
+        rotation_z, set_rotation_z: f32 = ROTATION_Z;
         /// Pixels: a shadow of its outline under it above 0, as `shadowElevation`.
-        shadow_elevation, set_shadow_elevation: f32;
-        ambient_shadow_color, set_ambient_shadow_color: Color;
-        spot_shadow_color, set_spot_shadow_color: Color;
+        shadow_elevation, set_shadow_elevation: f32 = SHADOW_ELEVATION;
+        ambient_shadow_color, set_ambient_shadow_color: Color = AMBIENT_SHADOW_COLOR;
+        spot_shadow_color, set_spot_shadow_color: Color = SPOT_SHADOW_COLOR;
         /// How it's composited with what's under it, as `blendMode`.
-        blend_mode, set_blend_mode: BlendMode;
+        blend_mode, set_blend_mode: BlendMode = BLEND_MODE;
         /// What recolors it as it's composited, as `colorFilter`.
-        color_filter, set_color_filter: Option<ColorFilter>;
+        color_filter, set_color_filter: Option<ColorFilter> = COLOR_FILTER;
         /// Whether it clips what it draws to its outline, as `clip`.
-        clip, set_clip: bool;
-        compositing_strategy, set_compositing_strategy: CompositingStrategy;
+        clip, set_clip: bool = CLIP;
+        compositing_strategy, set_compositing_strategy: CompositingStrategy = COMPOSITING_STRATEGY;
     }
 
     /// Its outline: what it clips to and casts a shadow of, its bounds unless set, as
@@ -395,7 +607,7 @@ impl GraphicsLayer {
 
     /// Its outline, as `setOutline`.
     pub fn set_outline(&self, outline: Outline) {
-        self.update(|properties| properties.outline = Some(outline));
+        self.update(field::OUTLINE, |properties| properties.outline = Some(outline));
     }
 
     /// A rectangle from `top_left` of `size` (`Size::UNSPECIFIED`: to its far corner), as
@@ -455,12 +667,21 @@ impl GraphicsLayer {
     /// Drops its recording: it draws nothing until recorded again, as
     /// `GraphicsContext.releaseGraphicsLayer`.
     pub fn release(&self) {
+        self.0.note_set(field::CONTENT);
         if self.0.released.get() {
             return;
         }
-        let in_pass = self.will_change(|| self.0.properties.borrow().clone());
+        let in_pass = self.will_change(field::CONTENT, || self.0.properties.borrow().clone());
+        self.0.content.set(self.0.content.get().wrapping_add(1));
         self.replace_recording(DisplayList::default(), in_pass);
         self.0.released.set(true);
+    }
+
+    /// How many readers it keeps (told ones included, whose places new readers take): for
+    /// tests.
+    #[doc(hidden)]
+    pub fn reader_count(&self) -> usize {
+        self.0.readers.borrow().len()
     }
 
     /// Whether `other` is this layer.
@@ -487,7 +708,7 @@ impl GraphicsLayer {
     /// alpha, shadow, clip (to the bounds) and compositing strategy; its pivot, if set, as a
     /// fraction of the scope's size. Reads its version, so a change to them runs this again.
     pub(crate) fn apply_to_scope(&self, scope: &mut crate::graphics_layer::GraphicsLayerScope) {
-        self.0.version.get();
+        self.0.read_version();
         let properties = self.0.properties.borrow();
         scope.alpha = properties.alpha;
         scope.scale_x = properties.scale_x;
@@ -588,7 +809,7 @@ impl DrawScope<'_> {
     /// released. What drew it draws again when it changes.
     pub fn draw_layer(&mut self, layer: &GraphicsLayer) {
         let cell = &layer.0;
-        cell.version.get();
+        cell.read_version();
         if cell.released.get() {
             return;
         }

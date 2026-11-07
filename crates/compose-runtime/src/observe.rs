@@ -255,6 +255,36 @@ impl ReadObserver {
     }
 }
 
+/// The observation a read now would register under, outside composition: who reads (its
+/// observer and key) and which run of it. Each [`ReadObserver::observe`] under a key starts a
+/// new run; one nested in an observation of the same key, or `observe_adding`, continues it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ObservationRun {
+    observer: u32,
+    key: u64,
+    run: u32,
+}
+
+impl ObservationRun {
+    /// Whether `other` is the same reader (observer and key), in any run.
+    pub fn same_reader(&self, other: &ObservationRun) -> bool {
+        self.observer == other.observer && self.key == other.key
+    }
+}
+
+/// The observation running now, if any ([`ObservationRun`]): what a platform object read by
+/// several observed drawings tells them apart by (a graphics layer, D1337).
+pub fn current_observation() -> Option<ObservationRun> {
+    try_with_runtime(|runtime| {
+        runtime.observing.map(|observing| ObservationRun {
+            observer: observing.observer,
+            key: observing.key,
+            run: observing.epoch,
+        })
+    })
+    .flatten()
+}
+
 /// Forgets a key's reads when dropped, as [`ReadObserver::forget`]: what ties a derived state's
 /// reads in a snapshot to the record they made (D781).
 pub(crate) struct ForgetKey {

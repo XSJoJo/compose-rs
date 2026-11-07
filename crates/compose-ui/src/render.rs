@@ -156,7 +156,10 @@ impl UiTree {
         } else {
             self.draw_pass::<true>()
         };
+        // Only drawing code changes a layer in a pass, so a pass that told drawings drew: what
+        // the second one draws doesn't change what `draw` returns.
         if crate::graphics_layer_object::take_pass_told() {
+            debug_assert!(drew, "a pass drawing nothing told drawings of a layer");
             self.draw_again();
         }
         drew
@@ -429,11 +432,15 @@ impl UiTree {
     /// Called between frames, after `prefetch`, by a platform that records groups (Android's
     /// render nodes): the frame revealing an item then neither draws nor records it.
     pub fn draw_ahead(&mut self) -> Option<Vec<DrawGroup>> {
-        if self.placed_layer_nodes == 0 {
+        let groups = if self.placed_layer_nodes == 0 {
             self.draw_ahead_of::<false>()
         } else {
             self.draw_ahead_of::<true>()
-        }
+        };
+        // What drew a layer this changed draws again in the next frame, which the send of its
+        // version asks for: no second pass here, nor left to the next `draw` (D1332).
+        crate::graphics_layer_object::take_pass_told();
+        groups
     }
 
     /// `draw_ahead`, `P` saying whether a node has a layer placed with one (D1909).

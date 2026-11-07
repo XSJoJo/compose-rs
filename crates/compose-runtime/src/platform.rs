@@ -17,7 +17,7 @@ pub use crate::executor::{
     set_manual_clock, set_wake_handler,
 };
 pub use crate::node_tree::NodeTree;
-pub use crate::observe::ReadObserver;
+pub use crate::observe::{ObservationRun, ReadObserver, current_observation};
 pub use crate::pausable::{PausableContent, PausableContentFor};
 pub use crate::recomposer::{
     CancellationHandle, perform_frame, run_frame_end_callbacks, run_frame_end_callbacks_of,
