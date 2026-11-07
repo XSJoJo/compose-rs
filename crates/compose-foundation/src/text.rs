@@ -44,6 +44,19 @@ pub static LOCAL_TEXT_SELECTION_COLORS: compose_runtime::CompositionLocal<TextSe
         DEFAULT_TEXT_SELECTION_COLORS
     });
 
+/// The color a field is highlighted with once autofilled, as Compose's Android
+/// `autofillHighlightColor()`.
+pub const DEFAULT_AUTOFILL_HIGHLIGHT_COLOR: compose_ui::Color =
+    compose_ui::Color::from_argb(0x4dff_eb3b);
+
+/// What a field is highlighted with once autofilled, until its text changes, as Compose's
+/// `LocalAutofillHighlightBrush` (D1685). Compose's deprecated `LocalAutofillHighlightColor`
+/// isn't ported.
+pub static LOCAL_AUTOFILL_HIGHLIGHT_BRUSH: compose_runtime::CompositionLocal<compose_ui::Brush> =
+    compose_runtime::CompositionLocal::new("LocalAutofillHighlightBrush", || {
+        compose_ui::Brush::solid(DEFAULT_AUTOFILL_HIGHLIGHT_COLOR)
+    });
+
 /// Makes the texts in `content` selectable, as Compose's `SelectionContainer`: a press and drag
 /// selects from where it went down to the pointer, across texts in order; a double-click
 /// selects a word, a triple-click a text; Cmd+A (Ctrl+A) selects all and Cmd+C (Ctrl+C) copies,
@@ -845,6 +858,9 @@ impl SemanticsModifierNode for TextNode {
         config.set_text(self.text.text().clone());
         config.get_text_layout_result_of_node();
     }
+
+    /// Nothing autofill reads (D1688).
+    fn apply_autofill_semantics(&self, _config: &mut SemanticsConfiguration) {}
 
     fn text_layout_result(
         &mut self,

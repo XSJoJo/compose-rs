@@ -234,6 +234,25 @@ impl UiTree {
     }
 }
 
+/// What `UiTree::autofill_semantics` gives: the node's kept semantics, or what autofill reads of
+/// them, computed for the sync and not kept.
+// A value returned and dropped at once: boxing the computed one is the allocation it saves.
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum AutofillSemantics {
+    Kept(Rc<OwnSemantics>),
+    Computed(OwnSemantics),
+}
+
+impl std::ops::Deref for AutofillSemantics {
+    type Target = OwnSemantics;
+    fn deref(&self) -> &OwnSemantics {
+        match self {
+            AutofillSemantics::Kept(kept) => kept,
+            AutofillSemantics::Computed(computed) => computed,
+        }
+    }
+}
+
 impl UiTree {
     /// The semantics a node's own modifiers set and the layer of the one whose bounds are the
     /// node's semantic bounds, as Compose's `LayoutNode.semanticsConfiguration`: computed when
@@ -247,7 +266,8 @@ impl UiTree {
             return Some(cached.clone());
         }
         let observed = value.kinds.any(NodeKinds::OBSERVED);
-        let computed = match self.observer.clone().filter(|_| observed) {
+        let observer = self.semantics_observer.clone().or_else(|| self.observer.clone());
+        let computed = match observer.filter(|_| observed) {
             Some(observer) => observer
                 .observe(observation_key(node, Observation::Semantics), || {
                     self.compute_own_semantics(node)
@@ -263,8 +283,14 @@ impl UiTree {
     /// its semantics asked while they're computed don't count, as Compose's
     /// (`isCurrentlyCalculatingSemanticsConfiguration`), whoever computes them (D1261).
     fn compute_own_semantics(&mut self, node: NodeId) -> OwnSemantics {
+        self.compute_own_semantics_for(node, false)
+    }
+
+    /// `compute_own_semantics`, or what autofill reads of them (`autofill`: each modifier's
+    /// `apply_autofill_semantics`, no action bound).
+    fn compute_own_semantics_for(&mut self, node: NodeId, autofill: bool) -> OwnSemantics {
         let queued = self.focus_requests.node_invalidations.borrow().len();
-        let computed = self.apply_own_semantics(node);
+        let computed = self.apply_own_semantics(node, autofill);
         let mut pending = self.focus_requests.node_invalidations.borrow_mut();
         let mut index = 0;
         pending.retain(|&(asking, _, what)| {
@@ -277,8 +303,44 @@ impl UiTree {
         computed
     }
 
-    /// Each semantics modifier's `apply_semantics`, tail to head.
-    fn apply_own_semantics(&mut self, node: NodeId) -> OwnSemantics {
+    /// What autofill reads of `node`'s own semantics (D1688): the kept ones if they are, else
+    /// each modifier's `apply_autofill_semantics`, computed as `own_semantics` (their state reads
+    /// observed, under the same key: nothing's kept to go stale) but neither kept nor bound.
+    pub(crate) fn autofill_semantics(&mut self, node: NodeId) -> Option<AutofillSemantics> {
+        let value = self.get(node)?;
+        if !value.kinds.any(NodeKinds::SEMANTICS) {
+            return None;
+        }
+        if let Some(cached) = &value.semantics {
+            return Some(AutofillSemantics::Kept(cached.clone()));
+        }
+        let observed = value.kinds.any(NodeKinds::OBSERVED);
+        let observer = self.semantics_observer.clone().or_else(|| self.observer.clone());
+        let computed = match observer.filter(|_| observed) {
+            Some(observer) => observer
+                .observe(observation_key(node, Observation::Semantics), || {
+                    self.compute_own_semantics_for(node, true)
+                }),
+            None => self.compute_own_semantics_for(node, true),
+        };
+        // The cache check's builds (tests) check each node's `apply_autofill_semantics` against
+        // its `apply_semantics`.
+        if CHECK_CACHE.with(std::cell::Cell::get) {
+            let full = self.compute_own_semantics_for(node, false);
+            assert!(
+                crate::autofill::same_for_autofill(&computed.config, &full.config),
+                "compose-ui: what autofill reads of {node:?}'s semantics differs from them \
+                 (`apply_autofill_semantics`, D1688):\nautofill: {:?}\nall:      {:?}",
+                computed.config,
+                full.config
+            );
+        }
+        Some(AutofillSemantics::Computed(computed))
+    }
+
+    /// Each semantics modifier's `apply_semantics` (`apply_autofill_semantics` for `autofill`),
+    /// tail to head.
+    fn apply_own_semantics(&mut self, node: NodeId, autofill: bool) -> OwnSemantics {
         let value = self.node(node);
         let mut config = SemanticsConfiguration::default();
         let mut layers: SmallVec<[usize; 8]> = SmallVec::new();
@@ -315,7 +377,11 @@ impl UiTree {
                     own.is_merging_semantics_of_descendants =
                         semantics.should_merge_descendant_semantics();
                     own.is_clearing_semantics = semantics.should_clear_descendant_semantics();
-                    semantics.apply_semantics(&mut own);
+                    if autofill {
+                        semantics.apply_autofill_semantics(&mut own);
+                    } else {
+                        semantics.apply_semantics(&mut own);
+                    }
                     // Clearing drops what the modifiers after it set, as Compose's
                     // `calculateSemanticsConfiguration`.
                     if own.is_clearing_semantics {
@@ -333,8 +399,10 @@ impl UiTree {
                 },
             );
         }
-        self.bind_request_focus(node, &mut config);
-        self.bind_text_actions(node, &mut config);
+        if !autofill {
+            self.bind_request_focus(node, &mut config);
+            self.bind_text_actions(node, &mut config);
+        }
         let (layer, bounds_entry) = merging_bounds.or(first_bounds).unwrap_or((0, 0));
         OwnSemantics { config, layer, bounds_entry, has_bounds: first_bounds.is_some() }
     }
@@ -373,6 +441,7 @@ impl UiTree {
             if value.attached && !value.deactivated {
                 self.semantics_changed = true;
             }
+            self.note_autofill_dirty(node);
         }
     }
 
@@ -381,6 +450,10 @@ impl UiTree {
     pub(crate) fn forget_semantics(&mut self, node: NodeId) {
         if let Some(value) = self.get_mut(node) {
             value.semantics = None;
+            // Autofill looks at it again (D1688): a node without semantics has nothing it reads.
+            if value.kinds.any(NodeKinds::SEMANTICS) {
+                self.note_autofill_dirty(node);
+            }
         }
     }
 
@@ -556,6 +629,9 @@ impl UiTree {
         if unbound(config, &A::ON_CLICK) {
             config.on_click(None, perform(TextAction::Click));
         }
+        if unbound(config, &A::ON_LONG_CLICK) {
+            config.on_long_click(None, perform(TextAction::LongClick));
+        }
         if unbound(config, &A::COPY_TEXT) {
             config.copy_text(None, perform(TextAction::CopyText));
         }
@@ -585,6 +661,10 @@ impl UiTree {
                 perform(TextAction::InsertText(text.text().clone()))()
             });
         }
+        if config.get(&A::ON_FILL_DATA).is_some_and(|action| action.action.is_none()) {
+            let perform = perform.clone();
+            config.on_fill_data(None, move |data| perform(TextAction::FillData(data))());
+        }
         if config.get(&A::SET_SELECTION).is_some_and(|action| action.action.is_none()) {
             config.set_selection(None, move |start, end, relative_to_original| {
                 perform(TextAction::SetSelection { start, end, relative_to_original })()
@@ -596,6 +676,11 @@ impl UiTree {
     /// takes their properties and hides them, unless they merge themselves; unmerged, every
     /// node with semantics appears. Nodes not placed are left out.
     pub fn semantics_tree(&mut self, merged: bool) -> SemanticsSnapshot {
+        // What was written since the last frame (an event's handler, a selection's handles
+        // moved by a drag) invalidates the semantics that read it before they're read, not at
+        // the next frame's start (D1688).
+        compose_runtime::snapshots::Snapshot::send_apply_notifications();
+        self.apply_observed_writes();
         if CHECK_CACHE.with(std::cell::Cell::get) {
             self.check_semantics_cache();
         }

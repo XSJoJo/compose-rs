@@ -602,6 +602,9 @@ impl SemanticsModifierNode for FocusableNode {
         config.set_focused(self.focused);
         config.request_focus_of_node();
     }
+
+    /// Nothing autofill reads (D1688).
+    fn apply_autofill_semantics(&self, _config: &mut SemanticsConfiguration) {}
 }
 
 /// `on_focus_changed`: its callback, and the state it last reported (to the application: what's
@@ -682,6 +685,9 @@ impl SemanticsModifierNode for TestTagNode {
     fn apply_semantics(&self, config: &mut SemanticsConfiguration) {
         config.set_test_tag(self.0.clone());
     }
+
+    /// Nothing autofill reads (D1688).
+    fn apply_autofill_semantics(&self, _config: &mut SemanticsConfiguration) {}
 }
 
 struct SemanticsNode(bool, Rc<SemanticsConfiguration>);

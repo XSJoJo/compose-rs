@@ -171,6 +171,25 @@ impl UiHost {
         // Writes to state read while measuring or drawing ask for a frame, as composition's do.
         let observer = compose_runtime::platform::ReadObserver::new(move || request());
         composition.with_applier(|tree: &mut UiTree| tree.set_read_observer(observer));
+        // Those to state semantics read, outside a frame: one made in a frame (a lazy list's
+        // layout state, which its semantics read) is applied before it draws, and that frame
+        // tells the semantics changed (D1688).
+        let semantics_observer = {
+            let (requested, framing, wake) =
+                (frame_requested.clone(), framing.clone(), waker.clone());
+            compose_runtime::platform::ReadObserver::new(move || {
+                if framing.get() {
+                    return;
+                }
+                requested.set(true);
+                let waker = wake.borrow().clone();
+                if let Some(waker) = waker {
+                    waker();
+                }
+            })
+        };
+        composition
+            .with_applier(|tree: &mut UiTree| tree.set_semantics_read_observer(semantics_observer));
         let saveable_registry = compose_runtime::SaveableStateRegistry::new(None);
         let window_insets = Rc::new(crate::configuration::HostInsets::new());
         let insets_source = crate::configuration::WindowInsetsSource::of(window_insets.clone());
@@ -729,13 +748,29 @@ impl UiHost {
         if self.frame_requested.get() {
             self.wake();
         }
-        let semantics_changed = self.with_tree(|tree| std::mem::take(&mut tree.semantics_changed));
+        let (semantics_changed, autofill) = self.with_tree(|tree| {
+            (std::mem::take(&mut tree.semantics_changed), tree.autofill_pending())
+        });
+        // The platform's autofill hears of what changed, if installed, on and anything was noted
+        // for it (D1680, D1688).
+        if autofill {
+            self.sync_autofill();
+        }
         FrameStats {
             recomposed,
             measured,
             drew,
             semantics_changed,
             bodies_run: compose_runtime::platform::bodies_run() - bodies,
+        }
+    }
+
+    /// Tells the platform's autofill what changed since it was last told, with the tree free.
+    fn sync_autofill(&mut self) {
+        if let Some((platform, calls)) = self.with_tree(|tree| tree.take_autofill_sync()) {
+            for call in calls {
+                platform.call(call);
+            }
         }
     }
 

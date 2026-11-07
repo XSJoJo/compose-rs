@@ -2,13 +2,13 @@
 //! disabled), closed by a click off it or an item, its items by the clipboard, the selection, a
 //! password and read-only (D2040), from the `btf2` half of Compose's `TextFieldContextMenuTest`.
 //!
-//! The rule's root is 400 by 400 at density 1. The items match Compose's before API 26 (no
-//! autofill: compose-rs has none, D2035); the `afterApi26` tests, which expect it, wait on it.
+//! The rule's root is 400 by 400 at density 1. The rule's platform has autofill, as Android 8
+//! and up (D1682): the `beforeApi26` tests say it hasn't.
 //! Compose's two process-text tests are `@Ignore`d upstream (b/472497302), left out.
 
 #![allow(non_snake_case)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use compose_foundation::layout::*;
@@ -204,6 +204,26 @@ enum SelectionAmount {
     All,
 }
 
+thread_local! {
+    /// Whether the platform's API level is 26 or more, where autofill is (D1682).
+    static API_26: Cell<bool> = const { Cell::new(true) };
+}
+
+/// `run_correct_items_test` before API 26: no autofill, so no autofill item.
+fn run_correct_items_test_before_api26(
+    password: bool,
+    read_only: bool,
+    empty_clipboard: bool,
+    amount: SelectionAmount,
+) -> ComposeTestRule {
+    API_26.with(|it| it.set(false));
+    // Nor a platform autofill manager, whatever `COMPOSE_TEST_AUTOFILL` says (D1688).
+    compose_test::use_autofill(false);
+    let ui = run_correct_items_test(password, read_only, empty_clipboard, amount);
+    API_26.with(|it| it.set(true));
+    ui
+}
+
 /// Compose's `runBtf2CorrectItemsTest`: "Text Text Text", selected as said, the clipboard empty
 /// or holding text, a secure field for a password, then a right click.
 fn run_correct_items_test(
@@ -223,7 +243,12 @@ fn run_correct_items_test(
     if !empty_clipboard {
         clipboard.set_text("Clipboard Text");
     }
-    let mut ui = rule_with(clipboard, move || {
+    let mut ui = ComposeTestRule::sized(IntSize::new(400, 400), || {});
+    let shared: Rc<dyn ClipboardManager> = clipboard;
+    ui.host().with_tree(|tree| tree.set_clipboard(shared));
+    // Before API 26, Android has no autofill (Compose's `beforeApi26` tests run there only).
+    ui.host().with_tree(|tree| tree.set_autofill_available(API_26.with(Cell::get)));
+    ui.set_content(move || {
         if password {
             BasicSecureTextField!(state, modifier = Modifier.test_tag(TAG));
         } else {
@@ -237,13 +262,12 @@ fn run_correct_items_test(
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_emptyClipboard_noSelection_itemsMatch_beforeApi26
 #[test]
 fn btf2_contextMenu_emptyClipboard_noSelection_itemsMatch_beforeApi26() {
-    let mut ui = run_correct_items_test(false, false, true, SelectionAmount::None);
+    let mut ui = run_correct_items_test_before_api26(false, false, true, SelectionAmount::None);
     assert_items(&mut ui, [NO, NO, NO, YES, NO]);
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_emptyClipboard_noSelection_itemsMatch_afterApi26
 #[test]
-#[ignore = "waits on autofill (D2035)"]
 fn btf2_contextMenu_emptyClipboard_noSelection_itemsMatch_afterApi26() {
     let mut ui = run_correct_items_test(false, false, true, SelectionAmount::None);
     assert_items(&mut ui, [NO, NO, NO, YES, YES]);
@@ -266,13 +290,12 @@ fn btf2_contextMenu_emptyClipboard_fullSelection_itemsMatch() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_nonEmptyClipboard_noSelection_itemsMatch_beforeApi26
 #[test]
 fn btf2_contextMenu_nonEmptyClipboard_noSelection_itemsMatch_beforeApi26() {
-    let mut ui = run_correct_items_test(false, false, false, SelectionAmount::None);
+    let mut ui = run_correct_items_test_before_api26(false, false, false, SelectionAmount::None);
     assert_items(&mut ui, [NO, NO, YES, YES, NO]);
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_nonEmptyClipboard_noSelection_itemsMatch_afterApi26
 #[test]
-#[ignore = "waits on autofill (D2035)"]
 fn btf2_contextMenu_nonEmptyClipboard_noSelection_itemsMatch_afterApi26() {
     let mut ui = run_correct_items_test(false, false, false, SelectionAmount::None);
     assert_items(&mut ui, [NO, NO, YES, YES, YES]);
@@ -295,13 +318,12 @@ fn btf2_contextMenu_nonEmptyClipboard_fullSelection_itemsMatch() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_password_noSelection_itemsMatch_beforeApi26
 #[test]
 fn btf2_contextMenu_password_noSelection_itemsMatch_beforeApi26() {
-    let mut ui = run_correct_items_test(true, false, false, SelectionAmount::None);
+    let mut ui = run_correct_items_test_before_api26(true, false, false, SelectionAmount::None);
     assert_items(&mut ui, [NO, NO, YES, YES, NO]);
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_password_noSelection_itemsMatch_afterApi26
 #[test]
-#[ignore = "waits on autofill (D2035)"]
 fn btf2_contextMenu_password_noSelection_itemsMatch_afterApi26() {
     let mut ui = run_correct_items_test(true, false, false, SelectionAmount::None);
     assert_items(&mut ui, [NO, NO, YES, YES, YES]);
@@ -355,13 +377,14 @@ fn openMenu_itemsFollowTheField() {
     assert_items(&mut ui, [YES, YES, NO, YES, NO]);
     state.clear_text();
     ui.wait_for_idle();
-    assert_items(&mut ui, [NO, NO, NO, NO, NO]);
+    // Autofill shows on an editable field with no selection (D1684).
+    assert_items(&mut ui, [NO, NO, NO, NO, YES]);
     state.set_text_and_select_all("Text");
     ui.wait_for_idle();
     assert_items(&mut ui, [YES, YES, NO, NO, NO]);
     state.edit(|buffer| buffer.set_selection(TextRange::new(1, 1)));
     ui.wait_for_idle();
-    assert_items(&mut ui, [NO, NO, NO, YES, NO]);
+    assert_items(&mut ui, [NO, NO, NO, YES, YES]);
 }
 
 /// The field, its middle word selected, inside a box telling whether each press and release

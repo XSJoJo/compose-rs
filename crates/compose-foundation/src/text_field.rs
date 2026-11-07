@@ -37,14 +37,14 @@ use crate::text_input::{
     ImeAction, KeyboardActions, KeyboardOptions, OffsetMapping, VisualTransformation,
 };
 use compose_ui::{
-    AnyModifierNodeElement, Color, CommitTextCommand, Constraints, DeleteSurroundingTextCommand,
-    DrawModifierNode, DrawScope, EditCommand, EditProcessor, EventContext,
-    FinishComposingTextCommand, FocusTargetModifierNode, IntSize, IntrinsicMeasureScope, Key,
-    KeyEvent, KeyEventType, KeyInputModifierNode, Layout, LayoutModifierNode, Measurable,
-    MeasureResult, MeasureScope, Modifier, ModifierNode, ModifierNodeElement, Offset, Paint,
-    PointerEvent, PointerEventPass, PointerEventType, PointerInputModifierNode, Rect,
-    ReleaseContext, SemanticsConfiguration, SemanticsModifierNode, SetComposingTextCommand,
-    SetSelectionCommand, TextFieldValue, TextRange, TextStyle,
+    AnyModifierNodeElement, Color, CommitTextCommand, Constraints, ContentDataType, ContentType,
+    DeleteSurroundingTextCommand, DrawModifierNode, DrawScope, EditCommand, EditProcessor,
+    EventContext, FillableData, FinishComposingTextCommand, FocusTargetModifierNode, IntSize,
+    IntrinsicMeasureScope, Key, KeyEvent, KeyEventType, KeyInputModifierNode, Layout,
+    LayoutModifierNode, Measurable, MeasureResult, MeasureScope, Modifier, ModifierNode,
+    ModifierNodeElement, Offset, Paint, PointerEvent, PointerEventPass, PointerEventType,
+    PointerInputModifierNode, Rect, ReleaseContext, SemanticsConfiguration, SemanticsModifierNode,
+    SetComposingTextCommand, SetSelectionCommand, TextFieldValue, TextRange, TextStyle,
     platform::{ParagraphHandle, TextLayoutOptions},
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -112,10 +112,11 @@ pub fn BasicTextField(
     });
     let press_source = interaction_source_for_press;
     let inner_text_field = inner_field(element, handles);
+    let content_type = keyboard_content_type(keyboard_options);
     crate::layout::Box(
         // An I-beam over the field, as Compose Desktop's text fields.
         modifier
-            .semantics_with(true, |config| config.parts_host())
+            .semantics_with(true, |config| host_semantics(config, content_type))
             .then_custom(FocusOnTap { interaction_source: press_source })
             .pointer_hover_icon(compose_ui::PointerIcon::TEXT),
         crate::Alignment::TOP_START,
@@ -283,15 +284,38 @@ pub fn BasicTextFieldOfState(
         }
         None => modifier,
     };
+    let content_type = keyboard_content_type(keyboard_options);
     crate::layout::Box(
         modifier
-            .semantics_with(true, |config| config.parts_host())
+            .semantics_with(true, |config| host_semantics(config, content_type))
             .then_custom(FocusOnTap { interaction_source: press_source })
             .pointer_hover_icon(compose_ui::PointerIcon::TEXT),
         crate::Alignment::TOP_START,
         true,
         compose_runtime::callback(move |_| decorator(inner_text_field.clone())),
     );
+}
+
+/// The decorated field's own semantics: its parts' host (D2003), and the content type its
+/// keyboard says, as Compose's decorator sets it (the application's, outside, wins).
+fn host_semantics(config: &mut SemanticsConfiguration, content_type: Option<ContentType>) {
+    config.parts_host();
+    if let Some(content_type) = content_type {
+        config.set_content_type(content_type);
+    }
+}
+
+/// What a keyboard type says autofill fills, as Compose's text fields' semantics: an email's
+/// address, a password, a phone number (D1684).
+fn keyboard_content_type(options: KeyboardOptions) -> Option<ContentType> {
+    match options.keyboard_type {
+        compose_ui::KeyboardType::Email => Some(ContentType::EMAIL_ADDRESS),
+        compose_ui::KeyboardType::Password | compose_ui::KeyboardType::NumberPassword => {
+            Some(ContentType::PASSWORD)
+        }
+        compose_ui::KeyboardType::Phone => Some(ContentType::PHONE_NUMBER),
+        _ => None,
+    }
 }
 
 /// A phone number's direction is its digits', whatever the language's, as Compose's
@@ -791,6 +815,7 @@ impl ModifierNodeElement for TextFieldElement {
             before_edit: None,
             state: None,
             touch: Touch::new(self.handles.clone()),
+            autofill_highlight: None,
         }
     }
 
@@ -1079,6 +1104,9 @@ pub(crate) struct TextFieldNode {
     state: Option<Box<StateLink>>,
     /// Touch selection: its handles and what decides them (D2008).
     touch: Touch,
+    /// Autofilled: the highlight's brush and the text filled, drawn while the text is that
+    /// (D1685).
+    autofill_highlight: Option<Box<(compose_ui::Brush, String)>>,
 }
 
 impl TextFieldNode {
@@ -2928,6 +2956,16 @@ impl DrawModifierNode for TextFieldNode {
         if clipped {
             scope.restore();
         }
+        // Autofilled: highlighted over it, until its text changes, as Compose's decorator (D1685).
+        if let Some(highlight) = &self.autofill_highlight {
+            let (brush, filled) = &**highlight;
+            if *filled == self.text {
+                let paint = scope.brush_paint(brush, 1.0, compose_ui::PaintStyle::Fill);
+                scope.draw_rect(scope.bounds(), paint);
+            } else {
+                self.autofill_highlight = None;
+            }
+        }
     }
 }
 
@@ -3916,6 +3954,29 @@ impl KeyInputModifierNode for TextFieldNode {
 }
 
 impl SemanticsModifierNode for TextFieldNode {
+    /// What autofill reads of `apply_semantics`, with its values (D1688): a part, text to fill
+    /// through the node, its fillable data and a state-based field's input text, without the
+    /// rest (its actions bound at each key).
+    fn apply_autofill_semantics(&self, config: &mut SemanticsConfiguration) {
+        config.part_of_parent();
+        let text = &self.text;
+        if let Some(link) = &self.state {
+            let shown: compose_ui::SharedString = match &self.shown_text {
+                Some(shown) if link.password.is_none() => shown.clone().into(),
+                _ => text.clone().into(),
+            };
+            if let Some(data) = FillableData::create_from_text(shown) {
+                config.set_fillable_data(data);
+            }
+            config.set_input_text(text.clone());
+        } else if let Some(data) = FillableData::create_from_text(text.clone()) {
+            // The field's own text, transformed or not, as `apply_semantics`.
+            config.set_fillable_data(data);
+        }
+        config.set_content_data_type(ContentDataType::TEXT);
+        config.on_fill_data_of_node();
+    }
+
     fn apply_semantics(&self, config: &mut SemanticsConfiguration) {
         // The field's node is its decoration's, as Compose's `CoreTextField`.
         config.part_of_parent();
@@ -3937,6 +3998,10 @@ impl SemanticsModifierNode for TextFieldNode {
                 floor_char_boundary(shown.as_str(), range.start),
                 floor_char_boundary(shown.as_str(), range.end),
             ));
+            // Autofill's value: what's shown, a password's own text (Compose's decorator).
+            if let Some(data) = FillableData::create_from_text(shown.clone()) {
+                config.set_fillable_data(data);
+            }
             config.set_editable_text(shown);
             // The state's own text, transformed or not, as Compose's `inputText`.
             config.set_input_text(text.clone());
@@ -3957,6 +4022,13 @@ impl SemanticsModifierNode for TextFieldNode {
                 in_shown(self.anchor),
                 in_shown(self.cursor),
             ));
+            // Autofill's value: the field's own text (Compose's `CoreTextField`), the shown one's
+            // allocation when it's not transformed.
+            let own: compose_ui::SharedString =
+                if mapping.is_none() { shown.clone() } else { text.clone().into() };
+            if let Some(data) = FillableData::create_from_text(own) {
+                config.set_fillable_data(data);
+            }
             config.set_editable_text(shown);
         }
         if self.visual_transformation.is_password() {
@@ -3970,6 +4042,9 @@ impl SemanticsModifierNode for TextFieldNode {
         // enabled and not read-only.
         let editable = self.enabled && !self.read_only;
         config.set_is_editable(editable);
+        // A field is text to autofill, filled through its node (D1681).
+        config.set_content_data_type(ContentDataType::TEXT);
+        config.on_fill_data_of_node();
         if editable {
             config.set_text_of_node();
             config.insert_text_at_cursor_of_node();
@@ -3984,6 +4059,7 @@ impl SemanticsModifierNode for TextFieldNode {
         config.get_text_layout_result_of_node();
         config.set_selection_of_node();
         config.on_click_of_node();
+        config.on_long_click_of_node();
         config.on_ime_action_of_node(
             self.keyboard_options.to_ime_options(self.single_line).ime_action,
         );
@@ -4046,6 +4122,19 @@ impl TextFieldNode {
                 }
                 true
             }
+            // As Compose's: focused, the selection's toolbar asked for (`updateTextToolbarState`,
+            // `enterSelectionMode`); a value-based field's handles in selection mode too.
+            Action::LongClick => {
+                if !self.focused {
+                    context.request_focus();
+                }
+                if self.state.is_none() {
+                    self.touch_enter_selection_mode();
+                    context.invalidate_measure();
+                }
+                self.set_toolbar_state(toolbar::ToolbarState::Selection);
+                true
+            }
             Action::SetText(text) => {
                 if !editable {
                     return false;
@@ -4056,6 +4145,25 @@ impl TextFieldNode {
                 context.reset_input_method();
                 let end = text.as_str().len();
                 self.edit(text.as_str().to_string(), end, end, false, context);
+                true
+            }
+            Action::FillData(data) => {
+                // A state-based field refuses it unless editable (Compose's decorator); a
+                // value-based one takes it, highlighted, and its text stays then
+                // (`handleTextUpdateFromSemantics`).
+                if !editable && self.state.is_some() {
+                    return false;
+                }
+                if editable && let Some(text) = data.text_value() {
+                    self.end_composition();
+                    context.reset_input_method();
+                    let end = text.as_str().len();
+                    self.edit(text.as_str().to_string(), end, end, false, context);
+                }
+                // Highlighted until its text changes (D1685).
+                let brush = context.current_value_of(&crate::LOCAL_AUTOFILL_HIGHLIGHT_BRUSH);
+                self.autofill_highlight = Some(Box::new((brush, self.text.clone())));
+                context.invalidate_draw();
                 true
             }
             Action::InsertText(text) => {

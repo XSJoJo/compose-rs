@@ -25,6 +25,7 @@ pub mod serialize;
 pub mod text;
 pub mod text_segments;
 
+pub mod autofill;
 mod bridge;
 mod frame_time;
 mod logging;

@@ -343,6 +343,10 @@ impl UiTree {
             self.focus.captured = false;
         }
         if previous != target {
+            self.note_autofill_focus(
+                previous.map(|target| target.node),
+                target.map(|target| target.node),
+            );
             let generation = &self.focus_requests.focus_generation;
             generation.set(generation.get().wrapping_add(1));
             if self.has_indirect_pointer_input {

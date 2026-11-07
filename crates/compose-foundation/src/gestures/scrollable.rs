@@ -1079,6 +1079,9 @@ impl compose_ui::BringIntoViewResponderNode for ScrollableNode {
 }
 
 impl compose_ui::SemanticsModifierNode for ScrollableNode {
+    /// Nothing autofill reads (D1688).
+    fn apply_autofill_semantics(&self, _config: &mut compose_ui::SemanticsConfiguration) {}
+
     /// Scrolls by the action's delta along the axis, as Compose's scrollable's `scrollBy`
     /// action (compose-rs scrolls at once, D491).
     fn apply_semantics(&self, config: &mut compose_ui::SemanticsConfiguration) {

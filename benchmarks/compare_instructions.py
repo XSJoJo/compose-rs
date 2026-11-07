@@ -8,6 +8,11 @@ Timing on a loaded machine swings up to 4x; retired instructions move by a fract
     benchmarks/compare_instructions.py ../other --rounds 5      # ... or another checkout
     benchmarks/compare_instructions.py main grid_step:500       # scenario:iterations
     benchmarks/compare_instructions.py main --dumps             # the same display lists?
+    benchmarks/compare_instructions.py . --autofill             # with Android's autofill, against without
+
+`--autofill` builds this side with a platform autofill manager on every host, as Android installs
+on every view (the `bench-autofill` feature of compose-benchmarks, D1688); the base is built without
+it, so `.` as the base measures what the manager costs.
 
 The dumps print each paragraph by its text, not its handle, an allocation number another composing
 order renumbers (lazy items composed per item, C8).
@@ -72,7 +77,7 @@ SCENARIOS = {
 DUMPS = ["feed", "big", "feed_animated", "stress", "stress_animation", "grid", "cells"]
 
 
-def build(checkout, target):
+def build(checkout, target, features=()):
     """Builds the example in `checkout`, lent this checkout's source so that both sides have the
     same scenarios: an older copy of the example lacks the new ones. It must compile there."""
     example = checkout / "benchmarks/examples" / f"{EXAMPLE}.rs"
@@ -82,7 +87,8 @@ def build(checkout, target):
         shutil.copy(HERE / "examples" / f"{EXAMPLE}.rs", example)
     try:
         built = subprocess.run(
-            ["cargo", "build", "--release", "-p", "compose-benchmarks", "--example", EXAMPLE],
+            ["cargo", "build", "--release", "-p", "compose-benchmarks", "--example", EXAMPLE]
+            + [f"--features=compose-benchmarks/{feature}" for feature in features],
             cwd=checkout,
             env={**os.environ, "CARGO_TARGET_DIR": str(target)},
         )
@@ -120,6 +126,11 @@ def main():
     parser.add_argument("--rounds", type=int, default=3, help="runs of each side, alternating")
     parser.add_argument("--dumps", action="store_true", help="compare display lists instead")
     parser.add_argument("--scratch", help="where the builds go (default: a temporary directory)")
+    parser.add_argument(
+        "--autofill",
+        action="store_true",
+        help="this side with a platform autofill manager on every host (bench-autofill)",
+    )
     args = parser.parse_args()
     repo = HERE.parent
     scratch = pathlib.Path(args.scratch or tempfile.mkdtemp(prefix="compare-instructions-"))
@@ -149,7 +160,11 @@ def main():
     # built, the package's hash leaving out where the checkout is.
     binaries = {
         "base": build(base, scratch / f"base-target-{target_key(commit or str(base))}"),
-        "this": build(repo, scratch / f"this-target-{target_key(str(repo))}"),
+        "this": build(
+            repo,
+            scratch / f"this-target-{target_key(str(repo) + ('+autofill' if args.autofill else ''))}",
+            ("bench-autofill",) if args.autofill else (),
+        ),
     }
     if args.dumps:
         same = True

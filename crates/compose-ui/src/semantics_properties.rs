@@ -14,6 +14,7 @@ use std::sync::atomic::AtomicBool;
 use smallvec::SmallVec;
 
 use crate::annotated::AnnotatedString;
+use crate::autofill::{ContentDataType, ContentType, FillableData};
 use crate::graphics::{Color, Shape};
 use crate::semantics::{ProgressBarRangeInfo, Role, ScrollAxisRange, ToggleableState};
 use crate::text::{SharedString, TextLayoutResult};
@@ -151,6 +152,8 @@ pub type ShowTextSubstitutionFn = dyn Fn(bool) -> bool;
 pub type GetTextLayoutResultFn = dyn Fn(&mut Vec<TextLayoutResult>) -> bool;
 /// `GetScrollViewportLength`'s `(MutableList<Float>) -> Boolean`.
 pub type GetScrollViewportLengthFn = dyn Fn(&mut Vec<f32>) -> bool;
+/// `OnFillData`'s `(FillableData) -> Boolean`: the value an autofill service fills the node with.
+pub type FillDataFn = dyn Fn(FillableData) -> bool;
 
 /// An action a node offers, with the label accessibility services show for it, as Compose's
 /// `AccessibilityAction`. Equal when the labels are and it's the same function.
@@ -339,6 +342,9 @@ pub enum ValueSlot {
     ImeAction(ImeAction),
     Shape(Shape),
     InputTextSuggestionState(InputTextSuggestionState),
+    ContentType(ContentType),
+    ContentDataType(ContentDataType),
+    FillableData(FillableData),
     Action(AccessibilityAction<ActionFn>),
     ScrollByAction(AccessibilityAction<ScrollByFn>),
     ScrollToIndexAction(AccessibilityAction<ScrollToIndexFn>),
@@ -348,6 +354,7 @@ pub enum ValueSlot {
     ShowTextSubstitutionAction(AccessibilityAction<ShowTextSubstitutionFn>),
     GetTextLayoutResultAction(AccessibilityAction<GetTextLayoutResultFn>),
     GetScrollViewportLengthAction(AccessibilityAction<GetScrollViewportLengthFn>),
+    FillDataAction(AccessibilityAction<FillDataFn>),
     CustomActions(Vec<CustomAccessibilityAction>),
     Other(OtherSlot),
 }
@@ -366,6 +373,7 @@ impl ValueSlot {
                 | ValueSlot::ShowTextSubstitutionAction(_)
                 | ValueSlot::GetTextLayoutResultAction(_)
                 | ValueSlot::GetScrollViewportLengthAction(_)
+                | ValueSlot::FillDataAction(_)
         ) || matches!(self, ValueSlot::Other(other) if other.is_action)
     }
 
@@ -397,6 +405,9 @@ impl ValueSlot {
             }
             (V::GetScrollViewportLengthAction(new), V::GetScrollViewportLengthAction(old)) => {
                 V::GetScrollViewportLengthAction(collapse(new, old))
+            }
+            (V::FillDataAction(new), V::FillDataAction(old)) => {
+                V::FillDataAction(collapse(new, old))
             }
             (V::Other(new), V::Other(old)) => match new.collapse.and_then(|f| f(&new, old)) {
                 Some(collapsed) => V::Other(collapsed),
@@ -449,6 +460,9 @@ impl fmt::Debug for ValueSlot {
             ValueSlot::ImeAction(value) => value.fmt(formatter),
             ValueSlot::Shape(value) => value.fmt(formatter),
             ValueSlot::InputTextSuggestionState(value) => value.fmt(formatter),
+            ValueSlot::ContentType(value) => value.fmt(formatter),
+            ValueSlot::ContentDataType(value) => value.fmt(formatter),
+            ValueSlot::FillableData(value) => value.fmt(formatter),
             ValueSlot::Action(value) => value.fmt(formatter),
             ValueSlot::ScrollByAction(value) => value.fmt(formatter),
             ValueSlot::ScrollToIndexAction(value) => value.fmt(formatter),
@@ -458,6 +472,7 @@ impl fmt::Debug for ValueSlot {
             ValueSlot::ShowTextSubstitutionAction(value) => value.fmt(formatter),
             ValueSlot::GetTextLayoutResultAction(value) => value.fmt(formatter),
             ValueSlot::GetScrollViewportLengthAction(value) => value.fmt(formatter),
+            ValueSlot::FillDataAction(value) => value.fmt(formatter),
             ValueSlot::CustomActions(value) => value.fmt(formatter),
             ValueSlot::Other(value) => value.fmt(formatter),
         }
@@ -514,6 +529,9 @@ inline_value! {
     ImeAction => ImeAction,
     Shape => Shape,
     InputTextSuggestionState => InputTextSuggestionState,
+    ContentType => ContentType,
+    ContentDataType => ContentDataType,
+    FillableData => FillableData,
     Vec<CustomAccessibilityAction> => CustomActions,
 }
 
@@ -552,6 +570,7 @@ impl<F: ?Sized + 'static> SemanticsValue for AccessibilityAction<F> {
             ShowTextSubstitutionFn => ShowTextSubstitutionAction,
             GetTextLayoutResultFn => GetTextLayoutResultAction,
             GetScrollViewportLengthFn => GetScrollViewportLengthAction,
+            FillDataFn => FillDataAction,
         }
         ValueSlot::Other(OtherSlot::accessibility_action(this.take().expect("set once")))
     }
@@ -567,6 +586,7 @@ impl<F: ?Sized + 'static> SemanticsValue for AccessibilityAction<F> {
             ValueSlot::ShowTextSubstitutionAction(action) => action,
             ValueSlot::GetTextLayoutResultAction(action) => action,
             ValueSlot::GetScrollViewportLengthAction(action) => action,
+            ValueSlot::FillDataAction(action) => action,
             ValueSlot::Other(other) => other.value.__semantics_as_any(),
             _ => return None,
         };
@@ -880,6 +900,15 @@ pub mod SemanticsProperties {
         SemanticsPropertyKey::with_merge_policy("BackgroundColor", parent_only);
     pub static SHAPE: SemanticsPropertyKey<Shape> =
         SemanticsPropertyKey::with_merge_policy("Shape", parent_only);
+    /// What an autofill service may fill the node with, as `ContentType`: never merged.
+    pub static CONTENT_TYPE: SemanticsPropertyKey<ContentType> =
+        SemanticsPropertyKey::with_merge_policy("ContentType", parent_only);
+    /// The kind of value the node holds for autofill, as `ContentDataType`: never merged.
+    pub static CONTENT_DATA_TYPE: SemanticsPropertyKey<ContentDataType> =
+        SemanticsPropertyKey::with_merge_policy("ContentDataType", parent_only);
+    /// The node's value for autofill, as `FillableData`: never merged.
+    pub static FILLABLE_DATA: SemanticsPropertyKey<FillableData> =
+        SemanticsPropertyKey::with_merge_policy("FillableData", parent_only);
 }
 
 /// The actions semantics offer, as Compose's `SemanticsActions`. Left out: the deprecated
@@ -947,6 +976,9 @@ pub mod SemanticsActions {
     pub static GET_SCROLL_VIEWPORT_LENGTH: SemanticsPropertyKey<
         AccessibilityAction<GetScrollViewportLengthFn>,
     > = SemanticsPropertyKey::action("GetScrollViewportLength");
+    /// Fills the node with an autofill service's value, as `OnFillData`.
+    pub static ON_FILL_DATA: SemanticsPropertyKey<AccessibilityAction<FillDataFn>> =
+        SemanticsPropertyKey::action("OnFillData");
 }
 
 /// compose-rs's own: the properties belong to the nearest ancestor with semantics, in both
@@ -1305,6 +1337,41 @@ impl SemanticsConfiguration {
         self.set(&SemanticsProperties::SHAPE, shape);
     }
 
+    /// As `contentType = …`: the hints an autofill service fills the node by.
+    pub fn set_content_type(&mut self, content_type: ContentType) {
+        self.set(&SemanticsProperties::CONTENT_TYPE, content_type);
+    }
+
+    /// As `contentDataType = …`.
+    pub fn set_content_data_type(&mut self, content_data_type: ContentDataType) {
+        self.set(&SemanticsProperties::CONTENT_DATA_TYPE, content_data_type);
+    }
+
+    /// As `fillableData = …`.
+    pub fn set_fillable_data(&mut self, data: FillableData) {
+        self.set(&SemanticsProperties::FILLABLE_DATA, data);
+    }
+
+    /// As `onFillData(label, action)`: what an autofill service's value does to the node,
+    /// returning whether it was handled.
+    pub fn on_fill_data(
+        &mut self,
+        label: Option<SharedString>,
+        action: impl Fn(FillableData) -> bool + 'static,
+    ) {
+        self.set_action(&SemanticsActions::ON_FILL_DATA, label, Rc::new(action));
+    }
+
+    /// As `on_click_of_node`, for `OnFillData`: the node's modifiers are asked (a text field's,
+    /// `TextAction::FillData`).
+    #[doc(hidden)]
+    pub fn on_fill_data_of_node(&mut self) {
+        self.set(
+            &SemanticsActions::ON_FILL_DATA,
+            AccessibilityAction { label: None, action: None },
+        );
+    }
+
     /// As `selectableGroup()`: it groups selectable items (radio buttons).
     pub fn selectable_group(&mut self) {
         self.set(&SemanticsProperties::SELECTABLE_GROUP, ());
@@ -1486,6 +1553,14 @@ impl SemanticsConfiguration {
     /// (`SemanticsModifierNode::perform_text_action`), bound as `request_focus_of_node` (D1299).
     pub fn on_click_of_node(&mut self) {
         self.set(&SemanticsActions::ON_CLICK, AccessibilityAction { label: None, action: None });
+    }
+
+    /// As `on_click_of_node`, for `OnLongClick`.
+    pub fn on_long_click_of_node(&mut self) {
+        self.set(
+            &SemanticsActions::ON_LONG_CLICK,
+            AccessibilityAction { label: None, action: None },
+        );
     }
 
     /// As `on_click_of_node`, for `SetText`.

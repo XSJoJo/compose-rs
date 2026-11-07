@@ -33,14 +33,15 @@ pub(crate) enum ToolbarState {
     Selection,
 }
 
-/// Which of the field's items show, as Compose's `canShow*MenuItem`. No autofill: compose-rs has
-/// none to ask, so its item, which would do nothing, isn't shown (D2035).
+/// Which of the field's items show, as Compose's `canShow*MenuItem`; autofill where the platform
+/// has it, as Compose's from Android 8 (D1684).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(crate) struct FieldMenu {
     cut: bool,
     copy: bool,
     paste: bool,
     select_all: bool,
+    autofill: bool,
 }
 
 /// Whether the clipboard holds something to paste, as Compose's internal `ClipboardPasteState`:
@@ -100,6 +101,7 @@ enum MenuAction {
     Copy,
     Paste,
     SelectAll,
+    Autofill,
 }
 
 /// What a field's node keeps of its toolbar.
@@ -336,6 +338,7 @@ impl TextFieldNode {
             copy: !collapsed && !password,
             paste: editable && self.touch.toolbar.paste.has_text(),
             select_all: self.anchor.abs_diff(self.cursor) != self.text.len(),
+            autofill: editable && collapsed && self.touch.autofill_available,
         }
     }
 
@@ -374,6 +377,9 @@ impl TextFieldNode {
                 close = !toolbar_shown;
                 state = ToolbarState::Selection;
             }
+            // Asks the platform's autofill for the field, as Compose's `autofill()`
+            // (`requestAutofill` on its decorator).
+            MenuAction::Autofill => context.request_autofill(),
         }
         if close {
             session.close();
@@ -404,7 +410,7 @@ impl ToolbarHost for TextFieldNode {
     }
 
     /// The field's items, as Compose's `addBasicTextFieldTextContextMenuComponents`: cut, copy,
-    /// paste and select all, each only when it applies, between separators (no autofill, D2035).
+    /// paste, select all and autofill, each only when it applies, between separators (D1684).
     /// What applies is a state the field writes, so the toolbar follows it.
     fn own_text_context_menu_components(&mut self, scope: &mut TextContextMenuBuilderScope) {
         if let Some(handles) = self.touch.handles() {
@@ -428,6 +434,12 @@ fn field_components(handles: &Rc<TouchHandles>, scope: &mut TextContextMenuBuild
                 TextContextMenuKeys::SelectAll,
                 text_action_labels::SELECT_ALL,
                 MenuAction::SelectAll,
+            ),
+            (
+                menu.autofill,
+                TextContextMenuKeys::Autofill,
+                text_action_labels::AUTOFILL,
+                MenuAction::Autofill,
             ),
         ];
         for (shown, key, label, action) in items {

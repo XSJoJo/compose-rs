@@ -211,11 +211,15 @@ impl UiTree {
         value.constraints = Some(constraints);
         // What its semantics read may have changed with what measured it (a lazy list's
         // ranges, a text field's text): computed again when next asked (D1257).
-        value.semantics = None;
+        let dropped = value.semantics.take();
         // What this measurement asks of its descendants' intrinsics is asked anew, unless its
         // own were asked: then what its parent asked through it holds (Compose's
         // `clearSubtreeIntrinsicsUsage`).
-        if value.children_intrinsics_asked && !value.intrinsics_asked {
+        let clear_intrinsics = value.children_intrinsics_asked && !value.intrinsics_asked;
+        if let Some(dropped) = dropped {
+            self.note_autofill_measured(node, &dropped);
+        }
+        if clear_intrinsics {
             self.clear_intrinsics_usage_below(node);
         }
         // Only a line's change asks if it's measuring, and only who read one can be told of one.

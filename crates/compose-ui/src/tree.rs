@@ -453,6 +453,9 @@ pub struct UiTree {
         Option<Box<crate::indirect_pointer::IndirectPointerNavigationGestureDetector>>,
     /// Observes the state measure policies and custom nodes read (D71), keyed by node.
     pub(crate) observer: Option<Rc<compose_runtime::platform::ReadObserver>>,
+    /// Observes what semantics read (D1257), apart: a write in a frame invalidates them in that
+    /// frame, asking for no other (D1688). `observer` if none.
+    pub(crate) semantics_observer: Option<Rc<compose_runtime::platform::ReadObserver>>,
     pub(crate) measure_runs: u64,
     /// What `FocusRequester`s attached to this tree's nodes asked for.
     pub(crate) focus_requests: Rc<crate::focus_requester::FocusRequests>,
@@ -562,6 +565,10 @@ pub struct UiTree {
     /// A node's semantics changed outside what recomposition and layout say (its
     /// `invalidate_semantics`, a semantics node's update): the frame's stats tell it.
     pub(crate) semantics_changed: bool,
+    /// The platform's autofill and what it was told, if installed (D1680).
+    pub(crate) autofill: Option<Box<crate::autofill::AutofillTracking>>,
+    /// The platform has autofill, a manager installed or not (`set_autofill_available`).
+    pub(crate) autofill_available: bool,
     /// Pointer nodes came, went or changed: the resting mouse's hover is refreshed even if
     /// nothing was laid out.
     pub(crate) hover_stale: bool,
@@ -697,6 +704,7 @@ impl UiTree {
             indirect_focus_path: Vec::new(),
             indirect_navigation: None,
             observer: None,
+            semantics_observer: None,
             measure_runs: 0,
             focus_requests,
             text_selection: None,
@@ -740,6 +748,8 @@ impl UiTree {
             key,
             lifecycle: Vec::new(),
             semantics_changed: false,
+            autofill: None,
+            autofill_available: false,
             hover_stale: false,
             paused_lifecycle: Vec::new(),
             side_effects: Vec::new(),
@@ -1388,8 +1398,25 @@ impl UiTree {
         self.observer = Some(Rc::new(observer));
     }
 
-    /// Measures and draws again what observed writes invalidated.
+    /// Observes what semantics read apart from what measuring and drawing read: `observer` calls
+    /// back when a write invalidates some, and a host asks for a frame only outside one (a write
+    /// a frame makes, a lazy list's layout state, is applied before it draws: D1688).
+    pub fn set_semantics_read_observer(
+        &mut self,
+        observer: compose_runtime::platform::ReadObserver,
+    ) {
+        self.semantics_observer = Some(Rc::new(observer));
+    }
+
+    /// Measures and draws again what observed writes invalidated, and forgets the semantics
+    /// they invalidated.
     pub fn apply_observed_writes(&mut self) {
+        if let Some(semantics) = self.semantics_observer.clone() {
+            semantics.drain_invalidated(|key| {
+                let (node, _) = observation_of(key);
+                self.invalidate_semantics_of(node);
+            });
+        }
         let Some(observer) = self.observer.clone() else { return };
         observer.drain_invalidated(|key| {
             let (node, observation) = observation_of(key);
@@ -1629,6 +1656,9 @@ impl UiTree {
         // A node attached in this pass attaches its whole subtree when it ends.
         let attaching = value.attaching;
         self.next_entry = next_entry;
+        if changed {
+            self.note_autofill_dirty(node);
+        }
         for &index in &locals_updated {
             self.note_local_changes(node, index as usize, true);
         }
@@ -2007,6 +2037,8 @@ impl UiTree {
         // Before the pass updates its elements: what's told of the focus going is what was there.
         self.focus_node_resetting(node);
         let semantics_id = self.next_semantics_id();
+        // Autofill sees new content come (D1688).
+        self.note_autofill_reused(node);
         let value = self.node_mut(node);
         value.semantics_id = semantics_id;
         value.composite_key = compose_runtime::CompositeKeyToken::NONE;
@@ -2094,6 +2126,9 @@ impl UiTree {
                 observer.forget(observation_key(id, Observation::Draw));
                 observer.forget(observation_key(id, Observation::Layer));
                 observer.forget(observation_key(id, Observation::InnerLayers));
+                if let Some(semantics) = &self.semantics_observer {
+                    semantics.forget(observation_key(id, Observation::Semantics));
+                }
                 observer.forget(observation_key(id, Observation::Semantics));
                 observer.forget(observation_key(id, Observation::FocusProperties));
                 if value.placements.is_some() {

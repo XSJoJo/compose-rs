@@ -1638,6 +1638,16 @@ pub trait SemanticsModifierNode {
     /// state, but not depend on anything else that changes unannounced.
     fn apply_semantics(&self, config: &mut SemanticsConfiguration);
 
+    /// What of `apply_semantics` the platform's autofill reads (D1688): its content type, data
+    /// type, input text, toggle state, fillable data and `OnFillData`, and whether it's a part
+    /// (`PART_OF_PARENT`, `PARTS_HOST`), with the same values. The tree asks for it, when the
+    /// node's semantics aren't kept, instead of computing them all (a field's at each key).
+    /// Defaults to `apply_semantics`; a node setting none of those sets nothing here.
+    #[doc(hidden)]
+    fn apply_autofill_semantics(&self, config: &mut SemanticsConfiguration) {
+        self.apply_semantics(config);
+    }
+
     /// What one of the semantics actions it offered through `*_of_node` asks of it (a text field's
     /// state being its own, an action that isn't a closure over shared state, D1299), with the
     /// tree free. Returns whether it did it.
@@ -1726,6 +1736,8 @@ pub trait FocusRequesterModifierNode {}
 pub enum TextAction {
     /// `OnClick`: the field takes the focus and shows its keyboard.
     Click,
+    /// `OnLongClick`: the field takes the focus and asks for its selection's toolbar (D1686).
+    LongClick,
     /// `SetText`: this text, in place of all there is, the cursor at its end.
     SetText(crate::SharedString),
     /// `InsertTextAtCursor`: this text, in place of the selection.
@@ -1743,6 +1755,8 @@ pub enum TextAction {
     PasteText,
     /// `OnImeAction`: the action the field's keyboard offers.
     ImeAction,
+    /// `OnFillData`: an autofill service's value for the field (D1681).
+    FillData(crate::autofill::FillableData),
 }
 
 /// A node that receives key and text events while it or a descendant has focus, as

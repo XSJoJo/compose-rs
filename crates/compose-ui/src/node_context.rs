@@ -280,6 +280,12 @@ impl NodeContext<'_> {
         self.tree.clipboard.clone()
     }
 
+    /// Whether the platform has autofill (`UiTree::is_autofill_available`), as Compose's
+    /// `isAutofillAvailable`: a text field's menus offer it then.
+    pub fn is_autofill_available(&self) -> bool {
+        self.tree.is_autofill_available()
+    }
+
     /// The host's floating text toolbars (`UiTree::set_text_action_modes`), if it has any.
     pub fn text_action_modes(
         &self,
@@ -354,6 +360,17 @@ impl NodeContext<'_> {
     /// The node's semantics changed, as `invalidateSemantics`.
     pub fn invalidate_semantics(&mut self) {
         self.invalidate(Invalidation::Semantics);
+    }
+
+    /// Asks the platform's autofill to fill the node's layout node, as
+    /// `DelegatableNode.requestAutofill`: told once the tree is free; nothing without autofill or
+    /// while the node isn't placed.
+    pub fn request_autofill(&mut self) {
+        if !self.is_attached() {
+            return;
+        }
+        let node = self.node;
+        self.tree.enter().request_autofill_of(node);
     }
 
     /// The node's parent data changed, as `invalidateParentData`.
@@ -712,6 +729,19 @@ impl NodeHandle {
     /// As `SemanticsModifierNode.invalidateSemantics`.
     pub fn invalidate_semantics(&self) {
         self.request(Invalidation::Semantics);
+    }
+
+    /// As `DelegatableNode.requestAutofill` (`NodeContext::request_autofill`), from where a node
+    /// has no context: with the tree free, else nothing.
+    pub fn request_autofill(&self) {
+        let Some(requests) = requests_of(self.tree) else { return };
+        if !requests.attached_entries.borrow().contains(&self.entry.0) {
+            return;
+        }
+        let node = self.node;
+        let _ = crate::focus_requester::on_free_tree(self.tree, |tree| {
+            tree.request_autofill_of(node);
+        });
     }
 
     /// As `ParentDataModifierNode.invalidateParentData`.

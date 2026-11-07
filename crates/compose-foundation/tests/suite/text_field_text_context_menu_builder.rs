@@ -2,12 +2,12 @@
 //! read-only, as a provided dropdown gets it (D2040), from the `btf2` half of Compose's
 //! `TextFieldTextContextMenuBuilderTest`.
 //!
-//! The keys match Compose's before API 26 (no autofill: compose-rs has none, D2035); the
-//! `afterApi26` tests, which expect it, wait on it.
+//! The rule's platform has autofill, as Android 8 and up (D1682): the `beforeApi26` tests say it
+//! hasn't.
 
 #![allow(non_snake_case)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use compose_foundation::text_context_menu::*;
@@ -29,6 +29,26 @@ enum SelectionAmount {
 }
 
 use TextContextMenuKeys::{Autofill, Copy, Cut, Paste, SelectAll};
+
+thread_local! {
+    /// Whether the platform's API level is 26 or more, where autofill is (D1682).
+    static API_26: Cell<bool> = const { Cell::new(true) };
+}
+
+/// `run_correct_items_test` before API 26: no autofill, so no autofill item.
+fn run_correct_items_test_before_api26(
+    password: bool,
+    read_only: bool,
+    empty_clipboard: bool,
+    amount: SelectionAmount,
+    expected: &[TextContextMenuKeys],
+) {
+    API_26.with(|it| it.set(false));
+    // Nor a platform autofill manager, whatever `COMPOSE_TEST_AUTOFILL` says (D1688).
+    compose_test::use_autofill(false);
+    run_correct_items_test(password, read_only, empty_clipboard, amount, expected);
+    API_26.with(|it| it.set(true));
+}
 
 /// Compose's `runBtf2CorrectItemsTest`: the data the provided dropdown gets from a right click on
 /// "Text Text Text", selected as said, the clipboard empty or holding text, a secure field for a
@@ -59,6 +79,8 @@ fn run_correct_items_test(
     let mut ui = ComposeTestRule::sized(IntSize::new(400, 400), || {});
     let shared: Rc<dyn ClipboardManager> = clipboard.clone();
     ui.host().with_tree(|tree| tree.set_clipboard(shared));
+    // Before API 26, Android has no autofill (Compose's `beforeApi26` tests run there only).
+    ui.host().with_tree(|tree| tree.set_autofill_available(API_26.with(Cell::get)));
     ui.set_content(move || {
         compose_runtime::CompositionLocalProvider(
             LOCAL_TEXT_CONTEXT_MENU_DROPDOWN_PROVIDER.provides(Some(fake.clone())),
@@ -92,12 +114,11 @@ fn run_correct_items_test(
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldTextContextMenuBuilderTest.kt, btf2_contextMenu_emptyClipboard_noSelection_itemsMatch_beforeApi26
 #[test]
 fn btf2_contextMenu_emptyClipboard_noSelection_itemsMatch_beforeApi26() {
-    run_correct_items_test(false, false, true, SelectionAmount::None, &[SelectAll]);
+    run_correct_items_test_before_api26(false, false, true, SelectionAmount::None, &[SelectAll]);
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldTextContextMenuBuilderTest.kt, btf2_contextMenu_emptyClipboard_noSelection_itemsMatch_afterApi26
 #[test]
-#[ignore = "waits on autofill (D2035)"]
 fn btf2_contextMenu_emptyClipboard_noSelection_itemsMatch_afterApi26() {
     run_correct_items_test(false, false, true, SelectionAmount::None, &[SelectAll, Autofill]);
 }
@@ -117,12 +138,12 @@ fn btf2_contextMenu_emptyClipboard_fullSelection_itemsMatch() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldTextContextMenuBuilderTest.kt, btf2_contextMenu_nonEmptyClipboard_noSelection_itemsMatch_beforeApi26
 #[test]
 fn btf2_contextMenu_nonEmptyClipboard_noSelection_itemsMatch_beforeApi26() {
-    run_correct_items_test(false, false, false, SelectionAmount::None, &[Paste, SelectAll]);
+    let expected = [Paste, SelectAll];
+    run_correct_items_test_before_api26(false, false, false, SelectionAmount::None, &expected);
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldTextContextMenuBuilderTest.kt, btf2_contextMenu_nonEmptyClipboard_noSelection_itemsMatch_afterApi26
 #[test]
-#[ignore = "waits on autofill (D2035)"]
 fn btf2_contextMenu_nonEmptyClipboard_noSelection_itemsMatch_afterApi26() {
     let expected = [Paste, SelectAll, Autofill];
     run_correct_items_test(false, false, false, SelectionAmount::None, &expected);
@@ -144,12 +165,12 @@ fn btf2_contextMenu_nonEmptyClipboard_fullSelection_itemsMatch() {
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldTextContextMenuBuilderTest.kt, btf2_contextMenu_password_noSelection_itemsMatch_beforeApi26
 #[test]
 fn btf2_contextMenu_password_noSelection_itemsMatch_beforeApi26() {
-    run_correct_items_test(true, false, false, SelectionAmount::None, &[Paste, SelectAll]);
+    let expected = [Paste, SelectAll];
+    run_correct_items_test_before_api26(true, false, false, SelectionAmount::None, &expected);
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldTextContextMenuBuilderTest.kt, btf2_contextMenu_password_noSelection_itemsMatch_afterApi26
 #[test]
-#[ignore = "waits on autofill (D2035)"]
 fn btf2_contextMenu_password_noSelection_itemsMatch_afterApi26() {
     let expected = [Paste, SelectAll, Autofill];
     run_correct_items_test(true, false, false, SelectionAmount::None, &expected);

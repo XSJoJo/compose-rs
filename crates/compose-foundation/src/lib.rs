@@ -128,8 +128,9 @@ pub use shape::{
     CutCornerShape, GenericShape, RoundedCornerShape, RoundedCorners, ZERO_CORNER_SIZE,
 };
 pub use text::{
-    BasicAnnotatedText, BasicText, DisableSelection, LOCAL_TEXT_SELECTION_COLORS,
-    SelectionContainer, TextSelectionColors,
+    BasicAnnotatedText, BasicText, DEFAULT_AUTOFILL_HIGHLIGHT_COLOR, DisableSelection,
+    LOCAL_AUTOFILL_HIGHLIGHT_BRUSH, LOCAL_TEXT_SELECTION_COLORS, SelectionContainer,
+    TextSelectionColors,
 };
 #[doc(hidden)]
 pub use text_field::ClipboardPasteState;
