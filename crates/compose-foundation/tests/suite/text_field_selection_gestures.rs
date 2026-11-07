@@ -1461,3 +1461,59 @@ fn a_handles_drag_vibrates_when_it_moves_the_selection() {
     assert_eq!(it.state.selection(), TextRange::new(12, 23));
     assert!(performed().0 >= 1);
 }
+
+// Not Compose's: a mouse's tap shows the cursor handle once a finger comes back, as Compose's
+// `onTapTextField` sets `showCursorHandle` whatever tapped, here after a long press hid it
+// (D2027).
+#[test]
+fn a_mouses_tap_shows_the_cursor_handle_once_a_finger_comes_back() {
+    for kind in CURSORS {
+        let mut it = field_gestures(false);
+        let at = it.character(13);
+        it.long_click(at);
+        it.expect(|it| {
+            it.by_touch(12, 17);
+            it.handles_shown = true;
+            it.long_presses += 1;
+        });
+        it.cursor(kind, |cursor| cursor.click(at));
+        it.expect(|it| {
+            it.by_mouse(13, 13);
+            it.handles_shown = false;
+        });
+        it.enter_touch_mode();
+        it.expect(|it| it.cursor_handle_shown = true);
+    }
+}
+
+// Not Compose's: a mouse coming into the field ends the touch interaction, whatever its event,
+// as Compose's `detectDirectTouchInteraction` hears every event (D2027).
+#[test]
+fn a_mouse_entering_the_field_hides_the_handles() {
+    let mut it = field_gestures(false);
+    let at = it.character(13);
+    it.long_click(at);
+    it.expect(|it| {
+        it.by_touch(12, 17);
+        it.handles_shown = true;
+        it.long_presses += 1;
+    });
+    let center = it.center();
+    it.ui.on_node_with_tag(TAG).perform_mouse_input(|mouse| mouse.enter(center));
+    it.ui.wait_for_idle();
+    it.expect(|it| it.handles_shown = false);
+}
+
+// Not Compose's: a mouse's event on a handle ends the touch interaction, as Compose's handles
+// run `detectDirectTouchInteraction` too (D2027). Its press stays the handle's here, where
+// Compose's test would send it to the field's window (D2017).
+#[test]
+fn a_mouse_on_the_cursor_handle_hides_it() {
+    for kind in CURSORS {
+        let mut it = field_gestures(false);
+        // The cursor handle the first tap showed hangs over the middle line's first letter.
+        let at = it.character(6);
+        it.cursor(kind, |cursor| cursor.click(at));
+        it.check();
+    }
+}
