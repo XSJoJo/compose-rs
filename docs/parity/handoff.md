@@ -66,7 +66,7 @@ As of 2026-11-07, `origin/main` is at 6e12fd99 (13,329 tests; the same with `COM
 | Branch | What | State |
 |---|---|---|
 | `bidi-selection` | `TextSelectionGesturesBidiTest` (39) and the fixes it needs (D2062 and up) | In progress |
-| `a11y-cut-text` | Android accessibility line and page traversal safe on a text cut by its maximum lines (D2054's open hazard) | In progress |
+| `a11y-cut-text` | Android accessibility line and page traversal stop at a cut text's last shown line instead of panicking (D2070); a plain text cut by its maximum lines changes the same way, a recorded divergence from Compose (whose iterators return a reversed or overlong range there). Small, test-first; **not reviewed** | Merged, review pending |
 | `multi-paragraph-2` | The paragraph API's second part (D2049–D2052). Merged first, reviewed after; the review's findings are fixed by D2053, D2054 (a text's own layout result paints), D2060 (blend modes on each glyph's paint) and D2061 (locale directions from ICU 68.2) | Merged, reviewed |
 | `autofill-2` | Compose's autofill (D1680–D1688), tracking only changed nodes, off while Android's autofill is. Merged first, reviewed after; the review's blocker (a state field's text changed in code not reported) and its other findings are fixed by D1689. With a manager on: `list_scroll` +1.7 %, `feed_step` +2.1 %, `field_keystroke_direct` +3.6 %, `first_frame_list_items` +4.2 %. Not run on a phone | Merged, reviewed |
 
