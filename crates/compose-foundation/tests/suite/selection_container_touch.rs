@@ -786,6 +786,128 @@ fn a_container_moved_by_a_graphics_layer_past_the_window_hides_its_handle() {
     assert!(shown(&mut ui, Handle::SelectionEnd));
 }
 
+/// The two texts of the container tests in a `SelectionContainer`, the box around it tagged.
+fn selectable_box(modifier: Modifier) {
+    Box!(modifier = modifier.test_tag(CONTAINER), {
+        SelectionContainer!({
+            Column!({
+                BasicText!("aaa", modifier = Modifier.test_tag(TAG1), style = style());
+                BasicText!("bbb", modifier = Modifier.test_tag(TAG2), style = style());
+            });
+        });
+    });
+}
+
+/// A rule 400 px square over `content`, as the tests above, its clock moving as asked.
+fn window_of_400(content: impl Fn() + 'static) -> ComposeTestRule {
+    let measurer = FixedTextMeasurer::with_metrics(FixedFontMetrics::SAMPLE_FONT);
+    let mut ui =
+        compose_test_with(IntSize::new(400, 400), Density::new(1.0), Box::new(measurer), content);
+    ui.host().set_input_mode(InputMode::Touch);
+    ui.set_auto_advance(false);
+    ui.wait_for_idle();
+    ui
+}
+
+// Not one of Compose's: an `animate_item` item places its content with its animation's layer
+// (D1910), so its move, which lays nothing out after its first frame, moves a selection
+// container in it as a graphics layer does: the end handle, taken past the window by the item's
+// place, shows once the layer brings it back in, as Compose's `updateHandleOffsets` on the
+// container's moves.
+#[test]
+fn a_selection_in_an_animated_item_follows_the_item_s_layer() {
+    let items = compose_runtime::mutable_state_of(vec![0, 1, 2]);
+    let handle = items.handle();
+    let mut ui = window_of_400(move || {
+        let items = handle.get();
+        LazyColumn!(
+            modifier = Modifier.fill_max_size(),
+            content = move |scope: LazyListScope| {
+                scope.items_list_keyed(
+                    items.clone(),
+                    |it: &i32| *it,
+                    |item_scope, it: &i32| {
+                        let spec = compose_animation::tween(64)
+                            .easing(compose_animation::LINEAR_EASING)
+                            .into();
+                        let modifier =
+                            Modifier.animate_item_with(&item_scope, None, Some(spec), None);
+                        match *it {
+                            0 => Box!(modifier = modifier.fill_max_width().height(60.dp())),
+                            1 => Box!(modifier = modifier.fill_max_width().height(320.dp())),
+                            _ => selectable_box(modifier),
+                        }
+                    },
+                );
+            }
+        );
+    });
+    // The texts' bottoms at 400 and 420, the window 400 px high.
+    start_selection(&mut ui, TAG1, 0);
+    select_all(&mut ui);
+    assert!(shown(&mut ui, Handle::SelectionStart));
+    assert!(!shown(&mut ui, Handle::SelectionEnd));
+    // The first item gone: the item is laid out 60 px up, its layer moving it from where it was
+    // over 64 ms.
+    let handle = items.handle();
+    ui.run_on_ui_thread(move |_| handle.set(vec![1, 2]));
+    ui.advance_time_by_frame();
+    ui.advance_time_by_frame();
+    assert!(!shown(&mut ui, Handle::SelectionEnd), "the layer keeps it where it was");
+    let mut frames = 0;
+    while !shown(&mut ui, Handle::SelectionEnd) {
+        frames += 1;
+        assert!(frames <= 8, "the end handle never came back in");
+        ui.advance_time_by_frame();
+    }
+    // In by a third of the way (20 px), not before the layer's move was told.
+    let top = ui.on_node_with_tag(CONTAINER).fetch_semantics_node().position_in_root().y;
+    assert!((320.0..=360.0).contains(&top), "{top}");
+    ui.wait_for_idle();
+    assert!(shown(&mut ui, Handle::SelectionStart) && shown(&mut ui, Handle::SelectionEnd));
+}
+
+// Not one of Compose's: a layer placed with comes with no layout of what it moves, so a selection
+// container under it is told of it (Compose's layer made calls `onLayoutChange`): the end handle
+// it takes past the window hides, and shows again once placed without it.
+#[test]
+fn a_selection_under_a_layer_placed_with_follows_it_coming_and_going() {
+    let with_layer = compose_runtime::mutable_state_of(false);
+    let handle = with_layer.handle();
+    let block = compose_ui::LayerBlock::new(|layer| layer.translation_y = 30.0);
+    let mut ui = window_of_400(move || {
+        let block = block.clone();
+        let policy = compose_ui::measure_policy(move |scope, measurables, constraints| {
+            let placeable = scope.measure(measurables[0], constraints);
+            let block = block.clone();
+            scope.layout_with(constraints.max_width, constraints.max_height, move |placement| {
+                if handle.get() {
+                    placement.place_with_layer(&placeable, 0, 340, block.clone());
+                } else {
+                    placement.place(&placeable, 0, 340);
+                }
+            })
+        });
+        compose_ui::Layout(
+            Modifier.fill_max_size(),
+            policy,
+            compose_runtime::callback(|| selectable_box(Modifier)),
+        );
+    });
+    // The texts' bottoms at 360 and 380, the window 400 px high.
+    start_selection(&mut ui, TAG1, 0);
+    select_all(&mut ui);
+    assert!(shown(&mut ui, Handle::SelectionStart) && shown(&mut ui, Handle::SelectionEnd));
+    // 30 px down: the end handle 10 px past the window, the start one 10 px in it.
+    with_layer.set(true);
+    ui.wait_for_idle();
+    assert!(shown(&mut ui, Handle::SelectionStart));
+    assert!(!shown(&mut ui, Handle::SelectionEnd));
+    with_layer.set(false);
+    ui.wait_for_idle();
+    assert!(shown(&mut ui, Handle::SelectionEnd));
+}
+
 /// Cmd+A (Ctrl+A): everything in the focused container selected.
 fn select_all(ui: &mut ComposeTestRule) {
     let modifiers = if cfg!(target_os = "macos") {

@@ -39,6 +39,7 @@ mod paragraph_style;
 mod parent_data;
 mod path_geometry;
 mod path_shapes;
+mod place_with_layer;
 mod placeholder;
 mod placement_pass;
 mod pointer_event;
@@ -56,6 +57,7 @@ mod review_d_panic_poisoned;
 #[path = "../review_d_support/mod.rs"]
 mod review_d_support;
 mod review_groups;
+mod review_pwl;
 mod review_retained;
 mod rulers;
 mod shadow_values;

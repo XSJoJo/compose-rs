@@ -1424,6 +1424,9 @@ impl UiTree {
         point: Offset,
         entry: Option<usize>,
     ) -> PointInNode {
+        if self.placed_layer_nodes != 0 {
+            return self.point_through_chain_placed(node, point, entry);
+        }
         use crate::graphics_layer::GraphicsLayerNode;
         use crate::node_chain::NodeKinds;
         let value = self.node(node);
@@ -1461,6 +1464,91 @@ impl UiTree {
                 let offset = value.layers[layer].offset;
                 origin = origin + Offset::new(offset.x as f32, offset.y as f32);
             }
+        }
+        // The chain's walk stops at the content's layer; without it, the layers are added here.
+        let value = self.node(node);
+        for next in layer + 1..value.layers.len() {
+            let offset = value.layers[next].offset;
+            origin = origin + Offset::new(offset.x as f32, offset.y as f32);
+        }
+        PointInNode {
+            at_entry: at_entry.unwrap_or((local - origin, in_clips)),
+            in_clips,
+            in_content: local - origin,
+        }
+    }
+
+    /// `point_through_chain` while a node has layers placed with one (D1909).
+    #[cold]
+    #[inline(never)]
+    fn point_through_chain_placed(
+        &mut self,
+        node: NodeId,
+        point: Offset,
+        entry: Option<usize>,
+    ) -> PointInNode {
+        use crate::graphics_layer::GraphicsLayerNode;
+        use crate::node_chain::NodeKinds;
+        let value = self.node(node);
+        // In the node's own coordinates, its first layer's, which a layer's pivot is in.
+        let mut local = if value.overlay {
+            point - value.overlay_origin
+        } else {
+            let placed = value.layers[0].offset;
+            point - Offset::new(placed.x as f32, placed.y as f32)
+        };
+        let (mut layer, mut origin, mut in_clips) = (0, Offset::ZERO, true);
+        let mut at_entry = None;
+        let placed_any = value.has_placed_layers();
+        // A layer placed with one, from its first entry on (D1909): undone, and clipping to its
+        // bounds if it clips.
+        let placed = |tree: &Self, index: usize, local: &mut Offset, in_clips: &mut bool| {
+            let value = tree.node(node);
+            if let Some((graphics, at)) = tree.placed_layer_starting_at(node, index, usize::MAX) {
+                let origin = crate::layout_callbacks::layer_origin(value, at);
+                let size = value.layers[at].measured;
+                *local = graphics.layer_map(origin, size.into()).unmap(*local);
+                if graphics.clips() {
+                    let inside = *local - origin;
+                    *in_clips &= inside.x >= 0.0
+                        && inside.y >= 0.0
+                        && inside.x < size.width as f32
+                        && inside.y < size.height as f32;
+                }
+            }
+        };
+        for index in 0..self.node(node).chain.len() {
+            if placed_any {
+                placed(self, index, &mut local, &mut in_clips);
+            }
+            if entry == Some(index) {
+                at_entry = Some((local - origin, in_clips));
+            }
+            let value = self.node(node);
+            if let Some(graphics) = value.chain[index].node.downcast_ref::<GraphicsLayerNode>() {
+                let at = value.layer_of(index);
+                let origin = crate::layout_callbacks::layer_origin(value, at);
+                local = graphics.layer_map(origin, value.layers[at].measured.into()).unmap(local);
+            }
+            let value = self.node_mut(node);
+            let measured = value.layers[layer].measured;
+            let (density, direction) = (value.density, value.layout_direction);
+            let bits = value.chain[index].kinds;
+            if bits.any(NodeKinds::DRAW | NodeKinds::DELEGATING)
+                && let Some(clip) = value.chain[index].hit_clip_at(measured.into(), density)
+            {
+                in_clips &=
+                    clip.outline_in(measured.into(), &density, direction).contains(local - origin);
+            }
+            if bits.any(NodeKinds::LAYOUT) && layer + 1 < value.layers.len() {
+                layer += 1;
+                let offset = value.layers[layer].offset;
+                origin = origin + Offset::new(offset.x as f32, offset.y as f32);
+            }
+        }
+        if placed_any {
+            let length = self.node(node).chain.len();
+            placed(self, length, &mut local, &mut in_clips);
         }
         // The chain's walk stops at the content's layer; without it, the layers are added here.
         let value = self.node(node);

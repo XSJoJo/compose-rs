@@ -246,10 +246,12 @@ impl UiTree {
     /// and the coordinates of the position-aware nodes, if anything was laid out or a layer
     /// around them moved.
     pub fn take_layout_callbacks(&mut self) -> Vec<Action> {
+        // A selection's handles are placed with a new layer's block run, as callbacks are.
         if !self.new_layers.is_empty()
             && (!self.placed_layers.is_empty()
                 || !self.positioned.is_empty()
-                || self.rects.is_some())
+                || self.rects.is_some()
+                || self.text_selection.is_some())
         {
             self.run_new_layers();
         }
@@ -320,6 +322,10 @@ impl UiTree {
     /// told; with `keep`, a state's change, what it computes for the node's group is what the
     /// frame's drawing uses, observed as there.
     pub(crate) fn note_layer_change(&mut self, node: NodeId, keep: bool) {
+        if self.placed_layer_nodes != 0 {
+            self.note_layer_change_placed(node, keep);
+            return;
+        }
         // A text selection's handles follow the layers above its container and texts too.
         if self.positioned.is_empty()
             && self.coordinate_readers.is_empty()
@@ -367,10 +373,93 @@ impl UiTree {
         }
     }
 
+    /// `note_layer_change` while a node has a layer placed with one (D1909).
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn note_layer_change_placed(&mut self, node: NodeId, keep: bool) {
+        // A text selection's handles follow the layers above its container and texts too.
+        if self.positioned.is_empty()
+            && self.coordinate_readers.is_empty()
+            && self.rects.is_none()
+            && self.text_selection.is_none()
+        {
+            return;
+        }
+        let Some(value) = self.get(node) else { return };
+        if value.layer_moved
+            || value.deactivated
+            || (!value.kinds.any(NodeKinds::GRAPHICS_LAYER) && !value.has_placed_layers())
+        {
+            return;
+        }
+        let group_layer = value.retained.as_ref().and_then(|retained| retained.layer_entry);
+        let (placed_count, length) = (self.placed_layers(node).len(), value.chain.len());
+        let listeners = self.position_listeners;
+        let mut moved = false;
+        // The layers it was placed with (D1909): its group's is layer 0's.
+        for slot in 0..placed_count {
+            let value = self.node(node);
+            let placed = &self.placed_layers(node)[slot];
+            let layer = placed.layer as usize;
+            if !placed.graphics.told_a_node(listeners) || layer >= value.layers.len() {
+                continue;
+            }
+            let group = layer == 0 && value.retained.as_ref().is_some_and(|it| it.placed_layer);
+            if keep && group {
+                let observer = self.observer.clone();
+                let Some(properties) = self.layer_properties(node, observer.as_deref()) else {
+                    continue;
+                };
+                let value = self.node(node);
+                moved |= self.placed_layers(node)[slot].graphics.transform_changed(&properties);
+                let (density, direction) = (value.density, value.layout_direction);
+                let retained = self.node_mut(node).retained.as_mut().expect("its group");
+                retained.layer_ahead = Some((properties, density, direction));
+            } else {
+                let properties = self.properties_of_placed_layer(node, slot);
+                moved |= self.placed_layers(node)[slot].graphics.transform_changed(&properties);
+            }
+        }
+        for index in 0..length {
+            let value = self.node(node);
+            let Some(graphics) = value.chain[index].node.downcast_ref::<GraphicsLayerNode>() else {
+                continue;
+            };
+            if !graphics.told_a_node(listeners) {
+                continue;
+            }
+            if keep && group_layer == Some(index as u16) {
+                let observer = self.observer.clone();
+                let Some(properties) = self.layer_properties(node, observer.as_deref()) else {
+                    continue;
+                };
+                let value = self.node(node);
+                let graphics =
+                    value.chain[index].node.downcast_ref::<GraphicsLayerNode>().expect("a layer");
+                moved |= graphics.transform_changed(&properties);
+                let (density, direction) = (value.density, value.layout_direction);
+                let retained = self.node_mut(node).retained.as_mut().expect("its group");
+                retained.layer_ahead = Some((properties, density, direction));
+            } else {
+                moved |=
+                    graphics.transform_changed(&self.properties_of_layer(node, index, graphics));
+            }
+        }
+        if moved {
+            self.node_mut(node).layer_moved = true;
+            self.layers_moved.push(node);
+            self.place_readers_under(node);
+        }
+    }
+
     /// Runs the blocks of the layers new or updated since a draw, for what's about to ask where
     /// it is in this layout, as Compose's run when they're placed: a query runs none. The one
     /// that's its node's group's keeps its answer for the draw; an inner layer's runs again there.
     pub(crate) fn run_new_layers(&mut self) {
+        if self.placed_layer_nodes != 0 {
+            self.run_new_layers_placed();
+            return;
+        }
         let observer = self.observer.clone();
         for node in std::mem::take(&mut self.new_layers) {
             let Some(value) = self.get(node).filter(|value| !value.deactivated) else { continue };
@@ -423,6 +512,121 @@ impl UiTree {
         }
     }
 
+    /// `run_new_layers` while a node has a layer placed with one (D1909).
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn run_new_layers_placed(&mut self) {
+        let observer = self.observer.clone();
+        for node in std::mem::take(&mut self.new_layers) {
+            let Some(value) = self.get(node).filter(|value| !value.deactivated) else { continue };
+            // Not measured yet: its size is for a later run, this layout's.
+            if value.constraints.is_none() {
+                self.new_layers.push(node);
+                continue;
+            }
+            let group_layer = value.retained.as_ref().and_then(|retained| retained.layer_entry);
+            let length = value.chain.len();
+            if value.has_placed_layers() {
+                self.run_new_placed_layers(node);
+            }
+            for index in 0..length {
+                let value = self.node(node);
+                let Some(graphics) = value.chain[index].node.downcast_ref::<GraphicsLayerNode>()
+                else {
+                    continue;
+                };
+                if !graphics.has_block() {
+                    continue;
+                }
+                let (density, direction) = (value.density, value.layout_direction);
+                if group_layer == Some(index as u16) {
+                    if value.retained.as_ref().is_some_and(|it| it.layer_ahead.is_some()) {
+                        continue;
+                    }
+                    let Some(properties) = self.layer_properties(node, observer.as_deref()) else {
+                        continue;
+                    };
+                    let retained = self.node_mut(node).retained.as_mut().expect("its group");
+                    retained.layer_ahead = Some((properties, density, direction));
+                    continue;
+                }
+                let slot = value.inner_layers.iter().position(|it| it.is_entry(index));
+                if slot.is_some_and(|slot| value.inner_layers[slot].ahead.is_some()) {
+                    continue;
+                }
+                // Observed apart from what the layer's recording reads: the drawing takes this
+                // run, its observation being of the content then.
+                let key =
+                    crate::tree::observation_key(node, crate::tree::Observation::InnerLayerBlock);
+                let properties = match &observer {
+                    Some(observer) => {
+                        observer.observe(key, || self.properties_of_layer(node, index, graphics))
+                    }
+                    None => self.properties_of_layer(node, index, graphics),
+                };
+                if let Some(slot) = slot {
+                    self.node_mut(node).inner_layers[slot].ahead =
+                        Some((properties, density, direction));
+                }
+            }
+        }
+    }
+
+    /// `run_new_layers` for the layers `node` was placed with (D1909).
+    #[inline(never)]
+    fn run_new_placed_layers(&mut self, node: NodeId) {
+        let observer = self.observer.clone();
+        for slot in 0..self.placed_layers(node).len() {
+            let value = self.node(node);
+            let layer = self.placed_layers(node)[slot].layer;
+            if layer as usize >= value.layers.len() {
+                continue;
+            }
+            let (density, direction) = (value.density, value.layout_direction);
+            if layer == 0 && value.retained.as_ref().is_some_and(|it| it.placed_layer) {
+                if value.retained.as_ref().is_some_and(|it| it.layer_ahead.is_some()) {
+                    continue;
+                }
+                let Some(properties) = self.layer_properties(node, observer.as_deref()) else {
+                    continue;
+                };
+                let retained = self.node_mut(node).retained.as_mut().expect("its group");
+                retained.layer_ahead = Some((properties, density, direction));
+                continue;
+            }
+            let inner = value.inner_layers.iter().position(|it| it.placement == Some(layer));
+            if inner.is_some_and(|inner| value.inner_layers[inner].ahead.is_some()) {
+                continue;
+            }
+            let key = crate::tree::observation_key(node, crate::tree::Observation::InnerLayerBlock);
+            let properties = match &observer {
+                Some(observer) => {
+                    observer.observe(key, || self.properties_of_placed_layer(node, slot))
+                }
+                None => self.properties_of_placed_layer(node, slot),
+            };
+            if let Some(inner) = inner {
+                self.node_mut(node).inner_layers[inner].ahead =
+                    Some((properties, density, direction));
+            }
+        }
+    }
+
+    /// The properties of the layer `node` was placed with, in `placement_layers[slot]`, seen
+    /// from the node's first layer.
+    pub(crate) fn properties_of_placed_layer(&self, node: NodeId, slot: usize) -> LayerProperties {
+        let value = self.node(node);
+        let placed = &self.placed_layers(node)[slot];
+        let layer = placed.layer as usize;
+        let _open = self.focus_requests.window.open_to_read(self);
+        placed.graphics.properties(
+            value.density,
+            value.layout_direction,
+            layer_origin(value, layer),
+            value.layers[layer].measured.into(),
+        )
+    }
+
     /// `node`'s graphics layer moved what's under it: a block that asked where it is there runs,
     /// which a layout's check would find only if a layout came.
     fn place_readers_under(&mut self, node: NodeId) {
@@ -471,7 +675,7 @@ impl UiTree {
         for inner in &mut value.inner_layers {
             inner.ahead = None;
         }
-        if value.kinds.any(NodeKinds::GRAPHICS_LAYER) {
+        if value.kinds.any(NodeKinds::GRAPHICS_LAYER) || value.has_placed_layers() {
             self.new_layers.push(node);
         }
         compose_runtime::snapshots::Snapshot::without_read_observation(|| {
@@ -822,10 +1026,92 @@ impl UiTree {
     /// Adds `id`'s clipping modifiers' rectangles to `clips`, innermost first; those before chain
     /// entry `before_entry` if it's given.
     fn clips_of_node(&mut self, id: NodeId, before_entry: Option<usize>, clips: &mut Vec<Rect>) {
+        if self.placed_layer_nodes != 0 {
+            self.clips_of_node_placed(id, before_entry, clips);
+            return;
+        }
         let at = clips.len();
         let mut layer_of_entry = 0;
         for index in 0..self.node(id).chain.len() {
             if before_entry.is_some_and(|before| index >= before) {
+                break;
+            }
+            let value = self.node_mut(id);
+            let size = value.layers[layer_of_entry].size;
+            let density = value.density;
+            let is_layout = value.chain[index].kinds.any(NodeKinds::LAYOUT);
+            if value.chain[index].hit_clip_at(size.into(), density).is_some() {
+                clips.push(self.rect_in_root(id, layer_of_entry, Some(index), size));
+            }
+            if is_layout {
+                layer_of_entry += 1;
+            }
+        }
+        clips[at..].reverse();
+    }
+
+    /// `clips_of_node` while a node has a layer placed with one (D1909).
+    #[cold]
+    #[inline(never)]
+    fn clips_of_node_placed(
+        &mut self,
+        id: NodeId,
+        before_entry: Option<usize>,
+        clips: &mut Vec<Rect>,
+    ) {
+        let value = self.node(id);
+        if value.has_placed_layers() {
+            self.clips_of_placed_node(id, before_entry, clips);
+            return;
+        }
+        let at = clips.len();
+        let mut layer_of_entry = 0;
+        for index in 0..value.chain.len() {
+            if before_entry.is_some_and(|before| index >= before) {
+                break;
+            }
+            let value = self.node_mut(id);
+            let size = value.layers[layer_of_entry].size;
+            let density = value.density;
+            let is_layout = value.chain[index].kinds.any(NodeKinds::LAYOUT);
+            if value.chain[index].hit_clip_at(size.into(), density).is_some() {
+                clips.push(self.rect_in_root(id, layer_of_entry, Some(index), size));
+            }
+            if is_layout {
+                layer_of_entry += 1;
+            }
+        }
+        clips[at..].reverse();
+    }
+
+    /// `clips_of_node` for a node with layers placed with one, those that clip with the chain's,
+    /// each from its first entry (D1909).
+    #[cold]
+    #[inline(never)]
+    fn clips_of_placed_node(
+        &mut self,
+        id: NodeId,
+        before_entry: Option<usize>,
+        clips: &mut Vec<Rect>,
+    ) {
+        let at = clips.len();
+        let mut layer_of_entry = 0;
+        let placed_clip = |tree: &Self, index: usize| {
+            let value = tree.node(id);
+            let (graphics, layer) = tree.placed_layer_starting_at(id, index, usize::MAX)?;
+            graphics
+                .clips()
+                .then(|| tree.rect_in_root(id, layer, Some(index), value.layers[layer].measured))
+        };
+        let length = self.node(id).chain.len();
+        for index in 0..=length {
+            if before_entry.is_some_and(|before| index > before) {
+                break;
+            }
+            if let Some(clip) = placed_clip(self, index) {
+                clips.push(clip);
+            }
+            if index == length || before_entry == Some(index) {
                 break;
             }
             let value = self.node_mut(id);
@@ -851,6 +1137,9 @@ impl UiTree {
     /// The product of the graphics layers' alphas: `node`'s before its chain entry `before_entry`
     /// and its ancestors', its window's only.
     pub(crate) fn alpha_around(&self, node: NodeId, before_entry: Option<usize>) -> f32 {
+        if self.placed_layer_nodes != 0 {
+            return self.alpha_around_placed(node, before_entry);
+        }
         let mut alpha = 1.0;
         let (mut current, mut before) = (node, before_entry);
         loop {
@@ -860,6 +1149,41 @@ impl UiTree {
                 if let Some(graphics) = value.chain[index].node.downcast_ref::<GraphicsLayerNode>()
                 {
                     alpha *= self.properties_of_layer(current, index, graphics).alpha;
+                }
+            }
+            if value.overlay {
+                return alpha;
+            }
+            match value.parent {
+                Some(parent) => {
+                    current = parent;
+                    before = None;
+                }
+                None => return alpha,
+            }
+        }
+    }
+
+    /// `alpha_around` while a node has layers placed with one (D1909).
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn alpha_around_placed(&self, node: NodeId, before_entry: Option<usize>) -> f32 {
+        let mut alpha = 1.0;
+        let (mut current, mut before) = (node, before_entry);
+        loop {
+            let value = self.node(current);
+            let end = before.unwrap_or(value.chain.len());
+            for index in 0..end {
+                if let Some(graphics) = value.chain[index].node.downcast_ref::<GraphicsLayerNode>()
+                {
+                    alpha *= self.properties_of_layer(current, index, graphics).alpha;
+                }
+            }
+            // The layers it was placed with, those around the entry (D1909).
+            for slot in 0..self.placed_layers(current).len() {
+                let layer = self.placed_layers(current)[slot].layer as usize;
+                if layer < value.layers.len() && value.start_of_layer(layer) <= end {
+                    alpha *= self.properties_of_placed_layer(current, slot).alpha;
                 }
             }
             if value.overlay {
@@ -960,7 +1284,47 @@ impl UiTree {
     /// `bounds` clipped by the clipping modifiers of `id`, those before chain entry `before_entry`
     /// if it's given.
     fn clip_by_node(&self, id: NodeId, before_entry: Option<usize>, bounds: &mut Rect) {
+        if self.placed_layer_nodes != 0 {
+            self.clip_by_node_placed(id, before_entry, bounds);
+            return;
+        }
         let value = self.node(id);
+        let mut layer_of_entry = 0;
+        for index in 0..value.chain.len() {
+            if before_entry.is_some_and(|before| index >= before) {
+                break;
+            }
+            let entry = &value.chain[index];
+            if entry.clips() {
+                let size = value.layers[layer_of_entry].size;
+                let clip = self.rect_in_root(id, layer_of_entry, Some(index), size);
+                *bounds = intersect(*bounds, clip);
+            }
+            if entry.kinds.any(NodeKinds::LAYOUT) {
+                layer_of_entry += 1;
+            }
+        }
+    }
+
+    /// `clip_by_node` while a node has layers placed with one (D1909).
+    #[cold]
+    #[inline(never)]
+    fn clip_by_node_placed(&self, id: NodeId, before_entry: Option<usize>, bounds: &mut Rect) {
+        let value = self.node(id);
+        // The layers placed with one that clip, around the entry (D1909).
+        if value.has_placed_layers() {
+            let end = before_entry.unwrap_or(value.chain.len());
+            for placed in self.placed_layers(id) {
+                let layer = placed.layer as usize;
+                if layer < value.layers.len()
+                    && placed.graphics.clips()
+                    && value.start_of_layer(layer) <= end
+                {
+                    let (start, size) = (value.start_of_layer(layer), value.layers[layer].measured);
+                    *bounds = intersect(*bounds, self.rect_in_root(id, layer, Some(start), size));
+                }
+            }
+        }
         let mut layer_of_entry = 0;
         for index in 0..value.chain.len() {
             if before_entry.is_some_and(|before| index >= before) {
@@ -987,6 +1351,9 @@ impl UiTree {
         before_entry: Option<usize>,
         size: IntSize,
     ) -> Rect {
+        if self.placed_layer_nodes != 0 {
+            return self.rect_in_root_placed(node, layer, before_entry, size);
+        }
         let (width, height) = (size.width as f32, size.height as f32);
         let corners = self.map_all_to_root(
             node,
@@ -1015,8 +1382,41 @@ impl UiTree {
         before_entry: Option<usize>,
         point: Offset,
     ) -> Offset {
+        if self.placed_layer_nodes != 0 {
+            let [point] = self.map_all_to_root_placed(node, layer, before_entry, [point]);
+            return point;
+        }
         let [point] = self.map_all_to_root(node, layer, before_entry, [point]);
         point
+    }
+
+    /// `rect_in_root` while a node has a layer placed with one (D1909): the branch is taken
+    /// before the corners are, which keeps `map_all_to_root` as it was inlined on main.
+    #[cold]
+    #[inline(never)]
+    fn rect_in_root_placed(
+        &self,
+        node: NodeId,
+        layer: usize,
+        before_entry: Option<usize>,
+        size: IntSize,
+    ) -> Rect {
+        let (width, height) = (size.width as f32, size.height as f32);
+        let corners = self.map_all_to_root_placed(
+            node,
+            layer,
+            before_entry,
+            [
+                Offset::new(0.0, 0.0),
+                Offset::new(width, 0.0),
+                Offset::new(0.0, height),
+                Offset::new(width, height),
+            ],
+        );
+        let min = |pick: fn(&Offset) -> f32| corners.iter().map(pick).fold(f32::INFINITY, f32::min);
+        let max =
+            |pick: fn(&Offset) -> f32| corners.iter().map(pick).fold(f32::NEG_INFINITY, f32::max);
+        Rect::new(min(|p| p.x), min(|p| p.y), max(|p| p.x), max(|p| p.y))
     }
 
     /// `map_to_root` of several points, one walk up for them all.
@@ -1063,9 +1463,68 @@ impl UiTree {
         }
     }
 
+    /// `map_all_to_root` while a node has layers placed with one (D1909).
+    #[cold]
+    #[inline(never)]
+    fn map_all_to_root_placed<const N: usize>(
+        &self,
+        node: NodeId,
+        layer: usize,
+        before_entry: Option<usize>,
+        points: [Offset; N],
+    ) -> [Offset; N] {
+        let (mut current, mut layer, mut before) = (node, layer, before_entry);
+        let mut points = points;
+        loop {
+            let value = self.node(current);
+            let origin = layer_origin(value, layer);
+            points = points.map(|point| point + origin);
+            let end = before.unwrap_or(value.chain.len());
+            // The innermost first; with layers placed with one, those too (D1909).
+            if value.has_placed_layers() {
+                for (graphics, at, _) in self.layers_out_with_placed(current, layer, end) {
+                    let map = graphics
+                        .layer_map(layer_origin(value, at), value.layers[at].measured.into());
+                    graphics.note_transform(&map, self.position_listeners);
+                    points = points.map(|point| map.map(point));
+                }
+            } else {
+                for index in (0..end).rev() {
+                    let Some(graphics) =
+                        value.chain[index].node.downcast_ref::<GraphicsLayerNode>()
+                    else {
+                        continue;
+                    };
+                    let layer = value.layer_of(index);
+                    let map = graphics
+                        .layer_map(layer_origin(value, layer), value.layers[layer].measured.into());
+                    graphics.note_transform(&map, self.position_listeners);
+                    points = points.map(|point| map.map(point));
+                }
+            }
+            if value.overlay {
+                return points.map(|point| point + value.overlay_origin);
+            }
+            let position = value.layers[0].offset;
+            let moved = Offset::new(position.x as f32, position.y as f32);
+            points = points.map(|point| point + moved);
+            match value.parent {
+                Some(parent) => {
+                    current = parent;
+                    layer = self.node(parent).layers.len() - 1;
+                    before = None;
+                }
+                None => return points,
+            }
+        }
+    }
+
     /// `point` of layer `layer` of `node`, through what's in the node and its own position, in its
     /// parent's content (or the window, for a popup's root).
     pub(crate) fn map_out_of_node(&self, node: NodeId, layer: usize, point: Offset) -> Offset {
+        if self.placed_layer_nodes != 0 {
+            return self.map_out_of_node_placed(node, layer, point);
+        }
         let value = self.node(node);
         let mut point = point + layer_origin(value, layer);
         for index in (0..value.chain.len()).rev() {
@@ -1077,6 +1536,45 @@ impl UiTree {
                 graphics.layer_map(layer_origin(value, layer), value.layers[layer].measured.into());
             graphics.note_transform(&map, self.position_listeners);
             point = map.map(point);
+        }
+        if value.overlay {
+            return point + value.overlay_origin;
+        }
+        let position = value.layers[0].offset;
+        point + Offset::new(position.x as f32, position.y as f32)
+    }
+
+    /// `map_out_of_node` while a node has layers placed with one (D1909).
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn map_out_of_node_placed(
+        &self,
+        node: NodeId,
+        layer: usize,
+        point: Offset,
+    ) -> Offset {
+        let value = self.node(node);
+        let mut point = point + layer_origin(value, layer);
+        // With layers placed with one, those too (D1909).
+        if value.has_placed_layers() {
+            for (graphics, at, _) in self.layers_out_with_placed(node, layer, value.chain.len()) {
+                let map =
+                    graphics.layer_map(layer_origin(value, at), value.layers[at].measured.into());
+                graphics.note_transform(&map, self.position_listeners);
+                point = map.map(point);
+            }
+        } else {
+            for index in (0..value.chain.len()).rev() {
+                let Some(graphics) = value.chain[index].node.downcast_ref::<GraphicsLayerNode>()
+                else {
+                    continue;
+                };
+                let layer = value.layer_of(index);
+                let map = graphics
+                    .layer_map(layer_origin(value, layer), value.layers[layer].measured.into());
+                graphics.note_transform(&map, self.position_listeners);
+                point = map.map(point);
+            }
         }
         if value.overlay {
             return point + value.overlay_origin;

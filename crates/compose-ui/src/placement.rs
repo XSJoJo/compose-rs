@@ -120,12 +120,82 @@ impl PlacementScope<'_> {
     /// Places `placeable` at `x` from the start, as `placeRelative`: in a right-to-left layout,
     /// mirrored in the layout's width.
     pub fn place_relative(&mut self, placeable: &Placeable, x: i32, y: i32) {
-        // A layout of no width mirrors nothing, as `placeAutoMirrored`.
-        let x = match self.layout_direction() {
+        let x = self.mirrored(placeable, x);
+        self.place(placeable, x, y);
+    }
+
+    /// `x` from the start, from the left: mirrored in the layout's width in a right-to-left
+    /// layout (one of no width mirrors nothing, as `placeAutoMirrored`).
+    fn mirrored(&self, placeable: &Placeable, x: i32) -> i32 {
+        match self.layout_direction() {
             LayoutDirection::Rtl if self.width != 0 => self.width - x - placeable.width,
             _ => x,
+        }
+    }
+
+    /// Places `placeable` at `x`, `y` with a graphics layer of its own, as
+    /// `placeWithLayer(x, y) { … }`: see [`MeasureScope::place_with_layer`].
+    pub fn place_with_layer(
+        &mut self,
+        placeable: &Placeable,
+        x: i32,
+        y: i32,
+        layer_block: impl Into<crate::graphics_layer::LayerBlock>,
+    ) {
+        self.place_at_with_layer(placeable, IntOffset::new(x, y), layer_block);
+    }
+
+    /// As [`place_with_layer`](Self::place_with_layer), at `position`.
+    pub fn place_at_with_layer(
+        &mut self,
+        placeable: &Placeable,
+        position: IntOffset,
+        layer_block: impl Into<crate::graphics_layer::LayerBlock>,
+    ) {
+        let position = if self.force_lookahead_offset {
+            self.lookahead_position_of(placeable).unwrap_or(position)
+        } else {
+            position
         };
-        self.place(placeable, x, y);
+        self.scope.place_at_with_layer(placeable, position, layer_block);
+    }
+
+    /// As [`place_with_layer`](Self::place_with_layer), mirrored in a right-to-left layout, as
+    /// `placeRelativeWithLayer`.
+    pub fn place_relative_with_layer(
+        &mut self,
+        placeable: &Placeable,
+        x: i32,
+        y: i32,
+        layer_block: impl Into<crate::graphics_layer::LayerBlock>,
+    ) {
+        let x = self.mirrored(placeable, x);
+        self.place_with_layer(placeable, x, y, layer_block);
+    }
+
+    /// Places `placeable` at `x`, `y` with `layer`'s properties, as `placeWithLayer(x, y, layer)`.
+    pub fn place_with_graphics_layer(
+        &mut self,
+        placeable: &Placeable,
+        x: i32,
+        y: i32,
+        layer: &crate::graphics_layer_object::GraphicsLayer,
+    ) {
+        let block = crate::graphics_layer::LayerBlock::of_graphics_layer(layer);
+        self.place_with_layer(placeable, x, y, block);
+    }
+
+    /// As [`place_with_graphics_layer`](Self::place_with_graphics_layer), mirrored in a
+    /// right-to-left layout, as `placeRelativeWithLayer(x, y, layer)`.
+    pub fn place_relative_with_graphics_layer(
+        &mut self,
+        placeable: &Placeable,
+        x: i32,
+        y: i32,
+        layer: &crate::graphics_layer_object::GraphicsLayer,
+    ) {
+        let block = crate::graphics_layer::LayerBlock::of_graphics_layer(layer);
+        self.place_relative_with_layer(placeable, x, y, block);
     }
 
     /// Measures `measurable`, as measuring in Compose's placement block may: a new size places

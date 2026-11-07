@@ -208,6 +208,9 @@ pub struct LayoutNode {
     /// Its graphics layers that aren't its first drawing modifier, each a group of its own
     /// inside its drawing (render.rs), by chain index.
     pub(crate) inner_layers: Vec<crate::render::InnerLayer>,
+    /// A layer of it was placed with a layer (`place_with_layer`): its layers are in
+    /// `UiTree::placement_layers` (a byte the node's padding had, where most nodes have none).
+    pub(crate) has_placement_layers: bool,
     /// The sum of its `z_index` modifiers: siblings are drawn, and hit, in its order.
     pub(crate) z_index: f32,
     /// It's ordered among its siblings by its children's largest `z_index` instead (D1452).
@@ -285,6 +288,7 @@ impl LayoutNode {
             place_order: 0,
             retained: None,
             inner_layers: Vec::new(),
+            has_placement_layers: false,
             z_index: 0.0,
             z_index_of_children: false,
             deactivated: false,
@@ -526,7 +530,17 @@ pub struct UiTree {
     /// The node of each inner layer's group key (`render::INNER_LAYER_KEY`).
     pub(crate) inner_layer_owners: std::collections::HashMap<u64, NodeId>,
     /// The last inner layer's key, without its flag.
-    next_inner_layer: u64,
+    pub(crate) next_inner_layer: u64,
+    /// The node and first entry of the layer placed with one whose group's content is being
+    /// recorded (render.rs, D1909): its drawing doesn't open it again.
+    pub(crate) recording_placed: Option<(NodeId, usize)>,
+    /// How many nodes have layers placed with one: while none has, the walks through a node's
+    /// layers take the code they had before (D1909).
+    pub(crate) placed_layer_nodes: u32,
+    /// The layers each of those nodes was placed with, by layer (`place_with_layer`): a table
+    /// apart, as most nodes have none (`LayoutNode::has_placement_layers` says which have).
+    pub(crate) placement_layers:
+        std::collections::HashMap<NodeId, Vec<crate::placement_layer::PlacementLayer>>,
     /// The tree's key in the thread's registry of trees, which its nodes' handles name it by.
     pub(crate) key: u32,
     /// A `SubcomposeLayout` composing its slots while it's measured: what they change of its
@@ -697,6 +711,9 @@ impl UiTree {
             optimizations: crate::optimizations::Optimizations::defaults(),
             inner_layer_owners: std::collections::HashMap::new(),
             next_inner_layer: 0,
+            recording_placed: None,
+            placed_layer_nodes: 0,
+            placement_layers: std::collections::HashMap::new(),
             key,
             lifecycle: Vec::new(),
             semantics_changed: false,
@@ -1651,67 +1668,8 @@ impl UiTree {
             }
         }
         self.has_indirect_pointer_input |= indirect;
+        let mut parent_draws_differently = self.refresh_layers(node);
         let value = self.node_mut(node);
-        // A repaint boundary keeps what it draws: its layer's properties apart if its first
-        // drawing modifier is a graphics layer (which makes it one, as each of Compose's
-        // graphics layers is a layer). Each other graphics layer is a group of its own inside
-        // the node's drawing (an inner layer, D522).
-        let is_layer = |entry: &ChainEntry| entry.kinds.any(NodeKinds::GRAPHICS_LAYER);
-        let layer_entry = if value.kinds.any(NodeKinds::GRAPHICS_LAYER) {
-            value
-                .chain
-                .iter()
-                .position(is_layer)
-                .filter(|&index| {
-                    value.chain[..index].iter().all(|entry| !entry.kinds.any(NodeKinds::DRAW))
-                })
-                .map(|index| index as u16)
-        } else {
-            None
-        };
-        let boundary = layer_entry.is_some() || value.kinds.any(NodeKinds::REPAINT_BOUNDARY);
-        let inner: SmallVec<[u16; 2]> = if value.kinds.any(NodeKinds::GRAPHICS_LAYER) {
-            (0..value.chain.len())
-                .filter(|&index| is_layer(&value.chain[index]) && layer_entry != Some(index as u16))
-                .map(|index| index as u16)
-                .collect()
-        } else {
-            SmallVec::new()
-        };
-        if !inner.is_empty() || !value.inner_layers.is_empty() {
-            let mut layers = std::mem::take(&mut value.inner_layers);
-            // Kept by chain index: the same render node for the same layer.
-            layers.retain(|layer| {
-                let keep = inner.contains(&layer.entry);
-                if !keep {
-                    self.inner_layer_owners.remove(&layer.key);
-                }
-                keep
-            });
-            for &entry in &inner {
-                if !layers.iter().any(|layer| layer.entry == entry) {
-                    self.next_inner_layer += 1;
-                    let key = crate::render::INNER_LAYER_KEY | self.next_inner_layer;
-                    self.inner_layer_owners.insert(key, node);
-                    layers.push(crate::render::InnerLayer::new(entry, key));
-                }
-            }
-            layers.sort_by_key(|layer| layer.entry);
-            self.node_mut(node).inner_layers = layers;
-        }
-        let value = self.node_mut(node);
-        let mut parent_draws_differently = boundary != value.retained.is_some();
-        match &mut value.retained {
-            Some(retained) if boundary => {
-                retained.layer_entry = layer_entry;
-                retained.dirty = true;
-                retained.layer_dirty = true;
-            }
-            _ if boundary => {
-                value.retained = Some(Box::new(crate::render::RetainedDrawing::new(layer_entry)))
-            }
-            _ => value.retained = None,
-        }
         let overlay = value.kinds.any(NodeKinds::OVERLAY);
         let parent = value.parent;
         if overlay != value.overlay {
@@ -2029,6 +1987,13 @@ impl UiTree {
             for layer in &value.inner_layers {
                 self.inner_layer_owners.remove(&layer.key);
             }
+            // Its layers placed with one, dropped with it (application code's captures).
+            let placed = if value.has_placement_layers {
+                self.placed_layer_nodes -= 1;
+                self.placement_layers.remove(&id)
+            } else {
+                None
+            };
             if !self.ruler_readers.is_empty() {
                 self.ruler_readers.retain(|(_, reader, _), _| *reader != id);
             }
@@ -2049,6 +2014,7 @@ impl UiTree {
                 entry.node.on_release(&mut context);
             }
             drop(value);
+            drop(placed);
             drop(open);
         }
     }

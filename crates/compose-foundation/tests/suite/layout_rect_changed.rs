@@ -12,8 +12,8 @@ use compose_foundation::*;
 use compose_runtime::*;
 use compose_test::*;
 use compose_ui::{
-    Constraints, IntOffset, IntRect, IntSize, Layout, Measurable, MeasureResult, MeasureScope,
-    Popup, RelativeLayoutBounds, UnitExt, measure_policy,
+    Constraints, GraphicsLayerScope, IntOffset, IntRect, IntSize, LayerBlock, Layout, Measurable,
+    MeasureResult, MeasureScope, Popup, RelativeLayoutBounds, UnitExt, measure_policy,
 };
 
 type Shared<T> = Rc<Cell<T>>;
@@ -1639,4 +1639,246 @@ fn a_new_layer_on_the_node_itself_is_told() {
     offset.set(5);
     ui.wait_for_idle();
     assert_eq!(position.get(), Some(IntOffset::new(5, 0)));
+}
+
+/// A layout modifier measuring its content with its constraints and reporting their maximum,
+/// placing the content at `(x, y)` with a layer scaled `scale` times when `layered()` says so
+/// (else without one), in a placement block.
+fn placing_content_with_scale(
+    x: i32,
+    y: i32,
+    scale: f32,
+    layered: impl Fn() -> bool + 'static,
+) -> Modifier {
+    let layered = Rc::new(layered);
+    Modifier.layout(move |scope, measurable, constraints| {
+        let placeable = scope.measure(measurable, constraints);
+        let layered = layered.clone();
+        scope.layout_with(constraints.max_width, constraints.max_height, move |placement| {
+            if layered() {
+                placement.place_with_layer(
+                    &placeable,
+                    x,
+                    y,
+                    move |layer: &mut GraphicsLayerScope| {
+                        layer.scale_x = scale;
+                        layer.scale_y = scale;
+                    },
+                );
+            } else {
+                placement.place(&placeable, x, y);
+            }
+        })
+    })
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/OnGlobalRectChangedTest.kt, testLayoutModifierPlacingWithOffsetAndScale
+#[test]
+fn a_layout_modifier_placing_with_an_offset_and_a_scale_moves_the_node_and_its_child() {
+    let (position, child) = (shared(), shared());
+    let (p, c) = (position.clone(), child.clone());
+    let _ui = rule(move || {
+        let (p, c) = (p.clone(), c.clone());
+        Box!({
+            let c = c.clone();
+            Box!(
+                modifier = placing_content_with_scale(10, 10, 2.0, || true).then(keep_position(&p)),
+                {
+                    Box!(modifier = keep_position(&c).size(10.dp()));
+                }
+            );
+        });
+    });
+    assert_eq!(position.get(), Some(IntOffset::new(5, 5)));
+    assert_eq!(child.get(), Some(IntOffset::new(5, 5)));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/OnGlobalRectChangedTest.kt, testLayoutModifierPlacingWithScaledLayerLater
+#[test]
+fn a_layer_placed_with_later_moves_the_node_and_its_child() {
+    let (position, child) = (shared(), shared());
+    let layered = mutable_state_of(false);
+    let (p, c, l) = (position.clone(), child.clone(), layered.handle());
+    let mut ui = rule(move || {
+        let (p, c) = (p.clone(), c.clone());
+        Box!({
+            let c = c.clone();
+            Box!(
+                modifier = placing_content_with_scale(10, 10, 2.0, move || l.get())
+                    .then(keep_position(&p)),
+                {
+                    Box!(modifier = keep_position(&c).size(10.dp()));
+                }
+            );
+        });
+    });
+    layered.set(true);
+    ui.wait_for_idle();
+    assert_eq!(position.get(), Some(IntOffset::new(5, 5)));
+    assert_eq!(child.get(), Some(IntOffset::new(5, 5)));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/OnGlobalRectChangedTest.kt, testRemovingScaleUpdatedOffsetsForSubhierarchy
+#[test]
+fn dropping_a_placed_layer_s_scale_moves_the_whole_subtree() {
+    let child: Shared<Option<IntRect>> = shared();
+    let grandchild: Shared<Option<IntRect>> = shared();
+    let scaled: Shared<Option<IntRect>> = shared();
+    let layered = mutable_state_of(true);
+    let (c, g, s, l) = (child.clone(), grandchild.clone(), scaled.clone(), layered.handle());
+    let keep_bounds = |into: &Shared<Option<IntRect>>| {
+        let into = into.clone();
+        Modifier.on_layout_rect_changed(0, 0, move |bounds: RelativeLayoutBounds| {
+            into.set(Some(bounds.bounds_in_window()))
+        })
+    };
+    let mut ui = rule(move || {
+        let (c, g, s) = (c.clone(), g.clone(), s.clone());
+        Box!(modifier = placing_content_with_scale(10, 10, 2.0, move || l.get()), {
+            let (g, s) = (g.clone(), s.clone());
+            Box!(modifier = keep_bounds(&c).size(20.dp()), {
+                Box!(modifier = keep_bounds(&g).size(10.dp()));
+                let s = s.clone();
+                Box!(
+                    modifier = Modifier.graphics_layer(|layer| {
+                        layer.scale_x = 2.0;
+                        layer.scale_y = 2.0;
+                    }),
+                    {
+                        Box!(modifier = keep_bounds(&s).size(10.dp()));
+                    }
+                );
+            });
+        });
+    });
+    layered.set(false);
+    ui.wait_for_idle();
+    assert_eq!(child.get(), Some(IntRect::new(10, 10, 30, 30)));
+    assert_eq!(grandchild.get(), Some(IntRect::new(10, 10, 20, 20)));
+    assert_eq!(scaled.get(), Some(IntRect::new(5, 5, 25, 25)));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/OnGlobalRectChangedTest.kt, stoppingPlacingWithLayerShouldInvalidateOffsetCacheForSubtree
+#[test]
+fn stopping_placing_an_ancestor_with_a_layer_is_told() {
+    let position = shared();
+    let offset = mutable_state_of(0);
+    let layered = mutable_state_of(true);
+    let l = layered.handle();
+    let modifier = move || {
+        Modifier.layout(move |scope, measurable, constraints| {
+            let placeable = scope.measure(measurable, constraints);
+            scope.layout_with(placeable.width, placeable.height, move |placement| {
+                if l.get() {
+                    placement.place_with_layer(
+                        &placeable,
+                        0,
+                        0,
+                        |layer: &mut GraphicsLayerScope| layer.translation_x = 10.0,
+                    );
+                } else {
+                    placement.place(&placeable, 0, 0);
+                }
+            })
+        })
+    };
+    let mut ui = rule(nested_with(modifier, offset.handle(), &position));
+    assert_eq!(position.get(), Some(IntOffset::new(10, 0)));
+    offset.set(5);
+    layered.set(false);
+    ui.wait_for_idle();
+    assert_eq!(position.get(), Some(IntOffset::new(0, 5)));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/OnGlobalRectChangedTest.kt, updatingLayerBlockOnAChildShouldCallCallbackOnTheSameNode
+#[test]
+fn a_new_layer_block_for_a_child_is_told() {
+    let position = shared();
+    let translated = mutable_state_of(false);
+    let (p, t) = (position.clone(), translated.handle());
+    let mut ui = rule(move || {
+        let p = p.clone();
+        // A new block when `translated` changes, as Compose's `layerBlock` state.
+        let block: LayerBlock = if t.get() {
+            LayerBlock::new(|layer| layer.translation_x = 5.0)
+        } else {
+            LayerBlock::new(|_| {})
+        };
+        Layout!(
+            measure_policy = measure_policy(move |scope, measurables, constraints| {
+                let placeable = scope.measure(measurables[0], constraints);
+                let block = block.clone();
+                scope.layout_with(constraints.max_width, constraints.max_height, move |placement| {
+                    placement.place_with_layer(&placeable, 0, 0, block.clone());
+                })
+            }),
+            {
+                Box!(modifier = keep_position(&p).size(10.dp()));
+            }
+        );
+    });
+    assert_eq!(position.get(), Some(IntOffset::ZERO));
+    translated.set(true);
+    ui.wait_for_idle();
+    assert_eq!(position.get(), Some(IntOffset::new(5, 0)));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/OnGlobalRectChangedTest.kt, updatingLayerParameterOnAChildShouldCallCallbackOnTheSameNode
+#[test]
+fn a_state_read_in_a_child_s_layer_block_is_told() {
+    let position = shared();
+    let offset = mutable_state_of(0.0f32);
+    let (p, o) = (position.clone(), offset.handle());
+    let mut ui = rule(move || {
+        let p = p.clone();
+        Layout!(
+            measure_policy = measure_policy(move |scope, measurables, constraints| {
+                let placeable = scope.measure(measurables[0], constraints);
+                scope.layout_with(constraints.max_width, constraints.max_height, move |placement| {
+                    placement.place_with_layer(
+                        &placeable,
+                        0,
+                        0,
+                        move |layer: &mut GraphicsLayerScope| layer.translation_x = o.get(),
+                    );
+                })
+            }),
+            {
+                Box!(modifier = keep_position(&p).size(10.dp()));
+            }
+        );
+    });
+    assert_eq!(position.get(), Some(IntOffset::ZERO));
+    offset.set(5.0);
+    ui.wait_for_idle();
+    assert_eq!(position.get(), Some(IntOffset::new(5, 0)));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/OnGlobalRectChangedTest.kt, testLayoutModifierPlacingWithScale_moveWithinScaledHierarchyAppliedForGrandChild
+#[test]
+fn a_move_inside_a_scaled_placed_layer_is_scaled_for_a_grandchild() {
+    let (position, child) = (shared(), shared());
+    let offset = mutable_state_of(0);
+    let (p, c, o) = (position.clone(), child.clone(), offset.handle());
+    let mut ui = rule(move || {
+        let (p, c) = (p.clone(), c.clone());
+        Box!({
+            let c = c.clone();
+            Box!(
+                modifier = placing_content_with_scale(0, 0, 2.0, || true)
+                    .offset((o.get() as f32).dp(), 0.dp())
+                    .then(keep_position(&p)),
+                {
+                    let c = c.clone();
+                    Box!({
+                        Box!(modifier = keep_position(&c).size(10.dp()));
+                    });
+                }
+            );
+        });
+    });
+    offset.set(10);
+    ui.wait_for_idle();
+    assert_eq!(position.get(), Some(IntOffset::new(15, -5)));
+    assert_eq!(child.get(), Some(IntOffset::new(15, -5)));
 }

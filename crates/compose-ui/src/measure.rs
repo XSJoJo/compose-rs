@@ -741,6 +741,70 @@ impl UiTree {
         run: u64,
         motion: bool,
     ) {
+        // While no node has a layer placed with one, the placement main had: it reads nothing
+        // of them (D1909).
+        if self.placed_layer_nodes != 0 {
+            self.place_in_run_placed(node, layer, position, run, motion);
+            return;
+        }
+        self.place_unchanged_layer(node, layer, position, run, motion);
+    }
+
+    /// `place_in_run` while a node has a layer placed with one (D1909): placed without a layer,
+    /// it loses one it had (the lookahead pass places none).
+    #[cold]
+    #[inline(never)]
+    fn place_in_run_placed(
+        &mut self,
+        node: NodeId,
+        layer: usize,
+        position: IntOffset,
+        run: u64,
+        motion: bool,
+    ) {
+        let had_layers = self.node(node).has_placed_layers();
+        self.place_unchanged_layer(node, layer, position, run, motion);
+        if !had_layers || self.in_lookahead {
+            return;
+        }
+        let old = self.update_placement_layer(node, layer, None);
+        // What the block captured is application code's, dropped with the window open.
+        let open = self.focus_requests.window.open_to_read(self);
+        drop(old);
+        drop(open);
+    }
+
+    /// `place_in_run` with a layer, as `placeWithLayer` (D1909): the lookahead pass ignores it,
+    /// as Compose's. Returns what it replaced, for the caller to drop outside the tree.
+    #[must_use]
+    pub(crate) fn place_with_layer_in_run(
+        &mut self,
+        node: NodeId,
+        layer: usize,
+        position: IntOffset,
+        run: u64,
+        motion: bool,
+        block: crate::graphics_layer::LayerBlock,
+    ) -> Option<crate::placement_layer::Replaced> {
+        let old = if self.in_lookahead {
+            None
+        } else {
+            self.update_placement_layer(node, layer, Some(block))
+        };
+        self.place_unchanged_layer(node, layer, position, run, motion);
+        old
+    }
+
+    /// `place_in_run`, its layer as it is.
+    #[inline(always)]
+    fn place_unchanged_layer(
+        &mut self,
+        node: NodeId,
+        layer: usize,
+        position: IntOffset,
+        run: u64,
+        motion: bool,
+    ) {
         let value = self.node_mut(node);
         if (motion | (value.motion_layers != 0)) && value.placed_in_motion(layer) != motion {
             value.note_motion(layer, motion);

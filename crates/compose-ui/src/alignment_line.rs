@@ -671,14 +671,26 @@ impl UiTree {
         use crate::layout_callbacks::layer_origin;
         let value = self.node(node);
         let mut point = Offset::new(position, position) + layer_origin(value, layer);
-        // What wraps the layer: all before its own layout node, those of its own segment too.
-        for index in (0..value.entries_of_layer(layer).end).rev() {
-            let Some(graphics) = value.chain[index].node.downcast_ref::<GraphicsLayerNode>() else {
-                continue;
-            };
-            let at = value.layer_of(index);
-            let map = graphics.layer_map(layer_origin(value, at), value.layers[at].measured.into());
-            point = map.map(point);
+        // What wraps the layer: all before its own layout node, those of its own segment too,
+        // and the layers placed with one around it (D1909).
+        let end = value.entries_of_layer(layer).end;
+        if value.has_placed_layers() {
+            for (graphics, at, _) in self.layers_out_with_placed(node, layer, end) {
+                let map =
+                    graphics.layer_map(layer_origin(value, at), value.layers[at].measured.into());
+                point = map.map(point);
+            }
+        } else {
+            for index in (0..end).rev() {
+                let Some(graphics) = value.chain[index].node.downcast_ref::<GraphicsLayerNode>()
+                else {
+                    continue;
+                };
+                let at = value.layer_of(index);
+                let map =
+                    graphics.layer_map(layer_origin(value, at), value.layers[at].measured.into());
+                point = map.map(point);
+            }
         }
         let position = value.layers[0].offset;
         point + Offset::new(position.x as f32, position.y as f32)

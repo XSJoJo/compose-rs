@@ -639,6 +639,93 @@ impl<'a> MeasureScope<'a> {
         }
     }
 
+    /// Places `placeable` at `x`, `y` with a graphics layer of its own, whose properties
+    /// `layer_block` gives, as `placeWithLayer(x, y) { … }`: the block runs where the layer's
+    /// properties are computed (state it reads changes them, not the layout), and a move of the
+    /// placeable moves the layer. A block given again (a [`LayerBlock`] kept) doesn't run again
+    /// for that; placing without a layer later drops it (D1909).
+    ///
+    /// [`LayerBlock`]: crate::LayerBlock
+    pub fn place_with_layer(
+        &mut self,
+        placeable: &Placeable,
+        x: i32,
+        y: i32,
+        layer_block: impl Into<crate::graphics_layer::LayerBlock>,
+    ) {
+        self.place_at_with_layer(placeable, IntOffset::new(x, y), layer_block)
+    }
+
+    /// As [`place_with_layer`](Self::place_with_layer), at `position`.
+    pub fn place_at_with_layer(
+        &mut self,
+        placeable: &Placeable,
+        position: IntOffset,
+        layer_block: impl Into<crate::graphics_layer::LayerBlock>,
+    ) {
+        if self.intrinsic.is_some() {
+            return;
+        }
+        self.placed = true;
+        let measurable = placeable.measurable;
+        let layer = measurable.layer as usize;
+        let (run, motion, block) = (self.run, self.motion, layer_block.into());
+        let old = self.base.tree.enter().place_with_layer_in_run(
+            measurable.node,
+            layer,
+            position,
+            run,
+            motion,
+            block,
+        );
+        // Application code's captures: dropped outside the tree.
+        drop(old);
+    }
+
+    /// As [`place_with_layer`](Self::place_with_layer), mirrored in a right-to-left layout, as
+    /// `placeRelativeWithLayer`.
+    pub fn place_relative_with_layer(
+        &mut self,
+        placeable: &Placeable,
+        x: i32,
+        y: i32,
+        layer_block: impl Into<crate::graphics_layer::LayerBlock>,
+    ) {
+        if self.intrinsic.is_some() {
+            return;
+        }
+        self.place_with_layer(placeable, x, y, layer_block);
+        if self.layout_direction() == LayoutDirection::Rtl {
+            self.relative.push((*placeable, IntOffset::new(x, y)));
+        }
+    }
+
+    /// Places `placeable` at `x`, `y` with `layer`'s properties, as `placeWithLayer(x, y, layer)`:
+    /// see [`LayerBlock::of_graphics_layer`](crate::LayerBlock::of_graphics_layer).
+    pub fn place_with_graphics_layer(
+        &mut self,
+        placeable: &Placeable,
+        x: i32,
+        y: i32,
+        layer: &crate::graphics_layer_object::GraphicsLayer,
+    ) {
+        let block = crate::graphics_layer::LayerBlock::of_graphics_layer(layer);
+        self.place_with_layer(placeable, x, y, block);
+    }
+
+    /// As [`place_with_graphics_layer`](Self::place_with_graphics_layer), mirrored in a
+    /// right-to-left layout, as `placeRelativeWithLayer(x, y, layer)`.
+    pub fn place_relative_with_graphics_layer(
+        &mut self,
+        placeable: &Placeable,
+        x: i32,
+        y: i32,
+        layer: &crate::graphics_layer_object::GraphicsLayer,
+    ) {
+        let block = crate::graphics_layer::LayerBlock::of_graphics_layer(layer);
+        self.place_relative_with_layer(placeable, x, y, block);
+    }
+
     /// The result of a measurement of `width` by `height` whose children `block` places, as
     /// `MeasureScope.layout(width, height) { … }`: once this node has been placed, in the
     /// layout's placement pass, top down. What the block reads places it again and doesn't

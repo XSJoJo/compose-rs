@@ -14,6 +14,7 @@ mod paragraph;
 mod path_geometry;
 mod path_semantics;
 mod path_steps;
+mod place_with_layer;
 mod placeholders;
 mod review_f;
 mod review_f2;

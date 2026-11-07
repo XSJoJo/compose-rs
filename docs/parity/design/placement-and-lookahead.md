@@ -89,7 +89,8 @@ impl PlacementScope<'_> {
     pub fn with_motion_frame_of_reference_placement(&mut self, block: impl FnOnce(&mut PlacementScope<'_>));
     pub fn layout_direction(&self) -> LayoutDirection;
     pub fn density(&self) -> Density;
-    // place_with_layer / place_relative_with_layer: ledger 3.16, a later step.
+    // place_with_layer / place_relative_with_layer and their GraphicsLayer forms: ledger 3.16,
+    // D1909 (place-with-layer.md).
 }
 
 impl Placeable {
