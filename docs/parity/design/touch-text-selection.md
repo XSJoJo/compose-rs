@@ -49,7 +49,7 @@ Both fields are one node, so the gestures, the handles' visibility and their pos
 
 **Where a drag lands.** As Compose's `SelectionLayoutBuilder`: the texts in order, each before, on or after the drag's place, those both ends are past left out, the end on the first text it's on or in the gap before the first it's before, a gap's end in the text on the other end's side; the start adjusted again at each move from the selection as it is (D2028).
 
-**Auto-scroll.** Each drag's move asks the scrolling ancestors of the text under it to show the drag's place (stretched to the text's nearest point), and the texts holding a part of the selection pin their lazy items, which a lazy list places beside those laid out, before the first and after the last, in order (D2023, D2024); a text leaving lets go of its pin at once (D2024).
+**Auto-scroll.** Each drag's move asks the scrolling ancestors of the text under it to show the drag's place (in touch mode with the cursor's place at its end's offset, D2030) (stretched to the text's nearest point), and the texts holding a part of the selection pin their lazy items, which a lazy list places beside those laid out, before the first and after the last, in order (D2023, D2024); a text leaving lets go of its pin at once (D2024).
 
 **Haptics.** A change of the selection in touch mode, its clearing included, performs `TextHandleMove`, with the `LOCAL_HAPTIC_FEEDBACK` read where the container is composed, as Compose's `SelectionManager`.
 

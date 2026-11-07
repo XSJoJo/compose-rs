@@ -484,3 +484,35 @@ fn a_selection_shrinking_lets_go_of_the_texts_left_out() {
     finish(&mut ui, Drag::LongPress);
     assert_eq!(*pinned.borrow(), BTreeSet::from([0]));
 }
+
+// Not Compose's (its tests scroll past whole lines): in touch mode a drag shows the cursor's
+// place at its end's offset, as Compose's `getCursorRect` in `bringDraggedPositionIntoView`, not
+// the character after it (D2030).
+#[test]
+fn a_finger_s_drag_shows_the_cursor_at_its_end_not_the_next_character() {
+    let state = **Box::leak(Box::new(ScrollState::new(0)));
+    let mut ui = rule(move || {
+        Box!(modifier = Modifier.width(100.dp()).horizontal_scroll(state), {
+            SelectionContainer!({
+                BasicText!(
+                    "abcd efgh ijkl mnop qrst".to_string(),
+                    style = TextStyle { font_size: 10.sp(), ..TextStyle::DEFAULT },
+                    soft_wrap = false,
+                    modifier = Modifier.test_tag("text"),
+                );
+            });
+        });
+    });
+    ui.on_node_with_tag("text").perform_touch_input(|touch| {
+        let timeout = touch.view_configuration().long_press_timeout_millis;
+        touch.down(Offset::new(5.0, 5.0));
+        touch.move_pointers_after(timeout + 10);
+        // Past the viewport's right edge, nearest the boundary at 100 (offset 10).
+        touch.move_pointer_to(0, Offset::new(104.0, 5.0), 16);
+    });
+    ui.wait_for_idle();
+    // The cursor at 100 and the finger at 104 shown: scrolled by 4, where the box of the
+    // character at 10 (100 to 110) would scroll by 10.
+    assert_eq!(state.value(), 4);
+    ui.on_node_with_tag("text").perform_touch_input(|touch| touch.up());
+}

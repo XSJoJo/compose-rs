@@ -1036,10 +1036,11 @@ The log is split by area into the files below, one table each, rows in number or
 | D2020 | [text](decisions/text.md#d2020) | revised by [D2026](decisions/text.md#d2026), [D2028](decisions/text.md#d2028) |
 | D2021 | [text](decisions/text.md#d2021) | current |
 | D2022 | [text](decisions/text.md#d2022) | current |
-| D2023 | [text](decisions/text.md#d2023) | revised by [D2024](decisions/text.md#d2024) |
+| D2023 | [text](decisions/text.md#d2023) | revised by [D2024](decisions/text.md#d2024), [D2030](decisions/text.md#d2030) |
 | D2024 | [text](decisions/text.md#d2024) | current |
 | D2025 | [text](decisions/text.md#d2025) | current |
 | D2026 | [text](decisions/text.md#d2026) | current |
 | D2027 | [text](decisions/text.md#d2027) | current |
 | D2028 | [text](decisions/text.md#d2028) | current |
 | D2029 | [text](decisions/text.md#d2029) | current |
+| D2030 | [text](decisions/text.md#d2030) | current |

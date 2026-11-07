@@ -969,6 +969,20 @@ impl compose_ui::Selectable for TextNode {
             .unwrap_or(compose_ui::Rect::ZERO)
     }
 
+    fn cursor_rect(
+        &self,
+        offset: usize,
+        measurer: &compose_ui::platform::SharedTextMeasurer,
+    ) -> compose_ui::Rect {
+        let text = self.text.as_str();
+        let mut offset = offset.min(text.len());
+        while !text.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        self.laid_out(measurer, |layout, _| layout.get_cursor_rect(offset))
+            .unwrap_or(compose_ui::Rect::ZERO)
+    }
+
     fn range_of_line_containing(
         &self,
         offset: usize,

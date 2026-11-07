@@ -71,6 +71,11 @@ pub trait Selectable {
     fn bounding_box(&self, _offset: usize, _measurer: &SharedTextMeasurer) -> Rect {
         Rect::ZERO
     }
+    /// The cursor's rect at `offset`, as `getCursorRect`: no width, its line's height; the
+    /// offset kept within the text. Empty before it's laid out.
+    fn cursor_rect(&self, _offset: usize, _measurer: &SharedTextMeasurer) -> Rect {
+        Rect::ZERO
+    }
     /// The line around `offset`, as `getRangeOfLineContaining`: from its start to its visible
     /// end, the offset kept to what's shown; empty for an empty text.
     fn range_of_line_containing(
@@ -726,8 +731,8 @@ impl UiTree {
     /// Scrolls what's around the text under a drag toward the finger, as Compose's
     /// `bringDraggedPositionIntoView` (`isSelectionAutoScrollEnabled`): the text whose point
     /// the drag at `position` (in the root) is at asks its scrolling ancestors for the drag's
-    /// place, in touch mode with the box of the character there (Compose's cursor at the
-    /// handle's offset), stretched to the nearest point of the text's bounds, so a list scrolls
+    /// place, in touch mode with the cursor's place at the end's offset there (Compose's
+    /// `getCursorRect`, D2030), stretched to the nearest point of the text's bounds, so a list scrolls
     /// a little each move, never past what it composes next.
     fn bring_dragged_into_view(
         &mut self,
@@ -746,7 +751,7 @@ impl UiTree {
                 .node_and_measurer(entry.node)
                 .and_then(|(value, (measurer, _))| {
                     let text = value.chain[entry.index].selectable()?;
-                    Some(text.bounding_box(point.offset, measurer))
+                    Some(text.cursor_rect(point.offset, measurer))
                 })
                 .unwrap_or(rect);
             rect = union(rect, edge);
