@@ -815,3 +815,337 @@ fn a_layer_recorded_ahead_draws_its_drawings_in_the_next_frame() {
     let dump = host.display_list().dump();
     assert!(dump.contains("#FF0000FF"), "{dump}");
 }
+
+// Compose: compose/ui/ui-graphics/src/androidMain/kotlin/androidx/compose/ui/graphics/layer/AndroidGraphicsLayer.android.kt, topLeft (setting a layer's property invalidates no drawing)
+/// Two drawings each placing one layer (its `top_left`) before drawing it: when one draws again
+/// (a state it reads), the other, which sets the layer's position itself, isn't told of the
+/// move, and the screen goes idle (D1337).
+#[test]
+fn a_layer_placed_by_two_drawings_goes_idle_when_one_draws_again() {
+    let layer = GraphicsLayer::new();
+    let step = mutable_state_of(0u32);
+    let s = step.handle();
+    let (left, right) = (layer.clone(), layer.clone());
+    let mut host = host(move || {
+        let (left, right) = (left.clone(), right.clone());
+        Column!({
+            let (left, right) = (left.clone(), right.clone());
+            Leaf(
+                Modifier
+                    .repaint_boundary()
+                    .draw_behind(move |scope| {
+                        s.get();
+                        log("left");
+                        left.set_top_left(IntOffset::new(0, 0));
+                        scope.draw_layer(&left);
+                    })
+                    .size(10.dp()),
+            );
+            Leaf(
+                Modifier
+                    .repaint_boundary()
+                    .draw_behind(move |scope| {
+                        log("right");
+                        right.set_top_left(IntOffset::new(5, 0));
+                        scope.draw_layer(&right);
+                    })
+                    .size(10.dp()),
+            );
+        });
+    });
+    host.frame();
+    take_log();
+    for next in 1..4 {
+        step.set(next);
+        host.frame();
+        assert_eq!(take_log(), ["left"], "the right one keeps its own position");
+        host.frame();
+        assert!(take_log().is_empty(), "idle");
+        assert!(!host.needs_frame(), "a frame asked for with nothing changed");
+    }
+    // Moved between frames: each sets the position itself (and a Compose drawing isn't told of
+    // a layer's property either).
+    layer.set_top_left(IntOffset::new(9, 0));
+    host.frame();
+    assert!(take_log().is_empty(), "neither told");
+}
+
+// Compose: compose/ui/ui-graphics/src/androidMain/kotlin/androidx/compose/ui/graphics/layer/AndroidGraphicsLayer.android.kt, alpha (a render node drawn shows its last properties)
+/// A drawing that sets a layer's position and draws it is told of an alpha set after it, by
+/// another drawing, in the pass it drew in and in a later one: it set the position itself, not
+/// the alpha (D1337).
+#[test]
+fn a_drawing_setting_one_property_hears_of_another_set_after_it() {
+    let layer = GraphicsLayer::new();
+    let step = mutable_state_of(0u32);
+    let fade = mutable_state_of(false);
+    let (s, f) = (step.handle(), fade.handle());
+    let (moved, drawn, faded) = (layer.clone(), layer.clone(), layer.clone());
+    let mut host = host(move || {
+        let (moved, drawn, faded) = (moved.clone(), drawn.clone(), faded.clone());
+        Column!({
+            let (moved, drawn, faded) = (moved.clone(), drawn.clone(), faded.clone());
+            // The layer's first change in a pass, before the drawer draws it.
+            Leaf(setting_layer("mover", move || moved.set_translation_x(s.get() as f32)));
+            Leaf(
+                Modifier
+                    .repaint_boundary()
+                    .draw_behind(move |scope| {
+                        s.get();
+                        log("drawer");
+                        drawn.set_top_left(IntOffset::new(3, 0));
+                        scope.draw_layer(&drawn);
+                    })
+                    .size(10.dp()),
+            );
+            Leaf(setting_layer("fader", move || {
+                let alpha = if s.get() % 2 == 1 || f.get() { 0.5 } else { 1.0 };
+                faded.set_alpha(alpha);
+            }));
+        });
+    });
+    host.frame();
+    take_log();
+    step.set(1);
+    host.frame();
+    assert_eq!(take_log(), ["mover", "drawer", "fader", "drawer"], "told in the pass");
+    host.frame();
+    assert!(take_log().is_empty(), "idle");
+    step.set(2);
+    host.frame();
+    take_log();
+    // The drawer not drawn in the pass changing the alpha.
+    fade.set(true);
+    host.frame();
+    assert_eq!(take_log(), ["fader", "drawer"], "told at the pass's end");
+    host.frame();
+    assert!(take_log().is_empty(), "idle");
+}
+
+/// A boundary of 10 × 10 logging `name` and running `change` as it draws, drawing nothing.
+fn setting_layer(name: &'static str, change: impl Fn() + 'static) -> Modifier {
+    Modifier
+        .repaint_boundary()
+        .draw_behind(move |_| {
+            log(name);
+            change();
+        })
+        .size(10.dp())
+}
+
+// Compose: compose/ui/ui-graphics/src/androidMain/kotlin/androidx/compose/ui/graphics/layer/AndroidGraphicsLayer.android.kt, record (a render node drawn shows its last recording)
+/// A drawing that draws a layer and then records it draws again in that frame, showing what it
+/// recorded: its own change came after it drew the layer (D1337).
+#[test]
+fn a_drawing_drawing_a_layer_then_recording_it_draws_again_showing_it() {
+    let layer = GraphicsLayer::new();
+    let color = mutable_state_of(Color::RED);
+    let (own, shade) = (layer.clone(), color.handle());
+    let mut host = host(move || {
+        let own = own.clone();
+        Leaf(
+            Modifier
+                .repaint_boundary()
+                .draw_with_content(move |scope| {
+                    log("drawer");
+                    scope.draw_layer(&own);
+                    scope.record_layer(&own, |scope| {
+                        let size = scope.size();
+                        let rect = Rect::new(0.0, 0.0, size.width, size.height);
+                        scope.draw_rect(rect, Paint::fill(shade.get()));
+                    });
+                })
+                .size(10.dp()),
+        );
+    });
+    assert_eq!(take_log(), ["drawer", "drawer"]);
+    assert!(host.display_list().dump().contains("#FFFF0000"));
+    color.set(Color::BLUE);
+    host.frame();
+    assert_eq!(take_log(), ["drawer", "drawer"]);
+    let dump = host.display_list().dump();
+    assert!(dump.contains("#FF0000FF") && !dump.contains("#FFFF0000"), "{dump}");
+    host.frame();
+    assert!(take_log().is_empty(), "idle");
+}
+
+/// A drawing told of a change gives its place among a layer's readers to the next new one: a
+/// layer drawn by a new node each step, changed between them, keeps two (D1337).
+#[test]
+fn told_readers_make_room_for_new_ones() {
+    let layer = GraphicsLayer::new();
+    let step = mutable_state_of(0u32);
+    let s = step.handle();
+    let given = layer.clone();
+    let mut host = host(move || {
+        let layer = given.clone();
+        key(s.get(), || {
+            let layer = layer.clone();
+            Leaf(
+                Modifier
+                    .repaint_boundary()
+                    .draw_behind(move |scope| scope.draw_layer(&layer))
+                    .size(10.dp()),
+            );
+        });
+    });
+    for next in 1..10u32 {
+        step.set(next);
+        host.frame();
+        layer.set_alpha(if next % 2 == 0 { 1.0 } else { 0.5 });
+        host.frame();
+    }
+    assert!(layer.reader_count() <= 2, "{} readers", layer.reader_count());
+}
+
+/// A drawing that draws a layer, sets its alpha, draws it again and sets the alpha back: what
+/// it drew first is what the layer is at the pass's end, and what it drew next it makes itself,
+/// so it isn't told, and goes idle (D1337).
+#[test]
+fn a_drawing_changing_a_layer_between_its_drawings_and_back_goes_idle() {
+    let layer = GraphicsLayer::new();
+    let step = mutable_state_of(0u32);
+    let s = step.handle();
+    let given = layer.clone();
+    let mut host = host(move || {
+        let layer = given.clone();
+        Leaf(
+            Modifier
+                .repaint_boundary()
+                .draw_behind(move |scope| {
+                    s.get();
+                    log("ghost");
+                    scope.draw_layer(&layer);
+                    layer.set_alpha(0.5);
+                    scope.draw_layer(&layer);
+                    layer.set_alpha(1.0);
+                })
+                .size(10.dp()),
+        );
+    });
+    assert_eq!(take_log(), ["ghost"]);
+    for next in 1..4 {
+        step.set(next);
+        host.frame();
+        assert_eq!(take_log(), ["ghost"], "drawn once");
+        host.frame();
+        assert!(take_log().is_empty(), "idle");
+    }
+}
+
+/// The same after another drawing changed the layer first in the pass (the ghost drawing it
+/// after the layer's first change): idle too (D1337).
+#[test]
+fn a_drawing_changing_a_layer_between_its_drawings_and_back_after_another_goes_idle() {
+    let layer = GraphicsLayer::new();
+    let step = mutable_state_of(0u32);
+    let s = step.handle();
+    let (moved, drawn) = (layer.clone(), layer.clone());
+    let mut host = host(move || {
+        let (moved, drawn) = (moved.clone(), drawn.clone());
+        Column!({
+            let (moved, drawn) = (moved.clone(), drawn.clone());
+            Leaf(setting_layer("mover", move || moved.set_translation_x(s.get() as f32)));
+            Leaf(
+                Modifier
+                    .repaint_boundary()
+                    .draw_behind(move |scope| {
+                        s.get();
+                        log("ghost");
+                        scope.draw_layer(&drawn);
+                        drawn.set_alpha(0.5);
+                        scope.draw_layer(&drawn);
+                        drawn.set_alpha(1.0);
+                    })
+                    .size(10.dp()),
+            );
+        });
+    });
+    take_log();
+    for next in 1..4 {
+        step.set(next);
+        host.frame();
+        assert_eq!(take_log(), ["mover", "ghost"], "drawn once");
+        host.frame();
+        assert!(take_log().is_empty(), "idle");
+    }
+}
+
+// Compose: compose/ui/ui-graphics/src/androidMain/kotlin/androidx/compose/ui/graphics/layer/AndroidGraphicsLayer.android.kt, alpha (a render node drawn shows its last properties)
+/// A drawing that draws a layer between two changes undoing each other draws again in that
+/// frame: it drew the first, and the pass ends as it started (D1337).
+#[test]
+fn a_drawing_between_changes_undoing_each_other_draws_again() {
+    let layer = GraphicsLayer::new();
+    let step = mutable_state_of(0u32);
+    let s = step.handle();
+    let (first, drawn, last) = (layer.clone(), layer.clone(), layer.clone());
+    let mut host = host(move || {
+        let (first, drawn, last) = (first.clone(), drawn.clone(), last.clone());
+        Column!({
+            let (first, drawn, last) = (first.clone(), drawn.clone(), last.clone());
+            Leaf(setting_layer("first", move || {
+                s.get();
+                first.set_alpha(0.5);
+            }));
+            Leaf(drawing("drawer", &drawn, s));
+            Leaf(setting_layer("last", move || {
+                s.get();
+                last.set_alpha(1.0);
+            }));
+        });
+    });
+    take_log();
+    for next in 1..3 {
+        step.set(next);
+        host.frame();
+        assert_eq!(take_log(), ["first", "drawer", "last", "drawer"], "the drawer told");
+        host.frame();
+        assert!(take_log().is_empty(), "idle");
+    }
+}
+
+/// A drawing that draws a layer, moves it, and draws it again hears of a move after it: its
+/// first drawing didn't set the position (D1337).
+#[test]
+fn a_drawing_drawing_a_layer_before_and_after_moving_it_hears_of_a_later_move() {
+    let layer = GraphicsLayer::new();
+    let elsewhere = mutable_state_of(false);
+    let e = elsewhere.handle();
+    let (drawn, moved) = (layer.clone(), layer.clone());
+    let mut host = host(move || {
+        let (drawn, moved) = (drawn.clone(), moved.clone());
+        Column!({
+            let (drawn, moved) = (drawn.clone(), moved.clone());
+            Leaf(
+                Modifier
+                    .repaint_boundary()
+                    .draw_behind(move |scope| {
+                        log("drawer");
+                        scope.draw_layer(&drawn);
+                        drawn.set_top_left(IntOffset::new(3, 0));
+                        scope.draw_layer(&drawn);
+                    })
+                    .size(10.dp()),
+            );
+            Leaf(setting_layer("mover", move || {
+                if e.get() {
+                    moved.set_top_left(IntOffset::new(9, 0));
+                }
+            }));
+        });
+    });
+    for _ in 0..3 {
+        host.frame();
+    }
+    take_log();
+    elsewhere.set(true);
+    host.frame();
+    assert_eq!(take_log(), ["mover", "drawer"], "the drawer told in the frame");
+    for _ in 0..3 {
+        host.frame();
+    }
+    take_log();
+    host.frame();
+    assert!(take_log().is_empty(), "idle");
+}

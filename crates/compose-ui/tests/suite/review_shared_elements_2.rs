@@ -42,9 +42,6 @@ fn setting(name: &'static str, change: impl Fn() + 'static) -> Modifier {
 /// it after a change undone later, is told, draws again in the second pass, which does the same,
 /// and so every frame after: the screen never goes idle.
 #[test]
-#[ignore = "review: a pass whose changes undo each other around a drawing of the layer tells that \
-            drawing every frame (D1332's Stale path), so two drawings positioning a shared layer \
-            never go idle; before D1332 they did"]
 fn two_drawings_placing_one_layer_go_idle() {
     let layer = GraphicsLayer::new();
     let given = layer.clone();
@@ -71,8 +68,6 @@ fn two_drawings_placing_one_layer_go_idle() {
 /// The same with one drawing drawing a layer twice, its alpha set before each (a ghost under the
 /// content): idle once drawn.
 #[test]
-#[ignore = "review: a drawing setting a layer's alpha, drawing it, setting it back and drawing it \
-            again is told at every pass's end (D1332's Stale path) and never goes idle"]
 fn a_drawing_drawing_a_layer_twice_with_two_alphas_goes_idle() {
     let layer = GraphicsLayer::new();
     let given = layer.clone();
