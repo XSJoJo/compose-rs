@@ -21,7 +21,7 @@ use super::drag_gesture::{Deltas, DragBehavior, DragGestureNode};
 use super::scrollable::{DefaultFlingBehavior, FlingBehavior, LocalBoxFuture, ScrollScope};
 use crate::mutator::{MutatePriority, MutationInterrupted, MutatorMutex};
 use crate::overscroll::{OverscrollEffect, PerformFling, same_overscroll};
-use crate::scroll::{event_time, same_fling};
+use crate::scroll::{NestedTree, chain_above, event_time, same_fling};
 
 // ---- The state ---------------------------------------------------------------------------------
 
@@ -455,6 +455,36 @@ impl NestedScrollConnection for Connection {
     }
 }
 
+/// A 2D scrollable in the tree's nested-scroll chain, as the parent of the nested-scroll nodes
+/// inside it (D1478): the same as [`Connection`], with the logic as the node last set it, its
+/// fling's parents found through the tree.
+struct TreeConnection {
+    logic: Rc<RefCell<Logic>>,
+    enabled: Cell<bool>,
+    handle: Option<compose_ui::NodeHandle>,
+}
+
+impl NestedScrollConnection for TreeConnection {
+    fn on_post_scroll(&self, _: Offset, available: Offset, _: NestedScrollSource) -> Offset {
+        if !self.enabled.get() {
+            return Offset::ZERO;
+        }
+        let logic = self.logic.borrow().clone();
+        logic.raw_scroll(available)
+    }
+
+    fn on_post_fling(&self, _: Offset, available: Offset) -> LocalBoxFuture<'_, Offset> {
+        Box::pin(async move {
+            if !self.enabled.get() {
+                return Offset::ZERO;
+            }
+            let mut logic = self.logic.borrow().clone();
+            logic.chain = chain_above(self.handle);
+            Connection { logic, enabled: true }.on_post_fling(Offset::ZERO, available).await
+        })
+    }
+}
+
 // ---- The wheel ---------------------------------------------------------------------------------
 
 /// How long a wheel gesture holds the scroll for another turn, as `ScrollProgressTimeout`.
@@ -658,6 +688,8 @@ pub(crate) struct Scrollable2DNode {
     enabled: bool,
     drag: DragGestureNode,
     wheel: Option<(Rc<Wheel>, Job)>,
+    /// Its place in the tree's nested-scroll chain (D1478).
+    tree: NestedTree<TreeConnection>,
 }
 
 impl<S: Scrollable2DState + ComposeArg + Clone + 'static> ModifierNodeElement
@@ -686,6 +718,7 @@ impl<S: Scrollable2DState + ComposeArg + Clone + 'static> ModifierNodeElement
             logic,
             enabled: self.enabled,
             wheel: None,
+            tree: NestedTree::default(),
         }
     }
     fn update(&self, node: &mut Scrollable2DNode) {
@@ -699,6 +732,9 @@ impl<S: Scrollable2DState + ComposeArg + Clone + 'static> ModifierNodeElement
             logic.fling_behavior = self.fling_behavior.clone();
         }
         node.enabled = self.enabled;
+        if let Some(connection) = node.tree.connection() {
+            connection.enabled.set(self.enabled);
+        }
         node.drag.update(self.enabled, None, self.interaction_source.clone(), reset);
     }
     fn same(&self, other: &Self) -> bool {
@@ -776,24 +812,66 @@ impl ModifierNode for Scrollable2DNode {
     fn as_semantics(&mut self) -> Option<&mut dyn compose_ui::SemanticsModifierNode> {
         Some(self)
     }
-    fn on_detach(&mut self, _context: &mut NodeContext<'_>) {
+    /// Found by the nested-scroll nodes inside looking for their parent, as Compose's
+    /// `Scrollable2DNode`, a `DragGestureNode` (its orientation none: no gesture is aligned with
+    /// it).
+    fn as_traversable(&mut self) -> Option<&mut dyn compose_ui::TraversableNode> {
+        Some(self)
+    }
+    fn on_attach(&mut self, context: &mut NodeContext<'_>) {
+        self.tree.on_attach(context);
+    }
+    fn on_detach(&mut self, context: &mut NodeContext<'_>) {
+        self.tree.on_detach(context);
         self.detach();
     }
     fn on_reset(&mut self, _context: &mut NodeContext<'_>) {
         self.detach();
     }
+    fn on_density_change(&mut self, context: &mut NodeContext<'_>) {
+        if self.tree.takes_part() {
+            self.logic.borrow_mut().density = context.require_density().density;
+        }
+    }
+    /// The nested-scroll parent of the nested-scroll nodes inside, as Compose's
+    /// `Scrollable2DNode` delegating to `nestedScrollModifierNode` (D1478).
+    fn as_nested_scroll_participant(
+        &mut self,
+        context: &mut NodeContext<'_>,
+    ) -> Option<compose_ui::platform::NestedScrollParticipant> {
+        if !self.tree.takes_part() {
+            self.logic.borrow_mut().density = context.require_density().density;
+        }
+        let (logic, enabled) = (self.logic.clone(), self.enabled);
+        Some(self.tree.participant_with(context, |handle| TreeConnection {
+            logic,
+            enabled: Cell::new(enabled),
+            handle,
+        }))
+    }
+}
+
+impl compose_ui::TraversableNode for Scrollable2DNode {
+    fn traverse_key(&self) -> &'static compose_ui::TraverseKey {
+        &super::DRAG_GESTURES
+    }
 }
 
 impl compose_ui::SemanticsModifierNode for Scrollable2DNode {
-    /// Scrolls by the action's offset at once, as compose-rs's `scrollable` does (D491).
+    /// Scrolls by the action's offset at once, as compose-rs's `scrollable` does (D491), through
+    /// the nested-scroll nodes above, as Compose's `semanticsScrollBy` (D1478).
     fn apply_semantics(&self, config: &mut compose_ui::SemanticsConfiguration) {
         if !self.enabled {
             return;
         }
-        let state = self.logic.borrow().state.clone();
+        let (logic, handle) = (self.logic.clone(), self.tree.handle());
         config.scroll_by(None, move |x, y| {
             if x != 0.0 || y != 0.0 {
-                state.dispatch_raw_delta(Offset::new(x, y));
+                let mut current = logic.borrow().clone();
+                current.chain = chain_above(handle);
+                let state = current.state.clone();
+                let scope = Scroll2DScope::new(move |delta| state.dispatch_raw_delta(delta));
+                current.perform(&scope, Offset::new(x, y), NestedScrollSource::UserInput);
             }
             true
         });

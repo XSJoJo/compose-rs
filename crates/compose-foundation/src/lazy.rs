@@ -19,6 +19,7 @@
 //! in lines.
 
 mod animate_scroll;
+mod beyond_bounds;
 mod cache_window;
 mod grid;
 mod item_animator;
@@ -647,10 +648,7 @@ impl LazyListState {
         let Some(inner) = self.inner() else { return Box::pin(async { Ok(()) }) };
         let state = self;
         // A drag's or a fling's deltas learn the parents around from the node (D479).
-        let consume = Rc::new(move |delta: f32| {
-            let outer = state.inner().and_then(|inner| inner.scroll_outer.borrow().clone());
-            state.dispatch(delta, outer)
-        });
+        let consume = Rc::new(move |delta: f32| state.dispatch_raw_delta(delta));
         Box::pin(async move { inner.core.scroll(priority, consume, block).await })
     }
 
@@ -912,8 +910,13 @@ impl ScrollableState for LazyListState {
     /// Scrolls by up to `delta` pixels (positive: towards the end) at the next layout, as far
     /// as the list goes as last laid out (an end not laid out isn't known: it takes it all,
     /// D476); returns the pixels it will move.
+    ///
+    /// In a scroll of the list's node that told the state the nested-scroll parents around (its
+    /// scope's deltas, what a dispatcher inside leaves), what an estimated end leaves goes to
+    /// them (D479).
     fn dispatch_raw_delta(&self, delta: f32) -> f32 {
-        self.dispatch(delta, None)
+        let outer = self.inner().and_then(|inner| inner.scroll_outer.borrow().clone());
+        self.dispatch(delta, outer)
     }
 
     fn is_scroll_in_progress(&self) -> bool {
@@ -3545,6 +3548,16 @@ pub(crate) struct LazyScrollNode {
     /// them with set by each event.
     set_outer: crate::scroll::OuterSetter,
     outer_axis: Rc<Cell<(bool, bool)>>,
+    /// Its place in the tree's nested-scroll chain, as a scrollable's (D1918, D1478).
+    tree: crate::scroll::NestedTree,
+    /// Pixels per dp and a right-to-left layout where it takes part in the tree's chain, for its
+    /// connection.
+    density: f32,
+    rtl: bool,
+    /// Its `BeyondBoundsLayout`, made when a node inside asks (D1479), and what measures the
+    /// layout at once while it's attached.
+    beyond: Option<Rc<beyond_bounds::LazyBeyondBounds>>,
+    remeasurement: Option<compose_ui::Remeasurement>,
 }
 
 /// The node's `set_outer`: the parents around the deltas, with the axis and mirroring the
@@ -3580,6 +3593,11 @@ impl ModifierNodeElement for LazyScrollElement {
             drag: DragScroller::along(self.vertical),
             set_outer: outer_setter(self.state, axis.clone()),
             outer_axis: axis,
+            tree: crate::scroll::NestedTree::default(),
+            density: 1.0,
+            rtl: false,
+            beyond: None,
+            remeasurement: None,
         }
     }
 
@@ -3603,6 +3621,10 @@ impl ModifierNodeElement for LazyScrollElement {
             node.drag.stop_fling();
         }
         node.enabled = self.enabled;
+        node.tell_tree();
+        if let Some(beyond) = &node.beyond {
+            beyond.update(node.state, node.vertical, node.reverse);
+        }
     }
 
     fn same(&self, other: &Self) -> bool {
@@ -3624,6 +3646,29 @@ impl LazyScrollNode {
     /// to left (both: left to right again).
     fn mirrored(&self, rtl: bool) -> bool {
         self.reverse ^ (!self.vertical && rtl)
+    }
+
+    /// What its tree connection scrolls: its deltas through the scope that tells the state the
+    /// parents above, which get what an estimated end leaves (D479).
+    fn tree_target(&self) -> crate::scroll::ScrollTarget {
+        let reverse = self.mirrored(self.rtl);
+        self.outer_axis.set((self.vertical, reverse));
+        let driver = ScrollDriver {
+            state: &self.dyn_state,
+            fling_behavior: self.fling_behavior.as_ref(),
+            interaction_source: None,
+            state_source: true,
+            set_outer: Some(&self.set_outer),
+            overscroll: self.overscroll.as_ref(),
+        };
+        self.drag.tree_target(&driver, reverse, self.density)
+    }
+
+    /// Tells its tree connection what it scrolls now, if it takes part.
+    fn tell_tree(&self) {
+        if self.tree.takes_part() {
+            self.tree.set_target(self.tree_target(), self.enabled);
+        }
     }
 
     /// Scrolls by what `distance` (a spec's `calculate_scroll_distance`: offset, size, container)
@@ -3749,13 +3794,26 @@ impl compose_ui::SemanticsModifierNode for LazyScrollNode {
                 }
             })
         });
+        let (dyn_state, handle, set_outer, reverse) =
+            (self.dyn_state.clone(), self.tree.handle(), self.set_outer.clone(), self.reverse);
+        let axis = self.outer_axis.clone();
         config.scroll_by(None, move |x, y| {
-            // Towards the content's end, as Compose's lazy layouts' `scrollBy` (D491); handled
-            // even where the list can't move that way, as Compose's (its action always returns
-            // true).
+            // Towards the content's end, as Compose's lazy layouts' `scrollBy` (D491), through the
+            // nested-scroll nodes above (D1478); handled even where the list can't move that way,
+            // as Compose's (its action always returns true).
             let delta = if vertical { y } else { x };
             if delta != 0.0 {
-                state.dispatch(delta, None);
+                let rtl = state.inner().is_some_and(|inner| inner.rtl.get());
+                let mirrored = reverse ^ (!vertical && rtl);
+                axis.set((vertical, mirrored));
+                crate::scroll::semantics_scroll(
+                    &dyn_state,
+                    handle,
+                    Some(&set_outer),
+                    vertical,
+                    mirrored,
+                    delta,
+                );
             }
             true
         });
@@ -3788,6 +3846,7 @@ impl compose_ui::KeyInputModifierNode for LazyScrollNode {
             return false;
         }
         let reverse = self.mirrored(context.layout_direction() == compose_ui::LayoutDirection::Rtl);
+        self.outer_axis.set((self.vertical, reverse));
         let dyn_state = self.dyn_state.clone();
         let driver = ScrollDriver {
             state: &dyn_state,
@@ -3797,7 +3856,9 @@ impl compose_ui::KeyInputModifierNode for LazyScrollNode {
             set_outer: Some(&self.set_outer),
             overscroll: self.overscroll.as_ref(),
         };
-        self.drag.on_key_event(event, self.vertical, reverse, context, &driver, None)
+        // Through the nested-scroll nodes above, found when it scrolls (D1478).
+        let handle = self.tree.handle();
+        self.drag.on_key_event(event, self.vertical, reverse, context, &driver, handle)
     }
 }
 
@@ -3836,6 +3897,50 @@ impl ModifierNode for LazyScrollNode {
         }
     }
 
+    fn on_attach(&mut self, context: &mut compose_ui::NodeContext<'_>) {
+        self.tree.on_attach(context);
+        self.remeasurement = Some(context.remeasurement());
+        if let Some(beyond) = &self.beyond {
+            beyond.set_remeasurement(self.remeasurement);
+        }
+    }
+
+    fn on_detach(&mut self, context: &mut compose_ui::NodeContext<'_>) {
+        self.tree.on_detach(context);
+        self.remeasurement = None;
+        if let Some(beyond) = &self.beyond {
+            beyond.set_remeasurement(None);
+        }
+    }
+
+    fn on_density_change(&mut self, context: &mut compose_ui::NodeContext<'_>) {
+        if self.tree.takes_part() {
+            self.density = context.require_density().density;
+            self.tell_tree();
+        }
+    }
+
+    fn on_layout_direction_change(&mut self, context: &mut compose_ui::NodeContext<'_>) {
+        if self.tree.takes_part() {
+            self.rtl = context.require_layout_direction() == compose_ui::LayoutDirection::Rtl;
+            self.tell_tree();
+        }
+    }
+
+    /// The nested-scroll parent of the nested-scroll nodes inside, as Compose's lazy layouts'
+    /// `scrollable` (D1478): what they leave scrolls it, a velocity flings it.
+    fn as_nested_scroll_participant(
+        &mut self,
+        context: &mut compose_ui::NodeContext<'_>,
+    ) -> Option<compose_ui::platform::NestedScrollParticipant> {
+        if !self.tree.takes_part() {
+            self.density = context.require_density().density;
+            self.rtl = context.require_layout_direction() == compose_ui::LayoutDirection::Rtl;
+        }
+        let target = self.tree_target();
+        Some(self.tree.participant(context, self.enabled, || target))
+    }
+
     fn as_pointer_input(&mut self) -> Option<&mut dyn PointerInputModifierNode> {
         Some(self)
     }
@@ -3846,6 +3951,21 @@ impl ModifierNode for LazyScrollNode {
 
     fn is_beyond_bounds_layout(&self) -> bool {
         true
+    }
+
+    /// Its `BeyondBoundsLayout`, as Compose's lazy layouts' `lazyLayoutBeyondBoundsModifier`
+    /// (D1479): items laid out beyond those in view, measured at once, while a block runs.
+    /// None when the user can't scroll it, as Compose's.
+    fn beyond_bounds_layout(&mut self) -> Option<Rc<dyn compose_ui::BeyondBoundsLayout>> {
+        if !self.enabled {
+            return None;
+        }
+        let (state, vertical, reverse, remeasurement) =
+            (self.state, self.vertical, self.reverse, self.remeasurement);
+        let beyond = self.beyond.get_or_insert_with(|| {
+            Rc::new(beyond_bounds::LazyBeyondBounds::new(state, vertical, reverse, remeasurement))
+        });
+        Some(beyond.clone())
     }
 
     /// One more item (a grid's line) beyond those laid out, the way `direction` goes along the

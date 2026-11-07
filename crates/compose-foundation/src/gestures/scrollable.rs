@@ -1093,7 +1093,7 @@ impl compose_ui::SemanticsModifierNode for ScrollableNode {
             // edge), as Compose's action returns true (D877).
             let delta = if vertical { y } else { x };
             if delta != 0.0 {
-                crate::scroll::semantics_scroll(&state, handle, vertical, reverse, delta);
+                crate::scroll::semantics_scroll(&state, handle, None, vertical, reverse, delta);
             }
             true
         });

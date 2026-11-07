@@ -418,6 +418,7 @@ impl ContentInView {
                                     * crate::scroll::scroll_above(
                                         &scroll,
                                         handle,
+                                        None,
                                         vertical,
                                         reverse,
                                         multiplier * delta,

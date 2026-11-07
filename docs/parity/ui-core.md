@@ -534,7 +534,7 @@ One entry per feature, in the suggested order (below, after the entries). Sizes:
 - *Tests:* OnGlobalRectChangedTest, RectListIntegrationTest, OnGlobalLayoutListenerTest, OnVisibilityChangedTest, RectListTest, ThrottledCallbacksTest.
 - *Depends on:* 3.14; 3.4 for `register*` on nodes; the host clock for throttling.
 
-**3.23 `beyond-bounds-layout`** — S to M. **Done** (D1919): the API; the lazy layouts answering it are foundation's beyond-bounds-api.
+**3.23 `beyond-bounds-layout`** — S to M. **Done** (D1919): the API; the lazy layouts answer it (D1479, foundation's beyond-bounds-api).
 - *API:* `BeyondBoundsLayout`, `BeyondBoundsLayoutProviderModifierNode`, `findNearestBeyondBoundsLayoutAncestor`.
 - *Does:* makes compose-rs's internal beyond-bounds layout (D477) public.
 - *Tests:* completes BeyondBoundsLayoutProviderModifierNodeTest, BeyondBoundsLayoutTest.
