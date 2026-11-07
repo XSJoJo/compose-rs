@@ -250,6 +250,12 @@ internal object ComposeRsNative {
     /** The merged semantics tree, for accessibility (`accessibility.rs`). */
     @JvmStatic external fun semantics(host: Long): ByteBuffer?
 
+    /** The virtual structure for the platform's autofill (`autofill.rs`, D1687). */
+    @JvmStatic external fun autofillStructure(host: Long, packageName: String): ByteBuffer?
+
+    /** Fills node [id] with the platform's value, as its parts (`autofill.rs`, D1687). */
+    @JvmStatic external fun autofill(host: Long, id: Int, type: Int, text: String?, number: Long)
+
     /** What changed since a service was last told; [forget]: it just turned on, none is told. */
     @JvmStatic external fun semanticsChanges(host: Long, forget: Boolean): ByteBuffer
 

@@ -67,7 +67,7 @@ As of 2026-11-07, `origin/main` is at 659dc01d (12,481 tests).
 | Branch | What | State |
 |---|---|---|
 | `moved-node-fixes` | The moved-node review's findings (nested movable content, detach orders, a panic guard) and a moved shared element's start position | In progress |
-| `autofill` | Autofill (D1680–D1699): the API, the semantics and the platform side's logic (step 1), the text fields' semantics, "Autofill" item and highlight (step 2), Android's `AutofillManager` bridge (step 3) | Steps 1 and 2 done; step 3 in progress |
+| `autofill` | Autofill (D1680–D1699): the API, the semantics and the platform side's logic (step 1), the text fields' semantics, "Autofill" item and highlight (step 2), Android's `AutofillManager` bridge (step 3) | Done, to review (step 3 not run on a phone) |
 | `multi-paragraph` | The rest of the paragraph API: paragraph styles in `AnnotatedString` and `MultiParagraph`, then `getRangeForRect` and `fillBoundingBoxes` (D2047 and up), one commit per step | In progress |
 
 Next, once those land: `DeferredSharedElementTest`, the moved shared element that doesn't animate from its old place, and the shared elements of `LookaheadScopeTest` and Navigation 3; touch selection's bidi tests (`TextSelectionGesturesBidiTest`); graphics leftovers (`ImageShader`, BrushPainter, FilterQuality); place-with-layer leftovers (zIndex, hit testing through layer transforms); style API, border parity, AndroidView interop, magnifier. missing.md has the full list.

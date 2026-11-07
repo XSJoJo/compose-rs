@@ -1106,7 +1106,7 @@ pub(crate) struct TextFieldNode {
     touch: Touch,
     /// Autofilled: the highlight's brush and the text filled, drawn while the text is that
     /// (D1685).
-    autofill_highlight: Option<(compose_ui::Brush, String)>,
+    autofill_highlight: Option<Box<(compose_ui::Brush, String)>>,
 }
 
 impl TextFieldNode {
@@ -2952,7 +2952,8 @@ impl DrawModifierNode for TextFieldNode {
             scope.restore();
         }
         // Autofilled: highlighted over it, until its text changes, as Compose's decorator (D1685).
-        if let Some((brush, filled)) = &self.autofill_highlight {
+        if let Some(highlight) = &self.autofill_highlight {
+            let (brush, filled) = &**highlight;
             if *filled == self.text {
                 let paint = scope.brush_paint(brush, 1.0, compose_ui::PaintStyle::Fill);
                 scope.draw_rect(scope.bounds(), paint);
@@ -3977,10 +3978,6 @@ impl SemanticsModifierNode for TextFieldNode {
             // The state's own text, transformed or not, as Compose's `inputText`.
             config.set_input_text(text.clone());
         } else {
-            // Autofill's value: the field's own text (Compose's `CoreTextField`).
-            if let Some(data) = FillableData::create_from_text(text.clone()) {
-                config.set_fillable_data(data);
-            }
             let (shown, mapping): (compose_ui::SharedString, _) = match self
                 .visual_transformation
                 .filter(text)
@@ -3997,6 +3994,13 @@ impl SemanticsModifierNode for TextFieldNode {
                 in_shown(self.anchor),
                 in_shown(self.cursor),
             ));
+            // Autofill's value: the field's own text (Compose's `CoreTextField`), the shown one's
+            // allocation when it's not transformed.
+            let own: compose_ui::SharedString =
+                if mapping.is_none() { shown.clone() } else { text.clone().into() };
+            if let Some(data) = FillableData::create_from_text(own) {
+                config.set_fillable_data(data);
+            }
             config.set_editable_text(shown);
         }
         if self.visual_transformation.is_password() {
@@ -4126,7 +4130,7 @@ impl TextFieldNode {
                 }
                 // Highlighted until its text changes (D1685).
                 let brush = context.current_value_of(&crate::LOCAL_AUTOFILL_HIGHLIGHT_BRUSH);
-                self.autofill_highlight = Some((brush, self.text.clone()));
+                self.autofill_highlight = Some(Box::new((brush, self.text.clone())));
                 context.invalidate_draw();
                 true
             }

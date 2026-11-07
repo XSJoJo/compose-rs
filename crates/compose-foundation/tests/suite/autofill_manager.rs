@@ -902,3 +902,88 @@ fn without_a_platform_manager_the_local_is_none() {
     let _ui = compose_test(move || into.set(LOCAL_AUTOFILL_MANAGER.current().is_some()));
     assert!(!seen.get());
 }
+
+/// A lazy row's items with a content type and an input text, scrolled: the item scrolled out (its
+/// node deactivated, then reused) hides once, as Compose's deactivation (no semantics change told
+/// for it); the one scrolled in shows twice (its input text appearing, then `onPostLayoutNodeReused`).
+#[test]
+fn a_lazy_scroll_of_text_items_hides_the_old_once() {
+    let state = Rc::new(Cell::new(None));
+    let into = state.clone();
+    let (mut ui, am) = set_test_content(move || {
+        let list = compose_foundation::lazy::remember_lazy_list_state(0, 0);
+        into.set(Some(list));
+        let side = 10.0 / LOCAL_DENSITY.current().density;
+        LazyRow!(modifier = Modifier.size(side.dp()), state = list, move |scope: LazyListScope| {
+            scope.items(2, move |index| {
+                Box!(
+                    modifier = Modifier.size(side.dp()).semantics(move |config| {
+                        config.set_test_tag("username");
+                        config.set_content_type(ContentType::USERNAME);
+                        config.set_input_text(format!("item {index}"));
+                    })
+                );
+            });
+        });
+    });
+    let before = id(&mut ui, "username");
+    let list = state.get().expect("composed");
+    ui.run_on_idle(|_| list.request_scroll_to_item(1, 0));
+    let after = id(&mut ui, "username");
+    ui.wait_for_idle();
+    am.verify(&visibility(before, false));
+    am.verify_times(&visibility(after, true), 2);
+    am.assert_no_more_calls();
+}
+
+/// A field's value goes to the field's node (its parts' host), not a node with semantics between
+/// it and its inner field (a decoration's).
+#[test]
+fn a_field_s_value_goes_to_the_field_not_its_decoration() {
+    let (mut ui, am) = set_test_content(|| {
+        let state = remember_text_field_state("", None);
+        BasicTextFieldOfState!(
+            state,
+            modifier = Modifier.test_tag("field").semantics(|config| {
+                config.set_content_type(ContentType::USERNAME);
+            }),
+            decorator = |inner: compose_runtime::Callback| {
+                Box!(
+                    modifier = Modifier
+                        .semantics(|config| config.set_content_description("decoration"))
+                        .test_tag("decoration"),
+                    { inner() }
+                );
+            },
+        );
+    });
+    ui.on_node_with_tag("field").request_focus();
+    ui.wait_for_idle();
+    am.clear();
+    ui.on_node_with_tag("field").perform_text_input("a");
+    ui.wait_for_idle();
+    let field = id(&mut ui, "field");
+    am.verify_times(&value_changed(field, text("a")), 2);
+    am.assert_no_more_calls();
+}
+
+/// A toggle's new state is told twice, as Compose's: its toggle state and its fillable data.
+#[test]
+fn a_toggle_s_new_state_is_told() {
+    let checked = mutable_state_of(false);
+    let handle = checked.handle();
+    let (mut ui, am) = set_test_content(move || {
+        Box!(
+            modifier = Modifier
+                .toggleable(handle.get(), move |it| handle.set(it))
+                .then(square_modifier())
+                .test_tag("toggle")
+        );
+    });
+    ui.run_on_idle(|_| checked.set(true));
+    ui.wait_for_idle();
+    let toggle = id(&mut ui, "toggle");
+    let on = FillableData::create_from_boolean(true).unwrap();
+    am.verify_times(&value_changed(toggle, on), 2);
+    am.assert_no_more_calls();
+}

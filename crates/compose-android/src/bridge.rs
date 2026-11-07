@@ -830,6 +830,8 @@ struct Host {
     drawing_given: (usize, usize),
     /// What `semantics` last gave Kotlin: the semantics tree.
     semantics: Writer,
+    /// What `autofillStructure` last gave Kotlin: the autofill structure (D1687).
+    autofill_structure: Writer,
     /// The merged semantics tree, for the record, the actions and the input method's options.
     semantics_tree: crate::accessibility::KeptSemanticsTree,
     semantics_changes: crate::accessibility::KeptForChanges,
@@ -1031,6 +1033,10 @@ fn create(
     crate::services::install(env, view, &view_ref, &ui);
     let text_action_modes = crate::text_toolbar::JniTextActionModes::new(env, view, &view_ref);
     ui.with_tree(|tree| tree.set_text_action_modes(Some(Rc::new(text_action_modes))));
+    // The platform's autofill: every view has it from Android 8, below the library's minimum, as
+    // Compose's `AndroidAutofillManager` (D1687).
+    let autofill = crate::autofill::JniAutofill::new(env, view, &view_ref);
+    ui.with_tree(|tree| tree.set_platform_autofill_manager(Some(Rc::new(autofill))));
     if rtl {
         ui.set_layout_direction(LayoutDirection::Rtl);
     }
@@ -1116,6 +1122,7 @@ fn create(
         drawing: Writer { bytes: Vec::with_capacity(4096) },
         drawing_given: (0, 0),
         semantics: Writer::default(),
+        autofill_structure: Writer::default(),
         semantics_tree: Default::default(),
         semantics_changes: Default::default(),
         custom_actions: Default::default(),
@@ -2360,6 +2367,54 @@ pub extern "system" fn Java_rs_compose_android_ComposeRsNative_semantics<'local>
         // Kotlin reads it before calling again.
         unsafe { env.new_direct_byte_buffer(bytes.as_mut_ptr(), bytes.len()) }.unwrap_or_default()
     })
+}
+
+/// `ComposeRsNative.autofillStructure(host, packageName)`: the virtual structure for the
+/// platform's autofill (`autofill::write_structure`), for `ComposeRsAutofill.kt` to write into
+/// its `ViewStructure` (D1687).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_rs_compose_android_ComposeRsNative_autofillStructure<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    host: jlong,
+    package_name: JString<'local>,
+) -> JByteBuffer<'local> {
+    // SAFETY: a live host, on the main thread.
+    let host = unsafe { self::host(host) };
+    let package_name = with_env(&mut env, |env| package_name.mutf8_chars(env).map(String::from));
+    let package_name = package_name.ok();
+    let structure =
+        host.ui.with_tree(|tree| tree.populate_autofill_structure(package_name.as_deref()));
+    host.autofill_structure.bytes.clear();
+    crate::autofill::write_structure(&structure, &mut host.autofill_structure);
+    let bytes = &mut host.autofill_structure.bytes;
+    with_env(&mut env, |env| {
+        // SAFETY: the buffer lives in the host until the next `autofillStructure` (or
+        // `destroy`), and Kotlin reads it before calling again.
+        unsafe { env.new_direct_byte_buffer(bytes.as_mut_ptr(), bytes.len()) }.unwrap_or_default()
+    })
+}
+
+/// `ComposeRsNative.autofill(host, id, type, text, number)`: fills node `id` with the platform's
+/// value (`autofill::fillable_data`), as Compose's `AndroidComposeView.autofill` (D1687).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_rs_compose_android_ComposeRsNative_autofill(
+    mut env: EnvUnowned,
+    _class: JClass,
+    host: jlong,
+    id: jint,
+    data_type: jint,
+    text: JString,
+    number: jlong,
+) {
+    // SAFETY: a live host, on the main thread.
+    let host = unsafe { self::host(host) };
+    let text = with_env(&mut env, |env| {
+        if text.is_null() { None } else { text.mutf8_chars(env).map(String::from).ok() }
+    });
+    if let Some(value) = crate::autofill::fillable_data(data_type, text, number) {
+        host.ui.perform_autofill(vec![(id, value)]);
+    }
 }
 
 /// `ComposeRsNative.semanticsChanges(host)`: what changed since a service was last told

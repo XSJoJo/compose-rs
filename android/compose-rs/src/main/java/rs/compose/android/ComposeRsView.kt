@@ -22,7 +22,10 @@ import android.os.SystemClock
 import android.os.Trace
 import android.text.TextUtils
 import android.util.Log
+import android.util.SparseArray
 import android.view.ActionMode
+import android.view.autofill.AutofillValue
+import android.view.ViewStructure
 import android.view.Choreographer
 import android.view.HapticFeedbackConstants
 import android.view.InputDevice
@@ -217,6 +220,8 @@ class ComposeRsView @JvmOverloads constructor(
         frameStartedNanos = System.nanoTime()
     }
     private val accessibility = Accessibility(this)
+    /** The platform's autofill, as Compose's `AndroidAutofillManager` (D1687). */
+    private val autofill = ComposeRsAutofill(this)
     private val accessibilityManager = context.getSystemService(AccessibilityManager::class.java)
 
     /** What the last composition saved (or the instance state restored), for the next one. */
@@ -276,6 +281,8 @@ class ComposeRsView @JvmOverloads constructor(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) defaultFocusHighlightEnabled = false
         // Its instance state is saved only with an id.
         if (id == NO_ID) id = R.id.compose_rs_view
+        // Its content's nodes are autofill's virtual views, as Compose's view.
+        importantForAutofill = IMPORTANT_FOR_AUTOFILL_YES
         insets.attach()
     }
 
@@ -1418,6 +1425,37 @@ class ComposeRsView @JvmOverloads constructor(
     fun setClipboardText(text: String) {
         val clipboard = context.getSystemService(ClipboardManager::class.java)
         clipboard.setPrimaryClip(ClipData.newPlainText("text", text))
+    }
+
+    // ---- Autofill (Rust calls `autofillCall`: `autofill.rs`, D1687) ----------------------------
+
+    /** What Rust tells the platform's autofill: one of `autofill::kind`'s, on node [id]. */
+    fun autofillCall(
+        kind: Int,
+        id: Int,
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int,
+        valueType: Int,
+        text: String?,
+        number: Long,
+    ) {
+        autofill.call(kind, id, Rect(left, top, right, bottom), valueType, text, number)
+    }
+
+    override fun onProvideAutofillVirtualStructure(structure: ViewStructure?, flags: Int) {
+        if (structure == null || host == 0L) return
+        val bytes = ComposeRsNative.autofillStructure(host, context.packageName) ?: return
+        autofill.populate(structure, bytes)
+    }
+
+    override fun autofill(values: SparseArray<AutofillValue>) {
+        if (host == 0L) return
+        for (index in 0 until values.size()) {
+            val (type, text, number) = ComposeRsAutofill.parts(values.valueAt(index))
+            ComposeRsNative.autofill(host, values.keyAt(index), type, text, number)
+        }
     }
 
     // ---- The floating text toolbar (Rust calls these: `text_toolbar.rs`, D2033) ----------------

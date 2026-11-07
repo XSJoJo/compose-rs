@@ -430,8 +430,8 @@ pub(crate) struct AutofillTracking {
     manager: Rc<dyn AutofillManager>,
     /// The ids of the nodes in use (attached, not deactivated) at the last sync.
     present: HashSet<i32>,
-    /// Their snapshots, those not empty.
-    known: HashMap<i32, Snapshot>,
+    /// Their layout nodes and snapshots, those not empty.
+    known: HashMap<i32, (NodeId, Snapshot)>,
     /// The nodes with a content type on screen, as Compose's `currentlyDisplayedIDs`.
     displayed: HashSet<i32>,
     /// Some were displayed since the last commit, as `pendingAutofillCommit`.
@@ -616,45 +616,38 @@ impl UiTree {
             .then(|| (owner, self.node(owner).semantics_id))
     }
 
-    /// Each node in use with its snapshot, in tree order (a part's taken into its owner's), and
-    /// the ids of the deactivated ones.
-    fn autofill_snapshots(&mut self) -> (Vec<(i32, Snapshot)>, HashSet<i32>) {
-        let mut out: Vec<(i32, Snapshot)> = Vec::new();
-        let mut deactivated = HashSet::new();
-        // (node, in deactivated content, the nearest semantics node's index, the nearest host's)
+    /// Each node in use with its layout node and snapshot, in tree order (a part's taken into its
+    /// owner's). Deactivated content is left out.
+    fn autofill_snapshots(&mut self) -> Vec<(i32, NodeId, Snapshot)> {
+        let mut out: Vec<(i32, NodeId, Snapshot)> = Vec::new();
+        // (node, the nearest semantics node's index, the nearest host's)
         let mut roots = vec![self.root_id()];
         roots.extend(self.overlays.iter().copied());
-        let mut stack: Vec<(NodeId, bool, Option<usize>, Option<usize>)> =
-            roots.into_iter().rev().map(|root| (root, false, None, None)).collect();
+        let mut stack: Vec<(NodeId, Option<usize>, Option<usize>)> =
+            roots.into_iter().rev().map(|root| (root, None, None)).collect();
         let mut visited = HashSet::new();
-        while let Some((node, in_deactivated, nearest, host)) = stack.pop() {
+        while let Some((node, nearest, host)) = stack.pop() {
             let Some(value) = self.get(node) else { continue };
-            if !value.attached || !visited.insert(node) {
+            if !value.attached || value.deactivated || !visited.insert(node) {
                 continue;
             }
             let id = value.semantics_id;
             let (nearest, host) = if value.overlay { (None, None) } else { (nearest, host) };
-            let deactivated_here = in_deactivated || value.deactivated;
             let children: Vec<NodeId> = value.children.iter().rev().map(|c| c.node).collect();
-            if deactivated_here {
-                deactivated.insert(id);
-                stack.extend(children.into_iter().map(|child| (child, true, None, None)));
-                continue;
-            }
             let own =
                 if value.kinds.any(NodeKinds::SEMANTICS) { self.own_semantics(node) } else { None };
             let index = out.len();
             let (mut child_nearest, mut child_host) = (nearest, host);
             match own {
                 Some(own) if own.config.contains(&PART_OF_PARENT) => {
-                    out.push((id, Snapshot::default()));
+                    out.push((id, node, Snapshot::default()));
                     let part = Snapshot::of(&own.config);
                     if let Some(owner) = host.or(nearest) {
-                        out[owner].1.apply(&part);
+                        out[owner].2.apply(&part);
                     }
                 }
                 Some(own) => {
-                    out.push((id, Snapshot::of(&own.config)));
+                    out.push((id, node, Snapshot::of(&own.config)));
                     if !own.config.is_empty() {
                         child_nearest = Some(index);
                     }
@@ -662,13 +655,11 @@ impl UiTree {
                         child_host = Some(index);
                     }
                 }
-                None => out.push((id, Snapshot::default())),
+                None => out.push((id, node, Snapshot::default())),
             }
-            stack.extend(
-                children.into_iter().map(|child| (child, false, child_nearest, child_host)),
-            );
+            stack.extend(children.into_iter().map(|child| (child, child_nearest, child_host)));
         }
-        (out, deactivated)
+        out
     }
 
     /// Compose's `onSemanticsChanged`, `onPostAttach`, `onLayoutNodeDeactivated` and `onDetach`,
@@ -678,13 +669,13 @@ impl UiTree {
         tracking: &mut AutofillTracking,
         calls: &mut Vec<PlatformAutofillCall>,
     ) {
-        let (nodes, deactivated) = self.autofill_snapshots();
+        let nodes = self.autofill_snapshots();
         let previous_present = std::mem::take(&mut tracking.present);
         let mut previous_known = std::mem::take(&mut tracking.known);
         let empty = Snapshot::default();
-        for (id, snapshot) in nodes {
+        for (id, node, snapshot) in nodes {
             tracking.present.insert(id);
-            let previous = previous_known.remove(&id);
+            let previous = previous_known.remove(&id).map(|(_, snapshot)| snapshot);
             let previous = previous.as_ref().unwrap_or(&empty);
             if *previous != snapshot {
                 semantics_changed(tracking, calls, id, previous, &snapshot);
@@ -698,22 +689,23 @@ impl UiTree {
                 });
             }
             if !snapshot.is_empty() {
-                tracking.known.insert(id, snapshot);
+                tracking.known.insert(id, (node, snapshot));
             }
         }
         // Those no longer in use, in the order of their ids.
-        let mut gone: Vec<(i32, Snapshot)> = previous_known.into_iter().collect();
+        let mut gone: Vec<(i32, (NodeId, Snapshot))> = previous_known.into_iter().collect();
         gone.sort_by_key(|(id, _)| *id);
-        for (id, previous) in gone {
+        for (id, (node, previous)) in gone {
             if tracking.displayed.remove(&id) {
                 calls.push(PlatformAutofillCall::NotifyViewVisibilityChanged {
                     semantics_id: id,
                     is_visible: false,
                 });
             }
-            // Detached, its configuration gone (`notifySemanticsChange` with none); a deactivated
-            // node's goes without telling.
-            if !deactivated.contains(&id) {
+            // Detached, its configuration gone (`notifySemanticsChange` with none); a node still
+            // attached was deactivated (or reused since, with a new id), its configuration gone
+            // without telling (`onDeactivate`).
+            if !self.get(node).is_some_and(|value| value.attached) {
                 semantics_changed(tracking, calls, id, &previous, &empty);
             }
         }
