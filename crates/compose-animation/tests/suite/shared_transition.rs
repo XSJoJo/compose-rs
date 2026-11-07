@@ -3826,9 +3826,6 @@ fn detaching_shared_element_and_reattaching_before_animating() {
 /// The same, the element moved out of an offset parent to the origin: it animates from where it
 /// was and ends at the origin.
 #[test]
-#[ignore = "compose-ui doesn't detach and attach again the modifier nodes of a layout node \
-            movable content moves, where Compose does: the shared node keeps no bounds from \
-            before the move, and starts where it lands (missing.md)"]
 fn detaching_shared_element_and_reattaching_in_new_position_before_animating() {
     let show_match = mutable_state_of(false);
     let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();

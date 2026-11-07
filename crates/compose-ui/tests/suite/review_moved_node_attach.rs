@@ -230,6 +230,82 @@ fn a_node_moved_into_a_new_layout_sees_the_old_parent_in_on_detach() {
     assert_eq!(take(&log), ["detach under old", "attach under new"]);
 }
 
+/// Logs where it is in the root in its `on_detach`.
+#[derive(Clone)]
+struct WhereOnDetach(Log);
+
+struct WhereOnDetachNode(Log);
+
+impl ModifierNodeElement for WhereOnDetach {
+    type Node = WhereOnDetachNode;
+    fn create(&self) -> WhereOnDetachNode {
+        WhereOnDetachNode(self.0.clone())
+    }
+    fn update(&self, node: &mut WhereOnDetachNode) {
+        node.0 = self.0.clone();
+    }
+    fn same(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl ModifierNode for WhereOnDetachNode {
+    fn on_detach(&mut self, context: &mut NodeContext<'_>) {
+        let at = context.require_layout_coordinates().position_in_root();
+        self.0.borrow_mut().push(format!("detach at {} {}", at.x, at.y));
+    }
+}
+
+/// `content` in the first of two layouts that stay, at (30, 20), or the second, at the origin,
+/// when `moved`.
+#[composable]
+fn BetweenPlaces(moved: bool, content: impl Fn() + 'static) {
+    let here = content.clone();
+    Stack!(modifier = Modifier.offset(30.dp(), 20.dp()), {
+        if !moved {
+            here();
+        }
+    });
+    let there = content.clone();
+    Stack!({
+        if moved {
+            there();
+        }
+    });
+}
+
+/// A moved node's `on_detach` reads where it was: its coordinates go up through the parent it
+/// left, as Compose's `removeAt` detaches it while it's still there (D1924). Through the parent
+/// it went to, it would read where it lands, and a shared element would start from there.
+#[test]
+fn a_moved_node_s_coordinates_in_on_detach_are_where_it_was() {
+    for deep in [false, true] {
+        let log = Log::default();
+        let moved = mutable_state_of(false);
+        let (there, content_log) = (moved.handle(), log.clone());
+        let content = movable_content_of(move || {
+            let reads = Modifier.then_custom(WhereOnDetach(content_log.clone()));
+            if deep {
+                Stack!({
+                    Leaf(reads.clone());
+                });
+            } else {
+                Leaf(reads);
+            }
+        });
+        let mut host = host(move || {
+            let (content, moved) = (content.clone(), there.get());
+            Stack(Modifier, callback(move || BetweenPlaces(moved, content.clone())));
+        });
+        moved.set(true);
+        host.frame();
+        assert_eq!(take(&log), ["detach at 30 20"], "deep: {deep}");
+        moved.set(false);
+        host.frame();
+        assert_eq!(take(&log), ["detach at 0 0"], "deep: {deep}");
+    }
+}
+
 // ---- Nested movable content ---------------------------------------------------------------------
 
 /// `outer` in a row, or when `split` in a stack, `inner` in another stack after it.
@@ -594,7 +670,6 @@ impl ModifierNode for FragileNode {
 /// stays `Some(node)`, and at the next pass moving the node, its `on_attach` (not detaching)
 /// walks up through the parent it left (`parent_for_callbacks` finds the pass's removal first).
 #[test]
-#[ignore = "review: detaching_moved left set when a moved node's on_detach panics; later on_attach sees the old parent"]
 fn a_panic_in_a_moved_node_s_on_detach_leaves_no_stale_parent() {
     let log = Log::default();
     let armed = Rc::new(std::cell::Cell::new(false));
@@ -632,7 +707,6 @@ fn a_panic_in_a_moved_node_s_on_detach_leaves_no_stale_parent() {
 /// detached second first. Here `Applier::remove` queues their `Detach` steps first to last
 /// (pre-existing for plain removals).
 #[test]
-#[ignore = "review: siblings removed by one Applier::remove are detached first to last; Compose's removeAt detaches last to first"]
 fn siblings_removed_together_are_detached_last_first() {
     let log = Log::default();
     let shown = mutable_state_of(true);
@@ -660,7 +734,6 @@ fn Pair(shown: bool, a: Modifier, b: Modifier) {
 /// `removeAt` of both), then attaches them first first (an `insertAt` each). D1923 detaches moved
 /// nodes "in the order of the removals", which inherits `Applier::remove`'s first-to-last order.
 #[test]
-#[ignore = "review: moved content of two top nodes is detached first to last; Compose's removeAt detaches last to first"]
 fn moved_content_of_two_nodes_is_detached_last_first() {
     let log = Log::default();
     let moved = mutable_state_of(false);
@@ -705,11 +778,10 @@ fn TakeOut(split: bool, outer: Callback<dyn Fn()>, inner: Callback<dyn Fn()>) {
 /// (`insertAt`: attached). The inner content is detached once and attached once.
 ///
 /// Here the outer content is taken out of the tree first (its nodes parked, `detach_pending`),
-/// then the inner one out of the parked outer: its parent isn't attached, so it isn't marked,
-/// and its entries, still attached, stay so; `attach_subtree` where it goes finds them attached
-/// and runs no `on_attach`, and the outer's detach no longer reaches it.
+/// then the inner one out of the parked outer, whose entries are still attached: D1923 left it
+/// unmarked, its entries attached, so `attach_subtree` where it went ran no `on_attach` and the
+/// outer's detach no longer reached it. D1924 marks it and detaches it with the outer.
 #[test]
-#[ignore = "review: content taken out of movable content removed in the same pass is never detached nor attached"]
 fn content_taken_out_of_removed_content_is_detached_and_attached_once() {
     let log = Log::default();
     let split = mutable_state_of(false);
@@ -730,6 +802,49 @@ fn content_taken_out_of_removed_content_is_detached_and_attached_once() {
     split.set(true);
     host.frame();
     assert_eq!(take(&log), ["detach(o)", "detach(i)", "attach(i)"]);
+}
+
+/// `outer` (holding `inner` a layout deep) in a row marked "row", or when `split` only `inner`,
+/// in a stack marked "new".
+#[composable]
+fn TakeOutMarked(split: bool, outer: Callback<dyn Fn()>, inner: Callback<dyn Fn()>) {
+    if split {
+        Stack(mark("new"), inner.clone());
+    } else {
+        let outer = outer.clone();
+        Row!(modifier = mark("row"), {
+            outer();
+        });
+    }
+}
+
+/// The same, the inner content a layout below the outer one's top: it's detached with the outer
+/// content, while what that was in is still there (the row the pass releases), as Compose's
+/// `removeAt` detached it, under the row; then attached where it goes.
+#[test]
+fn content_taken_out_of_removed_content_is_detached_under_what_it_was_in() {
+    let log = Log::default();
+    let split = mutable_state_of(false);
+    let (there, inner_log) = (split.handle(), log.clone());
+    let inner = movable_content_of(move || Leaf(probe(&inner_log)));
+    let in_outer = inner.clone();
+    let outer = movable_content_of(move || {
+        let inner = in_outer.clone();
+        Stack!({
+            let inner = inner.clone();
+            Stack!({
+                inner();
+            });
+        });
+    });
+    let mut host = host(move || {
+        let (inner, outer, split) = (inner.clone(), outer.clone(), there.get());
+        Stack(Modifier, callback(move || TakeOutMarked(split, outer.clone(), inner.clone())));
+    });
+    assert_eq!(take(&log), ["attach under row"]);
+    split.set(true);
+    host.frame();
+    assert_eq!(take(&log), ["detach under row", "attach under new"]);
 }
 
 /// `outer(false)` (holding `inner`) in a row, or when `split` `inner` in a stack then
@@ -757,7 +872,6 @@ fn SplitInnerFirst(split: bool, outer: Callback<dyn Fn(bool)>, inner: Callback<d
 /// As `content_moved_out_of_moving_content_is_detached_and_attached_once`, the inner content
 /// placed before the outer: each is detached once and attached once.
 #[test]
-#[ignore = "review: content taken out of moving content before it's placed again is never detached nor attached"]
 fn content_moved_out_of_moving_content_placed_first_is_detached_and_attached_once() {
     let log = Log::default();
     let split = mutable_state_of(false);
@@ -782,9 +896,58 @@ fn content_moved_out_of_moving_content_placed_first_is_detached_and_attached_onc
     assert_eq!(sorted(take(&log)), ["attach(i)", "attach(o)", "detach(i)", "detach(o)"]);
 }
 
-/// `a` then `b` in a layout that stays, or when `moved` in one the pass inserts before it.
+/// As `SplitInnerFirst`, the layouts marked: "row" at first, then "inner" and "outer".
 #[composable]
-fn TwoIntoNew(moved: bool, a: Callback<dyn Fn()>, b: Callback<dyn Fn()>) {
+fn SplitInnerFirstMarked(split: bool, outer: Callback<dyn Fn(bool)>, inner: Callback<dyn Fn()>) {
+    if split {
+        Stack(mark("inner"), inner.clone());
+        let outer = outer.clone();
+        Stack!(modifier = mark("outer"), {
+            outer(true);
+        });
+    } else {
+        let outer = outer.clone();
+        Row!(modifier = mark("row"), {
+            outer(false);
+        });
+    }
+}
+
+/// The same, the outer content in the tree again (under "outer") when it's detached: the inner
+/// content, detached with it, finds above it what the outer content left (the row), not where
+/// the outer content went, as under Compose's `removeAt`.
+#[test]
+fn content_moved_out_of_moving_content_is_detached_under_what_it_was_in() {
+    let log = Log::default();
+    let split = mutable_state_of(false);
+    let (there, inner_log) = (split.handle(), log.clone());
+    let inner = movable_content_of(move || Leaf(probe(&inner_log)));
+    let in_outer = inner.clone();
+    let outer = movable_content_of_with(move |split: bool| {
+        let inner = in_outer.clone();
+        Stack!({
+            if !split {
+                inner();
+            }
+        });
+    });
+    let mut host = host(move || {
+        let (inner, outer, split) = (inner.clone(), outer.clone(), there.get());
+        Stack(
+            Modifier,
+            callback(move || SplitInnerFirstMarked(split, outer.clone(), inner.clone())),
+        );
+    });
+    assert_eq!(take(&log), ["attach under row"]);
+    split.set(true);
+    host.frame();
+    assert_eq!(take(&log), ["detach under row", "attach under inner"]);
+}
+
+/// `a` then `b` in a layout that stays (each in its own when `apart`), or when `moved` in one the
+/// pass inserts before it.
+#[composable]
+fn TwoIntoNew(moved: bool, apart: bool, a: Callback<dyn Fn()>, b: Callback<dyn Fn()>) {
     if moved {
         let (a, b) = (a.clone(), b.clone());
         Stack!({
@@ -792,22 +955,33 @@ fn TwoIntoNew(moved: bool, a: Callback<dyn Fn()>, b: Callback<dyn Fn()>) {
             b();
         });
     }
-    let (old_a, old_b) = (a.clone(), b.clone());
-    Stack!({
-        if !moved {
-            old_a();
-            old_b();
-        }
-    });
+    if apart {
+        let old_a = a.clone();
+        Stack!({
+            if !moved {
+                old_a();
+            }
+        });
+        let old_b = b.clone();
+        Stack!({
+            if !moved {
+                old_b();
+            }
+        });
+    } else {
+        let (old_a, old_b) = (a.clone(), b.clone());
+        Stack!({
+            if !moved {
+                old_a();
+                old_b();
+            }
+        });
+    }
 }
 
-/// Two contents moved together into a layout the pass inserts before them: Compose detaches
-/// each where it's taken out, `a` first (each its own `removeAt`, in the order they're taken).
-/// Here both are detached in the new layout's `Attach` step, which goes through its subtree in
-/// reverse post-order ("outer first"): the later sibling first.
-#[test]
-#[ignore = "review: contents moved into a new layout are detached in reverse tree order, not in the order they were taken out"]
-fn two_contents_moved_into_a_new_layout_are_detached_in_the_order_they_leave() {
+/// Logs of moving `a` and `b` into a layout the pass inserts before them, out of one layout or
+/// (`apart`) out of one each.
+fn moved_into_a_new_layout(apart: bool) -> Vec<String> {
     let log = Log::default();
     let moved = mutable_state_of(false);
     let (there, a_log, b_log) = (moved.handle(), log.clone(), log.clone());
@@ -815,10 +989,30 @@ fn two_contents_moved_into_a_new_layout_are_detached_in_the_order_they_leave() {
     let b = movable_content_of(move || Leaf(logger(&b_log, "b")));
     let mut host = host(move || {
         let (a, b, moved) = (a.clone(), b.clone(), there.get());
-        Stack(Modifier, callback(move || TwoIntoNew(moved, a.clone(), b.clone())));
+        Stack(Modifier, callback(move || TwoIntoNew(moved, apart, a.clone(), b.clone())));
     });
     assert_eq!(take(&log), ["attach(a)", "attach(b)"]);
     moved.set(true);
     host.frame();
-    assert_eq!(take(&log), ["detach(a)", "detach(b)", "attach(a)", "attach(b)"]);
+    take(&log)
+}
+
+/// Two contents moved out of two layouts into one the pass inserts before them: Compose detaches
+/// each where it's taken out, `a` first (each its own `removeAt`, in the order the composer
+/// removes their groups). D1923 detached both in the new layout's `Attach` step, which went
+/// through its subtree in reverse post-order ("outer first"): the later sibling first.
+#[test]
+fn two_contents_moved_into_a_new_layout_are_detached_in_the_order_they_leave() {
+    assert_eq!(moved_into_a_new_layout(true), ["detach(a)", "detach(b)", "attach(a)", "attach(b)"]);
+}
+
+/// The same out of one layout, where both leave with one group: Compose removes the group's two
+/// nodes with one `removeNode(index, 2)` (`GapComposer`'s group removal; the movable content in
+/// it is released, not deleted on its own), and `LayoutNode.removeAt` detaches them last to first.
+#[test]
+fn two_contents_leaving_one_layout_together_are_detached_last_first() {
+    assert_eq!(
+        moved_into_a_new_layout(false),
+        ["detach(b)", "detach(a)", "attach(a)", "attach(b)"]
+    );
 }

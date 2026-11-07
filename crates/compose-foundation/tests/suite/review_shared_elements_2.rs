@@ -45,8 +45,6 @@ fn lifecycle(log: &Log) -> Modifier {
 /// them again, as Compose's `LayoutNode` removed from one parent and inserted in another: the
 /// shared node's `boundsBeforeDetached` relies on it.
 #[test]
-#[ignore = "review: confirms D1336's compose-ui gap: a node movable content moves keeps its \
-            modifier nodes attached (no detach, no attach)"]
 fn moved_content_detaches_and_attaches_its_modifier_nodes() {
     let log: Log = Rc::default();
     let in_second = mutable_state_of(false);

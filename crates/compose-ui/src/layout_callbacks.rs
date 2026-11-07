@@ -1455,7 +1455,7 @@ impl UiTree {
             let position = value.layers[0].offset;
             let moved = Offset::new(position.x as f32, position.y as f32);
             points = points.map(|point| point + moved);
-            match value.parent {
+            match self.coordinates_parent(current, value) {
                 Some(parent) => {
                     current = parent;
                     layer = self.node(parent).layers.len() - 1;
@@ -1511,7 +1511,7 @@ impl UiTree {
             let position = value.layers[0].offset;
             let moved = Offset::new(position.x as f32, position.y as f32);
             points = points.map(|point| point + moved);
-            match value.parent {
+            match self.coordinates_parent(current, value) {
                 Some(parent) => {
                     current = parent;
                     layer = self.node(parent).layers.len() - 1;

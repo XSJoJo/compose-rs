@@ -421,16 +421,15 @@ impl UiTree {
     /// Attaches the modifier nodes of the subtree at `root`, as `LayoutNode.attach`: every one
     /// marked attached first, then their `on_attach`, children before parents. Those of a node
     /// moved into it in the pass, still attached where it was, are detached first, as Compose
-    /// detached them when it left (D1923).
+    /// detached them when it left (D1923), in the order they left (D1924).
     fn attach_subtree(&mut self, root: NodeId) {
         // Post-order, each node's children in their order, as `LayoutNode.attach`.
         let nodes = self.subtree_post_order(root);
         // Only a pass that removed an attached node has one waiting for its detach.
         if !self.removed_parents.is_empty() {
-            // Outer first: detaching a node detaches what's under it.
-            for &node in nodes.iter().rev() {
+            for &node in &nodes {
                 if self.get(node).is_some_and(|value| value.detach_pending) {
-                    self.detach_removed(node);
+                    self.detach_removed_through(node);
                 }
             }
         }
@@ -457,18 +456,51 @@ impl UiTree {
         for &node in &nodes {
             self.for_custom_entries(node, entry_state::ATTACH_RAN, true, detach_with_delegates);
         }
+        // What the pass took out of these after removing them goes with them, before they're
+        // marked detached, as Compose's children (D1924).
+        if !self.taken_out.is_empty() {
+            self.detach_taken_out(&nodes);
+        }
         for &node in &nodes {
             self.mark_detached(node);
         }
     }
 
+    /// Detaches the nodes the pass took out of `nodes` (a subtree being detached) after removing
+    /// them, if still to be: in the order they were taken out.
+    #[cold]
+    fn detach_taken_out(&mut self, nodes: &[NodeId]) {
+        let mut index = 0;
+        while let Some(&(child, parent)) = self.taken_out.get(index) {
+            if nodes.contains(&parent) {
+                self.taken_out.remove(index);
+                if self.get(child).is_some_and(|value| value.detach_pending) {
+                    self.detach_removed(child);
+                }
+                // What that took out may be gone from the list: look from the start again.
+                index = 0;
+            } else {
+                index += 1;
+            }
+        }
+    }
+
     /// Detaches the subtree at `node`, removed from an attached parent in the pass, wherever it
-    /// is now: above it, for their `on_detach`, is the parent it left, as Compose's `removeAt`
-    /// detaches a node before it unlinks it (D1923).
+    /// is now: above it, for their `on_detach` and the coordinates they read, is the parent it
+    /// left, as Compose's `removeAt` detaches a node before it unlinks it (D1923, D1924).
     fn detach_removed(&mut self, node: NodeId) {
-        let outer = self.detaching_moved.replace(node);
-        self.detach_subtree(node);
-        self.detaching_moved = outer;
+        // Undone when dropped, a panic in a callback included (D1924).
+        struct Detaching<'a>(&'a mut UiTree, usize);
+        impl Drop for Detaching<'_> {
+            fn drop(&mut self) {
+                self.0.detaching_moved.truncate(self.1);
+            }
+        }
+        let depth = self.detaching_moved.len();
+        self.detaching_moved.push(node);
+        let detaching = Detaching(self, depth);
+        detaching.0.detach_subtree(node);
+        drop(detaching);
         // What pointers hit or hover there is let go untold, as Compose's hit paths drop the
         // nodes detached: hit again where it went (a resting mouse enters it again).
         if !self.captures.is_empty() || !self.hovered.is_empty() || !self.stylus_hovered.is_empty()
@@ -596,6 +628,21 @@ impl UiTree {
         }
     }
 
+    /// Detaches, in the order the pass removed them, the subtrees it removed up to `node` (which
+    /// it removed, and moved where it's attaching), if still to be: as Compose detaches each at
+    /// its removal (D1924).
+    fn detach_removed_through(&mut self, node: NodeId) {
+        while let Some(&(child, _)) = self.removed_parents.get(self.removed_detached) {
+            self.removed_detached += 1;
+            if self.get(child).is_some_and(|value| value.detach_pending) {
+                self.detach_removed(child);
+            }
+            if child == node {
+                return;
+            }
+        }
+    }
+
     /// Detaches now, in the order the pass removed them, the subtrees it removed before `root`,
     /// which it removed too and is releasing, if they're still to be: moved elsewhere by movable
     /// content (or left for a later pass). Compose detaches each at its removal: they are while
@@ -626,11 +673,20 @@ impl UiTree {
     /// (`on_end_changes`), and wherever the tree applies its nodes' requests.
     pub(crate) fn run_lifecycle(&mut self) {
         // The consumers that have read something first: those attaching now read what's there.
-        self.run_modifier_local_changes();
-        self.run_lifecycle_steps();
-        self.flush_focus_invalidations();
-        self.removed_parents.clear();
-        self.removed_detached = 0;
+        // What the pass removed is forgotten when it's over, a panic in a callback included
+        // (D1924).
+        struct PassOver<'a>(&'a mut UiTree);
+        impl Drop for PassOver<'_> {
+            fn drop(&mut self) {
+                self.0.removed_parents.clear();
+                self.0.removed_detached = 0;
+                self.0.taken_out.clear();
+            }
+        }
+        let pass = PassOver(self);
+        pass.0.run_modifier_local_changes();
+        pass.0.run_lifecycle_steps();
+        pass.0.flush_focus_invalidations();
     }
 
     fn run_lifecycle_steps(&mut self) {

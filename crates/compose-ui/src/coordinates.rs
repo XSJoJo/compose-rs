@@ -240,7 +240,7 @@ impl LayoutCoordinates {
                     return Some(LayoutCoordinates::new(self.tree, self.node, end));
                 }
             }
-            self.parent_layout_of(value)
+            self.parent_layout_of(tree, value)
         })
         .flatten()
     }
@@ -249,11 +249,12 @@ impl LayoutCoordinates {
     /// (a popup's content is a root).
     #[track_caller]
     pub fn parent_layout_coordinates(&self) -> Option<LayoutCoordinates> {
-        self.read_position(|tree, place| self.parent_layout_of(tree.node(place.node))).flatten()
+        self.read_position(|tree, place| self.parent_layout_of(tree, tree.node(place.node)))
+            .flatten()
     }
 
-    fn parent_layout_of(&self, value: &LayoutNode) -> Option<LayoutCoordinates> {
-        let parent = if value.overlay { None } else { value.parent };
+    fn parent_layout_of(&self, tree: &UiTree, value: &LayoutNode) -> Option<LayoutCoordinates> {
+        let parent = if value.overlay { None } else { tree.coordinates_parent(self.node, value) };
         parent.map(|parent| LayoutCoordinates::new(self.tree, parent, None))
     }
 
@@ -455,7 +456,7 @@ impl LayoutCoordinates {
         self.read(|tree| {
             let mut root = self.node;
             while let Some(value) = tree.get(root) {
-                match value.parent {
+                match tree.coordinates_parent(root, value) {
                     Some(parent) if !value.overlay => root = parent,
                     _ => break,
                 }
@@ -541,7 +542,7 @@ impl UiTree {
         while let Some(id) = current {
             path.push(id);
             let value = self.node(id);
-            current = if value.overlay { None } else { value.parent };
+            current = if value.overlay { None } else { self.coordinates_parent(id, value) };
         }
         path
     }
@@ -754,7 +755,8 @@ impl UiTree {
             if let Some(by) = self.position_step(node, motion) {
                 visit(Step::Move(by));
             }
-            at = inner(self.node(node).parent.expect("under the common node"));
+            let parent = self.coordinates_parent(node, self.node(node));
+            at = inner(parent.expect("under the common node"));
         }
         let at_end = if common == to.node { (to.layer, to.before) } else { inner(common) };
         // The outer of the two, within it.
@@ -785,7 +787,7 @@ impl UiTree {
             if let Some(by) = self.position_step(node, true) {
                 visit(Step::Move(by));
             }
-            if let Some(parent) = value.parent {
+            if let Some(parent) = self.coordinates_parent(node, value) {
                 let value = self.node(parent);
                 at = (value.layers.len() - 1, value.chain.len());
             }
