@@ -1031,7 +1031,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D2015 | [text](decisions/text.md#d2015) | current |
 | D2016 | [text](decisions/text.md#d2016) | current |
 | D2017 | [text](decisions/text.md#d2017) | current |
-| D2018 | [text](decisions/text.md#d2018) | revised by [D2021](decisions/text.md#d2021) |
+| D2018 | [text](decisions/text.md#d2018) | revised by [D2021](decisions/text.md#d2021), [D2027](decisions/text.md#d2027) |
 | D2019 | [text](decisions/text.md#d2019) | current |
 | D2020 | [text](decisions/text.md#d2020) | revised by [D2026](decisions/text.md#d2026) |
 | D2021 | [text](decisions/text.md#d2021) | current |
@@ -1040,3 +1040,4 @@ The log is split by area into the files below, one table each, rows in number or
 | D2024 | [text](decisions/text.md#d2024) | current |
 | D2025 | [text](decisions/text.md#d2025) | current |
 | D2026 | [text](decisions/text.md#d2026) | current |
+| D2027 | [text](decisions/text.md#d2027) | current |

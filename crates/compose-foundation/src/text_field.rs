@@ -1125,12 +1125,12 @@ impl TextFieldNode {
 
     /// A finger's later press of a multi-tap at `at`: a long press's start (D2018).
     #[inline(never)]
-    fn subsequent_press(&mut self, at: Offset, context: &mut EventContext<'_>) {
+    fn subsequent_press(&mut self, at: Offset, unit: Unit, context: &mut EventContext<'_>) {
         self.cancel_long_press();
         self.press = Some(Press {
             at,
             dragging: false,
-            unit: Unit::Word,
+            unit,
             initial: 0..0,
             long_possible: false,
             long: true,
@@ -1139,7 +1139,7 @@ impl TextFieldNode {
         });
         // Held past the long-press timeout, it drags without the slop (D2021).
         self.start_long_press(context);
-        self.touch_subsequent_press(at);
+        self.touch_subsequent_press(at, unit);
         context.invalidate_measure();
     }
 
@@ -2619,6 +2619,7 @@ impl LayoutModifierNode for TextFieldNode {
             }
             self.follow_long_press(&mut *scope.text_measurer(), paragraph);
             self.follow_handle_drag(&mut *scope.text_measurer(), paragraph);
+            self.perform_haptics(scope);
             paragraph
         };
         self.cursor_rect =
@@ -2891,8 +2892,10 @@ impl DrawModifierNode for TextFieldNode {
                 Paint::fill(color),
             );
         }
+        // The cursor of a collapsed selection only, as both of Compose's fields (D2027).
         if self.focused
             && !self.read_only
+            && self.anchor == self.cursor
             && self.window.as_ref().is_none_or(|window| window.is_window_focused())
         {
             // The cursor: drawn where the measurer that laid the paragraph out puts it.
@@ -2939,9 +2942,9 @@ impl TextFieldNode {
         if pass != PointerEventPass::Main {
             return;
         }
-        if matches!(event.kind, PointerEventType::Press | PointerEventType::Move) {
-            self.touch_pointer_event(event);
-        }
+        // Every event says whether a finger or a mouse uses the field, as Compose's
+        // `detectDirectTouchInteraction` (a mouse entering it too, D2027).
+        self.touch_pointer_event(event, context);
         let inside = event.position.x >= 0.0
             && event.position.y >= 0.0
             && event.position.x < bounds.width as f32
@@ -2963,18 +2966,19 @@ impl TextFieldNode {
                     _ => 1,
                 };
                 self.last_tap = Some((now, event.position, clicks));
-                // A finger's later press of a multi-tap selects the word under it and drags by
-                // words, as a long press (Compose's `touchSelectionSubsequentPress` gives the
-                // press to the long press's drag observer): no handle while it drags (D2018).
-                if event.pointer_type != compose_ui::PointerType::Mouse && clicks == 2 {
-                    self.subsequent_press(at, context);
-                    return;
-                }
                 let unit = match clicks {
                     2 => Unit::Word,
                     3 => Unit::Line,
                     _ => Unit::Character,
                 };
+                // A finger's later press of a multi-tap selects the word (the paragraph from the
+                // third) under it and drags by them, as a long press (Compose's
+                // `touchSelectionSubsequentPress` gives the press to the long press's drag
+                // observer): no handle while it drags (D2018, D2027).
+                if event.pointer_type != compose_ui::PointerType::Mouse && unit != Unit::Character {
+                    self.subsequent_press(at, unit, context);
+                    return;
+                }
                 let mut initial = 0..0;
                 if unit != Unit::Character
                     && let Some(offset) = self.offset_at(at, context)
@@ -2982,6 +2986,18 @@ impl TextFieldNode {
                     initial = self.unit_at(unit, offset);
                     self.anchor = initial.start;
                     self.cursor = initial.end;
+                    context.invalidate_measure();
+                }
+                // A mouse's first press puts the cursor there and focuses the field at once, as
+                // Compose's `TextFieldMouseSelectionObserver.onStart` (D2027).
+                if event.pointer_type == compose_ui::PointerType::Mouse
+                    && unit == Unit::Character
+                    && let Some(offset) = self.tap_offset(at, context)
+                {
+                    self.anchor = offset;
+                    self.cursor = offset;
+                    self.preferred_x = None;
+                    context.request_focus();
                     context.invalidate_measure();
                 }
                 let long_possible =
@@ -3075,7 +3091,7 @@ impl TextFieldNode {
                     self.long_press_lifted();
                     // A double tap on the focused field asks for the keyboard as its taps do
                     // (Compose's tap detector beside its selection gestures, D2018).
-                    if press.unit == Unit::Word && self.focused && !self.read_only {
+                    if press.unit != Unit::Character && self.focused && !self.read_only {
                         context.show_software_keyboard();
                     }
                     context.request_focus();

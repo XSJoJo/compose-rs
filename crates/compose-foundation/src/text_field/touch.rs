@@ -48,20 +48,27 @@ pub(crate) struct Touch {
     /// A long press's drag under way, as Compose's `TextFieldTextDragObserver` (its
     /// `directDragGestureInitiator` is `Touch` meanwhile: no handle shows).
     long: Option<LongDrag>,
+    /// The haptics the gestures resolved at this measurement asked for, performed at its end
+    /// with `LOCAL_HAPTIC_FEEDBACK` (D2027): `LongPress`, then `TextHandleMove`.
+    haptics: (u32, u32),
 }
 
 #[derive(Clone, Copy)]
 enum Pending {
-    LongPress(Offset),
+    /// A long press, or a later press of a multi-tap: by words, or by paragraphs from the third
+    /// (Compose's `SelectionAdjustment.Paragraph`).
+    LongPress(Offset, super::Unit),
     DragTo(Offset),
 }
 
-/// A long press's drag: where it went down in the text, and the start of the word it selected
-/// (`dragBeginOffsetInText`), none when it went down past the text (`isPositionOnText`).
+/// A long press's drag: where it went down in the text, the start of the unit it selected
+/// (`dragBeginOffsetInText`), none when it went down past the text (`isPositionOnText`), and the
+/// unit it extends by.
 #[derive(Clone, Copy)]
 struct LongDrag {
     at: Offset,
     begin: Option<usize>,
+    unit: super::Unit,
 }
 
 impl Touch {
@@ -78,6 +85,7 @@ impl Touch {
             long_press_job: None,
             pending: None,
             long: None,
+            haptics: (0, 0),
         }
     }
 
@@ -124,14 +132,27 @@ impl TextFieldNode {
 
     /// A pointer's event on the field: a mouse's (or a touchpad's) ends the touch interaction, a
     /// finger's starts it, as Compose's `detectDirectTouchInteraction`.
-    pub(super) fn touch_pointer_event(&mut self, event: &PointerEvent) {
-        self.touch.direct = event.pointer_type != PointerType::Mouse;
+    /// The handles shown or hidden by it are told at the next measurement, as Compose's handles
+    /// follow its `isDirectTouchInteraction` state.
+    pub(super) fn touch_pointer_event(
+        &mut self,
+        event: &PointerEvent,
+        context: &mut EventContext<'_>,
+    ) {
+        let direct = event.pointer_type != PointerType::Mouse;
+        if direct != self.touch.direct {
+            self.touch.direct = direct;
+            if self.focused && self.touch.handles.is_some() {
+                context.invalidate_measure();
+            }
+        }
     }
 
     /// A tap placed the cursor: its handle shows over a text that isn't empty, in an editable
-    /// field, as Compose's `onTapTextField` (`showCursorHandle = true`).
+    /// field, as Compose's `onTapTextField` (`showCursorHandle = true`), whatever tapped it: a
+    /// mouse's tap shows it once a finger comes back (D2027).
     pub(super) fn touch_tapped(&mut self) {
-        if self.touch.direct && !self.read_only && self.touch.handles.is_some() {
+        if !self.read_only && self.touch.handles.is_some() {
             let text = self.shown_str();
             self.touch.cursor_handle = (!text.is_empty()).then(|| text.to_owned());
         }
@@ -197,15 +218,15 @@ impl TextFieldNode {
             return;
         };
         press.long = true;
-        self.touch.pending = Some(Pending::LongPress(press.at));
+        self.touch.pending = Some(Pending::LongPress(press.at, super::Unit::Word));
         context.invalidate_measurement();
     }
 
     /// A finger's later press of a multi-tap, at `at` in the text: resolved as a long press at
-    /// the next measurement, as Compose's `touchSelectionSubsequentPress` starts the long press's
-    /// drag observer (D2018).
-    pub(super) fn touch_subsequent_press(&mut self, at: Offset) {
-        self.touch.pending = Some(Pending::LongPress(at));
+    /// the next measurement, by `unit`, as Compose's `touchSelectionSubsequentPress` starts the
+    /// long press's drag observer (D2018, D2027).
+    pub(super) fn touch_subsequent_press(&mut self, at: Offset, unit: super::Unit) {
+        self.touch.pending = Some(Pending::LongPress(at, unit));
     }
 
     /// The finger moved to `at` (in the text) after a long press.
@@ -237,25 +258,30 @@ impl TextFieldNode {
             at.x >= layout.get_line_left(line) && at.x <= layout.get_line_right(line)
         };
         match pending {
-            Pending::LongPress(at) => {
+            Pending::LongPress(at, unit) => {
                 self.touch.cursor_handle = None;
                 if !on_text(at) {
                     let offset = self.tap_offset_in(measurer, paragraph, at).0;
+                    self.touch.haptics.0 += 1;
                     self.cursor = offset;
                     self.anchor = offset;
                     let text = self.shown_str();
                     self.touch.cursor_handle = (!text.is_empty()).then(|| text.to_owned());
-                    self.touch.long = Some(LongDrag { at, begin: None });
+                    self.touch.long = Some(LongDrag { at, begin: None, unit });
                 } else {
-                    self.touch.long = Some(LongDrag { at, begin: None });
+                    self.touch.long = Some(LongDrag { at, begin: None, unit });
                     if self.text.is_empty() {
                         return;
                     }
                     let offset = self.tap_offset_in(measurer, paragraph, at).0;
-                    let word = self.unit_at(super::Unit::Word, offset);
+                    let word = self.unit_at(unit, offset);
+                    // Compose compares the word with a selection reset to 0 (`TextRange.Zero`).
+                    if (word.start, word.end) != (0, 0) {
+                        self.touch.haptics.0 += 1;
+                    }
                     self.anchor = word.start;
                     self.cursor = word.end;
-                    self.touch.long = Some(LongDrag { at, begin: Some(word.start) });
+                    self.touch.long = Some(LongDrag { at, begin: Some(word.start), unit });
                 }
             }
             Pending::DragTo(at) => {
@@ -269,7 +295,11 @@ impl TextFieldNode {
                     // offset it began at.
                     None if !on_text(at) => {
                         let start = self.tap_offset_in(measurer, paragraph, long.at).0;
-                        if start == end { (end, end) } else { self.word_selection(start, end) }
+                        if start == end {
+                            (end, end)
+                        } else {
+                            self.unit_selection(long.unit, start, end)
+                        }
                     }
                     begin => {
                         let start = match begin {
@@ -281,9 +311,13 @@ impl TextFieldNode {
                         if begin.is_none() && start == end {
                             return;
                         }
-                        self.word_selection(start, end)
+                        self.unit_selection(long.unit, start, end)
                     }
                 };
+                // A change of its ends, before they're put in order, as Compose's `updateSelection`.
+                if ordered(anchor, cursor) != ordered(self.anchor, self.cursor) {
+                    self.touch.haptics.1 += 1;
+                }
                 // Begun past the text, the drag goes on from where its first selection started,
                 // before it's put in order (Compose's `newSelection.start`): from the end of the
                 // last word when it went back.
@@ -303,11 +337,30 @@ impl TextFieldNode {
         self.preferred_x = None;
     }
 
-    /// The selection from the word at `start` to the word at `end`, as
-    /// `SelectionAdjustment.Word`: each end at the far side of its word.
-    fn word_selection(&self, start: usize, end: usize) -> (usize, usize) {
-        let first = self.unit_at(super::Unit::Word, start);
-        let last = self.unit_at(super::Unit::Word, end);
+    /// The haptics the gestures resolved at this measurement asked for, as Compose's
+    /// `TextFieldSelectionState` performs them: `LongPress` when a long press (or a later tap of
+    /// a multi-tap) starts a selection, `TextHandleMove` when a drag (a handle's or a long
+    /// press's) moves an end. Read where the field is composed, only when there are some.
+    pub(super) fn perform_haptics(&mut self, scope: &compose_ui::MeasureScope<'_>) {
+        if self.touch.haptics == (0, 0) {
+            return;
+        }
+        let (long, moves) = std::mem::take(&mut self.touch.haptics);
+        let haptics = scope.current_value_of(&compose_ui::LOCAL_HAPTIC_FEEDBACK);
+        use compose_ui::HapticFeedbackType::{LongPress, TextHandleMove};
+        for _ in 0..long {
+            haptics.perform_haptic_feedback(LongPress);
+        }
+        for _ in 0..moves {
+            haptics.perform_haptic_feedback(TextHandleMove);
+        }
+    }
+
+    /// The selection from the word (or paragraph) at `start` to the one at `end`, as
+    /// `SelectionAdjustment.Word` (or `Paragraph`): each end at the far side of its unit.
+    fn unit_selection(&self, unit: super::Unit, start: usize, end: usize) -> (usize, usize) {
+        let first = self.unit_at(unit, start);
+        let last = self.unit_at(unit, end);
         if end >= start { (first.start, last.end.max(first.end)) } else { (first.end, last.start) }
     }
 
@@ -335,6 +388,10 @@ impl TextFieldNode {
             let offset = self.tap_offset_in(measurer, paragraph, target).0;
             match handle {
                 Handle::Cursor => {
+                    // Compose's `placeCursorAtNearestOffset` changing the selection.
+                    if (offset, offset) != (self.anchor, self.cursor) {
+                        self.touch.haptics.1 += 1;
+                    }
                     self.cursor = offset;
                     self.anchor = offset;
                 }
@@ -342,6 +399,10 @@ impl TextFieldNode {
                     let start_handle = handle == Handle::SelectionStart;
                     let layout = measurer.paragraph(paragraph);
                     let (anchor, cursor) = self.accelerated(start_handle, offset, &*layout);
+                    // Before the collapse is refused, as Compose's `updateSelection`.
+                    if ordered(anchor, cursor) != ordered(self.anchor, self.cursor) {
+                        self.touch.haptics.1 += 1;
+                    }
                     self.touch.raw = Some(offset);
                     // A selection never collapses while its handles are dragged, as Compose's.
                     if anchor != cursor {
@@ -431,12 +492,17 @@ impl TextFieldNode {
     /// `getCursorHandleState` and `getSelectionHandleState`: only when it changed, and nothing
     /// at all while none shows and none may.
     pub(super) fn tell_handles(&mut self, measurer: &dyn TextMeasurer, paragraph: ParagraphHandle) {
+        let Some(handles) = &self.touch.handles else { return };
+        // A mouse's event on a handle ended the touch interaction (D2027).
+        if handles.mouse.replace(false) {
+            self.touch.direct = false;
+        }
         let may_show =
             self.focused && self.enabled && self.touch.direct && self.touch.long.is_none();
         if !may_show && !self.touch.shown.any() && !self.touch.active {
             return;
         }
-        let Some(handles) = self.touch.handles.clone() else { return };
+        let handles = handles.clone();
         self.tell_handles_now(&handles, may_show, measurer, paragraph);
     }
 
@@ -537,4 +603,9 @@ impl TextFieldNode {
             handles.positions.set(positions);
         }
     }
+}
+
+/// A selection's ends in order, as Compose's `TextRange.min` and `max`.
+fn ordered(anchor: usize, cursor: usize) -> (usize, usize) {
+    (anchor.min(cursor), anchor.max(cursor))
 }

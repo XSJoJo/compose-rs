@@ -26,6 +26,7 @@ mod selection_handles;
 mod shadows;
 mod skia;
 mod text_brush;
+mod text_field_cursor;
 mod text_field_height;
 mod text_painter;
 mod text_reuse;

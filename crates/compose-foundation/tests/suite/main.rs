@@ -188,6 +188,7 @@ mod text_field_output;
 mod text_field_output_input_method;
 mod text_field_scroll_state;
 mod text_field_scrolled_selection_gesture;
+mod text_field_selection_gestures;
 mod text_field_selection_handles;
 mod text_field_semantics;
 mod text_field_state;

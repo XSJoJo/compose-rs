@@ -159,6 +159,9 @@ pub(crate) struct TouchHandles {
     /// The inner field's visible bounds, in its coordinates, after its last placement: a handle's
     /// point outside them hides it (one frame behind, as Compose's).
     pub visible: Cell<Option<Rect>>,
+    /// A mouse's (or a touchpad's) event reached a handle: the touch interaction ends, as
+    /// Compose's handles' `detectDirectTouchInteraction` (D2027).
+    pub mouse: Cell<bool>,
 }
 
 impl TouchHandles {
@@ -172,6 +175,7 @@ impl TouchHandles {
             field: Cell::new(None),
             active: compose_runtime::mutable_state_of(false),
             visible: Cell::new(None),
+            mouse: Cell::new(false),
         }
     }
 
@@ -248,6 +252,8 @@ pub(crate) trait HandleSource {
     fn drag_ended(&self, handle: Handle);
     /// It was tapped (a press lifted before the touch slop).
     fn tapped(&self, _handle: Handle) {}
+    /// A mouse's (or a touchpad's) event reached it.
+    fn mouse_event(&self) {}
 }
 
 impl HandleSource for TouchHandles {
@@ -266,6 +272,11 @@ impl HandleSource for TouchHandles {
     fn tapped(&self, handle: Handle) {
         if handle == Handle::Cursor {
             self.cursor_tapped.set(!self.cursor_tapped.get());
+        }
+    }
+    fn mouse_event(&self) {
+        if !self.mouse.replace(true) {
+            self.measure_field();
         }
     }
 }
@@ -726,6 +737,9 @@ impl PointerInputModifierNode for HandleNode {
     ) {
         if pass != PointerEventPass::Main {
             return;
+        }
+        if event.pointer_type == compose_ui::PointerType::Mouse {
+            self.source.mouse_event();
         }
         let Some(position) = context.pointer_position() else { return };
         match event.kind {

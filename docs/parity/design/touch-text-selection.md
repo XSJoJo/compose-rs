@@ -49,6 +49,10 @@ Both fields are one node, so the gestures, the handles' visibility and their pos
 
 **Haptics.** A change of the selection in touch mode, its clearing included, performs `TextHandleMove`, with the `LOCAL_HAPTIC_FEEDBACK` read where the container is composed, as Compose's `SelectionManager`.
 
+## A field's haptics
+
+As Compose's `TextFieldSelectionState`: `LongPress` when a long press or a later tap of a multi-tap starts a selection, `TextHandleMove` at each move of a long press's drag or a handle's that changes the selection's ends; a mouse's gestures feel nothing. The field resolves those gestures at its measurement, so it performs them at its end, reading `LOCAL_HAPTIC_FEEDBACK` where it's composed only when it has some: nothing in composition (D2027).
+
 ## Hooks left for the toolbar and the magnifier
 
 - **Toolbar.** The node keeps Compose's `TextToolbarState` (`None`, `Cursor`, `Selection`) as it goes: a tap on the cursor handle toggles `Cursor`, a long press sets `Selection`, an edit or a tap sets `None`. Nothing reads it until `text-context-menu`.
