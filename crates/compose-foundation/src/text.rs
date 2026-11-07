@@ -1340,6 +1340,38 @@ fn last_visible_offset(layout: &dyn compose_ui::Paragraph, size: compose_ui::Siz
     layout.get_line_end(last, true)
 }
 
+/// The direction a selection's end at `offset` says, as Compose's `getTextDirectionForOffset`: on
+/// an empty line, or in an empty text, its paragraph's (a run there says left to right, whatever
+/// the paragraph's direction); elsewhere its run's (D2062). The lines before and after are its
+/// characters' neighbours' (Compose's `offset - 1` and `offset + 1`, in bytes here); `end` is the
+/// end of what's laid out, past which there's no line: an offset past it (the end of a text cut
+/// by its maximum lines) is the run's, as before (D2054).
+fn text_direction_for_offset(
+    layout: &dyn compose_ui::Paragraph,
+    text: &str,
+    end: usize,
+    offset: usize,
+) -> compose_ui::ResolvedTextDirection {
+    if offset > end {
+        return layout.get_bidi_run_direction(offset);
+    }
+    let empty_line = text.is_empty() || {
+        let (Some(before), Some(after)) = (text.get(..offset), text.get(offset..)) else {
+            return layout.get_bidi_run_direction(offset);
+        };
+        let line = layout.get_line_for_offset(offset);
+        let other = |at: Option<usize>| at.is_none_or(|at| layout.get_line_for_offset(at) != line);
+        let previous = before.chars().next_back().map(|it| offset - it.len_utf8());
+        let next = after.chars().next().map(|it| offset + it.len_utf8()).filter(|at| *at <= end);
+        other(previous) && other(next)
+    };
+    if empty_line {
+        layout.get_paragraph_direction(offset)
+    } else {
+        layout.get_bidi_run_direction(offset)
+    }
+}
+
 impl compose_ui::Selectable for TextNode {
     fn text(&self) -> SharedString {
         self.text.text().clone()
@@ -1503,13 +1535,19 @@ impl compose_ui::Selectable for TextNode {
         offset: usize,
         measurer: &compose_ui::platform::SharedTextMeasurer,
     ) -> compose_ui::ResolvedTextDirection {
+        let text = self.text.as_str();
         if let Some(layout) = self.paragraphs_layout() {
             let offset = self.laid_out_offset(offset);
-            return layout.multi_paragraph.get_bidi_run_direction(offset);
+            // What's laid out ends at its last paragraph's end (D2054).
+            let infos = layout.multi_paragraph.paragraph_info_list();
+            let end = infos.last().map_or(0, |last| last.end_index).min(text.len());
+            return text_direction_for_offset(&*layout.multi_paragraph, text, end, offset);
         }
         match self.paragraph {
             Some(paragraph) => {
-                measurer.borrow().paragraph(paragraph).get_bidi_run_direction(offset)
+                let measurer = measurer.borrow();
+                let layout = measurer.paragraph(paragraph);
+                text_direction_for_offset(&*layout, text, text.len(), offset.min(text.len()))
             }
             None => compose_ui::ResolvedTextDirection::Ltr,
         }

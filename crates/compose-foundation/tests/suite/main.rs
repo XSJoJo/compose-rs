@@ -250,6 +250,7 @@ mod text_input;
 mod text_reuse;
 mod text_selection_colors;
 mod text_selection_gestures;
+mod text_selection_gestures_bidi;
 mod transform_gesture_detector;
 mod transformable;
 mod visibility_changed;

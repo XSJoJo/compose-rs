@@ -21,7 +21,8 @@ use compose_foundation::*;
 use compose_test::*;
 use compose_ui::platform::{FixedFontMetrics, FixedTextMeasurer};
 use compose_ui::{
-    Density, InputMode, IntSize, LayoutDirection, Offset, Rect, TextLayoutResult, UnitExt,
+    Density, InputMode, IntSize, LayoutDirection, Offset, Rect, ResolvedTextDirection,
+    TextLayoutResult, UnitExt,
 };
 
 use crate::text_field_touch_support::*;
@@ -30,7 +31,7 @@ const TAG: &str = "selectionContainer";
 const TEXT_TAG: &str = "testTag";
 const FONT: f32 = 15.0;
 /// Compose's `RtlChar`, a Hebrew letter.
-const RTL_CHAR: char = '\u{05D1}';
+pub(crate) const RTL_CHAR: char = '\u{05D1}';
 
 thread_local! {
     static HAPTICS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -131,6 +132,10 @@ pub(crate) struct Gestures {
     pub haptics: u32,
     /// The text toolbar expected shown, as the asserter's `textToolbarShown` (D2041).
     pub toolbar_shown: bool,
+    /// The direction at the selection's start and end, as the asserter's `startLayoutDirection`
+    /// and `endLayoutDirection` (`Selection.AnchorInfo.direction`): checked when set, as the bidi
+    /// tests' asserter does.
+    pub directions: Option<(ResolvedTextDirection, ResolvedTextDirection)>,
 }
 
 /// Each test's runs: in both directions, over one text and over several.
@@ -155,6 +160,12 @@ fn gestures_in(rtl: bool, multi: bool) -> Gestures {
     } else {
         "line1\nline2 text1 text2\nline3".to_string()
     };
+    gestures_over(text, rtl, multi)
+}
+
+/// The same over `text`, laid out right to left (`rtl`), in one text or a text for each line
+/// (`multi`).
+pub(crate) fn gestures_over(text: String, rtl: bool, multi: bool) -> Gestures {
     let content = Box::leak(Box::new(compose_runtime::mutable_state_of(text))).handle();
     let measurer = FixedTextMeasurer::with_metrics(FixedFontMetrics::SAMPLE_FONT);
     HAPTICS.with(|count| count.set(0));
@@ -230,6 +241,7 @@ fn gestures_in(rtl: bool, multi: bool) -> Gestures {
         end_shown: None,
         haptics: 0,
         toolbar_shown: false,
+        directions: None,
     }
 }
 
@@ -353,6 +365,14 @@ impl Gestures {
         rect.translate(Offset::new(text.left - area.left, text.top - area.top))
     }
 
+    /// Character `offset`'s box at its right side's middle nudged left (`rtl`), or at its left
+    /// side's nudged right, as the bidi tests' `characterPosition(offset, isRtl)`.
+    pub fn character_side(&mut self, offset: usize, rtl: bool) -> Offset {
+        let rect = self.character_box(offset);
+        let y = rect.center().y;
+        if rtl { Offset::new(rect.right - 2.0, y) } else { Offset::new(rect.left + 2.0, y) }
+    }
+
     /// Character `offset`'s box at its left side's middle, as the handle tests'
     /// `characterPosition`.
     pub fn character_center_left(&mut self, offset: usize) -> Offset {
@@ -468,6 +488,10 @@ impl Gestures {
             (at(start), at(end))
         });
         assert_eq!(found, expected, "the selection in {:?}", self.content.get());
+        if let Some(expected) = self.directions.filter(|_| self.selection.is_some()) {
+            let found = self.ui.host().with_tree(|tree| tree.selection_directions());
+            assert_eq!(found, Some(expected), "the selection's directions");
+        }
         let start = self.start_shown.unwrap_or(self.handles_shown);
         let end = self.end_shown.unwrap_or(self.handles_shown);
         for (handle, shown) in [(Handle::SelectionStart, start), (Handle::SelectionEnd, end)] {

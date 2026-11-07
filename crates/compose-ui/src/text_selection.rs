@@ -1493,6 +1493,24 @@ impl UiTree {
         Some(((anchor.node, anchor.offset), (focus.node, focus.offset)))
     }
 
+    /// The direction of the text at the selection's start and end, as Compose's
+    /// `Selection.AnchorInfo.direction` (`None` without a selection, or with an end whose text is
+    /// gone or changed). For tests.
+    #[doc(hidden)]
+    pub fn selection_directions(
+        &mut self,
+    ) -> Option<(ResolvedTextDirection, ResolvedTextDirection)> {
+        let selection = self.text_selection?;
+        let entries = self.selectables(selection.container);
+        let mut direction = |point: Point| {
+            let entry = entries.iter().find(|entry| entry.holds(&point))?;
+            let (value, (measurer, _)) = self.node_and_measurer(entry.node)?;
+            let text = value.chain[entry.index].selectable()?;
+            Some(text.direction_at(point.offset, measurer))
+        };
+        Some((direction(selection.anchor)?, direction(selection.focus)?))
+    }
+
     /// The text selected in a container, if any (what Cmd+C copies there): `None` when nothing
     /// is, or a text it ends in is gone or changed.
     pub fn selected_text(&mut self) -> Option<String> {
