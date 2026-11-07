@@ -1799,7 +1799,7 @@ pub extern "system" fn Java_rs_compose_android_ComposeRsNative_pointerIconBitmap
     };
     with_env(&mut env, |env| {
         shape.set_region(env, 0, &values)?;
-        env.byte_array_from_slice(pixels)
+        env.byte_array_from_slice(&pixels)
     })
     .unwrap_or_default()
 }

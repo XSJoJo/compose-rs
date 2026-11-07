@@ -640,7 +640,7 @@ fn what_the_indicator_draws() {
             _ => None,
         })
         .expect("an arc");
-    assert_eq!((arc.alpha() as f32 / 255.0 * 10.0).round(), 3.0);
+    assert_eq!((arc.alpha() * 10.0).round(), 3.0);
     assert!(ops.iter().any(|op| matches!(op, DrawOp::DrawPath { .. })), "the arrow");
     assert!(
         ops.iter()

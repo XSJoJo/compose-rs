@@ -134,7 +134,12 @@ fn along(value: f32, start: f32, end: f32) -> f32 {
 /// interpolate in another space, so it isn't exact: only whether it's on its way or there).
 fn color_along(color: Color, start: Color, end: Color) -> f32 {
     let channels = |color: Color| {
-        [color.alpha() as f32, color.red() as f32, color.green() as f32, color.blue() as f32]
+        [
+            ((color.to_argb() >> 24) as u8) as f32,
+            ((color.to_argb() >> 16) as u8) as f32,
+            ((color.to_argb() >> 8) as u8) as f32,
+            (color.to_argb() as u8) as f32,
+        ]
     };
     let (value, from, to) = (channels(color), channels(start), channels(end));
     let index = (0..4)
@@ -383,8 +388,11 @@ fn scrim_alpha(ui: &mut ComposeTestRule) -> f32 {
         .ops
         .iter()
         .find_map(|op| match op {
-            DrawOp::DrawRect(_, paint) if paint.color.red() == 255 && paint.color.blue() == 0 => {
-                Some(paint.color.alpha() as f32 / 255.0)
+            DrawOp::DrawRect(_, paint)
+                if ((paint.color.to_argb() >> 16) as u8) == 255
+                    && (paint.color.to_argb() as u8) == 0 =>
+            {
+                Some(((paint.color.to_argb() >> 24) as u8) as f32 / 255.0)
             }
             _ => None,
         })

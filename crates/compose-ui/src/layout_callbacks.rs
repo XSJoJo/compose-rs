@@ -246,10 +246,12 @@ impl UiTree {
     /// and the coordinates of the position-aware nodes, if anything was laid out or a layer
     /// around them moved.
     pub fn take_layout_callbacks(&mut self) -> Vec<Action> {
+        // A selection's handles are placed with a new layer's block run, as callbacks are.
         if !self.new_layers.is_empty()
             && (!self.placed_layers.is_empty()
                 || !self.positioned.is_empty()
-                || self.rects.is_some())
+                || self.rects.is_some()
+                || self.text_selection.is_some())
         {
             self.run_new_layers();
         }
@@ -295,12 +297,21 @@ impl UiTree {
         if self.rects.is_some() {
             self.dispatch_rects(laid_out || !self.layers_moved.is_empty());
         }
-        if !self.layers_moved.is_empty() {
-            for node in mem::take(&mut self.layers_moved) {
-                if let Some(value) = self.get_mut(node) {
-                    value.layer_moved = false;
-                }
+        let mut moved = mem::take(&mut self.layers_moved);
+        for &node in &moved {
+            if let Some(value) = self.get_mut(node) {
+                value.layer_moved = false;
             }
+        }
+        // A selection's handles follow its container and texts, as Compose's
+        // `updateHandleOffsets` when their positions change.
+        if let Some(selection) = self.text_selection.filter(|_| laid_out || !moved.is_empty()) {
+            self.refresh_handles_if_moved(&selection, &moved);
+        }
+        if self.layers_moved.is_empty() {
+            // Its allocation kept for the next frame.
+            moved.clear();
+            self.layers_moved = moved;
         }
         mem::take(&mut self.layout_callbacks)
     }
@@ -315,7 +326,11 @@ impl UiTree {
             self.note_layer_change_placed(node, keep);
             return;
         }
-        if self.positioned.is_empty() && self.coordinate_readers.is_empty() && self.rects.is_none()
+        // A text selection's handles follow the layers above its container and texts too.
+        if self.positioned.is_empty()
+            && self.coordinate_readers.is_empty()
+            && self.rects.is_none()
+            && self.text_selection.is_none()
         {
             return;
         }
@@ -362,7 +377,11 @@ impl UiTree {
     #[cold]
     #[inline(never)]
     pub(crate) fn note_layer_change_placed(&mut self, node: NodeId, keep: bool) {
-        if self.positioned.is_empty() && self.coordinate_readers.is_empty() && self.rects.is_none()
+        // A text selection's handles follow the layers above its container and texts too.
+        if self.positioned.is_empty()
+            && self.coordinate_readers.is_empty()
+            && self.rects.is_none()
+            && self.text_selection.is_none()
         {
             return;
         }
@@ -1203,7 +1222,12 @@ impl UiTree {
 
     /// Layer `layer` of `node`, for its chain entry `entry`: its bounds clipped by the clipping
     /// modifiers around it (its own before the entry, and its ancestors').
-    fn coordinate_values(&self, node: NodeId, layer: usize, entry: usize) -> CoordinatesValues {
+    pub(crate) fn coordinate_values(
+        &self,
+        node: NodeId,
+        layer: usize,
+        entry: usize,
+    ) -> CoordinatesValues {
         let size = self.node(node).layers[layer].size;
         let origin = self.map_to_root(node, layer, Some(entry), Offset::ZERO);
         let mut bounds = self.rect_in_root(node, layer, Some(entry), size);
@@ -1224,6 +1248,38 @@ impl UiTree {
             origin: window_origin,
             lines_changed: value_lines_changed,
         }
+    }
+
+    /// The window `node` shows in, in the root's coordinates: the root's bounds, or its popup's
+    /// (Compose's popup is a window of its own, D1374), as `boundsInWindow()` clips by.
+    pub(crate) fn window_bounds_of(&self, node: NodeId) -> Rect {
+        let mut top = node;
+        loop {
+            let value = self.node(top);
+            match value.parent {
+                Some(parent) if !value.overlay => top = parent,
+                _ => break,
+            }
+        }
+        let size = self.node(top).layers[0].size;
+        self.rect_in_root(top, 0, Some(0), size)
+    }
+
+    /// The bounds in the root of the popup `node` is in, if it's in one: its window, as Compose's
+    /// popup is a window of its own (D1374), what the test harness's `isDisplayed` checks a node
+    /// in a popup against (D2017).
+    #[doc(hidden)]
+    pub fn popup_window_of(&self, node: NodeId) -> Option<Rect> {
+        self.get(node)?;
+        let window = self.window_bounds_of(node);
+        let mut top = node;
+        while let Some(value) = self.get(top) {
+            if value.overlay {
+                return Some(window);
+            }
+            top = value.parent?;
+        }
+        None
     }
 
     /// `bounds` clipped by the clipping modifiers of `id`, those before chain entry `before_entry`

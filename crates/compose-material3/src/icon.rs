@@ -206,8 +206,7 @@ impl DrawModifierNode for IconNode {
             // color.
             let own = *own;
             let color = if self.tint.is_specified() {
-                self.tint
-                    .with_alpha(self.tint.alpha() as f32 / 255.0 * (own.alpha() as f32 / 255.0))
+                self.tint.with_alpha(self.tint.alpha() * (own.alpha()))
             } else {
                 own
             };

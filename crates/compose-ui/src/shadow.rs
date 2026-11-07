@@ -72,7 +72,7 @@ impl Shadow {
         let alpha = (alpha * self.alpha).clamp(0.0, 1.0);
         match self.brush {
             Some(_) => alpha,
-            None => alpha * self.color.alpha() as f32 / 255.0,
+            None => alpha * self.color.alpha(),
         }
     }
 

@@ -180,12 +180,18 @@ internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEd
     private var paintFilter: ColorFilter? = null
     /** The radius of the paint's blur mask filter (a shadow's), 0 for none. */
     private var paintBlur = 0f
+    /** Whether the paint's color was set as a color long ([paintColorLong]), not [paintColor]. */
+    private var paintWide = false
+    private var paintColorLong = 0L
 
     /**
      * Reads a paint: color, style flags (1 stroke, 2 a blend mode follows, 4 a color filter
-     * follows, 8 a blur radius follows), width, cap, its shader (a kind; for a gradient, its
-     * definition and alpha), then its blend mode, color filter and blur if the flags say so: a
-     * blur is a `BlurMaskFilter` (`NORMAL`), made only when its radius changes. A drawing scaled by ([scaleX],
+     * follows, 8 a blur radius follows, 16 a color long follows), width, cap, its shader (a kind;
+     * for a gradient, its definition and alpha), then its blend mode, color filter, blur and color
+     * long if the flags say so: a blur is a `BlurMaskFilter` (`NORMAL`), made only when its radius
+     * changes; a color long (a color of a wide space) is set with `setColor(long)`, but BT.2020 HLG
+     * and PQ's (Android's 16 and 17) below API 34, which keep the color (their sRGB conversion), as
+     * Compose's `toColorLong`. A drawing scaled by ([scaleX],
      * [scaleY]) then moved by ([x], [y]) (a path's) has its gradient moved back, as
      * compose-skia's: a gradient is in the list's coordinates.
      */
@@ -204,6 +210,9 @@ internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEd
         val blendMode = if (flags and 2 != 0) get().toInt() else BLEND_SRC_OVER
         val filter = if (flags and 4 != 0) readColorFilter() else null
         val blur = if (flags and 8 != 0) float() else 0f
+        val colorLong = if (flags and 16 != 0) getLong() else 0L
+        val wide = flags and 16 != 0 && shader == null &&
+            (Build.VERSION.SDK_INT >= 34 || (colorLong and 0x3fL).toInt() !in 16..17)
         if (blur != paintBlur) {
             paintBlur = blur
             paint.maskFilter = if (blur > 0f) BlurMaskFilter(blur, BlurMaskFilter.Blur.NORMAL) else null
@@ -220,7 +229,14 @@ internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEd
             paintShader = shader
             paint.shader = shader
         }
-        if (color != paintColor) {
+        if (wide) {
+            if (!paintWide || colorLong != paintColorLong) {
+                paintWide = true
+                paintColorLong = colorLong
+                paint.setColor(colorLong)
+            }
+        } else if (paintWide || color != paintColor) {
+            paintWide = false
             paintColor = color
             paint.color = color
         }
@@ -1532,6 +1548,8 @@ internal class Replayer(var text: TextMeasurer, private val effects: ComposeRsEd
         scaleX: Float,
         scaleY: Float,
     ): Boolean {
+        // The mask paint takes an ARGB: a wide color draws the path itself.
+        if (paintWide) return false
         val mask = kept.mask(scaleX, scaleY)?.also { masks[it] }
             ?: makeMask(kept, scaleX, scaleY)
             ?: return false

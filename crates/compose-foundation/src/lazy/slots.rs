@@ -179,7 +179,7 @@ pub(super) struct ItemContents {
 }
 
 /// An item's content, and the index its key was last found at.
-type ItemContent = (Rc<std::cell::Cell<usize>>, Callback);
+pub(super) type ItemContent = (Rc<std::cell::Cell<usize>>, Callback);
 
 /// The contents kept at most; past it, those of keys no longer composed go.
 const MOST_CONTENTS: usize = 256;
@@ -242,26 +242,86 @@ impl ItemFactory {
     }
 }
 
+/// What a lazy layout's items are composed from, as Compose's item content factory sees its item
+/// provider: the lists' [`ItemFactory`] (statically dispatched) and the public `LazyLayout`'s
+/// provider (`layout::ProviderSource`, one virtual call per item).
+pub(super) trait SlotSource: 'static {
+    fn count(&self) -> usize;
+    fn key(&self, index: usize) -> u64;
+    fn content_type(&self, index: usize) -> Option<u64>;
+    /// Item `index`'s content, its key `key`: the same `Callback` while its key is there.
+    fn content_of(&self, index: usize, key: u64) -> Callback;
+    /// Panics if two of `indices` have the same key, saying whether their full keys are equal
+    /// (the lists' `Items` know them; a provider's keys are `u64`s already).
+    #[cfg(debug_assertions)]
+    fn check_keys(&self, indices: &[usize]);
+}
+
+impl SlotSource for ItemFactory {
+    #[inline]
+    fn count(&self) -> usize {
+        self.items.0.count
+    }
+
+    #[inline]
+    fn key(&self, index: usize) -> u64 {
+        self.items.0.key(index)
+    }
+
+    #[inline]
+    fn content_type(&self, index: usize) -> Option<u64> {
+        self.items.0.content_type(index)
+    }
+
+    #[inline]
+    fn content_of(&self, index: usize, key: u64) -> Callback {
+        ItemFactory::content_of(self, index, key)
+    }
+
+    #[cfg(debug_assertions)]
+    fn check_keys(&self, indices: &[usize]) {
+        self.items.0.check_keys(indices);
+    }
+}
+
 /// The items a measurement composes, as Compose's `LazyLayoutMeasureScope.compose`: each asked for
-/// once, its layout returned; in the order asked, which is their slots'.
-pub(super) struct ItemComposer {
-    factory: Rc<ItemFactory>,
+/// once, its layout returned; in the order asked, which is their slots'. Lists ask for an item's
+/// one layout (`measurable`, their `ItemStacking` making one of its nodes), the public
+/// `LazyLayout` for all its top-level ones (`measurables`).
+pub(super) struct ItemComposer<S: SlotSource = ItemFactory> {
+    factory: Rc<S>,
     composed: ItemMap<Option<Measurable>>,
+    /// What `measurables` composed, by index.
+    all: ItemMap<Vec<Measurable>>,
     order: Vec<usize>,
     #[cfg(debug_assertions)]
     keys: IndexMap<u64, usize>,
 }
 
-impl ItemComposer {
-    fn new(factory: Rc<ItemFactory>, expected: usize) -> ItemComposer {
+impl<S: SlotSource> ItemComposer<S> {
+    pub(super) fn new(factory: Rc<S>, expected: usize) -> ItemComposer<S> {
         let mut composed = ItemMap::default();
         composed.reserve(expected);
         ItemComposer {
             factory,
             composed,
+            all: ItemMap::default(),
             order: Vec::with_capacity(expected),
             #[cfg(debug_assertions)]
             keys: IndexMap::default(),
+        }
+    }
+
+    /// Notes `key` composed for item `index`: two items of one key would share a slot, and
+    /// Compose's lazy layouts panic, as this does (debug builds).
+    #[inline]
+    fn note_key(&mut self, _key: u64, _index: usize) {
+        #[cfg(debug_assertions)]
+        {
+            if let Some(&other) = self.keys.get(&_key) {
+                self.factory.check_keys(&[other, _index]);
+            }
+            self.keys.insert(_key, _index);
         }
     }
 
@@ -277,21 +337,14 @@ impl ItemComposer {
         if index >= self.factory.count() {
             return None;
         }
-        let key = self.factory.items.0.key(index);
-        // Two items of one key would share a slot: Compose's lazy layouts panic, and so does this.
-        #[cfg(debug_assertions)]
-        {
-            if let Some(&other) = self.keys.get(&key) {
-                self.factory.items.0.check_keys(&[other, index]);
-            }
-            self.keys.insert(key, index);
-        }
+        let key = self.factory.key(index);
+        self.note_key(key, index);
         // An item's content is the same for its key while it's there (`ItemContents`): the slot
         // composed in place needs neither its content type nor its content.
         let probe = LazySlot { key, content_type: None };
         let factory = &self.factory;
         let measurable = scope.subcompose_first_with(&probe, || {
-            let slot = LazySlot { key, content_type: factory.items.0.content_type(index) };
+            let slot = LazySlot { key, content_type: factory.content_type(index) };
             (slot, factory.content_of(index, key))
         });
         self.composed.insert(index, measurable);
@@ -299,6 +352,39 @@ impl ItemComposer {
         measurable
     }
 
+    /// Item `index`'s top-level layouts, composed if this measurement hasn't yet, as Compose's
+    /// `LazyLayoutMeasureScope.compose`. Panics past the items, as Compose's provider's `getKey`
+    /// would be asked for an index it hasn't.
+    pub(super) fn measurables(
+        &mut self,
+        scope: &mut SubcomposeMeasureScope<'_, '_>,
+        index: usize,
+    ) -> Vec<Measurable> {
+        if let Some(found) = self.all.get(&index) {
+            return found.clone();
+        }
+        let count = self.factory.count();
+        assert!(
+            index < count,
+            "compose-foundation: item {index} composed in a lazy layout of {count} items"
+        );
+        let key = self.factory.key(index);
+        self.note_key(key, index);
+        let content_type = self.factory.content_type(index);
+        let content = self.factory.content_of(index, key);
+        let measurables = scope.subcompose(LazySlot { key, content_type }, content);
+        self.all.insert(index, measurables.clone());
+        self.order.push(index);
+        measurables
+    }
+
+    /// The keys of the items this measurement composed, in order.
+    pub(super) fn composed_keys(&self) -> Vec<u64> {
+        self.order.iter().map(|index| self.factory.key(*index)).collect()
+    }
+}
+
+impl ItemComposer {
     /// Keeps item `index` composed through this measurement, measured or not.
     pub(super) fn keep(&mut self, scope: &mut SubcomposeMeasureScope<'_, '_>, index: usize) {
         self.measurable(scope, index);

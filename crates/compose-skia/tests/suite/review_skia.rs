@@ -169,7 +169,7 @@ fn graphics_layers_replay_through_skia() {
     assert_eq!(renderer.pixel(5, 70), Color::WHITE, "moved away");
     assert_eq!(renderer.pixel(25, 70), Color::BLUE, "the clip moved with it");
     let faded = renderer.pixel(10, 90);
-    assert!((126..=129).contains(&faded.red()), "{faded:?}");
+    assert!((126..=129).contains(&((faded.to_argb() >> 16) as u8)), "{faded:?}");
 }
 
 /// A frame's groups, drawn from their boundaries' recordings by reference (D270), draw what

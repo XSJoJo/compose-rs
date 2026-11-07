@@ -449,6 +449,9 @@ pub struct UiTree {
     pub(crate) focus_requests: Rc<crate::focus_requester::FocusRequests>,
     /// The text selected in a `SelectionContainer`, if any.
     pub(crate) text_selection: Option<crate::text_selection::TextSelection>,
+    /// Where the selection's container and its ends' texts were when its handles were last
+    /// told where they point: a layout that moves none of them tells them nothing.
+    pub(crate) handles_placed_for: Option<crate::text_selection::HandlesPlacedFor>,
     /// A node focused before it was ever placed (a prefetched lazy item): brought into view
     /// once laid out.
     pub(crate) bring_into_view_after_layout: Option<NodeId>,
@@ -665,6 +668,7 @@ impl UiTree {
             measure_runs: 0,
             focus_requests,
             text_selection: None,
+            handles_placed_for: None,
             bring_into_view_after_layout: None,
             beyond_search: crate::focus::BeyondSearch::default(),
             layout_callbacks: Vec::new(),

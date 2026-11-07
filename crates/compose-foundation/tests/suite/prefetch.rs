@@ -559,7 +559,7 @@ fn row_groups(list: &compose_ui::platform::FlatDisplayList) -> HashMap<usize, (u
     for group in list.groups.iter().filter(|group| !holds_others(group)) {
         for op in &list.ops[group.start..group.end] {
             if let compose_ui::platform::DrawOp::DrawRect(_, paint) = op {
-                let index = (paint.color.argb() & 0x00FF_FFFF) as usize;
+                let index = (paint.color.to_argb() & 0x00FF_FFFF) as usize;
                 let first = rows.insert(index, (group.key, group.version)).is_none();
                 assert!(first, "row {index} drawn once");
             }
@@ -656,7 +656,7 @@ fn a_frame_revealing_prefetched_items_draws_only_them() {
 fn row_of(group: &compose_ui::platform::DrawGroup) -> Option<usize> {
     group.content.ops.iter().find_map(|op| match op {
         compose_ui::platform::DrawOp::DrawRect(_, paint) => {
-            Some((paint.color.argb() & 0x00FF_FFFF) as usize)
+            Some((paint.color.to_argb() & 0x00FF_FFFF) as usize)
         }
         _ => None,
     })
@@ -806,7 +806,7 @@ fn an_item_drawn_ahead_draws_again_when_what_it_read_changes() {
         assert_ne!(group.version, version, "drawn again");
         let tinted = list.ops[group.start..group.end].iter().any(|op| {
             matches!(op, compose_ui::platform::DrawOp::DrawRect(_, paint)
-                if paint.color.argb() >> 16 & 0xFF == 1)
+                if paint.color.to_argb() >> 16 & 0xFF == 1)
         });
         assert!(tinted, "with the new tint");
     }

@@ -197,6 +197,9 @@ impl UiTree {
             value.subtree_needs_measure = false;
             return value.layers[0].size;
         }
+        if self.in_lookahead {
+            self.measure_now_after_ahead(node);
+        }
         let value = self.node_mut(node);
         value.needs_measure = false;
         value.subtree_needs_measure = false;

@@ -720,10 +720,38 @@ impl ScrollableModifier for Modifier {
             reverse_direction,
             fling_behavior,
             interaction_source,
+            field: false,
         })
         // Its content a group for focus searches, as `ScrollableNode`'s target.
         .focus_group()
     }
+}
+
+/// `scrollable_with` for a state-based text field, which Compose puts under its decorator: no
+/// focus group (compose-rs's focus target is the inner field, inside the decoration: a group
+/// between them would tell an `on_focus_changed` before the field the group's state), and no
+/// bring-into-view (the field's requests go past it to the containers around, as the
+/// decorator's do in Compose; the field follows its cursor itself) (D2017).
+pub(crate) fn field_scrollable(
+    modifier: Modifier,
+    state: crate::ScrollState,
+    orientation: Orientation,
+    enabled: bool,
+    reverse_direction: bool,
+    interaction_source: Option<MutableInteractionSource>,
+) -> Modifier {
+    modifier.then_custom(ScrollableElement {
+        bring_into_view_spec: None,
+        overscroll: None,
+        dyn_state: Rc::new(state),
+        state,
+        orientation,
+        enabled,
+        reverse_direction,
+        fling_behavior: None,
+        interaction_source,
+        field: true,
+    })
 }
 
 struct ScrollableElement<S> {
@@ -736,6 +764,8 @@ struct ScrollableElement<S> {
     interaction_source: Option<MutableInteractionSource>,
     overscroll: Option<Rc<dyn OverscrollEffect>>,
     bring_into_view_spec: Option<Rc<dyn BringIntoViewSpec>>,
+    /// A state-based text field's own (D2017): no focus group, no bring-into-view.
+    field: bool,
 }
 
 pub(crate) struct ScrollableNode {
@@ -754,6 +784,10 @@ pub(crate) struct ScrollableNode {
     content_in_view: Option<Rc<ContentInView>>,
     /// Its size as last measured, to see it shrink (`onRemeasured`).
     measured: compose_ui::IntSize,
+    /// A state-based text field's own: the field brings its cursor into view itself, and its
+    /// requests go to the containers around it, as Compose's decorator above its scrollable
+    /// asks its parents (D2017).
+    field: bool,
 }
 
 impl<S: ScrollableState + ComposeArg + Clone + 'static> ModifierNodeElement
@@ -775,6 +809,7 @@ impl<S: ScrollableState + ComposeArg + Clone + 'static> ModifierNodeElement
             bring_into_view_spec: self.bring_into_view_spec.clone(),
             content_in_view: None,
             measured: compose_ui::IntSize::ZERO,
+            field: self.field,
         }
     }
 
@@ -805,6 +840,7 @@ impl<S: ScrollableState + ComposeArg + Clone + 'static> ModifierNodeElement
         node.interaction_source = self.interaction_source.clone();
         node.overscroll = self.overscroll.clone();
         node.bring_into_view_spec = self.bring_into_view_spec.clone();
+        node.field = self.field;
         if let Some(content_in_view) = &node.content_in_view {
             content_in_view.set_config(node.content_in_view_config());
         }
@@ -819,6 +855,7 @@ impl<S: ScrollableState + ComposeArg + Clone + 'static> ModifierNodeElement
             && same_overscroll(&other.overscroll, &self.overscroll)
             && other.interaction_source == self.interaction_source
             && same_spec(&other.bring_into_view_spec, &self.bring_into_view_spec)
+            && other.field == self.field
     }
 
     fn name(&self) -> &'static str {
@@ -912,7 +949,7 @@ impl ModifierNode for ScrollableNode {
     fn as_measured_size_aware(
         &mut self,
     ) -> Option<&mut dyn compose_ui::MeasuredSizeAwareModifierNode> {
-        Some(self)
+        if self.field { None } else { Some(self) }
     }
     fn as_key_input(&mut self) -> Option<&mut dyn compose_ui::KeyInputModifierNode> {
         Some(self)
@@ -949,7 +986,7 @@ impl ModifierNode for ScrollableNode {
     fn as_bring_into_view_responder(
         &mut self,
     ) -> Option<&mut dyn compose_ui::BringIntoViewResponderNode> {
-        Some(self)
+        if self.field { None } else { Some(self) }
     }
 }
 

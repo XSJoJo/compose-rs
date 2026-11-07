@@ -122,7 +122,10 @@ fn a_layers_alpha_fades_it() {
     });
     let pixel = image.pixel(WIDTH / 2, HEIGHT / 2);
     let expected = RED.with_alpha(0.5).composite_over(BLACK);
-    assert!(pixel.red().abs_diff(expected.red()) <= 2, "{pixel:?} against {expected:?}");
+    assert!(
+        ((pixel.to_argb() >> 16) as u8).abs_diff((expected.to_argb() >> 16) as u8) <= 2,
+        "{pixel:?} against {expected:?}"
+    );
 }
 
 // Compose: compose/ui/ui-graphics/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/layer/AndroidGraphicsLayerTest.kt, testSetScaleX, testSetScaleY, testTranslationX, testTranslationY
@@ -316,9 +319,9 @@ fn a_layers_compositing_strategy_decides_how_its_alpha_is_applied() {
         let pixel = image.pixel(x, y);
         let close = |a: u8, b: u8| a.abs_diff(b) <= 2;
         assert!(
-            close(pixel.red(), expected.red())
-                && close(pixel.green(), expected.green())
-                && close(pixel.blue(), expected.blue()),
+            close((pixel.to_argb() >> 16) as u8, (expected.to_argb() >> 16) as u8)
+                && close((pixel.to_argb() >> 8) as u8, (expected.to_argb() >> 8) as u8)
+                && close(pixel.to_argb() as u8, expected.to_argb() as u8),
             "({x}, {y}): {pixel:?} against {expected:?}"
         );
     };
@@ -469,7 +472,10 @@ fn a_layer_recorded_by_a_node_is_drawn_by_another_after_it_is_gone() {
     ui.wait_for_idle();
     let pixel = drawing_box(&mut ui).pixel(5, 5);
     let expected = RED.with_alpha(0.5).composite_over(Color::WHITE);
-    assert!(pixel.green().abs_diff(expected.green()) <= 2, "{pixel:?} against {expected:?}");
+    assert!(
+        ((pixel.to_argb() >> 8) as u8).abs_diff((expected.to_argb() >> 8) as u8) <= 2,
+        "{pixel:?} against {expected:?}"
+    );
 }
 
 // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/draw/DrawingPrebuiltGraphicsLayerTest.kt, keepComposingTheNodeWeTookLayerFrom
@@ -670,5 +676,8 @@ fn a_property_set_by_another_drawing_draws_the_layer_again() {
     ui.wait_for_idle();
     let pixel = drawing_box(&mut ui).pixel(5, 5);
     let expected = RED.with_alpha(0.5).composite_over(Color::WHITE);
-    assert!(pixel.green().abs_diff(expected.green()) <= 2, "{pixel:?} against {expected:?}");
+    assert!(
+        ((pixel.to_argb() >> 8) as u8).abs_diff((expected.to_argb() >> 8) as u8) <= 2,
+        "{pixel:?} against {expected:?}"
+    );
 }

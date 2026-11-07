@@ -406,7 +406,7 @@ impl LookaheadScope {
 ### 7.6 Invalidation
 
 - Composition changes, attach and detach (modifier-nodes' `invalidate_measurement`) inside a scope dirty both passes (`lookahead.needs_measure`, `needs_measure`, and both subtree flags up to the outermost root, then the main flags above it), as Compose's `invalidateMeasurements` (`LayoutNode.kt:1176-1188`).
-- State reads are observed per pass: `Observation::LookaheadMeasure` and `Observation::LookaheadPlacement` keys for reads made in `Pass::Lookahead`, invalidating both passes; reads in the approach (`Observation::Measure`, `Placement`) invalidate the approach only. An animation read in `approach_measure` therefore re-runs the approach alone (`LookaheadScopeTest.lookaheadStaysTheSameDuringAnimationTest`).
+- State reads are observed per pass: `Observation::LookaheadMeasure` and `Observation::LookaheadPlacement` keys for reads made in `Pass::Lookahead`, invalidating both passes; reads in the approach (`Observation::Measure`, `Placement`) invalidate the approach only. An animation read in `approach_measure` therefore re-runs the approach alone (`LookaheadScopeTest.lookaheadStaysTheSameDuringAnimationTest`). Whatever measures a node ahead, a read or its child's size ahead, measures it now after, as Compose's lookahead measurement marks the approach pending (D1319).
 - `invalidate_placement` in a scope re-places the approach; the lookahead placement only for reads made in lookahead blocks.
 
 ### 7.7 Intrinsics in lookahead

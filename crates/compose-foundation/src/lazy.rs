@@ -1,11 +1,9 @@
 //! Lazy lists, as Compose's `LazyColumn` and `LazyRow`: only the items in view are placed and
 //! drawn; they, a few next to them and the focused one are composed and measured.
 //!
-//! Compose composes items while measuring (subcomposition). Here the list composes a range of
-//! items, and its measurement, which fills the viewport from the scroll position, writes the
-//! range it needs when the composed one falls short; the host then recomposes and measures again
-//! within the same frame (`UiHost::frame`), so scrolling shows no empty frame. The items are
-//! composed by a restartable composable of their own, each item one too: a scroll recomposes
+//! As Compose's, the list composes its items while measuring, each in a subcomposition of its own
+//! (`slots`, C8, D1312): its measurement, which fills the viewport from the scroll position,
+//! composes an item when it reaches it, so scrolling shows no empty frame and a scroll recomposes
 //! neither the list's caller nor the items that stay.
 //!
 //! After each scroll, the next items in the scroll direction are composed and measured between
@@ -24,6 +22,7 @@ mod animate_scroll;
 mod cache_window;
 mod grid;
 mod item_animator;
+pub mod layout;
 mod layout_info;
 pub(crate) mod pager;
 mod prefetch;
@@ -116,6 +115,11 @@ struct LazyListInner {
     /// The items the pass that's now last wanted, after a pass ahead: the pass ahead keeps them
     /// composed too, so what either pass wants stays composed across frames (D1226).
     wanted_now: Cell<Option<(usize, usize)>>,
+    /// A grid's: the last item the pass that's now showed after a pass ahead (Compose's
+    /// `approachLayoutInfo`), and the last the pass ahead showed. The pass ahead places the lines
+    /// up to the first's past its own (`linesRetainedForLookahead`, D1318).
+    approach_last: Cell<Option<usize>>,
+    ahead_last: Cell<Option<usize>>,
     /// Where the pass ahead placed each animated item: the pass that's now places it there.
     lookahead_places: RefCell<Vec<item_animator::LookaheadPlace>>,
     /// What runs `animate_item`, shared with its items' nodes.
@@ -470,6 +474,8 @@ impl LazyListInner {
             laid_out: layout_info::LaidOut::new(),
             measured_ahead: Cell::new(false),
             wanted_now: Cell::new(None),
+            approach_last: Cell::new(None),
+            ahead_last: Cell::new(None),
             lookahead_places: RefCell::default(),
             density: Cell::new(1.0),
             laid_items: RefCell::new(None),
@@ -1457,6 +1463,11 @@ impl Hash for DefaultKey {
     }
 }
 
+/// Item `index`'s key when it has none given: its `DefaultKey`, hashed.
+fn default_key(index: usize) -> u64 {
+    hash_key(&DefaultKey(index))
+}
+
 impl ComposeArg for LazyListScope {
     fn same(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.intervals, &other.intervals)
@@ -1607,12 +1618,9 @@ impl compose_ui::LayoutModifierNode for ParentSizeElement {
 
 /// The items a list's content declared, for one composition of the list.
 struct Items {
-    intervals: Vec<Interval>,
-    /// Each interval's first item: a binary search finds an item's interval.
-    starts: Vec<usize>,
-    /// The interval found last, looked at first, as `MutableIntervalList.lastInterval`: a walk
-    /// over the items, as a grid's spans, stays in it for a while.
-    last_found: Cell<usize>,
+    /// The intervals, found by an item's index (the one found last looked at first: a walk over
+    /// the items, as a grid's spans, stays in it for a while).
+    intervals: layout::MutableIntervalList<Interval>,
     count: usize,
     /// The sticky headers' indices, in order.
     headers: Vec<usize>,
@@ -1631,29 +1639,21 @@ const KEY_CACHE: usize = 64;
 
 impl Items {
     fn new(intervals: Vec<Interval>) -> Items {
-        let mut starts = Vec::with_capacity(intervals.len());
+        let mut list = layout::MutableIntervalList::new();
         let mut headers = Vec::new();
-        let mut count = 0;
         let has_custom_spans = intervals.iter().any(|interval| interval.span.is_some());
-        for interval in &intervals {
-            starts.push(count);
+        let keyed = intervals.iter().any(|interval| interval.key.is_some());
+        for interval in intervals {
+            let count = layout::IntervalList::size(&list);
             if interval.sticky {
                 headers.extend(count..count + interval.count);
             }
-            count += interval.count;
+            list.add_interval(interval.count, interval);
         }
-        let keyed = intervals.iter().any(|interval| interval.key.is_some());
+        let count = layout::IntervalList::size(&list);
         let cached = if keyed { count.min(KEY_CACHE) } else { 0 };
         let keys = (0..cached).map(|_| Cell::new((usize::MAX, 0))).collect();
-        Items {
-            intervals,
-            starts,
-            last_found: Cell::new(0),
-            count,
-            headers,
-            has_custom_spans,
-            keys,
-        }
+        Items { intervals: list, count, headers, has_custom_spans, keys }
     }
 
     /// The interval holding item `index`, and the item's index in it.
@@ -1661,13 +1661,8 @@ impl Items {
         if index >= self.count {
             return None;
         }
-        let last = self.last_found.get();
-        let in_last = self.starts[last] <= index
-            && self.starts.get(last + 1).is_none_or(|next| index < *next);
-        let interval =
-            if in_last { last } else { self.starts.partition_point(|start| *start <= index) - 1 };
-        self.last_found.set(interval);
-        Some((&self.intervals[interval], index - self.starts[interval]))
+        let interval = self.intervals.get_in_bounds(index);
+        Some((interval.value(), index - interval.start_index()))
     }
 
     /// The item with `key`, looked for within a window around `near` (as Compose's
@@ -1685,7 +1680,7 @@ impl Items {
     }
 
     fn key(&self, index: usize) -> u64 {
-        let default = || hash_key(&DefaultKey(index));
+        let default = || default_key(index);
         let Some(cached) = self.keys.get(index.checked_rem(self.keys.len()).unwrap_or(0)) else {
             return default();
         };

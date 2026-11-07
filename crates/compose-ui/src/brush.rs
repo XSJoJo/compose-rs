@@ -126,11 +126,13 @@ impl Gradient {
         let count = self.colors.len().max(1) as f32;
         let (mut alpha, mut red, mut green, mut blue) = (0.0, 0.0, 0.0, 0.0);
         for color in self.colors.iter() {
-            let weight = color.alpha() as f32;
+            let argb = color.to_argb();
+            let byte = |shift: u32| f32::from((argb >> shift) as u8);
+            let weight = byte(24);
             alpha += weight;
-            red += color.red() as f32 * weight;
-            green += color.green() as f32 * weight;
-            blue += color.blue() as f32 * weight;
+            red += byte(16) * weight;
+            green += byte(8) * weight;
+            blue += byte(0) * weight;
         }
         if alpha == 0.0 {
             return Color::TRANSPARENT;
@@ -172,8 +174,7 @@ impl Brush {
     /// This brush at `alpha` (0 to 1) of its opacity: each color's alpha multiplied, as the
     /// `alpha` Compose's `background(brush, shape, alpha)` and draw calls take.
     pub fn with_alpha(self, alpha: f32) -> Brush {
-        let fade =
-            |color: Color| color.with_alpha(color.alpha() as f32 / 255.0 * alpha.clamp(0.0, 1.0));
+        let fade = |color: Color| color.with_alpha(color.alpha() * alpha.clamp(0.0, 1.0));
         let faded = |gradient: Gradient| Gradient {
             colors: gradient.colors.iter().map(|color| fade(*color)).collect(),
             ..gradient
@@ -306,7 +307,7 @@ impl Brush {
             | Brush::Radial { gradient, .. }
             | Brush::Sweep { gradient, .. } => gradient.average(),
         };
-        color.with_alpha(color.alpha() as f32 / 255.0 * alpha.clamp(0.0, 1.0))
+        color.with_alpha(color.alpha() * alpha.clamp(0.0, 1.0))
     }
 }
 
@@ -350,7 +351,7 @@ impl Shader {
 
 /// A shader of a display list, by its index in `DisplayList::shaders`.
 /// Kept as the index plus one (`NonZeroU32`), so an `Option` of it is 4 bytes and a `Paint`
-/// naming a shader and a filter stays 28.
+/// naming a shader and a filter stays 32 (28 with a 32-bit color).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ShaderIndex(std::num::NonZeroU32);
 

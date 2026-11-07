@@ -618,6 +618,9 @@ impl<'a> SemanticsNodeInteraction<'a> {
             Ok(None) => return false,
             Err(message) => panic!("compose-test: {message}"),
         };
+        // A node in a popup is checked against the popup's window, as Compose's against its
+        // popup's view: a selection handle's popup past the screen's edge still shows (D2017).
+        let window = self.rule.host.with_tree(|tree| tree.popup_window_of(id)).unwrap_or(window);
         let clipped = if is_root {
             window
         } else {

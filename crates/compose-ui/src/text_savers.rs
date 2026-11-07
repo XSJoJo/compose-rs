@@ -84,12 +84,19 @@ impl Saveable for Offset {
     }
 }
 
-/// Its packed ARGB, as `Color.Saver` (unspecified included).
+/// Its sRGB ARGB, or `false` for unspecified, as `Color.Saver`.
 impl Saveable for Color {
     fn save(&self) -> SavedValue {
-        SavedValue::Int(self.argb() as i64)
+        if self.is_unspecified() {
+            SavedValue::Bool(false)
+        } else {
+            SavedValue::Int(i64::from(self.to_argb()))
+        }
     }
     fn restore(saved: &SavedValue) -> Option<Color> {
+        if *saved == SavedValue::Bool(false) {
+            return Some(Color::UNSPECIFIED);
+        }
         u32::try_from(i64::restore(saved)?).ok().map(Color::from_argb)
     }
 }

@@ -29,6 +29,7 @@ mod scroll;
 mod scroll_indicator;
 pub mod scrollbar;
 mod secure_text_field;
+mod selection_handles;
 pub mod shape;
 mod text;
 mod text_field;
@@ -113,6 +114,10 @@ pub use scrollbar::{
 pub use secure_text_field::{
     BasicSecureTextField, DEFAULT_OBFUSCATION_CHARACTER, LOCAL_PASSWORD_VISIBILITY,
     PasswordInputTransformation, PasswordVisibility, PerGlyph, TextObfuscationMode,
+};
+pub use selection_handles::{
+    Handle, SELECTION_HANDLE_INFO_KEY, SelectionHandle, SelectionHandleAnchor, SelectionHandleIcon,
+    SelectionHandleInfo, is_handle_ltr_direction, is_left_selection_handle,
 };
 pub use shape::{
     AbsoluteCutCornerShape, AbsoluteRoundedCornerShape, CIRCLE_SHAPE, CornerSize, CornerSizes,

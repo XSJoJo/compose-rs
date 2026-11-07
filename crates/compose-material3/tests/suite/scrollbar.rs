@@ -147,7 +147,10 @@ fn it_shows_on_a_scroll_then_fades() {
         assert_eq!(thumb(&mut ui).map(|thumb| thumb.1), Some(THUMB), "during the delay");
         ui.advance_time_by(Duration::from_millis(100));
         let fading = thumb(&mut ui).expect("fading").1;
-        assert!(fading.alpha() < 255 && fading.alpha() > 0, "{fading:?}");
+        assert!(
+            ((fading.to_argb() >> 24) as u8) < 255 && ((fading.to_argb() >> 24) as u8) > 0,
+            "{fading:?}"
+        );
         ui.advance_time_by(Duration::from_millis(100));
         assert_eq!(thumb(&mut ui), None, "gone");
     }
@@ -172,7 +175,7 @@ fn a_scroll_starts_the_delay_over() {
     assert_eq!(thumb(&mut ui).map(|thumb| thumb.1), Some(THUMB), "160 ms on, 80 from the last");
     ui.advance_time_by(Duration::from_millis(80));
     let fading = thumb(&mut ui).expect("fading").1;
-    assert!(fading.alpha() < 255);
+    assert!(((fading.to_argb() >> 24) as u8) < 255);
     offset.set(30);
     ui.advance_time_by(Duration::from_millis(32));
     assert_eq!(thumb(&mut ui).map(|thumb| thumb.1), Some(THUMB), "shown again");
@@ -528,7 +531,7 @@ fn the_track_fades_and_a_new_style_is_drawn() {
     offset.set(100);
     ui.advance_time_by(Duration::from_millis(500));
     let alpha = track(&mut ui).expect("a track").1.alpha();
-    assert!(alpha > 0 && alpha < TRACK.alpha(), "part way: {alpha}");
+    assert!(alpha > 0.0 && alpha < TRACK.alpha(), "part way: {alpha}");
     ui.set_auto_advance(true);
     ui.wait_for_idle();
     // A new style, and a scroll to show it: it's what's drawn.
@@ -538,7 +541,7 @@ fn the_track_fades_and_a_new_style_is_drawn() {
     offset.set(200);
     ui.advance_time_by(Duration::from_millis(50));
     let color = thumb(&mut ui).expect("a thumb").1;
-    assert_eq!(color.argb() & 0xFF_FFFF, Color::BLUE.argb() & 0xFF_FFFF);
+    assert_eq!(color.to_argb() & 0xFF_FFFF, Color::BLUE.to_argb() & 0xFF_FFFF);
     ui.set_auto_advance(true);
     ui.wait_for_idle();
 }

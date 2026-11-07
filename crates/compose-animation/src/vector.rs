@@ -286,12 +286,15 @@ impl Animate for Color {
             let value = f32::from(channel) / 255.0;
             if value <= 0.04045 { value / 12.92 } else { ((value + 0.055) / 1.055).powf(2.4) }
         };
-        let (r, g, b) = (linear(self.red()), linear(self.green()), linear(self.blue()));
+        // A color of another space animates as its sRGB conversion (Compose converts it to
+        // Oklab directly, and back to its space).
+        let argb = self.to_argb();
+        let (r, g, b) = (linear((argb >> 16) as u8), linear((argb >> 8) as u8), linear(argb as u8));
         let l = (0.412_221_46 * r + 0.536_332_55 * g + 0.051_445_995 * b).cbrt();
         let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
         let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).cbrt();
         AnimationVector::from([
-            f32::from(self.alpha()) / 255.0,
+            f32::from((argb >> 24) as u8) / 255.0,
             0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s,
             1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s,
             0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s,

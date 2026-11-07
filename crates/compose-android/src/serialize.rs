@@ -151,6 +151,9 @@ impl Writer {
     pub fn f32(&mut self, value: f32) {
         self.bytes.extend_from_slice(&value.to_le_bytes());
     }
+    pub fn u64(&mut self, value: u64) {
+        self.bytes.extend_from_slice(&value.to_le_bytes());
+    }
     fn offset(&mut self, offset: Offset) {
         self.f32(offset.x);
         self.f32(offset.y);
@@ -167,14 +170,16 @@ impl Writer {
         }
     }
     fn color(&mut self, color: Color) {
-        self.u32(color.argb());
+        self.u32(color.to_argb());
     }
     /// Color, style flags (1 stroke, 2 a blend mode follows, 4 a color filter follows, 8 a blur
-    /// radius follows: a mask filter, a shadow's), stroke
+    /// radius follows: a mask filter, a shadow's; 16 a color long follows), stroke
     /// width, cap (0 butt, 1 round, 2 square), its shader (from `shaders`): see
-    /// [`Writer::shader`]; then its blend mode (u8, Compose's order) if not `SrcOver`, and its
-    /// color filter (from `filters`, [`Writer::color_filter`]) if any: a plain paint's bytes are
-    /// what they were before either. Faded by `alpha` (folded layers'): its color's alpha, or
+    /// [`Writer::shader`]; then its blend mode (u8, Compose's order) if not `SrcOver`, its
+    /// color filter (from `filters`, [`Writer::color_filter`]) if any, its blur radius, and
+    /// the `@ColorLong` of a color of another space than sRGB that Android's paints take
+    /// ([`color_long`]; the ARGB is then its sRGB conversion): a plain sRGB paint's bytes are
+    /// what they were before any. Faded by `alpha` (folded layers'): its color's alpha, or
     /// its shader's. A gradient that is a solid color (see [`shading`]) is that color at the
     /// shader's alpha, with no shader.
     fn paint(&mut self, paint: &Paint, (shaders, filters): Tables<'_>, alpha: f32) {
@@ -184,13 +189,13 @@ impl Writer {
             .map_or(Shading::Color, shading);
         let color = match shading {
             Shading::Solid(color, opacity) => {
-                color.with_alpha(color.alpha() as f32 / 255.0 * opacity.clamp(0.0, 1.0))
+                color.with_alpha(color.alpha() * opacity.clamp(0.0, 1.0))
             }
             Shading::Color | Shading::Gradient(_) => paint.color,
         };
         self.color(faded(color, alpha));
         // Most paints are plain: no flag to work out.
-        let (filter, blended, blurred, flags) = if paint.is_plain() {
+        let (filter, blended, blurred, mut flags) = if paint.is_plain() {
             (None, false, false, 0)
         } else {
             let filter = paint.color_filter().and_then(|index| filters.get(index.index()));
@@ -200,6 +205,15 @@ impl Writer {
                 u8::from(blended) << 1 | u8::from(filter.is_some()) << 2 | u8::from(blurred) << 3;
             (filter, blended, blurred, flags)
         };
+        // An sRGB color is its ARGB: one test of its space's bits.
+        let long = if color.value() & 0x3F != 0 && matches!(shading, Shading::Color) {
+            color_long(faded_wide(color, alpha))
+        } else {
+            None
+        };
+        if long.is_some() {
+            flags |= COLOR_LONG;
+        }
         match paint.style {
             PaintStyle::Fill => {
                 self.u8(flags);
@@ -229,6 +243,9 @@ impl Writer {
         }
         if blurred {
             self.f32(paint.blur_radius());
+        }
+        if let Some(long) = long {
+            self.u64(long);
         }
     }
     /// A color filter: its kind (a [`color_filter`] constant), then for a blend mode filter
@@ -384,7 +401,10 @@ fn average_color(gradient: &compose_ui::platform::Gradient) -> Color {
     let colors: Vec<[f32; 4]> = gradient
         .colors
         .iter()
-        .map(|color| [color.alpha(), color.red(), color.green(), color.blue()].map(f32::from))
+        .map(|color| {
+            let argb = color.to_argb();
+            [24, 16, 8, 0].map(|shift| f32::from((argb >> shift) as u8))
+        })
         .collect();
     let colors = if colors.len() == 1 { vec![colors[0]; 2] } else { colors };
     let count = colors.len();
@@ -729,6 +749,9 @@ fn paint_bytes(bytes: &[u8], at: usize) -> usize {
     if flags & 8 != 0 {
         end += 4;
     }
+    if flags & COLOR_LONG != 0 {
+        end += 8;
+    }
     end - at
 }
 
@@ -841,12 +864,35 @@ fn foldable_layer(ops: &[DrawOp], start: usize, bounds: Rect) -> Option<usize> {
     single_drawing_extent(layer).is_some_and(|extent| fits_in(extent, bounds)).then_some(end)
 }
 
+/// A paint's style flag: Android's `@ColorLong` of its color follows ([`color_long`]).
+pub const COLOR_LONG: u8 = 16;
+
+/// The `@ColorLong` an Android paint takes for `color`, as Compose's `toSupportedColorLong`
+/// (docs/parity/design/color-spaces.md): `None` for an sRGB color, which its ARGB says, and for
+/// a space Android's paints don't take (unspecified, Oklab, CIE XYZ and Lab), drawn as its sRGB
+/// conversion. Compose's ids 0 to 15 are Android's; BT.2020 HLG and PQ, Compose's 17 and 18, are
+/// Android's 16 and 17 (API 34: below it, the replayer keeps the ARGB, as Compose's
+/// `toColorLong` converts to sRGB).
+pub fn color_long(color: Color) -> Option<u64> {
+    let value = color.value();
+    match value & 0x3F {
+        0 | 14 | 15 | 16 | 19 => None,
+        17 | 18 => Some(value - 1),
+        _ => Some(value),
+    }
+}
+
+/// A color of another space than sRGB with its alpha multiplied by `alpha`.
+fn faded_wide(color: Color, alpha: f32) -> Color {
+    if alpha >= 1.0 { color } else { color.with_alpha(color.alpha() * alpha.clamp(0.0, 1.0)) }
+}
+
 /// `color` with its alpha multiplied by `alpha`.
 fn faded(color: Color, alpha: f32) -> Color {
     if alpha >= 1.0 {
         return color;
     }
-    let argb = color.argb();
+    let argb = color.to_argb();
     let faded = ((argb >> 24) as f32 * alpha.clamp(0.0, 1.0)).round() as u32;
     Color::from_argb((faded << 24) | (argb & 0x00FF_FFFF))
 }
@@ -1721,7 +1767,7 @@ mod tests {
         assert_eq!(bytes[layer], tag::SAVE_LAYER);
         assert_eq!(bytes[layer + 1 + 20], BlendMode::Screen as u8);
         assert_eq!(bytes[layer + 1 + 21], color_filter::LIGHTING);
-        assert_eq!(read_u32(bytes, layer + 1 + 22), Color::RED.argb());
+        assert_eq!(read_u32(bytes, layer + 1 + 22), Color::RED.to_argb());
         assert_eq!(bytes[layer + 1 + operand_bytes(bytes, layer)], tag::RESTORE);
     }
 
@@ -1748,7 +1794,7 @@ mod tests {
         assert_eq!(bytes[second], tag::DRAW_RECT);
         assert_eq!(bytes[second + 1 + 16 + 4], 4, "fill, a filter");
         assert_eq!(bytes[second + after_shader], color_filter::BLEND_MODE);
-        assert_eq!(read_u32(bytes, second + after_shader + 1), Color::BLUE.argb());
+        assert_eq!(read_u32(bytes, second + after_shader + 1), Color::BLUE.to_argb());
         assert_eq!(bytes[second + after_shader + 5], BlendMode::SrcIn as u8);
         assert_eq!(bytes[second + 1 + operand_bytes(bytes, second)], tag::RESTORE);
     }
@@ -1768,6 +1814,105 @@ mod tests {
         let blur = 1 + 16 + 4 + 1 + 4 + 1 + 1 + 1;
         assert_eq!(f32::from_le_bytes(bytes[blur..blur + 4].try_into().unwrap()), 3.5);
         assert_eq!(bytes[1 + operand_bytes(bytes, 0)], tag::RESTORE);
+    }
+
+    /// A rectangle of `paint`'s bytes: its ARGB, its flags, and the color long if any.
+    fn wide_rect(paint: Paint) -> (u32, u8, Option<u64>) {
+        let mut list = DisplayList::default();
+        list.push(DrawOp::DrawRect(Rect::new(0.0, 0.0, 1.0, 1.0), paint));
+        list.push(DrawOp::Restore);
+        let (mut resources, mut out) = (Resources::default(), Writer::default());
+        write_display_list(&list, &mut resources, &mut GroupCache::default(), &mut out);
+        let bytes = &out.bytes;
+        let flags = bytes[1 + 16 + 4];
+        let after_shader = 1 + 16 + 4 + 1 + 4 + 1 + 1;
+        let long = (flags & COLOR_LONG != 0)
+            .then(|| u64::from_le_bytes(bytes[after_shader..after_shader + 8].try_into().unwrap()));
+        assert_eq!(bytes[1 + operand_bytes(bytes, 0)], tag::RESTORE, "the paint's length");
+        (read_u32(bytes, 1 + 16), flags, long)
+    }
+
+    // Compose: compose/ui/ui-graphics/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/PaintTest.kt, testColorLongConfiguration
+    // Compose: compose/ui/ui-graphics/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/ColorTest.kt, toColorLong, toColorLong34
+    /// A color of a space Android's paints take is written as its color long (Compose's packing,
+    /// the ids Android's) after the rest, its ARGB being its sRGB conversion; an sRGB paint's
+    /// bytes are what they were.
+    #[test]
+    fn a_wide_color_is_written_as_androids_color_long() {
+        use compose_ui::colorspace::ColorSpaces;
+        let adobe = Color::new_with(0.8916, 0.4980, 0.1168, 1.0, &ColorSpaces::ADOBE_RGB);
+        let (argb, flags, long) = wide_rect(Paint::fill(adobe));
+        assert_eq!(flags, COLOR_LONG);
+        assert_eq!(argb, adobe.to_argb());
+        assert_eq!(long, Some(adobe.value()));
+        assert_eq!(long.unwrap() & 0x3F, 10, "Android's ADOBE_RGB");
+        // With the other flags, it comes last.
+        let blurred = Paint::fill(adobe).with_blend_mode(BlendMode::Xor).with_blur(2.0);
+        let mut list = DisplayList::default();
+        list.push(DrawOp::DrawRect(Rect::new(0.0, 0.0, 1.0, 1.0), blurred));
+        list.push(DrawOp::Restore);
+        let (mut resources, mut out) = (Resources::default(), Writer::default());
+        write_display_list(&list, &mut resources, &mut GroupCache::default(), &mut out);
+        let at = 1 + 16 + 4 + 1 + 4 + 1 + 1 + 1 + 4;
+        assert_eq!(out.bytes[1 + 16 + 4], 2 | 8 | COLOR_LONG);
+        assert_eq!(u64::from_le_bytes(out.bytes[at..at + 8].try_into().unwrap()), adobe.value());
+        // Every space up to CIE XYZ keeps its id; sRGB writes no long.
+        let color = Color::from_argb(0x1F2B_3D4E);
+        for id in 1..14 {
+            let converted = color.convert(ColorSpaces::get(id).unwrap());
+            assert_eq!(wide_rect(Paint::fill(converted)).2, Some(converted.value()), "{id}");
+        }
+        assert_eq!(wide_rect(Paint::fill(color)), (0x1F2B_3D4E, 0, None));
+    }
+
+    // Compose: compose/ui/ui-graphics/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/PaintTest.kt, testColorLongConfigurationBt2020Hlg, testColorLongConfigurationBt2020Pq
+    #[test]
+    fn hlg_and_pq_take_androids_ids() {
+        use compose_ui::colorspace::ColorSpaces;
+        let hlg = Color::new_with(0.1, 0.2, 0.3, 1.0, &ColorSpaces::BT2020_HLG);
+        assert_eq!(wide_rect(Paint::fill(hlg)).2.map(|long| long & 0x3F), Some(16));
+        assert_eq!(color_long(hlg).unwrap() & !0x3F, hlg.value() & !0x3F);
+        let pq = Color::new_with(0.1, 0.2, 0.3, 1.0, &ColorSpaces::BT2020_PQ);
+        assert_eq!(wide_rect(Paint::fill(pq)).2.map(|long| long & 0x3F), Some(17));
+    }
+
+    // Compose: compose/ui/ui-graphics/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/PaintTest.kt, testColorLongConfigurationOkLabFallsBackToSrgb, testColorLongConfigurationCieXyzFallsBackToSrgb, testColorUnspecifiedSafeFallback, testColorUnspecifiedCompositeOverFallback
+    // Compose: compose/ui/ui-graphics/src/androidHostTest/kotlin/androidx/compose/ui/graphics/AndroidColorTest.kt, testUnspecifiedCompositeOverToColorLong, testColorUnspecifiedToColorLong, testUnspecifiedColorSpaceWithVariousBlueChannels, testOklabFallbackOnOlderApi
+    // Compose: compose/ui/ui-graphics/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/ColorTest.kt, toColorLongUnspecified
+    /// The spaces Android's paints don't take are drawn as their sRGB conversion, with no long.
+    #[test]
+    fn spaces_android_paints_dont_take_are_written_as_srgb() {
+        use compose_ui::colorspace::ColorSpaces;
+        let oklab = Color::new_with(0.5, 0.1, 0.1, 1.0, &ColorSpaces::OKLAB);
+        let xyz = Color::new_with(0.5, 0.5, 0.5, 1.0, &ColorSpaces::CIE_XYZ);
+        let lab = Color::new_with(50.0, 10.0, 10.0, 1.0, &ColorSpaces::CIE_LAB);
+        for color in [oklab, xyz, lab] {
+            assert_eq!(wide_rect(Paint::fill(color)), (color.to_argb(), 0, None), "{color}");
+        }
+        // Unspecified, and a color composited over it, are in the unspecified space.
+        assert_eq!(color_long(Color::UNSPECIFIED), None);
+        let real = Color::new(3.0 / 255.0, 252.0 / 255.0, 21.0 / 255.0, 0.38);
+        let blended = real.composite_over(Color::UNSPECIFIED);
+        assert_eq!(*blended.color_space(), ColorSpaces::UNSPECIFIED);
+        assert_eq!(color_long(blended), None);
+        for blue in [21.0 / 255.0, 45.0 / 255.0, 63.0 / 255.0, 1.0] {
+            let color = Color::new_with(0.5, 0.5, blue, 0.8, &ColorSpaces::UNSPECIFIED);
+            assert_eq!(color_long(color), None);
+        }
+        let (argb, flags, long) = wide_rect(Paint::fill(blended));
+        assert_eq!((argb, flags, long), (blended.to_argb(), 0, None));
+    }
+
+    /// A wide color under a folded layer's alpha has its long faded too.
+    #[test]
+    fn a_folded_alpha_fades_the_color_long() {
+        use compose_ui::colorspace::ColorSpaces;
+        let p3 = Color::new_with(0.9, 0.2, 0.1, 1.0, &ColorSpaces::DISPLAY_P3);
+        let mut writer = Writer::default();
+        writer.paint(&Paint::fill(p3), (&[], &[]), 0.5);
+        let long = u64::from_le_bytes(writer.bytes[11..19].try_into().unwrap());
+        assert_eq!(writer.bytes[4], COLOR_LONG);
+        assert_eq!(Color::from_value(long), p3.with_alpha(0.5));
     }
 
     // Compose: compose/ui/ui-graphics/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/AndroidBlendModeTest.kt, testBlendModeClearMapsToPorterDuffClear and the other mappings
@@ -2369,7 +2514,7 @@ mod tests {
         let at = at + 2 + 16;
         assert_eq!(read_u32(bytes, at), 3);
         let colors: Vec<u32> = (0..3).map(|index| read_u32(bytes, at + 4 + index * 4)).collect();
-        assert_eq!(colors, [Color::RED.argb(), Color::GREEN.argb(), Color::BLUE.argb()]);
+        assert_eq!(colors, [Color::RED.to_argb(), Color::GREEN.to_argb(), Color::BLUE.to_argb()]);
         let at = at + 4 + 12;
         assert_eq!(read_u32(bytes, at), 3);
         let stops: Vec<f32> = (0..3).map(|index| read_f32(bytes, at + 4 + index * 4)).collect();

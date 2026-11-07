@@ -51,11 +51,8 @@ pub(crate) fn skia_shader(
     use compose_ui::platform::Shader;
     use skia_safe::gradient::{Colors, Gradient, Interpolation, shaders};
     let gradient = shader.gradient();
-    let mut colors: Vec<skia_safe::Color4f> = gradient
-        .colors
-        .iter()
-        .map(|color| skia_safe::Color4f::from(skia_safe::Color::new(color.argb())))
-        .collect();
+    let mut colors: Vec<skia_safe::Color4f> =
+        gradient.colors.iter().map(|color| color4f(*color)).collect();
     // A gradient needs two colors: one is a solid color.
     if colors.len() == 1 {
         colors.push(colors[0]);
@@ -132,7 +129,7 @@ pub(crate) fn skia_blend_mode(mode: BlendMode) -> skia_safe::BlendMode {
 /// Skia's color filter for `filter`. A matrix's offsets are in 0 to 255, as Android's
 /// `ColorMatrix` and Compose's; Skia's are in 0 to 1, as HWUI divides them.
 pub(crate) fn skia_color_filter(filter: &ColorFilter) -> Option<skia_safe::ColorFilter> {
-    let color = |color: Color| skia_safe::Color::new(color.argb());
+    let color = |color: Color| skia_safe::Color::new(color.to_argb());
     match filter {
         ColorFilter::BlendMode { color: tint, blend_mode } => {
             skia_safe::color_filters::blend(color(*tint), skia_blend_mode(*blend_mode))
@@ -150,10 +147,25 @@ pub(crate) fn skia_color_filter(filter: &ColorFilter) -> Option<skia_safe::Color
     }
 }
 
+/// `color` as Skia's float color in sRGB: an sRGB color its bytes; a color of another space
+/// converted to extended sRGB, which holds every space's colors (values below 0 or above 1 are
+/// outside sRGB), as skia-safe can't name the color's own space (no `SkColorSpace::MakeRGB`).
+pub(crate) fn color4f(color: Color) -> skia_safe::Color4f {
+    if color.value() & 0x3F == 0 {
+        return skia_safe::Color4f::from(skia_safe::Color::new(color.to_argb()));
+    }
+    let extended = color.convert(&compose_ui::colorspace::ColorSpaces::EXTENDED_SRGB);
+    skia_safe::Color4f::new(extended.red(), extended.green(), extended.blue(), extended.alpha())
+}
+
 fn skia_paint(paint: &Paint, filters: &[ColorFilter]) -> skia_safe::Paint {
     let mut skia = skia_safe::Paint::default();
     skia.set_anti_alias(true);
-    skia.set_color(skia_safe::Color::new(paint.color.argb()));
+    if paint.color.value() & 0x3F == 0 {
+        skia.set_color(skia_safe::Color::new(paint.color.to_argb()));
+    } else {
+        skia.set_color4f(color4f(paint.color), None);
+    }
     if paint.blend_mode != BlendMode::SrcOver {
         skia.set_blend_mode(skia_blend_mode(paint.blend_mode));
     }
@@ -453,8 +465,8 @@ fn draw_op(
                 skia_safe::Point3::new(0.0, 0.0, *elevation),
                 skia_safe::Point3::new(light.0, light.1, light.2),
                 *light_radius,
-                skia_safe::Color::new(ambient.argb()),
-                skia_safe::Color::new(spot.argb()),
+                skia_safe::Color::new(ambient.to_argb()),
+                skia_safe::Color::new(spot.to_argb()),
                 flags,
             );
         }
@@ -649,7 +661,7 @@ impl Renderer for RasterRenderer {
         text_measurer: &dyn TextMeasurer,
     ) {
         let canvas = self.surface.canvas();
-        canvas.clear(skia_safe::Color::new(background.argb()));
+        canvas.clear(skia_safe::Color::new(background.to_argb()));
         let count = canvas.save();
         canvas.scale((scale, scale));
         draw_display_list_with(canvas, list, text_measurer, self.optimizations);
@@ -871,11 +883,34 @@ fn skia_image(image: &compose_ui::ImageBitmap) -> Option<skia_safe::Image> {
             skia_safe::AlphaType::Premul,
             None,
         );
-        let data = skia_safe::Data::new_copy(image.pixels());
+        let data = skia_safe::Data::new_copy(&image.pixels());
         let skia = skia_safe::images::raster_from_data(&info, data, image.width() as usize * 4)?;
         images.insert(image.id(), (image.downgrade(), skia.clone()));
         Some(skia)
     })
+}
+
+/// The platform bitmap rasterizer on desktop (`compose_ui::platform::set_bitmap_rasterizer`):
+/// draws a bitmap's canvas's operations into its pixels with Skia, as Compose Desktop's
+/// `Canvas(imageBitmap)` draws with Skiko. Paragraphs aren't drawn (no text measurer).
+pub struct SkiaBitmapRasterizer;
+
+impl compose_ui::platform::BitmapRasterizer for SkiaBitmapRasterizer {
+    fn draw(&self, list: &DisplayList, width: u32, height: u32, pixels: &mut [u8]) {
+        let info = skia_safe::ImageInfo::new(
+            (width as i32, height as i32),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Premul,
+            None,
+        );
+        let Some(mut surface) =
+            skia_safe::surfaces::wrap_pixels(&info, pixels, width as usize * 4, None)
+        else {
+            return;
+        };
+        let measurer = compose_ui::platform::FixedTextMeasurer::default();
+        draw_display_list(surface.canvas(), list, &measurer);
+    }
 }
 
 /// Decodes an encoded image (PNG, JPEG, WebP, GIF's first frame, …) with Skia, as the

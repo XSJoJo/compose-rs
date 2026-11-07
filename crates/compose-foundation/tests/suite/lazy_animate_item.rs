@@ -553,7 +553,7 @@ fn fade_fixture(options: FadeList) -> FadeFixture {
         let content = move |scope: LazyListScope| {
             scope.items_list_keyed(
                 colors.clone(),
-                |color: &Color| color.argb(),
+                |color: &Color| color.to_argb(),
                 move |item_scope, color: &Color| {
                     colored_item(&item_scope, vertical, *color, fade_in(*color), fade_out(*color));
                 },
@@ -2688,7 +2688,7 @@ fn modified_list(
             |scope: LazyListScope| {
                 scope.items_list_keyed(
                     colors.clone(),
-                    |color: &Color| color.argb(),
+                    |color: &Color| color.value(),
                     move |item_scope, color: &Color| {
                         Box!(modifier = modifier(&item_scope, *color).size(dp(ITEM)));
                     },

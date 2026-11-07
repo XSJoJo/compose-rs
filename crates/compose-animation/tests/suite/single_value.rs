@@ -155,10 +155,10 @@ fn a_color_tweens_in_oklab_frame_by_frame() {
         let fraction = tween_fraction(FAST_OUT_LINEAR_IN_EASING, play, 100);
         let expected = Color::from_vector(black.map(|i, a| lerp(a, cyan_vector[i], fraction)));
         for (actual, expected) in [
-            (color.red(), expected.red()),
-            (color.green(), expected.green()),
-            (color.blue(), expected.blue()),
-            (color.alpha(), expected.alpha()),
+            (((color.to_argb() >> 16) as u8), ((expected.to_argb() >> 16) as u8)),
+            (((color.to_argb() >> 8) as u8), ((expected.to_argb() >> 8) as u8)),
+            ((color.to_argb() as u8), (expected.to_argb() as u8)),
+            (((color.to_argb() >> 24) as u8), ((expected.to_argb() >> 24) as u8)),
         ] {
             assert!(actual.abs_diff(expected) <= 1, "at {play} ms: {color:?}, not {expected:?}");
         }

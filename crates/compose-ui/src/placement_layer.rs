@@ -187,10 +187,12 @@ impl UiTree {
         self.invalidate_drawing_of_node(node);
         self.note_updated_layer(node);
         // What's in it moved, though its layers' places didn't: those listening hear of it, as
-        // Compose's `onLayoutChange` for a layer made or destroyed.
+        // Compose's `onLayoutChange` for a layer made or destroyed; a text selection's handles
+        // follow it too.
         if !self.positioned.is_empty()
             || !self.coordinate_readers.is_empty()
             || self.rects.is_some()
+            || self.text_selection.is_some()
         {
             let value = self.node_mut(node);
             if !value.layer_moved {
