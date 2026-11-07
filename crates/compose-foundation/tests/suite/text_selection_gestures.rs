@@ -9,8 +9,8 @@
 //! As Compose's tests: the test font at 15 sp, density 1, a touch slop of 0.1, the container
 //! inset by 32 dp and wrapping its text, which fills its width. Each check is the asserter's:
 //! the selection, the handles shown, and at least as many `TextHandleMove` haptics as expected
-//! since the last check. The toolbar's checks wait on `text-context-menu`; no magnifier shows
-//! (Compose's checks are skipped where the platform has none).
+//! since the last check, and the text toolbar shown or not on the test rule's toolbar (D2043); no
+//! magnifier shows (Compose's checks are skipped where the platform has none).
 
 #![allow(non_snake_case)]
 
@@ -129,6 +129,8 @@ pub(crate) struct Gestures {
     pub start_shown: Option<bool>,
     pub end_shown: Option<bool>,
     pub haptics: u32,
+    /// The text toolbar expected shown, as the asserter's `textToolbarShown` (D2041).
+    pub toolbar_shown: bool,
 }
 
 /// Each test's runs: in both directions, over one text and over several.
@@ -227,6 +229,7 @@ fn gestures_in(rtl: bool, multi: bool) -> Gestures {
         start_shown: None,
         end_shown: None,
         haptics: 0,
+        toolbar_shown: false,
     }
 }
 
@@ -477,6 +480,9 @@ impl Gestures {
             };
             assert_eq!(visible, shown, "{handle:?} shown");
         }
+        // The test rule's toolbar, as the spy's `assertShown` (D2041).
+        let toolbar = self.ui.text_toolbar().is_shown();
+        assert_eq!(toolbar, self.toolbar_shown, "the text toolbar shown");
         let performed = HAPTICS.with(|count| count.replace(0));
         assert!(performed >= self.haptics, "{performed} haptics, expected {}", self.haptics);
         self.haptics = 0;
@@ -598,6 +604,13 @@ fn whenTouch_withLongPressInEndPaddingOfEmptyFinalLine_entersSelectionMode() {
             it.haptics += 1;
         });
         it.up();
+        // Compose's last check finds the toolbar shown with the finger still down, after no
+        // action since the check before, which found it hidden, over several texts too, where
+        // the selection holds no character (its `getContentRect` is null there); here it shows
+        // once the long press lifts (`onStop`) over a selected character, as in the file's other
+        // tests (D2041).
+        it.toolbar_shown = !multi;
+        it.check();
     }
 }
 
@@ -608,6 +621,7 @@ fn whenTouch_withLongPressThenClear_noSelection() {
         let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.long_click(at);
+        it.toolbar_shown = true;
         it.expect(|it| {
             it.selection = Some((12, 17));
             it.handles_shown = true;
@@ -615,6 +629,7 @@ fn whenTouch_withLongPressThenClear_noSelection() {
         });
         let at = it.character(14);
         it.touch(|touch| touch.click_at(at));
+        it.toolbar_shown = false;
         it.expect(|it| {
             it.selection = None;
             it.handles_shown = false;
@@ -666,6 +681,7 @@ fn whenTouch_withLongPress_selectsSingleWord() {
         let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.long_click(at);
+        it.toolbar_shown = true;
         it.expect(|it| {
             it.selection = Some((12, 17));
             it.handles_shown = true;
@@ -680,6 +696,7 @@ fn whenTouch_withLongPressesOnMultipleWords_selectsSingleWords() {
     for (rtl, multi) in variants() {
         let mut it = gestures_in(rtl, multi);
         it.handles_shown = true;
+        it.toolbar_shown = true;
         let words = [(2, (0, 5)), (8, (6, 11)), (13, (12, 17)), (20, (18, 23)), (26, (24, 29))];
         for (offset, selection) in words {
             let at = it.character(offset);
@@ -713,6 +730,7 @@ fn long_press_then_drag_forwards_and_back(forward: usize, back: usize, expected:
         it.touch_drag_to(to);
         it.check();
         it.up();
+        it.toolbar_shown = true;
         it.check();
     }
 }
@@ -759,6 +777,7 @@ fn long_press_then_drag_to_end_padding(to: fn(&mut Gestures) -> Offset, expected
             it.haptics += 1;
         });
         it.up();
+        it.toolbar_shown = true;
         it.check();
     }
 }
@@ -797,6 +816,7 @@ fn whenTouch_withLongPressInEndPadding_entersSelectionMode() {
         it.touch_drag_by(by);
         it.check();
         it.up();
+        it.toolbar_shown = true;
         it.check();
     }
 }
@@ -830,6 +850,7 @@ fn long_press_in_end_padding_then_drag(to: fn(&mut Gestures) -> Offset, expected
             });
         }
         it.up();
+        it.toolbar_shown = true;
         it.check();
     }
 }
@@ -861,6 +882,7 @@ fn whenTouch_withLongPressInEndPaddingOfFinalLine_entersSelectionMode() {
         it.touch_drag_by(Offset::new(-1.0, 0.0));
         it.check();
         it.up();
+        it.toolbar_shown = true;
         it.check();
     }
 }
@@ -894,6 +916,7 @@ fn whenTouch_withLongPressInFinalLineEndPaddingThenDragToMidEndPadding_entersSel
             });
         }
         it.up();
+        it.toolbar_shown = true;
         it.check();
     }
 }
@@ -911,6 +934,7 @@ fn whenTouch_withLongPressInEndPadding_selectsFinalWord() {
             it.haptics += 1;
         });
         it.up();
+        it.toolbar_shown = true;
         it.check();
     }
 }
@@ -1056,6 +1080,7 @@ fn whenMouse_thenTouch_touchBehaviorsAppear() {
         });
         it.expect(|it| it.selection = Some((12, 17)));
         it.enter_touch_mode();
+        it.toolbar_shown = true;
         it.expect(|it| it.handles_shown = true);
     }
 }
@@ -1067,12 +1092,14 @@ fn whenTouch_thenMouse_touchBehaviorsDisappear() {
         let mut it = gestures_in(rtl, multi);
         let at = it.character(13);
         it.long_click(at);
+        it.toolbar_shown = true;
         it.expect(|it| {
             it.selection = Some((12, 17));
             it.handles_shown = true;
             it.haptics += 1;
         });
         it.enter_cursor_mode(kind);
+        it.toolbar_shown = false;
         it.expect(|it| it.handles_shown = false);
     }
 }
@@ -1120,6 +1147,9 @@ fn whenMouseCollapsedSelectionAcrossLines_thenTouch_showUi() {
         it.cursor_drag_to(kind, to);
         it.expect(|it| it.selection = Some((23, 24)));
         it.enter_touch_mode();
+        // Over several texts, the selection holds no character: no toolbar, as the multi-text
+        // tests' override.
+        it.toolbar_shown = !multi;
         it.expect(|it| it.handles_shown = true);
     }
 }
@@ -1167,6 +1197,7 @@ fn whenTouch_withDoubleClick_selectsWord() {
             touch.click_at(at);
             touch.click_at(at);
         });
+        it.toolbar_shown = true;
         it.expect(|it| {
             it.selection = Some((12, 17));
             it.handles_shown = true;
@@ -1196,6 +1227,7 @@ fn double_tap_then_drag(end: usize, last: (usize, usize)) {
         it.touch_drag_to(to);
         it.expect(|it| it.selection = Some(last));
         it.up();
+        it.toolbar_shown = true;
         it.expect(|it| it.handles_shown = true);
     }
 }
@@ -1242,6 +1274,7 @@ fn a_second_tap_dragged_at_once_selects_by_words() {
     it.touch_drag_to(to);
     it.expect(|it| it.selection = Some((12, 23)));
     it.up();
+    it.toolbar_shown = true;
     it.check();
 }
 
@@ -1291,6 +1324,7 @@ fn whenTouchHandle_verifyOneCharStaysSelected_withinLine() {
     let mut it = gestures(false);
     let at = it.character_center_left(14);
     it.long_click(at);
+    it.toolbar_shown = true;
     it.expect(|it| {
         it.selection = Some((12, 17));
         it.handles_shown = true;
@@ -1299,6 +1333,7 @@ fn whenTouchHandle_verifyOneCharStaysSelected_withinLine() {
     let handle = Handle::SelectionEnd;
     let mut gesture = press_handle(&mut it, handle);
     move_handle_to_character(&mut it, handle, &mut gesture, 13);
+    it.toolbar_shown = false;
     it.expect(|it| {
         it.selection = Some((12, 13));
         it.haptics += 1;
@@ -1312,6 +1347,7 @@ fn whenTouchHandle_verifyOneCharStaysSelected_withinLine() {
         it.haptics += 1;
     });
     release_handle(&mut it, handle);
+    it.toolbar_shown = true;
     it.check();
 }
 
@@ -1321,6 +1357,7 @@ fn whenTouchHandle_thenDragLeftOutOfBounds_keepsFirstCharSelected() {
     let mut it = gestures(false);
     let at = it.character_center_left(9);
     it.long_click(at);
+    it.toolbar_shown = true;
     it.expect(|it| {
         it.selection = Some((6, 11));
         it.handles_shown = true;
@@ -1331,6 +1368,7 @@ fn whenTouchHandle_thenDragLeftOutOfBounds_keepsFirstCharSelected() {
     for offset in [8, 7, 6] {
         move_handle_to_character(&mut it, handle, &mut gesture, offset);
     }
+    it.toolbar_shown = false;
     it.expect(|it| {
         it.selection = Some((6, 7));
         it.haptics += 1;
@@ -1340,6 +1378,7 @@ fn whenTouchHandle_thenDragLeftOutOfBounds_keepsFirstCharSelected() {
     move_handle_to(&mut it, handle, &mut gesture, Offset::new(-1.0, y));
     it.check();
     release_handle(&mut it, handle);
+    it.toolbar_shown = true;
     it.check();
 }
 
@@ -1351,6 +1390,7 @@ fn whenTouchHandle_withWordSpanningMultipleLines_selectionCanShrinkWithinLine() 
     it.set_content(&content);
     let at = it.character_center_left(content.len() - 1);
     it.long_click(at);
+    it.toolbar_shown = true;
     it.expect(|it| {
         it.selection = Some((0, content.len()));
         it.handles_shown = true;
@@ -1360,11 +1400,13 @@ fn whenTouchHandle_withWordSpanningMultipleLines_selectionCanShrinkWithinLine() 
     let mut gesture = press_handle(&mut it, handle);
     move_handle_to_character(&mut it, handle, &mut gesture, 10);
     move_handle_to_character(&mut it, handle, &mut gesture, 5);
+    it.toolbar_shown = false;
     it.expect(|it| {
         it.selection = Some((0, 5));
         it.haptics += 1;
     });
     release_handle(&mut it, handle);
+    it.toolbar_shown = true;
     it.check();
 }
 
@@ -1393,6 +1435,7 @@ fn a_second_tap_held_past_the_timeout_drags_within_the_slop() {
     it.touch(|touch| touch.move_to(to));
     it.expect(|it| it.selection = Some((12, 23)));
     it.up();
+    it.toolbar_shown = true;
     it.check();
 }
 
@@ -1404,6 +1447,7 @@ fn a_handle_grows_by_words_from_a_boundary_and_shrinks_by_characters() {
     let mut it = gestures(false);
     let at = it.character_center_left(14);
     it.long_click(at);
+    it.toolbar_shown = true;
     it.expect(|it| {
         it.selection = Some((12, 17));
         it.handles_shown = true;
@@ -1412,6 +1456,7 @@ fn a_handle_grows_by_words_from_a_boundary_and_shrinks_by_characters() {
     let handle = Handle::SelectionEnd;
     let mut gesture = press_handle(&mut it, handle);
     move_handle_to_character(&mut it, handle, &mut gesture, 20);
+    it.toolbar_shown = false;
     it.expect(|it| {
         it.selection = Some((12, 23));
         it.haptics += 1;
@@ -1422,6 +1467,8 @@ fn a_handle_grows_by_words_from_a_boundary_and_shrinks_by_characters() {
         it.haptics += 1;
     });
     release_handle(&mut it, handle);
+    it.toolbar_shown = true;
+    it.check();
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionGesturesTest.kt, whenMouse_withTripleClick_selectsParagraph, whenTrackpad_withTripleClick_selectsParagraph, whenTouch_withTripleClick_selectsParagraph
@@ -1515,6 +1562,7 @@ fn triple_tap_then_drag(end: usize, last: (usize, usize)) {
         it.touch_drag_to(to);
         it.expect(|it| it.selection = Some(last));
         it.up();
+        it.toolbar_shown = true;
         it.expect(|it| it.handles_shown = true);
     }
 }

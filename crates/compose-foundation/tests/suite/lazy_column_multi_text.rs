@@ -279,3 +279,52 @@ fn whenTextIsSavedRestored_clearsSelection() {
     tester.emulate_save_and_restore(&mut ui);
     assert_eq!(selection(&mut ui), None);
 }
+
+/// The box of line `line`'s first line in the root, as `boundingBoxForLineInRoot`.
+fn line_box_in_root(ui: &mut ComposeTestRule, line: usize) -> Rect {
+    let area = ui.on_node_with_tag(TAG).fetch_semantics_snapshot().bounds;
+    line_box(ui, line).translate(Offset::new(area.left, area.top))
+}
+
+/// Where the toolbar goes, its top, as `assertTextToolbarTopAt` (the spy's `contentRect`, in the
+/// window: the root here).
+#[track_caller]
+fn assert_text_toolbar_top_at(ui: &mut ComposeTestRule, y: f32) {
+    let top = ui.text_toolbar().content_rect().map(|rect| rect.top);
+    let top = top.expect("a toolbar's rect");
+    assert!((top - y).abs() <= 0.1, "the toolbar's top {top}, expected {y}");
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/LazyColumnMultiTextRegressionTest.kt, whenScrollingTextOutOfViewUpwards_textToolbarCoercedToTop
+#[test]
+fn whenScrollingTextOutOfViewUpwards_textToolbarCoercedToTop() {
+    let mut ui = rule();
+    let toolbar = ui.text_toolbar();
+    let pointer_area_top =
+        |ui: &mut ComposeTestRule| ui.on_node_with_tag(TAG).fetch_semantics_snapshot().bounds.top;
+    assert!(!toolbar.is_shown());
+
+    create_selection_over(&mut ui, 1, 3);
+    assert!(toolbar.is_shown());
+    let top = line_box_in_root(&mut ui, 1).top;
+    assert_text_toolbar_top_at(&mut ui, top);
+
+    scroll_lines(&mut ui, 3, 1);
+    assert!(toolbar.is_shown());
+    let top = pointer_area_top(&mut ui);
+    assert_text_toolbar_top_at(&mut ui, top);
+
+    scroll_lines(&mut ui, 5, 3);
+    let top = pointer_area_top(&mut ui);
+    assert_text_toolbar_top_at(&mut ui, top);
+
+    scroll_lines(&mut ui, 5, 7);
+    assert!(toolbar.is_shown());
+    let top = pointer_area_top(&mut ui);
+    assert_text_toolbar_top_at(&mut ui, top);
+
+    scroll_lines(&mut ui, 3, 5);
+    assert!(toolbar.is_shown());
+    let top = line_box_in_root(&mut ui, 1).top;
+    assert_text_toolbar_top_at(&mut ui, top);
+}

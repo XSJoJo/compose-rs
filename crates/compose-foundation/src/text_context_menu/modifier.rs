@@ -93,6 +93,56 @@ impl TraversableNode for AppendNode {
     }
 }
 
+/// A builder made where it's collected, from that node's context, as the block of Compose's
+/// internal `addTextContextMenuComponentsWithContext` is given Android's `Context`: here the
+/// tree, which a builder run later can't reach.
+#[doc(hidden)]
+pub type TextContextMenuBuilderWithContext =
+    Rc<dyn Fn(&mut NodeContext<'_>) -> TextContextMenuBuilder>;
+
+/// Adds the components of the builder `with_context` makes when the menu's collected, as
+/// Compose's internal `Modifier.addTextContextMenuComponentsWithContext` (D2041): a container's
+/// items, which ask its tree what's selected.
+#[doc(hidden)]
+pub fn append_text_context_menu_components_with_context(
+    modifier: Modifier,
+    with_context: TextContextMenuBuilderWithContext,
+) -> Modifier {
+    modifier.then_custom(AppendWithContextElement(with_context))
+}
+
+struct AppendWithContextElement(TextContextMenuBuilderWithContext);
+
+struct AppendWithContextNode(TextContextMenuBuilderWithContext);
+
+impl ModifierNodeElement for AppendWithContextElement {
+    type Node = AppendWithContextNode;
+    fn create(&self) -> AppendWithContextNode {
+        AppendWithContextNode(self.0.clone())
+    }
+    fn update(&self, node: &mut AppendWithContextNode) {
+        node.0 = self.0.clone();
+    }
+    fn same(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+    fn name(&self) -> &'static str {
+        "addTextContextMenuDataComponentsWithContext"
+    }
+}
+
+impl ModifierNode for AppendWithContextNode {
+    fn as_traversable(&mut self) -> Option<&mut dyn TraversableNode> {
+        Some(self)
+    }
+}
+
+impl TraversableNode for AppendWithContextNode {
+    fn traverse_key(&self) -> &'static TraverseKey {
+        &TEXT_CONTEXT_MENU_DATA
+    }
+}
+
 struct FilterElement(TextContextMenuFilter);
 
 struct FilterNode(TextContextMenuFilter);
@@ -148,9 +198,12 @@ fn collect_modifiers(
 ) -> (Vec<TextContextMenuBuilder>, Vec<TextContextMenuFilter>) {
     let mut builders: Vec<TextContextMenuBuilder> = Vec::new();
     let mut filters: Vec<TextContextMenuFilter> = Vec::new();
-    context.traverse_ancestors_with_key(&TEXT_CONTEXT_MENU_DATA, |node, _| {
+    context.traverse_ancestors_with_key(&TEXT_CONTEXT_MENU_DATA, |node, context| {
         if let Some(append) = node.downcast_ref::<AppendNode>() {
             builders.push(append.0.clone());
+        } else if let Some(append) = node.downcast_ref::<AppendWithContextNode>() {
+            let with_context = append.0.clone();
+            builders.push(with_context(context));
         } else if let Some(filter) = node.downcast_ref::<FilterNode>() {
             filters.push(filter.0.clone());
         }
@@ -516,6 +569,123 @@ pub(crate) fn show_text_context_menu_at(
         Rc::new(ClickDataProvider { coordinates, click, builders, filters });
     // Its job isn't kept: a new menu replaces it through the provider, as Compose's.
     context.coroutine_scope().launch(async move { provider.show_text_context_menu(data).await });
+}
+
+/// What a right click shows where no dropdown is provided, anchored at the node clicked: a
+/// container's default dropdown (D2041).
+pub(crate) type DefaultDropdownFactory =
+    Rc<dyn Fn(LayoutCoordinates) -> Option<Rc<dyn TextContextMenuProvider>>>;
+
+/// What a right click tells before its menu shows, the click in the node's coordinates.
+#[doc(hidden)]
+pub type OnPreShowContextMenu = Rc<dyn Fn(Offset)>;
+
+/// Shows the dropdown of the menu collected from here at a secondary button's press, as Compose's
+/// internal `Modifier.showTextContextMenuOnSecondaryClick(onPreShowContextMenu)`: the press (one
+/// not consumed below) and its release consumed, `on_pre_show` told the click before the menu
+/// shows, through `LOCAL_TEXT_CONTEXT_MENU_DROPDOWN_PROVIDER`'s provider; none provided, nothing.
+/// Compose's `onPreShowContextMenu` is suspending, run in the menu's job before it shows; this one
+/// runs at the press (D2041).
+#[doc(hidden)]
+pub fn show_text_context_menu_on_secondary_click(
+    modifier: Modifier,
+    on_pre_show: Option<OnPreShowContextMenu>,
+) -> Modifier {
+    modifier.then_custom(SecondaryClickElement { on_pre_show, default: None })
+}
+
+/// The same, with `default`'s dropdown where none is provided.
+pub(crate) fn show_text_context_menu_on_secondary_click_or(
+    modifier: Modifier,
+    default: DefaultDropdownFactory,
+) -> Modifier {
+    modifier.then_custom(SecondaryClickElement { on_pre_show: None, default: Some(default) })
+}
+
+struct SecondaryClickElement {
+    on_pre_show: Option<OnPreShowContextMenu>,
+    default: Option<DefaultDropdownFactory>,
+}
+
+struct SecondaryClickNode {
+    on_pre_show: Option<OnPreShowContextMenu>,
+    default: Option<DefaultDropdownFactory>,
+    /// A secondary press it took, whose release it takes too.
+    pressed: bool,
+}
+
+impl ModifierNodeElement for SecondaryClickElement {
+    type Node = SecondaryClickNode;
+    fn create(&self) -> SecondaryClickNode {
+        SecondaryClickNode {
+            on_pre_show: self.on_pre_show.clone(),
+            default: self.default.clone(),
+            pressed: false,
+        }
+    }
+    fn update(&self, node: &mut SecondaryClickNode) {
+        node.on_pre_show = self.on_pre_show.clone();
+        node.default = self.default.clone();
+    }
+    fn same(&self, other: &Self) -> bool {
+        same_option(&self.on_pre_show, &other.on_pre_show)
+            && same_option(&self.default, &other.default)
+    }
+    fn name(&self) -> &'static str {
+        "TextContextMenuGestures"
+    }
+}
+
+impl ModifierNode for SecondaryClickNode {
+    fn as_pointer_input(&mut self) -> Option<&mut dyn compose_ui::PointerInputModifierNode> {
+        Some(self)
+    }
+}
+
+impl compose_ui::PointerInputModifierNode for SecondaryClickNode {
+    /// As Compose's `onRightClickDown`: a press with the secondary button, not consumed (Compose's
+    /// `changedToDown`), consumed, the menu shown at it; its release consumed.
+    fn on_pointer_event(
+        &mut self,
+        event: &mut compose_ui::PointerEvent,
+        pass: compose_ui::PointerEventPass,
+        _bounds: compose_ui::IntSize,
+        context: &mut compose_ui::EventContext<'_>,
+    ) {
+        if pass != compose_ui::PointerEventPass::Main {
+            return;
+        }
+        match event.kind {
+            compose_ui::PointerEventType::Press
+                if !event.consumed && event.buttons.is_secondary_pressed() =>
+            {
+                event.consume();
+                self.pressed = true;
+                let click = event.position;
+                if let Some(on_pre_show) = &self.on_pre_show {
+                    on_pre_show(click);
+                }
+                let default = self.default.clone();
+                show_text_context_menu_at(context, click, None, |anchor| {
+                    default.and_then(|default| default(anchor))
+                });
+            }
+            compose_ui::PointerEventType::Release if self.pressed => {
+                self.pressed = false;
+                event.consume();
+            }
+            _ => {}
+        }
+    }
+
+    /// It hears the secondary button, which isn't an event for what hears the primary alone.
+    fn hears_every_button(&self) -> bool {
+        true
+    }
+
+    fn on_cancel_pointer_input(&mut self) {
+        self.pressed = false;
+    }
 }
 
 /// A right click's menu: at the click, around nothing, its data the node's, as Compose's

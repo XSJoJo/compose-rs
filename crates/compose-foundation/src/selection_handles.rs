@@ -264,6 +264,8 @@ pub(crate) trait HandleSource {
     fn drag_ended(&self, handle: Handle);
     /// It was tapped (a press lifted before the touch slop).
     fn tapped(&self, _handle: Handle) {}
+    /// It was pressed.
+    fn pressed(&self, _handle: Handle) {}
     /// A mouse's (or a touchpad's) event reached it.
     fn mouse_event(&self) {}
 }
@@ -310,6 +312,14 @@ impl HandleSource for ContainerSource {
     }
     fn drag_ended(&self, _handle: Handle) {
         self.0.end_drag();
+    }
+    /// Its toolbar shows again, as Compose's handle observer's `onUp` (D2041).
+    fn tapped(&self, _handle: Handle) {
+        self.0.handle_tapped();
+    }
+    /// Its toolbar hides while it's held, as Compose's handle observer's `onDown` (D2041).
+    fn pressed(&self, handle: Handle) {
+        self.0.handle_pressed(handle == Handle::SelectionStart);
     }
 }
 
@@ -768,6 +778,7 @@ impl PointerInputModifierNode for HandleNode {
                 event.consume();
                 self.end_drag();
                 self.down = Some(position);
+                self.source.pressed(self.handle);
             }
             PointerEventType::Move if event.pressed => {
                 let Some(down) = self.down else { return };

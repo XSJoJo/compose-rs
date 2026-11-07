@@ -405,7 +405,9 @@ pub use text_measurer::{
     TextMeasurer, TextPainter, remember_text_measurer,
 };
 pub use text_range::TextRange;
-pub use text_selection::{ContainerHandles, ContainerHandlesShown, Selectable};
+pub use text_selection::{
+    ContainerHandles, ContainerHandlesShown, ContainerMenuAction, ContainerMenuItems, Selectable,
+};
 pub use text_style::TextStyle;
 pub use text_toolbar::{
     LOCAL_TEXT_TOOLBAR, PlatformTextToolbar, TextActionMenu, TextActionMenuItem, TextActionMode,

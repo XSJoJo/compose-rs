@@ -148,6 +148,11 @@ pub(crate) enum SelectionRequest {
         start: bool,
         moved: Option<Offset>,
     },
+    /// A gesture selecting ended (a long press's or a mouse's press lifted), as Compose's
+    /// `onSelectionUpdateEndCallback`: the toolbar may show.
+    GestureEnded {
+        container: NodeId,
+    },
 }
 
 /// Which selection handles a container shows, as the condition Compose's `SelectionContainer`
@@ -181,6 +186,49 @@ pub struct ContainerHandles {
     /// What a selection's change vibrates with in touch mode (`LocalHapticFeedback`'s where the
     /// container is composed), as `SelectionManager.hapticFeedBack`.
     haptics: std::cell::RefCell<Option<Rc<dyn crate::platform_services::HapticFeedback>>>,
+    /// The tree holding its selection and the container's coordinates, once its node attached.
+    tree: Cell<Option<u32>>,
+    coordinates: Cell<Option<crate::coordinates::LayoutCoordinates>>,
+    /// Whether the toolbar should show, as Compose's `SelectionManager.showToolbar`: set when a
+    /// gesture ends (a long press, a mouse's drag, a handle's drag), by select all; cleared when
+    /// one starts and when the selection's let go of (D2041).
+    show_toolbar: Cell<bool>,
+    /// The toolbar was asked to show and not to hide since.
+    toolbar_requested: Cell<bool>,
+    /// What shows or hides the toolbar (foundation's `ToolbarRequester`), called from a task.
+    toolbar_requests: std::cell::RefCell<Option<ToolbarRequests>>,
+    /// What the toolbar and the menu read, made when first asked (D2041).
+    toolbar: std::cell::OnceCell<ContainerToolbar>,
+}
+
+/// What shows (`true`) or hides a container's toolbar.
+type ToolbarRequests = Rc<dyn Fn(bool)>;
+
+/// What a container's toolbar and menu read: states, so they follow them.
+struct ContainerToolbar {
+    /// Where the toolbar goes, in the root, as Compose's `derivedContentRect`; the last kept
+    /// while it's hidden.
+    content_rect: OwnedState<Option<Rect>>,
+    /// Bumped at each change of the container's selection: what the menu's items follow.
+    changes: OwnedState<u32>,
+}
+
+/// Which of a container's items show, as Compose's `addSelectionContainerTextContextMenuComponents`:
+/// copy over a selection of some characters (`isNonEmptySelection`), select all while not all of
+/// its texts are selected (`isEntireContainerSelected`).
+#[doc(hidden)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct ContainerMenuItems {
+    pub copy: bool,
+    pub select_all: bool,
+}
+
+/// An item of a container's menu, as `addSelectionContainerTextContextMenuComponents`' items.
+#[doc(hidden)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ContainerMenuAction {
+    Copy,
+    SelectAll,
 }
 
 impl ContainerHandles {
@@ -193,7 +241,115 @@ impl ContainerHandles {
             drag: Cell::new(None),
             drag_point: Cell::new(None),
             haptics: std::cell::RefCell::new(None),
+            tree: Cell::new(None),
+            coordinates: Cell::new(None),
+            show_toolbar: Cell::new(false),
+            toolbar_requested: Cell::new(false),
+            toolbar_requests: std::cell::RefCell::new(None),
+            toolbar: std::cell::OnceCell::new(),
         }
+    }
+
+    fn toolbar_states(&self) -> &ContainerToolbar {
+        self.toolbar.get_or_init(|| ContainerToolbar {
+            content_rect: compose_runtime::mutable_state_of(None),
+            changes: compose_runtime::mutable_state_of(0),
+        })
+    }
+
+    /// What shows (`true`) or hides its toolbar, as Compose's `toolbarRequester`: called from a
+    /// task, outside the tree's work, when the tree decides (`updateSelectionToolbar`).
+    pub fn set_toolbar_requests(&self, requests: Rc<dyn Fn(bool)>) {
+        *self.toolbar_requests.borrow_mut() = Some(requests);
+    }
+
+    /// The container's coordinates, once its node attached: what the toolbar's rect, in the
+    /// root, is translated from.
+    pub fn coordinates(&self) -> Option<crate::coordinates::LayoutCoordinates> {
+        self.coordinates.get()
+    }
+
+    /// Where the toolbar goes, in the root (a read of its state), as Compose's
+    /// `derivedContentRect`: the selected region kept to the container's visible bounds, four
+    /// handles' heights lower; `None` before it first showed.
+    pub fn toolbar_content_rect(&self) -> Option<Rect> {
+        self.toolbar_states().content_rect.get()
+    }
+
+    /// Which of its menu's items show, from the tree `context` is in, as Compose's builder reads
+    /// the selection when collected; a read of the selection's changes, so a toolbar showing them
+    /// follows it.
+    pub fn menu_items(
+        &self,
+        context: &mut crate::node_context::NodeContext<'_>,
+    ) -> ContainerMenuItems {
+        self.toolbar_states().changes.get();
+        let Some(container) = self.container.get() else { return ContainerMenuItems::default() };
+        context.tree.enter().container_menu_items(container)
+    }
+
+    /// Runs its menu's `action`, as Compose's container's items: copy copies, then lets go of the
+    /// selection in touch mode (`onRelease`); select all selects every text, asks for the
+    /// focus and the toolbar. Returns whether the menu closes: always for copy, for select all
+    /// only while no toolbar is asked for in touch mode (`!showToolbar || !isInTouchMode`).
+    /// Nothing while its tree is busy.
+    pub fn run_menu_action(&self, action: ContainerMenuAction) -> bool {
+        let (Some(key), Some(container)) = (self.tree.get(), self.container.get()) else {
+            return true;
+        };
+        let mut close = true;
+        crate::node_context::with_free_tree(key, &mut |tree| {
+            let Some(found) = tree.container_handles(container) else { return };
+            match action {
+                ContainerMenuAction::Copy => {
+                    tree.handle_selection(SelectionRequest::Copy { container });
+                    if found.touch {
+                        tree.handle_selection(SelectionRequest::Clear { container });
+                    }
+                }
+                ContainerMenuAction::SelectAll => {
+                    tree.handle_selection(SelectionRequest::SelectAll { container });
+                    if !found.focused {
+                        let direction = crate::focus_manager::FocusDirection::Enter;
+                        tree.request_focus_at_or_below(container, direction);
+                    }
+                    close = !self.show_toolbar.get() || !found.touch;
+                }
+            }
+        });
+        close
+    }
+
+    /// A handle's drag ended or it was tapped: the toolbar shows again, as Compose's
+    /// `handleDragObserver`'s `done`.
+    fn handle_released(&self) {
+        self.set_show_toolbar_later(true);
+    }
+
+    /// Sets whether the toolbar should show; the tree follows from a task (no event's context
+    /// here).
+    fn set_show_toolbar_later(&self, show: bool) {
+        self.show_toolbar.set(show);
+        let (Some(key), Some(container)) = (self.tree.get(), self.container.get()) else { return };
+        compose_runtime::platform::launch(async move {
+            crate::node_context::with_free_tree(key, &mut |tree| tree.refresh_handles(container));
+        });
+    }
+
+    /// The start handle (`start`) or the end's was pressed: the toolbar hides while it's held,
+    /// as Compose's handle observer's `onDown`; nothing for a hidden handle, as its.
+    pub fn handle_pressed(&self, start: bool) {
+        let shown = compose_runtime::snapshots::Snapshot::without_read_observation(|| {
+            self.position(start).is_some()
+        });
+        if shown {
+            self.set_show_toolbar_later(false);
+        }
+    }
+
+    /// A handle was tapped (pressed and lifted before the touch slop), as Compose's `onUp`.
+    pub fn handle_tapped(&self) {
+        self.handle_released();
     }
 
     /// What its selection's changes vibrate with in touch mode, as the container composed reads
@@ -225,10 +381,13 @@ impl ContainerHandles {
     }
 
     /// The handle's drag ended (lifted, cancelled, or its node gone), as `onStop`: its next drag
-    /// begins anew where it points.
+    /// begins anew where it points, and the toolbar shows again.
     pub fn end_drag(&self) {
-        self.drag.set(None);
+        let dragged = self.drag.take().is_some();
         self.drag_point.set(None);
+        if dragged {
+            self.handle_released();
+        }
     }
 
     /// The handle dragged, if any (`SelectionManager.draggingHandle`).
@@ -527,19 +686,40 @@ impl UiTree {
                 .map(|selection| (selection.anchor, selection.focus))
         };
         if of(before) != of(self.text_selection)
-            && let Some(found) = self.container_handles(container).filter(|found| found.touch)
-            && let Some(haptics) = found.handles.haptics.borrow().clone()
+            && let Some(found) = self.container_handles(container)
         {
-            haptics.perform_haptic_feedback(
-                crate::platform_services::HapticFeedbackType::TextHandleMove,
-            );
+            // The menu's items follow the selection, once a menu asked for them.
+            if let Some(toolbar) = found.handles.toolbar.get() {
+                let changes =
+                    compose_runtime::snapshots::Snapshot::without_read_observation(|| {
+                        toolbar.changes.get()
+                    });
+                toolbar.changes.set(changes.wrapping_add(1));
+            }
+            if found.touch
+                && let Some(haptics) = found.handles.haptics.borrow().clone()
+            {
+                haptics.perform_haptic_feedback(
+                    crate::platform_services::HapticFeedbackType::TextHandleMove,
+                );
+            }
         }
         self.refresh_handles(container);
+    }
+
+    /// Sets whether `container`'s toolbar should show, as Compose's `showSelectionToolbar` and
+    /// `hideSelectionToolbar`; the handles' refresh then shows or hides it.
+    fn set_show_toolbar(&mut self, container: NodeId, show: bool) {
+        if let Some(found) = self.container_handles(container) {
+            found.handles.show_toolbar.set(show);
+        }
     }
 
     fn apply_selection_request(&mut self, request: SelectionRequest) {
         match request {
             SelectionRequest::Start { container, position, unit } => {
+                // A gesture starting hides the toolbar (`onSelectionUpdateStartCallback`).
+                self.set_show_toolbar(container, false);
                 let entries = self.selectables(container);
                 self.clear_other_selection(container);
                 let Some(Placed { point, .. }) = self.point_at(container, &entries, position, None)
@@ -606,6 +786,8 @@ impl UiTree {
                 self.bring_dragged_into_view(container, &entries, position, point);
             }
             SelectionRequest::SelectAll { container } => {
+                // As Compose's `selectAll`: `showSelectionToolbar`.
+                self.set_show_toolbar(container, true);
                 let entries = self.selectables(container);
                 let (Some(first), Some(last)) = (entries.first(), entries.last()) else { return };
                 let length = self.selectable_text(last.node, last.index).len();
@@ -622,6 +804,8 @@ impl UiTree {
                 }
             }
             SelectionRequest::Clear { container } => {
+                // As Compose's `onRelease`: `hideSelectionToolbar`.
+                self.set_show_toolbar(container, false);
                 if self.text_selection.is_some_and(|selection| selection.container == container) {
                     let entries = self.selectables(container);
                     self.text_selection = None;
@@ -653,6 +837,9 @@ impl UiTree {
             SelectionRequest::RefreshHandles { .. } => {}
             SelectionRequest::DragHandle { container, start, moved } => {
                 self.drag_handle(container, start, moved)
+            }
+            SelectionRequest::GestureEnded { container } => {
+                self.set_show_toolbar(container, true);
             }
         }
     }
@@ -1011,6 +1198,94 @@ impl UiTree {
             // nothing moved asks for one, as Compose's popups follow their position provider.
             self.invalidate_placement_of(container);
         }
+        self.refresh_toolbar(container, &found);
+    }
+
+    /// Shows or hides `container`'s toolbar, as Compose's `updateSelectionToolbar`: shown while
+    /// it's asked for (`showToolbar`) in touch mode with the focus and its rect is visible, hidden
+    /// otherwise; its rect a state the toolbar follows. Nothing while it's neither asked for nor
+    /// shown (D2041).
+    fn refresh_toolbar(&mut self, container: NodeId, found: &FoundHandles) {
+        let handles = &found.handles;
+        let asked = handles.show_toolbar.get() && found.touch && found.focused;
+        if !asked && !handles.toolbar_requested.get() {
+            return;
+        }
+        let rect = if asked { self.container_toolbar_rect(container, found) } else { None };
+        if let Some(rect) = rect {
+            let states = handles.toolbar_states();
+            let was = compose_runtime::snapshots::Snapshot::without_read_observation(|| {
+                states.content_rect.get()
+            });
+            if was != Some(rect) {
+                states.content_rect.set(Some(rect));
+            }
+        }
+        let show = rect.is_some();
+        if !show && !handles.toolbar_requested.get() {
+            return;
+        }
+        handles.toolbar_requested.set(show);
+        // Shown (again, if it was closed) or hidden from a task, outside the tree's work, as
+        // Compose's requester is told at each update.
+        let Some(requests) = handles.toolbar_requests.borrow().clone() else { return };
+        compose_runtime::platform::launch(async move { requests(show) });
+    }
+
+    /// Where `container`'s toolbar goes, in the root, as Compose's `getContentRect`: the region
+    /// of the selection in the first and the last text it covers (`getSelectedRegionRect` over
+    /// `firstAndLast`), kept to the container's visible bounds (touching them is enough), its
+    /// bottom four handles' heights lower (`HandleHeight.value * 4`: 100 px whatever the
+    /// density, as Compose's). `None` without a selection of some characters there, or out of
+    /// view.
+    fn container_toolbar_rect(&mut self, container: NodeId, found: &FoundHandles) -> Option<Rect> {
+        let selection = self.text_selection.filter(|selection| selection.container == container)?;
+        let entries = self.selectables(container);
+        let span = Self::span(&selection, &entries)?;
+        let mut covered = (0..entries.len()).filter(|&order| range_of(span, order).is_some());
+        let first = covered.next()?;
+        let last = covered.next_back().unwrap_or(first);
+        let origin = self.layer_origin(container, found.layer);
+        let orders: &[usize] = if first == last { &[first] } else { &[first, last] };
+        let region = self.region_of(&entries, span, origin, orders)?;
+        let clipped = self.coordinate_values(container, found.layer, found.index);
+        let window = self.window_bounds_of(container);
+        let visible = crate::layout_callbacks::intersect(clipped.clipped_bounds, window)
+            .translate(-clipped.position_in_root);
+        let rect = Rect::new(
+            visible.left.max(region.left),
+            visible.top.max(region.top),
+            visible.right.min(region.right),
+            visible.bottom.min(region.bottom),
+        );
+        if rect.right < rect.left || rect.bottom < rect.top {
+            return None;
+        }
+        let root = rect.translate(clipped.position_in_root);
+        Some(Rect::new(root.left, root.top, root.right, root.bottom + HANDLE_HEIGHT * 4.0))
+    }
+
+    /// Which of `container`'s menu items show, as Compose's `isNonEmptySelection` and
+    /// `isEntireContainerSelected`: copy when the selection there covers some characters, select
+    /// all unless every text that has some is wholly selected.
+    fn container_menu_items(&mut self, container: NodeId) -> ContainerMenuItems {
+        let entries = self.selectables(container);
+        let span = self
+            .text_selection
+            .filter(|selection| selection.container == container)
+            .and_then(|selection| Self::span(&selection, &entries));
+        let mut items = ContainerMenuItems::default();
+        for (order, entry) in entries.iter().enumerate() {
+            let text = self.selectable_text(entry.node, entry.index);
+            let range = span.and_then(|span| range_of(span, order)).map(|it| clamp(&text, it));
+            if range.as_ref().is_some_and(|range| !range.is_empty()) {
+                items.copy = true;
+            }
+            if !text.is_empty() && range.is_none_or(|range| range.len() != text.len()) {
+                items.select_all = true;
+            }
+        }
+        items
     }
 
     /// After a layout or graphics layers moving (`moved`), tells `selection`'s handles where they
@@ -1104,8 +1379,23 @@ impl UiTree {
         let origin = self.layer_origin(container, layer);
         let entries = self.selectables(container);
         let span = Self::span(&selection, &entries)?;
+        let orders: Vec<usize> = (0..entries.len()).collect();
+        self.region_of(&entries, span, origin, &orders)
+    }
+
+    /// The region `span` selects in the texts of `entries` at `orders`, in the coordinates of
+    /// what's at `origin`: each one's first and last selected characters' boxes, all together, as
+    /// Compose's `getSelectedRegionRect`. `None` if none has selected characters.
+    fn region_of(
+        &mut self,
+        entries: &[Entry],
+        span: Span,
+        origin: Offset,
+        orders: &[usize],
+    ) -> Option<Rect> {
         let mut region: Option<Rect> = None;
-        for (order, entry) in entries.iter().enumerate() {
+        for &order in orders {
+            let entry = &entries[order];
             let Some(range) = range_of(span, order) else { continue };
             let text = self.selectable_text(entry.node, entry.index);
             let range = clamp(&text, range);
@@ -1203,7 +1493,8 @@ impl SelectionRequest {
             | SelectionRequest::Clear { container }
             | SelectionRequest::LongPress { container, .. }
             | SelectionRequest::RefreshHandles { container }
-            | SelectionRequest::DragHandle { container, .. } => container,
+            | SelectionRequest::DragHandle { container, .. }
+            | SelectionRequest::GestureEnded { container } => container,
         }
     }
 }
@@ -1237,6 +1528,10 @@ fn clamp(text: &str, range: Range<usize>) -> Range<usize> {
 }
 
 // ---- The container's node ------------------------------------------------------------------
+
+/// Compose's `HandleHeight` (25 dp) as its `value`: the toolbar's rect reaches four of them below
+/// the selection, in pixels at any density, as Compose's `getContentRect`.
+const HANDLE_HEIGHT: f32 = 25.0;
 
 /// A press within this long of the last, and this close to it, is a double- or triple-click.
 const MULTI_CLICK_NANOS: u64 = 500_000_000;
@@ -1331,6 +1626,15 @@ impl ModifierNode for SelectionContainerNode {
         self.touch = None;
         self.last_down = None;
         self.end_finger();
+    }
+    /// Its handles learn the tree, the container and its coordinates, which its menu's items and
+    /// toolbar use.
+    fn on_attach(&mut self, context: &mut crate::node_context::NodeContext<'_>) {
+        if let Some(handles) = &self.handles {
+            handles.tree.set(Some(context.tree.key));
+            handles.container.set(Some(context.node));
+            handles.coordinates.set(Some(context.require_layout_coordinates()));
+        }
     }
     fn on_detach(&mut self, _context: &mut crate::node_context::NodeContext<'_>) {
         self.end_finger();
@@ -1429,14 +1733,23 @@ impl PointerInputModifierNode for SelectionContainerNode {
                 event.consume();
                 context.requests.selection.push(SelectionRequest::Extend { container, position });
             }
-            PointerEventType::Release => self.dragging = false,
+            // Its drag done (`onDragDone`): the toolbar may show.
+            PointerEventType::Release if std::mem::replace(&mut self.dragging, false) => {
+                context.requests.selection.push(SelectionRequest::GestureEnded { container });
+            }
             _ => {}
         }
     }
 
+    /// A press selecting, cancelled, ends as Compose's `onCancel` and `onDragDone` do: the
+    /// toolbar may show, told from a task (no event's context here).
     fn on_cancel_pointer_input(&mut self) {
-        self.dragging = false;
+        let selecting = std::mem::replace(&mut self.dragging, false)
+            || self.finger.as_ref().is_some_and(|finger| finger.long);
         self.end_finger();
+        if selecting && let Some(handles) = &self.handles {
+            handles.handle_released();
+        }
     }
 }
 
@@ -1459,7 +1772,10 @@ impl SelectionContainerNode {
         match event.kind {
             PointerEventType::Press => {
                 self.end_finger();
-                self.dragging = false;
+                // A mouse's press still selecting ends as the finger comes, as Android cancels it.
+                if std::mem::replace(&mut self.dragging, false) {
+                    context.requests.selection.push(SelectionRequest::GestureEnded { container });
+                }
                 if event.consumed {
                     context.requests.selection.push(SelectionRequest::Clear { container });
                     return;
@@ -1549,8 +1865,10 @@ impl SelectionContainerNode {
                     job.cancel();
                 }
                 if finger.long {
-                    // The long press's up is its, as Compose's drag consumes it.
+                    // The long press's up is its, as Compose's drag consumes it; its end may show
+                    // the toolbar (`onStop`).
                     event.consume();
+                    context.requests.selection.push(SelectionRequest::GestureEnded { container });
                 } else if !event.consumed {
                     context.requests.selection.push(SelectionRequest::Clear { container });
                 }
