@@ -65,13 +65,13 @@ Never merge the `ime-logging` branch (it records everything typed) or `parked/na
 
 ## In flight
 
-As of 2026-11-07, `origin/main` is at 23c5d9f7 (12,726 tests).
+As of 2026-11-07, `origin/main` is at dcbf5590 (12,895 tests).
 
 | Branch | What | State |
 |---|---|---|
 | `moved-node-fixes` | The moved-node review's findings (nested movable content, detach orders, a panic guard) and a moved shared element's start position | In progress |
 | `multi-paragraph-2` | The paragraph API's review findings, then `fillPathForRange`, `paint`, the constructors and the horizontal-position tests, then `BasicText` honouring paragraph styles (D2049 and up) | In progress |
-| `autofill` | Compose's autofill: `ContentType`, semantics, `AutofillManager`, text fields, the toolbar's Autofill item (un-ignores 9 tests), Android's bridge (D1680–D1699) | In progress |
+| `autofill`, then `autofill-2` | Compose's autofill (D1680–D1687): `ContentType`, semantics, `AutofillManager`, text fields, the toolbar's Autofill item (un-ignores 9 tests), Android's bridge. **Held off main by a review blocker:** on Android the manager walks the whole tree on every frame that recomposes or measures (~1,400 instructions per node; feed scroll frames +270 %), even with no autofill service. `autofill-2` (from `review-autofill` 89b34db2, main merged in) tracks only changed nodes and gates on `AutofillManager.isEnabled()`, fixes a removed focused field never exiting and a stale selection-handle semantics bug that is on main too | In progress |
 | `style-api-fixes` | The Style API's review findings: a first collection animating in, a lone offset growing the node, names colliding, a press clearing a hand-set focus, nested keys; predefined property names namespaced (D1588 and up) | In progress |
 
 Next, once those land: `DeferredSharedElementTest`, the moved shared element that doesn't animate from its old place, and the shared elements of `LookaheadScopeTest` and Navigation 3; touch selection's bidi tests (`TextSelectionGesturesBidiTest`); graphics leftovers (`ImageShader`, BrushPainter, FilterQuality); place-with-layer leftovers (zIndex, hit testing through layer transforms); style API, border parity, AndroidView interop, magnifier, autofill. missing.md has the full list.
