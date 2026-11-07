@@ -4,7 +4,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use compose_runtime::{DisposableEffect, MutableState, ReusableContentHost, remember};
+use compose_runtime::{Callback, DisposableEffect, MutableState, ReusableContentHost, remember};
 
 use super::support::*;
 
@@ -903,4 +903,68 @@ fn a_popup_that_takes_the_focus_is_a_window_and_one_that_doesnt_is_not() {
     assert!(window_focused(inside), "it's in the window beneath it");
     scene.set("not focusable", false);
     assert!(window_focused(outside));
+}
+
+/// Asks, in its `on_detach`, for the focus of the first target after it.
+#[derive(Clone, PartialEq)]
+struct RequestOnDetach;
+
+struct RequestOnDetachNode;
+
+impl ModifierNodeElement for RequestOnDetach {
+    type Node = RequestOnDetachNode;
+    fn create(&self) -> RequestOnDetachNode {
+        RequestOnDetachNode
+    }
+    fn update(&self, _: &mut RequestOnDetachNode) {}
+    fn same(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl ModifierNode for RequestOnDetachNode {
+    fn on_detach(&mut self, context: &mut NodeContext<'_>) {
+        context.request_focus(Enter);
+    }
+}
+
+/// `content` in the modal, or behind it when the flag `moved` is up, or nowhere when `gone` is.
+fn leaving_the_modal(scene: Scene, content: Callback<dyn Fn()>) {
+    let (moved, gone) = (scene.flag("moved").get(), scene.flag("gone").get());
+    Column!({
+        Leaf(keyed(scene, "behind"));
+        let inside = content.clone();
+        overlay(scene, "modal", "window", move || {
+            if !moved && !gone {
+                inside();
+            }
+        });
+        if moved {
+            content();
+        }
+    });
+}
+
+/// A node leaving a modal (moved behind it by movable content, or removed) is detached in the
+/// window it leaves, as Compose runs `onDetach` before `removeAt` unlinks it from the popup's
+/// owner: the focus it asks for in its `on_detach` is that window's, and what has the focus
+/// behind is told nothing. The walk to a node's window goes up through the parent it left
+/// (`focus_window_of`, `parent_for_callbacks`): through its new parent, or none, the request
+/// would take the focus behind.
+#[test]
+fn a_node_leaving_a_modal_asks_for_the_focus_in_the_modal_s_window() {
+    for flag in ["moved", "gone"] {
+        let scene = Scene::empty();
+        let content = compose_runtime::movable_content_of(move || {
+            Leaf(Modifier.then_custom(RequestOnDetach).then(scene.target("c")).size(10.dp()));
+        });
+        let scene = scene.compose(move |scene| leaving_the_modal(scene, content.clone()));
+        assert!(scene.request("behind"));
+        scene.set("modal", true);
+        assert_eq!(scene.state("window"), Active);
+        scene.forget();
+        scene.set(flag, true);
+        assert!(scene.heard("behind").is_empty(), "{flag}: the focus behind is untouched");
+        assert_eq!(scene.state("behind"), Active, "{flag}");
+    }
 }

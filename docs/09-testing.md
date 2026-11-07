@@ -65,21 +65,21 @@ MIRIFLAGS=-Zmiri-ignore-leaks cargo +nightly miri test -p compose-ui --test suit
     focus_tests::attaching focus_tests::manager focus_tests::modal focus_tests::nodes \
     focus_tests::ordered focus_tests::owner focus_tests::properties focus_tests::directional \
     focus_tests::requesting focus_tests::restoring focus_tests::states \
-    modifier_nodes::nodes_moved modifier_nodes::a_moved
+    modifier_nodes::nodes_moved modifier_nodes::a_moved review_moved_node_attach
 MIRIFLAGS="-Zmiri-ignore-leaks -Zmiri-tree-borrows" cargo +nightly miri test -p compose-ui --lib tree_access
 MIRIFLAGS="-Zmiri-ignore-leaks -Zmiri-tree-borrows" cargo +nightly miri test -p compose-ui --test suite -- \
     coordinates_in_passes layout_coordinates delegating_nodes rulers alignment_lines lookahead \
     focus_tests::attaching focus_tests::manager focus_tests::modal focus_tests::nodes \
     focus_tests::ordered focus_tests::owner focus_tests::properties focus_tests::directional \
     focus_tests::requesting focus_tests::restoring focus_tests::states \
-    modifier_nodes::nodes_moved modifier_nodes::a_moved
+    modifier_nodes::nodes_moved modifier_nodes::a_moved review_moved_node_attach
 ```
 
 The slice's `coordinates_in_passes` holds a popup's position provider asking where its anchor is as the popup is placed, the tree open to read there (`a_popup_s_position_provider_asks_where_its_anchor_is`, D2039: a text context menu's dropdown asks its data provider so). A change to a `SelectionContainer`'s menu or to what reads its tree from a composition (D2045) adds `cargo +nightly miri test -p compose-foundation --test suite -- selection_container_context_menu::the_open_menus_items_follow_the_selection review_text_context_menu_4`, in both models: its menu's builder peeks at the tree in composition, a layout lets go of a selection whose text changed, and its handles and menu run on the tree (D2046).
 
 A change to `SubcomposeLayout` or what a slot's pass does in a measurement (D1309) adds `cargo +nightly miri test -p compose-foundation --test suite -- subcompose_layout`, in both models. It holds a custom node's `on_attach` and a focus callback asking coordinates in a lend (`a_node_attached_in_a_lend_asks_the_tree`, `a_focus_callback_in_a_lend_asks_the_tree`). A change to the tree's virtual nodes (`add_virtual_node`, `move_virtual_node`, `remove_virtual_nodes`) adds `cargo +nightly miri test -p compose-ui --lib tree::tests`, which holds them against a model at random (D1477).
 
-The `modifier_nodes` filters are the moves of movable content (D1923): a moved subtree detached in a release, in the step attaching it, or in its own, with its old parent above it.
+The `modifier_nodes` filters are the moves of movable content (D1923): a moved subtree detached in a release, in the step attaching it, or in its own, with its old parent above it. `review_moved_node_attach` holds content taken out of removed content, detached inside its old parent's detach, and a moved node reading its coordinates through the parent it left (D1924); `--lib tree::tests` a panic in a moved node's `on_detach`.
 
 `-Zmiri-ignore-leaks` because of a leak that's deliberate and harmless: `compose_runtime`'s `EXECUTOR` is a `ManuallyDrop<Executor>` in a thread-local (`executor.rs`), so dropping tasks at a thread's exit can't run their drops after the runtime they use is gone: 3 allocations per test thread. Isolation doesn't need disabling. `focus_tests::candidates` is left out: its tables build a host per row, past what's useful here. `properties`, `ordered` and `directional` take about 10 minutes each under Stacked Borrows. `only_unsafe_module` in the suite fails if `unsafe` appears anywhere else in the crate.
 

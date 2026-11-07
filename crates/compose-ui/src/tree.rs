@@ -585,9 +585,14 @@ pub struct UiTree {
     /// them for the traversals of their nodes' `on_detach`, as Compose's `LayoutNode.detach` runs
     /// before it unlinks a node from its parent.
     pub(crate) removed_parents: Vec<(NodeId, NodeId)>,
-    /// The root of a subtree being detached that's in the tree again (moved): above it, for its
-    /// nodes' `on_detach`, is the parent it left, not the one it went to (D1923).
-    pub(crate) detaching_moved: Option<NodeId>,
+    /// The roots of the subtrees being detached that the pass removed, one inside another's
+    /// detach (content taken out of removed content, D1924): above each, for its nodes'
+    /// `on_detach` and their coordinates, is the parent it left, not the one it went to (D1923).
+    pub(crate) detaching_moved: Vec<NodeId>,
+    /// The nodes the pass took out of a removed subtree still to be detached, each with the
+    /// parent it left: detached with that parent, as Compose's `removeAt` detached them with
+    /// the subtree before they were taken out of it (D1924).
+    pub(crate) taken_out: Vec<(NodeId, NodeId)>,
     /// How many of `removed_parents` the releases of the pass under way went past: those before
     /// are detached (D1923).
     pub(crate) removed_detached: usize,
@@ -742,7 +747,8 @@ impl UiTree {
             borrowed_by_handle: false,
             remeasure_after: Vec::new(),
             removed_parents: Vec::new(),
-            detaching_moved: None,
+            detaching_moved: Vec::new(),
+            taken_out: Vec::new(),
             removed_detached: 0,
             modifier_local_changes: Vec::new(),
             resolved_locals: None,
@@ -1019,10 +1025,40 @@ impl UiTree {
             let mut removed = self.removed_parents.iter();
             removed.rfind(|(child, _)| *child == node).map(|(_, parent)| *parent)
         };
-        if self.detaching_moved == Some(node) {
+        if self.detaching_moved.contains(&node) {
             return removed().or(value.parent);
         }
         value.parent.or_else(removed)
+    }
+
+    /// Whether `node` is in a subtree the pass removed whose modifier nodes are still to be
+    /// detached (its root's `detach_pending`).
+    fn under_detach_pending(&self, node: NodeId) -> bool {
+        let mut current = Some(node);
+        while let Some(value) = current.and_then(|id| self.get(id)) {
+            if value.detach_pending {
+                return true;
+            }
+            current = value.parent;
+        }
+        false
+    }
+
+    /// The parent a walk of coordinates goes to from `node` (whose value is `value`, not an
+    /// overlay): while a moved subtree is being detached, the parent it left, as Compose detaches
+    /// a node before it unlinks it (D1924); else its parent.
+    #[inline]
+    pub(crate) fn coordinates_parent(&self, node: NodeId, value: &LayoutNode) -> Option<NodeId> {
+        if self.detaching_moved.is_empty() {
+            return value.parent;
+        }
+        self.coordinates_parent_detaching(node, value)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn coordinates_parent_detaching(&self, node: NodeId, value: &LayoutNode) -> Option<NodeId> {
+        self.parent_for_callbacks(node, value).filter(|parent| self.get(*parent).is_some())
     }
 
     /// The children of `node`, in order.
@@ -2198,11 +2234,23 @@ impl Applier for UiTree {
         if let Some(slot) = slot {
             self.node_mut(slot).children.drain(index..index + count);
         }
-        for child in removed {
+        // Out of a subtree the pass removed, whose modifier nodes are still attached (movable
+        // content taken out of other movable content leaving): Compose detached them with it.
+        let from_removed = !self.node(parent).attached && self.under_detach_pending(parent);
+        // The last first, as Compose's `LayoutNode.removeAt` (D1924).
+        for child in removed.into_iter().rev() {
             let Some(value) = self.get_mut(child.node) else { continue };
             value.parent = None;
             value.virtual_parent = None;
             value.placed = false;
+            if from_removed {
+                // Detached with the parent it left, or before where it went attaches it.
+                value.detach_pending = true;
+                self.queue_lifecycle(crate::lifecycle::Lifecycle::Detach(child.node));
+                self.removed_parents.push((child.node, parent));
+                self.taken_out.push((child.node, parent));
+                continue;
+            }
             // Out of the tree, its subtree too: their modifier nodes are detached when the pass
             // ends (or when it releases them, first), as Compose's `LayoutNode.detach`.
             if value.attached {
@@ -2510,5 +2558,52 @@ mod tests {
                 check(&tree, host, &model, &step);
             }
         }
+    }
+
+    /// Panics in its `on_detach`.
+    #[derive(Clone, PartialEq)]
+    struct PanicOnDetach;
+
+    struct PanicOnDetachNode;
+
+    impl crate::modifier::ModifierNodeElement for PanicOnDetach {
+        type Node = PanicOnDetachNode;
+        fn create(&self) -> PanicOnDetachNode {
+            PanicOnDetachNode
+        }
+        fn update(&self, _: &mut PanicOnDetachNode) {}
+        fn same(&self, _: &Self) -> bool {
+            true
+        }
+    }
+
+    impl crate::modifier::ModifierNode for PanicOnDetachNode {
+        fn on_detach(&mut self, _: &mut crate::node_context::NodeContext<'_>) {
+            panic!("on_detach panics");
+        }
+    }
+
+    /// A panic in a moved node's `on_detach` leaves nothing of the pass's removals for the next
+    /// (D1924): what's above a node and the cursor through them start again. A frame's start
+    /// runs the lifecycle again, which forgets them too; this is for a caller that goes on.
+    #[test]
+    fn a_panic_in_a_moved_node_s_on_detach_forgets_the_pass_s_removals() {
+        let mut tree =
+            UiTree::new(Density::new(1.0), Box::new(crate::fixed_text::FixedTextMeasurer::new()));
+        let root = tree.root_id();
+        let (one, two) = (
+            NodeId::from_ref(tree.insert(root.to_ref(), 0, layout_node())),
+            NodeId::from_ref(tree.insert(root.to_ref(), 1, layout_node())),
+        );
+        let moved = NodeId::from_ref(tree.insert(one.to_ref(), 0, layout_node()));
+        tree.set_modifier(moved, crate::modifier::Modifier.then_custom(PanicOnDetach));
+        tree.run_lifecycle();
+        tree.remove(one.to_ref(), 0, 1);
+        tree.attach(two.to_ref(), 0, moved.to_ref());
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tree.run_lifecycle()));
+        assert!(run.is_err());
+        assert!(tree.removed_parents.is_empty());
+        assert_eq!(tree.removed_detached, 0);
+        assert!(tree.detaching_moved.is_empty());
     }
 }
