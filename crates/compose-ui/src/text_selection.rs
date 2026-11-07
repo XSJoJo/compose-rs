@@ -935,6 +935,8 @@ impl UiTree {
             if self.get(old.container).is_some() {
                 let entries = self.selectables(old.container);
                 self.show_selection(&entries);
+            } else {
+                self.release_selection_pins();
             }
         }
     }

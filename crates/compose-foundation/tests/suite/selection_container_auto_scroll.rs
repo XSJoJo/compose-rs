@@ -351,3 +351,47 @@ fn dragOutsideSelectsAndScrolls_withLongTextInNonLazyContainer_scrollableOutside
         long_text(drag, false);
     }
 }
+
+// Not one of Compose's (its manager lets go when it's forgotten, `onForgotten`): a container
+// leaving the composition with a selection lets go of its texts' pins.
+#[test]
+fn a_container_leaving_lets_go_of_its_pins() {
+    let shown = Box::leak(Box::new(compose_runtime::mutable_state_of(true))).handle();
+    let pinned: Rc<RefCell<BTreeSet<usize>>> = Rc::default();
+    let tracked = pinned.clone();
+    let mut ui = rule(move || {
+        if !shown.get() {
+            return;
+        }
+        let tracked = tracked.clone();
+        SelectionContainer!({
+            let tracked = tracked.clone();
+            LazyColumn!(modifier = Modifier.size(200.dp()), move |scope: LazyListScope| {
+                let tracked = tracked.clone();
+                scope.items(LINES, move |index| {
+                    let delegate = compose_ui::LOCAL_PINNABLE_CONTAINER
+                        .current()
+                        .expect("an item's pinnable container");
+                    let pinned = tracked.clone();
+                    let container: Rc<dyn PinnableContainer> =
+                        Rc::new(Tracking { delegate, index, pinned });
+                    compose_runtime::CompositionLocalProvider(
+                        compose_ui::LOCAL_PINNABLE_CONTAINER.provides(Some(container)),
+                        move || {
+                            BasicText!(
+                                format!("Line{index}"),
+                                modifier = Modifier.test_tag(format!("text{index}")),
+                            );
+                        },
+                    );
+                });
+            });
+        });
+    });
+    start(&mut ui, Drag::LongPress);
+    finish(&mut ui, Drag::LongPress);
+    assert_eq!(*pinned.borrow(), BTreeSet::from([0]));
+    shown.set(false);
+    ui.wait_for_idle();
+    assert!(pinned.borrow().is_empty(), "{:?}", pinned.borrow());
+}

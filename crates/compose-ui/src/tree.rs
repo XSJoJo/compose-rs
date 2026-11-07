@@ -2153,6 +2153,12 @@ impl Applier for UiTree {
                     value.attached = false;
                     value.attaching = false;
                     stack.extend(value.children.iter().map(|child| child.node));
+                    // A selection's container gone: so is its selection, and its texts' pins
+                    // are let go (D2023).
+                    if self.text_selection.is_some_and(|selection| selection.container() == next) {
+                        self.text_selection = None;
+                        self.release_selection_pins();
+                    }
                 }
                 self.queue_lifecycle(crate::lifecycle::Lifecycle::Detach(child.node));
                 self.removed_parents.push((child.node, parent));
