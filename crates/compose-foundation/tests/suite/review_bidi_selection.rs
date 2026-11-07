@@ -134,7 +134,6 @@ fn offsets_from_a_cut_after_an_empty_line_say_its_paragraphs_direction() {
 /// `MultiParagraph` throws there (the offset before is in a paragraph left out), so neither is
 /// Compose's answer; the empty last line's paragraph's is D2062's own rule.
 #[test]
-#[ignore = "review: the end of a cut text of paragraphs says the run's direction, not its empty last line's paragraph's"]
 fn the_end_of_a_text_cut_after_an_empty_line_says_the_same_as_the_cut() {
     let text = paragraphs(&[("abc", ltr()), ("!!\n", rtl()), ("def", ltr())]);
     let mut ui = selectable(text, style(), 3);

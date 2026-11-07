@@ -1537,10 +1537,11 @@ impl compose_ui::Selectable for TextNode {
     ) -> compose_ui::ResolvedTextDirection {
         let text = self.text.as_str();
         if let Some(layout) = self.paragraphs_layout() {
-            let offset = self.laid_out_offset(offset);
-            // What's laid out ends at its last paragraph's end (D2054).
+            // What's laid out ends at its last paragraph's end (D2054); the text's own end, past
+            // it in a cut text, says what the cut says, as every offset between them does (D2071).
             let infos = layout.multi_paragraph.paragraph_info_list();
             let end = infos.last().map_or(0, |last| last.end_index).min(text.len());
+            let offset = self.laid_out_offset(offset).min(end);
             return text_direction_for_offset(&*layout.multi_paragraph, text, end, offset);
         }
         match self.paragraph {
