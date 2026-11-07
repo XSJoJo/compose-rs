@@ -2,7 +2,7 @@
 //! the menu's items in the context menu's popup, at the data provider's position, closed by a
 //! click outside or the back key (D2037).
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use compose_runtime::composable;
@@ -69,19 +69,28 @@ fn OpenContextMenu(
     data_provider: Rc<dyn TextContextMenuDataProvider>,
     anchor: AnchorCoordinates,
 ) {
-    // Where the menu goes in the anchor, read here: a popup is placed in the tree's layout pass,
-    // where the anchor's coordinates can't be asked (Compose reads them as it places it), and
-    // read again as what it reads changes (D2037).
-    let position = compose_runtime::remember(|| Rc::new(Cell::new(IntOffset::ZERO)));
-    if let Some(anchor) = anchor().filter(compose_ui::LayoutCoordinates::is_attached) {
-        let at = data_provider.position(&anchor);
-        position.set(IntOffset::new(at.x.round() as i32, at.y.round() as i32));
-    }
-    let read = position.clone();
-    let provider = compose_runtime::remember_keyed(data_provider.clone(), move || {
-        Rc::new(MaintainWindowPositionPopupPositionProvider::new(
-            ContextMenuPopupPositionProvider::new(move || read.get(), None),
-        )) as Rc<dyn PopupPositionProvider>
+    // Where the menu goes in the anchor, asked as it's placed, as Compose's
+    // `dataProvider.position(anchorLayoutCoordinates())` in `calculatePosition` (D2039): the
+    // tree answers coordinates' queries there. The anchor's latest block is the one asked.
+    let latest = compose_runtime::remember(|| Rc::new(RefCell::new(anchor.clone())));
+    *latest.borrow_mut() = anchor;
+    let provider = compose_runtime::remember_keyed(data_provider.clone(), {
+        let data_provider = data_provider.clone();
+        move || {
+            let position = move || {
+                let anchor = latest.borrow().clone();
+                match anchor().filter(compose_ui::LayoutCoordinates::is_attached) {
+                    Some(anchor) => {
+                        let at = data_provider.position(&anchor);
+                        IntOffset::new(at.x.round() as i32, at.y.round() as i32)
+                    }
+                    None => IntOffset::ZERO,
+                }
+            };
+            Rc::new(MaintainWindowPositionPopupPositionProvider::new(
+                ContextMenuPopupPositionProvider::new(position, None),
+            )) as Rc<dyn PopupPositionProvider>
+        }
     });
     let closing = session.clone();
     compose_ui::PopupWithPositionProvider(

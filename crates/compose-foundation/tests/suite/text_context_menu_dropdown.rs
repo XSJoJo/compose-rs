@@ -315,3 +315,113 @@ fn whenDataProviderPositionUpdates_andPopupContentSizeChanges_popupDoesMove() {
         IntOffset::new(10, 10)
     );
 }
+
+/// compose-rs's: the menu's position is read where it's placed, as Compose's provider asks the
+/// data provider in `calculatePosition`, not where it's composed: one read outside the snapshot
+/// (a `Cell`, as `NodeDataProvider` reads layout coordinates) still moves the menu once its size
+/// changes.
+#[test]
+fn whenUnobservedPositionUpdates_andPopupContentSizeChanges_popupDoesMove() {
+    let offset = Rc::new(Cell::new(Offset::ZERO));
+    let numbers = leak(mutable_state_of(1));
+    let (mut ui, scope) = run_default();
+    let read = offset.clone();
+    let data = data_provider_with(
+        move |_| read.get(),
+        move || numbers_to_data(&(1..=numbers.get()).collect::<Vec<_>>()),
+    );
+    let job = scope.show(&mut ui, data);
+    assert_context_menu_exists_with_numbers(&mut ui, &[1]);
+    job.assert_active();
+    let initial = position_on_screen(&mut ui, 1);
+    offset.set(Offset::new(10.0, 10.0));
+    numbers.set(2);
+    ui.wait_for_idle();
+    assert_context_menu_exists_with_numbers(&mut ui, &[1, 2]);
+    job.assert_active();
+    let delta = position_on_screen(&mut ui, 1) - initial;
+    assert_eq!(
+        IntOffset::new(delta.x.round() as i32, delta.y.round() as i32),
+        IntOffset::new(10, 10)
+    );
+}
+
+/// The anchor in a box 100 by 100 scrolling content 150 high, as Compose's
+/// `whenAnchorLayoutScrolled_popupDoesNotMove`.
+fn scrolled_outer(state: ScrollState) -> Outer {
+    Rc::new(move |content| {
+        Box!(modifier = Modifier.fill_max_size(), {
+            let content = content.clone();
+            Box!(
+                modifier = Modifier
+                    .background(Color::LIGHT_GRAY)
+                    .width(Dp(100.0))
+                    .height(Dp(100.0))
+                    .vertical_scroll(state)
+                    .width(Dp(100.0))
+                    .height(Dp(150.0)),
+                { content() }
+            );
+        });
+    })
+}
+
+/// compose-rs's, from Compose's `whenAnchorLayoutScrolled_popupDoesNotMove` (`@Ignore`d upstream,
+/// b/414664796): the menu stays where it opened while its anchor scrolls
+/// (`MaintainWindowPositionPopupPositionProvider`); once its size changes too, it's placed again,
+/// at the anchor's new place.
+#[test]
+fn whenAnchorLayoutScrolled_popupStays_untilItsSizeChanges() {
+    let scroll = Box::leak(Box::new(ScrollState::new(0)));
+    let state = **scroll;
+    let numbers = leak(mutable_state_of(1));
+    let (mut ui, scope) = run_test(scrolled_outer(state), default_inner());
+    let data = data_provider_with(default_positioner, move || {
+        numbers_to_data(&(1..=numbers.get()).collect::<Vec<_>>())
+    });
+    let job = scope.show(&mut ui, data);
+    assert_context_menu_exists_with_numbers(&mut ui, &[1]);
+    let initial = position_on_screen(&mut ui, 1);
+    let coroutine_scope = scope.coroutine_scope.get().expect("no scope");
+    launch(&coroutine_scope, async move {
+        let _ = state.scroll_to(state.max_value()).await;
+    });
+    ui.wait_for_idle();
+    assert_eq!(state.value(), 50);
+    assert_context_menu_exists_with_numbers(&mut ui, &[1]);
+    job.assert_active();
+    assert_eq!(position_on_screen(&mut ui, 1), initial);
+    numbers.set(2);
+    ui.wait_for_idle();
+    assert_context_menu_exists_with_numbers(&mut ui, &[1, 2]);
+    job.assert_active();
+    let delta = position_on_screen(&mut ui, 1) - initial;
+    assert_eq!(
+        IntOffset::new(delta.x.round() as i32, delta.y.round() as i32),
+        IntOffset::new(0, -50)
+    );
+}
+
+/// compose-rs's: the menu's popup is focusable, so the keys reach it: on Android, where the
+/// arrows move the focus (the host says so, D230), they move it between its items (each a
+/// clickable, as Compose's `ContextMenuItem`; Tab enters the menu from its popup's own focus),
+/// and Escape closes it, as Compose's `PopupLayout`
+/// takes `KEYCODE_ESCAPE` as the back key; its session ends.
+#[test]
+fn whenKeysPressed_arrowsMoveBetweenItems_andEscapeClosesTheMenu() {
+    let (mut ui, scope) = run_default();
+    ui.host().set_keys_navigate(true);
+    let job = scope.show(&mut ui, test_data_provider(&[1, 2]));
+    assert_context_menu_exists_with_numbers(&mut ui, &[1, 2]);
+    // Into the menu, from its popup's own focus.
+    ui.press_key(compose_ui::Key::Tab);
+    on_item_with_number(&mut ui, 1).assert_is_focused();
+    ui.press_key(compose_ui::Key::DirectionDown);
+    on_item_with_number(&mut ui, 2).assert_is_focused();
+    ui.press_key(compose_ui::Key::DirectionUp);
+    on_item_with_number(&mut ui, 1).assert_is_focused();
+    job.assert_active();
+    ui.press_key(compose_ui::Key::Escape);
+    assert_context_menu_does_not_exist(&mut ui);
+    job.assert_completed();
+}

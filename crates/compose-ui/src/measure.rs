@@ -126,7 +126,12 @@ impl UiTree {
                 continue;
             };
             let direction = self.node(node).layout_direction;
-            let position = provider.position(anchor, window, direction, size);
+            // Its provider may ask where things are, as Compose's ask their anchor's
+            // `LayoutCoordinates` in `calculatePosition` (D2039): the tree is open to read.
+            let position = {
+                let _open = self.focus_requests.window.open_to_read(self);
+                provider.position(anchor, window, direction, size)
+            };
             let value = self.node_mut(node);
             value.overlay_origin = crate::unit::Offset::new(position.x as f32, position.y as f32);
             if focus {
