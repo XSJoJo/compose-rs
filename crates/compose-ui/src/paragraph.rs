@@ -14,6 +14,21 @@ use crate::text_attributes::{ResolvedTextDirection, TextOverflow};
 use crate::text_range::TextRange;
 use crate::unit::{Density, Offset, Rect};
 
+/// A text's widths before it's laid out at one, as Compose's `ParagraphIntrinsics`:
+/// [`MultiParagraphIntrinsics`](crate::MultiParagraphIntrinsics) is one, for a text of many
+/// paragraphs or (from [`paragraph_intrinsics`](crate::paragraph_intrinsics)) one (D2051).
+pub trait ParagraphIntrinsics {
+    /// The narrowest it can be laid out, every soft line break taken.
+    fn min_intrinsic_width(&self) -> f32;
+    /// Its width without soft line breaks.
+    fn max_intrinsic_width(&self) -> f32;
+    /// Whether a font it resolved to has changed since (an async font arrived): laid out again,
+    /// it would look different.
+    fn has_stale_resolved_fonts(&self) -> bool {
+        false
+    }
+}
+
 /// A laid-out paragraph's queries, as Compose's `Paragraph`. Lines are indexed from 0; offsets
 /// are bytes of [`text`](Paragraph::text). Like Compose's, the offset queries panic on an
 /// offset past the text, and the line queries on a line past `line_count`.

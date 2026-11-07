@@ -15,12 +15,14 @@ use crate::alignment::LayoutDirection;
 use crate::annotated::{AnnotatedRange, AnnotatedString, intersect};
 use crate::constraints::Constraints;
 use crate::font::FontFamilyResolver;
+use crate::font_resolver::ResolvedFonts;
 use crate::intl::LocaleList;
 use crate::locale_direction::is_right_to_left;
-use crate::paragraph::Paragraph;
+use crate::paragraph::{Paragraph, ParagraphIntrinsics};
 use crate::path::Path;
 use crate::placeholder::{Placeholder, check_placeholders};
 use crate::range_for_rect::{TextGranularity, TextInclusionStrategy};
+use crate::span_style::SpanStyle;
 use crate::text::TextLayoutOptions;
 use crate::text_attributes::{ResolvedTextDirection, TextDirection, TextOverflow};
 use crate::text_measurer::{LaidOutParagraph, MeasuredParagraph, ParagraphSource, TextPaint};
@@ -237,6 +239,9 @@ pub struct MultiParagraphIntrinsics {
     soft_wrap: bool,
     /// The narrowest and widest, measured when first asked.
     widths: OnceCell<(f32, f32)>,
+    /// The fonts its paragraphs' styles and spans resolved to, as Compose's intrinsics resolve
+    /// them when made: stale once one of them arrives (D2051).
+    resolved_fonts: ResolvedFonts,
 }
 
 impl MultiParagraphIntrinsics {
@@ -255,7 +260,7 @@ impl MultiParagraphIntrinsics {
     ) -> MultiParagraphIntrinsics {
         check_placeholders(annotated_string.as_str(), placeholders);
         let paragraph_style = style.to_paragraph_style();
-        let infos = annotated_string
+        let infos: Vec<ParagraphIntrinsicInfo> = annotated_string
             .normalized_paragraph_styles(&paragraph_style)
             .into_iter()
             .map(|range| {
@@ -297,6 +302,16 @@ impl MultiParagraphIntrinsics {
                 }
             })
             .collect();
+        let mut resolved_fonts = ResolvedFonts::default();
+        let fonts = font_family_resolver.fonts();
+        for info in &infos {
+            resolved_fonts.resolve(fonts, &info.style);
+            if info.text.has_span_styles() {
+                for (_, run, _) in info.text.runs(&info.style) {
+                    resolved_fonts.resolve(fonts, &run);
+                }
+            }
+        }
         MultiParagraphIntrinsics {
             annotated_string,
             placeholders: placeholders.to_vec(),
@@ -305,7 +320,14 @@ impl MultiParagraphIntrinsics {
             font_family_resolver,
             soft_wrap,
             widths: OnceCell::new(),
+            resolved_fonts,
         }
+    }
+
+    /// Whether a font one of its paragraphs resolved to has arrived since, as Compose's
+    /// `hasStaleResolvedFonts`: laid out again, the text would look different.
+    pub fn has_stale_resolved_fonts(&self) -> bool {
+        self.resolved_fonts.is_stale()
     }
 
     /// The text.
@@ -378,6 +400,116 @@ impl MultiParagraphIntrinsics {
             (min, max)
         })
     }
+}
+
+impl ParagraphIntrinsics for MultiParagraphIntrinsics {
+    fn min_intrinsic_width(&self) -> f32 {
+        MultiParagraphIntrinsics::min_intrinsic_width(self)
+    }
+    fn max_intrinsic_width(&self) -> f32 {
+        MultiParagraphIntrinsics::max_intrinsic_width(self)
+    }
+    fn has_stale_resolved_fonts(&self) -> bool {
+        MultiParagraphIntrinsics::has_stale_resolved_fonts(self)
+    }
+}
+
+/// One paragraph's intrinsics, as Compose's `ParagraphIntrinsics(text, style, annotations, …)`:
+/// `text` in `style`, its span styles and other annotations kept and its paragraph styles left
+/// out (one paragraph whatever they say), what [`paragraph`] lays out (D2051).
+pub fn paragraph_intrinsics(
+    text: &AnnotatedString,
+    style: &TextStyle,
+    placeholders: &[AnnotatedRange<Placeholder>],
+    density: Density,
+    font_family_resolver: FontFamilyResolver,
+    soft_wrap: bool,
+    default_locale_list: LocaleList,
+) -> MultiParagraphIntrinsics {
+    let text = if text.has_paragraph_styles() {
+        text.substring_without_paragraph_styles(0, text.len())
+    } else {
+        text.clone()
+    };
+    MultiParagraphIntrinsics::new(
+        text,
+        style,
+        placeholders,
+        density,
+        font_family_resolver,
+        soft_wrap,
+        default_locale_list,
+    )
+}
+
+/// One paragraph laid out from its intrinsics within `constraints`, as Compose's
+/// `Paragraph(paragraphIntrinsics, constraints, maxLines, overflow)`: as wide as the maximum
+/// width. Panics on a minimum width or height, on intrinsics of many paragraphs (a
+/// [`MultiParagraph`] lays those out; Compose's cast fails), or without a line (D2051).
+pub fn paragraph(
+    intrinsics: &MultiParagraphIntrinsics,
+    constraints: Constraints,
+    max_lines: u32,
+    overflow: TextOverflow,
+) -> Rc<dyn Paragraph> {
+    assert!(
+        constraints.min_width == 0 && constraints.min_height == 0,
+        "Setting Constraints.minWidth and Constraints.minHeight is not supported, these should \
+         be the default zero values instead."
+    );
+    assert!(max_lines >= 1, "maxLines should be greater than 0");
+    let [info] = intrinsics.infos.as_slice() else {
+        panic!("a Paragraph lays out one paragraph's intrinsics, not {}", intrinsics.infos.len());
+    };
+    let width = constraints.max_width;
+    let constraints = if constraints.has_bounded_width() {
+        Constraints::new(width, width, 0, constraints.max_height)
+    } else {
+        Constraints::new(0, Constraints::INFINITY, 0, constraints.max_height)
+    };
+    let source = ParagraphSource {
+        text: &info.text,
+        placeholders: &info.placeholders,
+        options: TextLayoutOptions {
+            soft_wrap: intrinsics.soft_wrap,
+            max_lines,
+            direction: info.layout_direction(),
+            overflow,
+        },
+        constraints,
+        density: &intrinsics.density,
+    };
+    let platform = intrinsics.font_family_resolver.platform();
+    Rc::new(MeasuredParagraph::new(LaidOutParagraph::lay_out(platform, source, &info.style)))
+}
+
+/// `text` with `span_styles` laid out as one paragraph within `constraints`, as Compose's
+/// `Paragraph(text, style, constraints, density, fontFamilyResolver, defaultLocaleList,
+/// spanStyles, placeholders, maxLines, overflow)` (D2051).
+#[allow(clippy::too_many_arguments)]
+pub fn paragraph_of_text(
+    text: &str,
+    style: &TextStyle,
+    constraints: Constraints,
+    density: Density,
+    font_family_resolver: FontFamilyResolver,
+    default_locale_list: LocaleList,
+    span_styles: &[AnnotatedRange<SpanStyle>],
+    placeholders: &[AnnotatedRange<Placeholder>],
+    max_lines: u32,
+    overflow: TextOverflow,
+) -> Rc<dyn Paragraph> {
+    let text = AnnotatedString::with_styles(text.to_string(), span_styles.to_vec(), []);
+    let intrinsics = paragraph_intrinsics(
+        &text,
+        style,
+        placeholders,
+        density,
+        font_family_resolver,
+        true,
+        default_locale_list,
+    );
+    paragraph(&intrinsics, constraints, max_lines, overflow)
 }
 
 impl fmt::Debug for MultiParagraphIntrinsics {
@@ -458,6 +590,33 @@ impl MultiParagraph {
         overflow: TextOverflow,
     ) -> MultiParagraph {
         MultiParagraph::lay_out(intrinsics, constraints, max_lines, overflow, None)
+    }
+
+    /// `annotated_string` laid out within `constraints`, as Compose's `MultiParagraph(annotatedString,
+    /// style, constraints, density, fontFamilyResolver, defaultLocaleList, placeholders, maxLines,
+    /// overflow)`: its intrinsics made with soft wraps, then [`new`](Self::new) (D2051).
+    #[allow(clippy::too_many_arguments)]
+    pub fn of_text(
+        annotated_string: AnnotatedString,
+        style: &TextStyle,
+        constraints: Constraints,
+        density: Density,
+        font_family_resolver: FontFamilyResolver,
+        default_locale_list: LocaleList,
+        placeholders: &[AnnotatedRange<Placeholder>],
+        max_lines: u32,
+        overflow: TextOverflow,
+    ) -> MultiParagraph {
+        let intrinsics = MultiParagraphIntrinsics::new(
+            annotated_string,
+            style,
+            placeholders,
+            density,
+            font_family_resolver,
+            true,
+            default_locale_list,
+        );
+        MultiParagraph::new(Rc::new(intrinsics), constraints, max_lines, overflow)
     }
 
     /// As [`new`](Self::new), each paragraph known as drawn in `paint` (each its own style's

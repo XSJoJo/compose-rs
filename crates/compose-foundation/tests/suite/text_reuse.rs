@@ -684,6 +684,79 @@ fn a_text_is_laid_out_again_when_a_spans_font_arrives() {
     assert_eq!(counter.of("Hello").fresh, 2);
 }
 
+/// An async font for the text's style or for a span of one of its paragraphs, waiting.
+fn arriving_font() -> (Rc<RefCell<Option<compose_ui::Typeface>>>, compose_ui::FontFamily) {
+    let arriving: Rc<RefCell<Option<compose_ui::Typeface>>> = Rc::default();
+    let font = compose_ui::Font::from_loader(
+        Rc::new(ArrivingFont { typeface: arriving.clone() }),
+        compose_ui::FontOptions {
+            loading_strategy: Some(compose_ui::FontLoadingStrategy::Async),
+            ..Default::default()
+        },
+    );
+    (arriving, font.to_font_family())
+}
+
+/// `text`'s intrinsics in `style` on a stack of their own, its paragraphs split by their styles.
+fn intrinsics_of(
+    text: compose_ui::AnnotatedString,
+    style: &TextStyle,
+) -> compose_ui::MultiParagraphIntrinsics {
+    let shared = compose_ui::platform::SharedTextMeasurer::new(Box::new(FixedTextMeasurer::new()));
+    compose_ui::MultiParagraphIntrinsics::new(
+        text,
+        style,
+        &[],
+        Density::new(1.0),
+        compose_ui::create_font_family_resolver(&shared),
+        true,
+        compose_ui::LocaleList::empty(),
+    )
+}
+
+fn let_the_font_arrive(arriving: &RefCell<Option<compose_ui::Typeface>>) {
+    *arriving.borrow_mut() = Some(compose_ui::Typeface::new("arrived"));
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    compose_runtime::platform::fire_timers();
+    while compose_runtime::platform::run_ready() {}
+}
+
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntrinsicsAsyncTypefaceTest.kt, hasStaleResolvedFonts_falseByDefault
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntrinsicsAsyncTypefaceTest.kt, hasStaleResolvedFonts_trueOnTypefaceUpdate_mainTypeface
+#[test]
+fn intrinsics_in_an_async_font_are_stale_once_it_arrives() {
+    let (arriving, family) = arriving_font();
+    let style = TextStyle { font_family: Some(family), ..TextStyle::DEFAULT };
+    let intrinsics = intrinsics_of("Hello".into(), &style);
+    assert!(!intrinsics.has_stale_resolved_fonts());
+    let_the_font_arrive(&arriving);
+    assert!(intrinsics.has_stale_resolved_fonts());
+    // Through the trait too, as Compose's `ParagraphIntrinsics`.
+    let widths: &dyn compose_ui::ParagraphIntrinsics = &intrinsics;
+    assert!(widths.has_stale_resolved_fonts());
+}
+
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntrinsicsAsyncTypefaceTest.kt, hasStaleResolvedFonts_trueOnTypefaceUpdate_spanTypeface
+#[test]
+fn intrinsics_are_stale_once_a_span_s_async_font_in_a_later_paragraph_arrives() {
+    let (arriving, family) = arriving_font();
+    let text = compose_ui::AnnotatedString::build(|builder| {
+        builder.with_paragraph_style(compose_ui::ParagraphStyle::DEFAULT, |builder| {
+            builder.append("Hello");
+        });
+        builder.with_paragraph_style(compose_ui::ParagraphStyle::DEFAULT, |builder| {
+            let span = compose_ui::SpanStyle { font_family: Some(family), ..Default::default() };
+            builder.with_style(span, |builder| {
+                builder.append("World");
+            });
+        });
+    });
+    let intrinsics = intrinsics_of(text, &TextStyle::DEFAULT);
+    assert!(!intrinsics.has_stale_resolved_fonts());
+    let_the_font_arrive(&arriving);
+    assert!(intrinsics.has_stale_resolved_fonts());
+}
+
 /// A height shrinking under an ellipsized text ends it on a line the height has room for, and
 /// growing again brings the lines back.
 #[test]

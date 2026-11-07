@@ -328,7 +328,9 @@ pub use motion::{
     await_positive_motion_duration_scale, motion_duration_scale, set_motion_duration_scale,
     set_motion_duration_scale_source, with_motion_duration_scale,
 };
-pub use multi_paragraph::{MultiParagraph, MultiParagraphIntrinsics};
+pub use multi_paragraph::{
+    MultiParagraph, MultiParagraphIntrinsics, paragraph, paragraph_intrinsics, paragraph_of_text,
+};
 pub use nested_scroll::{
     LocalBoxFuture, NestedScrollConnection, NestedScrollDispatcher, NestedScrollSource,
     nested_scroll_modifier_node,
@@ -337,7 +339,7 @@ pub use node_context::{NodeContext, NodeHandle};
 pub use observer_node::ObserverModifierNode;
 pub use overlay::{PopupPositionProvider, WindowPosition};
 pub use painter::{BitmapPainter, ColorPainter, CustomPainter, Painter};
-pub use paragraph::{Paragraph, TextLayoutInput};
+pub use paragraph::{Paragraph, ParagraphIntrinsics, TextLayoutInput};
 pub use paragraph_style::ParagraphStyle;
 pub use parent_data::{LayoutIdParentData, ParentDataModifierNode};
 pub use path::{

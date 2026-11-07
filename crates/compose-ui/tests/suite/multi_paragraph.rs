@@ -1402,3 +1402,117 @@ fn a_text_without_paragraph_styles_is_its_one_paragraph() {
     assert_eq!(paragraph.height(), 20.0);
     assert_eq!(paragraph.get_line_top(1), 10.0);
 }
+
+// ---- The constructors and `ParagraphIntrinsics` (D2051) ----
+
+/// Compose's `Paragraph(text, style, constraints, …)`: the text laid out as one paragraph at the
+/// maximum width, its spans in their styles.
+#[test]
+fn a_paragraph_of_a_text_is_laid_out_at_the_maximum_width() {
+    let style = TextStyle { font_size: 10.sp(), ..TextStyle::DEFAULT };
+    let paragraph = compose_ui::paragraph_of_text(
+        "abc def",
+        &style,
+        Constraints::new(0, 50, 0, Constraints::INFINITY),
+        Density::new(1.0),
+        resolver(),
+        test_locale_list(),
+        &[],
+        &[],
+        u32::MAX,
+        TextOverflow::Clip,
+    );
+    assert_eq!(paragraph.width(), 50.0);
+    assert_eq!(paragraph.line_count(), 2);
+    assert_eq!(paragraph.get_line_end(0, true), 3);
+    // A span twice as large widens its letters and its line.
+    let large = SpanStyle { font_size: 20.sp(), ..SpanStyle::default() };
+    let paragraph = compose_ui::paragraph_of_text(
+        "abc",
+        &style,
+        Constraints::new(0, 100, 0, Constraints::INFINITY),
+        Density::new(1.0),
+        resolver(),
+        test_locale_list(),
+        &[AnnotatedRange::new(large, 1, 2)],
+        &[],
+        1,
+        TextOverflow::Clip,
+    );
+    assert_eq!(paragraph.get_bounding_box(1), Rect::new(10.0, 0.0, 30.0, 20.0));
+    assert_eq!(paragraph.get_bounding_box(2).left, 30.0);
+}
+
+/// One paragraph's intrinsics leave paragraph styles out, and are Compose's `ParagraphIntrinsics`.
+#[test]
+fn a_paragraph_s_intrinsics_are_one_paragraph_s() {
+    let style = TextStyle { font_size: 10.sp(), ..TextStyle::DEFAULT };
+    let intrinsics = compose_ui::paragraph_intrinsics(
+        &paragraphs(&["ab cd", "efg"]),
+        &style,
+        &[],
+        Density::new(1.0),
+        resolver(),
+        true,
+        test_locale_list(),
+    );
+    let widths: &dyn compose_ui::ParagraphIntrinsics = &intrinsics;
+    // "ab cdefg": its longest word, and the whole line.
+    assert_eq!(widths.min_intrinsic_width(), 50.0);
+    assert_eq!(widths.max_intrinsic_width(), 80.0);
+    assert!(!widths.has_stale_resolved_fonts());
+    let paragraph = compose_ui::paragraph(
+        &intrinsics,
+        Constraints::new(0, 100, 0, Constraints::INFINITY),
+        u32::MAX,
+        TextOverflow::Clip,
+    );
+    assert_eq!((paragraph.width(), paragraph.line_count()), (100.0, 1));
+    // Unbounded: as wide as its text.
+    let paragraph =
+        compose_ui::paragraph(&intrinsics, Constraints::unbounded(), u32::MAX, TextOverflow::Clip);
+    assert_eq!(paragraph.width(), 80.0);
+}
+
+#[test]
+#[should_panic(expected = "one paragraph's intrinsics, not 2")]
+fn a_paragraph_of_many_paragraphs_intrinsics_panics() {
+    let intrinsics = intrinsics(paragraphs(&["a", "b"]), &Setup::default());
+    compose_ui::paragraph(&intrinsics, Constraints::unbounded(), u32::MAX, TextOverflow::Clip);
+}
+
+#[test]
+#[should_panic(
+    expected = "Setting Constraints.minWidth and Constraints.minHeight is not supported"
+)]
+fn a_paragraph_with_a_minimum_width_panics() {
+    let intrinsics = intrinsics(AnnotatedString::new("a"), &Setup::default());
+    let constraints = Constraints::new(10, 100, 0, Constraints::INFINITY);
+    compose_ui::paragraph(&intrinsics, constraints, u32::MAX, TextOverflow::Clip);
+}
+
+/// Compose's `MultiParagraph(annotatedString, style, constraints, …)`: its intrinsics, then
+/// laid out as `MultiParagraph(intrinsics, …)`.
+#[test]
+fn a_multi_paragraph_of_a_text_is_its_intrinsics_laid_out() {
+    let style = TextStyle { font_size: 10.sp(), ..TextStyle::DEFAULT };
+    let constraints = Constraints::new(0, 30, 0, Constraints::INFINITY);
+    let paragraph = MultiParagraph::of_text(
+        paragraphs(&["ab", "cdef"]),
+        &style,
+        constraints,
+        Density::new(1.0),
+        resolver(),
+        test_locale_list(),
+        &[],
+        2,
+        TextOverflow::Clip,
+    );
+    assert_eq!(paragraph.max_lines(), 2);
+    assert_eq!(paragraph.paragraph_info_list().len(), 2);
+    assert_eq!(paragraph.line_count(), 2);
+    assert!(paragraph.did_exceed_max_lines());
+    assert_eq!(paragraph.width(), 30.0);
+    let intrinsics = paragraph.intrinsics().expect("laid out from intrinsics");
+    assert_eq!(intrinsics.annotated_string().as_str(), "abcdef");
+}
