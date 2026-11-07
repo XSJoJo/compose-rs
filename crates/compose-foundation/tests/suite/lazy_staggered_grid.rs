@@ -1,6 +1,6 @@
 //! Staggered grids, as Compose's `LazyStaggeredGridTest` and `LazyStaggeredGridLaneInfoTest`, in
-//! both orientations, at density 1. Items are composed in rounds of a frame here, so what depends
-//! on a measurement composing as it goes (`onlyOneInitialMeasurePass`) isn't ported.
+//! both orientations, at density 1. A measurement composes each item as it reaches it, as Compose's
+//! (C8, D1312), so `onlyOneInitialMeasurePass` is ported too.
 
 #![allow(non_snake_case)]
 
@@ -755,6 +755,37 @@ fn a_rotation_keeps_two_items_at_the_top() {
                 assert!(ui.on_node_with_tag(tag).is_displayed());
             }
         }
+    }
+}
+
+// Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/staggeredgrid/LazyStaggeredGridTest.kt onlyOneInitialMeasurePass
+/// A staggered grid's first layout measures it once: its measurement composes the items it reaches
+/// (C8, D1312), with no round after. Compose reads the state's `measurePassCount`; here a layout
+/// around the grid counts its measurements. Compose's `.composed { Modifier }` has no counterpart
+/// here, and is left out.
+#[test]
+fn the_first_layout_measures_a_staggered_grid_once() {
+    for lazy in orientations() {
+        let measures = Rc::new(Cell::new(0));
+        let counted = measures.clone();
+        let mut ui = rule(move || {
+            let counted = counted.clone();
+            let counting = Modifier.layout(move |scope, measurable, constraints| {
+                counted.set(counted.get() + 1);
+                let placeable = scope.measure(measurable, constraints);
+                scope.layout_with(placeable.width, placeable.height, move |placement| {
+                    placement.place(&placeable, 0, 0);
+                })
+            });
+            let modifier = counting.then(lazy.main_axis_size(Dp((ITEM * 10) as f32)));
+            Grid(Args::new(lazy, 3, modifier), move |scope| {
+                scope.items(1000, move |index| {
+                    Spacer(lazy.main_axis_size(Dp(ITEM as f32)).test_tag(index.to_string()));
+                });
+            });
+        });
+        ui.wait_for_idle();
+        assert_eq!(measures.get(), 1, "{lazy:?}");
     }
 }
 

@@ -193,7 +193,7 @@ The grid is there, with its cache window (D1469, D1470).
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/staggeredgrid/LazyStaggeredGridScrollIndicatorTest.kt | 9 | `scrollIndicatorState` | ported (`suite/scroll_indicator_lazy.rs`, all 9 both ways, D1568) |
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/staggeredgrid/LazyStaggeredGridScrollTest.kt | 18 | `scrollToItem` in and out of bounds, lanes | ported (`lazy_staggered_grid.rs`) |
 | compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/staggeredgrid/LazyStaggeredGridSemanticTest.kt | 2 | Item semantics | feature:lazy-semantics (`IndexForKey`) |
-| compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/staggeredgrid/LazyStaggeredGridTest.kt | 55 | Distribution across lanes, spans (`FullLine`), scrolling, sizes | partial (`lazy_staggered_grid.rs`: 50 of 55; left: the three on lookahead, `onlyOneInitialMeasurePass` as items are composed in rounds, D125, and `customOverscroll`) |
+| compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/staggeredgrid/LazyStaggeredGridTest.kt | 55 | Distribution across lanes, spans (`FullLine`), scrolling, sizes | partial (`lazy_staggered_grid.rs`: 51 of 55, `onlyOneInitialMeasurePass` among them since C8, D1312; left: the three on lookahead and `customOverscroll`) |
 
 ### Pager (`pager`)
 
