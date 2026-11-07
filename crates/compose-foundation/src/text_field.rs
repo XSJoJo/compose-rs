@@ -2958,6 +2958,27 @@ impl TextFieldNode {
             && event.position.y < bounds.height as f32;
         let at = event.position + self.scroll;
         match event.kind {
+            // A right click shows the menu (D2040), neither moving the cursor nor focusing, as
+            // Compose's `showTextContextMenuOnSecondaryClick` takes it before the selection's
+            // gestures, which take the primary button only.
+            PointerEventType::Press
+                if !event.consumed
+                    && event.pointer_type == compose_ui::PointerType::Mouse
+                    && event.buttons.is_secondary_pressed() =>
+            {
+                event.consume();
+                self.touch.right_click = true;
+                self.right_click(event.position, context);
+            }
+            PointerEventType::Release if self.touch.right_click => {
+                self.touch.right_click = false;
+                event.consume();
+            }
+            // The selection's gestures take a mouse's primary button alone.
+            PointerEventType::Press
+                if event.pointer_type == compose_ui::PointerType::Mouse
+                    && event.buttons.are_any_pressed()
+                    && !event.buttons.is_primary_pressed() => {}
             PointerEventType::Press if !event.consumed => {
                 event.consume();
                 self.commit_preedit(context);
@@ -3155,7 +3176,14 @@ impl PointerInputModifierNode for TextFieldNode {
         self.publish_state_in(EditSource::Other, context);
     }
 
+    /// A right click opens its menu (D2040): it hears the secondary button too, its own gestures
+    /// the primary one alone, as Compose's selection gestures (`isPrimaryPressed`).
+    fn hears_every_button(&self) -> bool {
+        true
+    }
+
     fn on_cancel_pointer_input(&mut self) {
+        self.touch.right_click = false;
         self.press = None;
         self.cancel_long_press();
         self.long_press_lifted();

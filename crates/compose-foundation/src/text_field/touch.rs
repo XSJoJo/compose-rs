@@ -53,8 +53,10 @@ pub(crate) struct Touch {
     haptics: (u32, u32),
     /// Its text toolbar (D2032).
     pub(super) toolbar: super::toolbar::Toolbar,
-    /// The tree's clipboard, while focused: what the toolbar's paste item looks at.
+    /// The tree's clipboard, while focused or after a right click: what the paste item looks at.
     clipboard: Option<Rc<dyn compose_ui::ClipboardManager>>,
+    /// A right click's press opened the menu: its release is the menu's too (D2040).
+    pub(super) right_click: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -92,6 +94,7 @@ impl Touch {
             haptics: (0, 0),
             toolbar: Default::default(),
             clipboard: None,
+            right_click: false,
         }
     }
 
@@ -196,6 +199,16 @@ impl TextFieldNode {
         } else {
             self.touch.cursor_handle = None;
             self.touch.drag = None;
+        }
+    }
+
+    /// A right click on the field: its node is the one the menu's items act on, the clipboard
+    /// the tree's (it may not be focused, D2040).
+    pub(super) fn touch_right_click(&mut self, context: &mut EventContext<'_>) {
+        let Some(handles) = &self.touch.handles else { return };
+        handles.field.set(Some(context.handle()));
+        if self.touch.clipboard.is_none() {
+            self.touch.clipboard = Some(compose_ui::NodeContext::clipboard(context));
         }
     }
 

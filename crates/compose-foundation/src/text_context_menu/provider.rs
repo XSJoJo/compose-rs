@@ -14,8 +14,9 @@ use crate::{MutatePriority, MutatorMutex};
 
 /// What shows a text context menu and how it looks, as Compose's `TextContextMenuProvider`.
 /// Provide another to [`LOCAL_TEXT_CONTEXT_MENU_DROPDOWN_PROVIDER`] or
-/// [`LOCAL_TEXT_CONTEXT_MENU_TOOLBAR_PROVIDER`] to replace one.
-pub trait TextContextMenuProvider {
+/// [`LOCAL_TEXT_CONTEXT_MENU_TOOLBAR_PROVIDER`] to replace one. `Any`, so what's provided can be
+/// told by its type, as Kotlin's `is` (D2038).
+pub trait TextContextMenuProvider: std::any::Any {
     /// Shows the menu `data_provider` describes, as Compose's suspending
     /// `showTextContextMenu(dataProvider)`: the future ends when the menu closes; dropped before
     /// (its job cancelled), it closes the menu.

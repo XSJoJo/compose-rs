@@ -4,6 +4,8 @@
 //!
 //! A field whose toolbar state is `None` and shows none pays a branch at each measurement.
 
+use std::rc::Rc;
+
 use compose_runtime::OwnedState;
 use compose_ui::platform::{ParagraphHandle, TextMeasurer};
 use compose_ui::{EventContext, LayoutCoordinates, NodeContext, Offset, Rect, text_action_labels};
@@ -11,11 +13,13 @@ use compose_ui::{EventContext, LayoutCoordinates, NodeContext, Offset, Rect, tex
 use super::TextFieldNode;
 use crate::key_mapping::KeyCommand;
 use crate::selection_handles::{TouchHandles, selection_handle_coordinates};
+use crate::text_context_menu::dropdown::default_dropdown;
 use crate::text_context_menu::modifier::{
-    ToolbarHandler, ToolbarHost, translate_root_to_destination,
+    ToolbarHandler, ToolbarHost, show_text_context_menu_at, translate_root_to_destination,
 };
 use crate::text_context_menu::{
-    TextContextMenuBuilderScope, TextContextMenuKeys, TextContextMenuSession,
+    TextContextMenuBuilder, TextContextMenuBuilderScope, TextContextMenuKeys,
+    TextContextMenuSession,
 };
 
 /// Which toolbar the user asked for, as Compose's `TextToolbarState`: the cursor's (a tap on its
@@ -39,7 +43,7 @@ pub(crate) struct FieldMenu {
 }
 
 /// Whether the clipboard holds something to paste, as Compose's internal `ClipboardPasteState`:
-/// known when it's updated (a field updates it when its toolbar shows), never reading the clip
+/// known when it's updated (a field updates it when a toolbar or a menu shows), never reading the clip
 /// itself (a clipboard's `has_clip` and `has_text` mustn't), which
 /// would show Android's "pasted from your clipboard" notice (b/422754681). Compose's takes the
 /// clipboard when made; this one is given it at each update, the field's being the tree's while
@@ -108,8 +112,7 @@ pub(crate) struct Toolbar {
     taps: u32,
     /// The toolbar was asked to show and not to hide since.
     requested: bool,
-    /// What the clipboard held when the toolbar last showed (Compose also updates it before a
-    /// right click's menu, which compose-rs's fields don't open yet).
+    /// What the clipboard held when a toolbar or a menu last showed.
     paste: ClipboardPasteState,
     handler: ToolbarHandler,
 }
@@ -263,8 +266,25 @@ impl TextFieldNode {
         }
     }
 
-    /// Asks the clipboard what it holds, as Compose's `updateClipboardEntry` when the toolbar
-    /// shows, and tells the items.
+    /// A right click at `click`, in the field's coordinates: the dropdown of its menu there, as
+    /// Compose's `showTextContextMenuOnSecondaryClick` with its `onPreShowContextMenu`
+    /// (`updateClipboardEntry`, before the menu shows), through the provided dropdown or the
+    /// field's default (D2040).
+    pub(super) fn right_click(&mut self, click: Offset, context: &mut EventContext<'_>) {
+        self.touch_right_click(context);
+        self.update_clipboard_entry();
+        let Some(handles) = self.touch.handles().cloned() else { return };
+        let own: TextContextMenuBuilder = {
+            let handles = handles.clone();
+            Rc::new(move |scope| field_components(&handles, scope))
+        };
+        show_text_context_menu_at(context, click, Some(own), |anchor| {
+            Some(default_dropdown(&handles.dropdown, anchor))
+        });
+    }
+
+    /// Asks the clipboard what it holds, as Compose's `updateClipboardEntry` when a toolbar or a
+    /// menu shows, and tells the items.
     pub(super) fn update_clipboard_entry(&mut self) {
         if let Some(clipboard) = self.touch.clipboard().cloned() {
             self.touch.toolbar.paste.update(&*clipboard);
@@ -279,7 +299,7 @@ impl TextFieldNode {
     }
 
     /// Which items show, as Compose's `canShow*MenuItem`: paste from what the clipboard held when
-    /// the toolbar showed (Compose's `ClipboardPasteState`).
+    /// a toolbar or a menu showed (Compose's `ClipboardPasteState`).
     fn field_menu(&self) -> FieldMenu {
         let editable = self.enabled && !self.read_only;
         let collapsed = self.anchor == self.cursor;
@@ -360,7 +380,16 @@ impl ToolbarHost for TextFieldNode {
     /// paste and select all, each only when it applies, between separators (no autofill, D2035).
     /// What applies is a state the field writes, so the toolbar follows it.
     fn own_text_context_menu_components(&mut self, scope: &mut TextContextMenuBuilderScope) {
-        let Some(handles) = self.touch.handles().cloned() else { return };
+        if let Some(handles) = self.touch.handles() {
+            field_components(handles, scope);
+        }
+    }
+}
+
+/// The field's items, reading what applies from its handles (D2032), for its toolbar and its
+/// right click's menu (D2040).
+fn field_components(handles: &Rc<TouchHandles>, scope: &mut TextContextMenuBuilderScope) {
+    {
         let menu = handles.field_toolbar().menu.get();
         scope.separator();
         let items = [

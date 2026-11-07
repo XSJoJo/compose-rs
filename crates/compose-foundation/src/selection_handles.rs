@@ -168,6 +168,8 @@ pub(crate) struct TouchHandles {
     /// A mouse's (or a touchpad's) event reached a handle: the touch interaction ends, as
     /// Compose's handles' `detectDirectTouchInteraction` (D2027).
     pub mouse: Cell<bool>,
+    /// The field's default dropdown, made at its first right click (D2040).
+    pub dropdown: OwnedState<Option<crate::text_context_menu::dropdown::DropdownSlot>>,
 }
 
 impl TouchHandles {
@@ -184,6 +186,7 @@ impl TouchHandles {
             active: compose_runtime::mutable_state_of(false),
             visible: Cell::new(None),
             mouse: Cell::new(false),
+            dropdown: compose_runtime::mutable_state_of(None),
         }
     }
 
@@ -227,6 +230,7 @@ impl compose_runtime::ComposeArg for TouchHandles {
 #[composable]
 #[allow(non_snake_case)]
 pub(crate) fn TextFieldHandles(handles: Rc<TouchHandles>) {
+    crate::text_context_menu::dropdown::DefaultDropdownMenu(handles.dropdown.get());
     if handles.active.get() {
         VisibleBoundsReader(handles.clone());
     }

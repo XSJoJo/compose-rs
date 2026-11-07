@@ -25,6 +25,8 @@ pub(crate) struct HitEntry {
     pub(crate) whole: bool,
     /// One change at a time, but what starts it goes as `firstDownRefersToPrimaryMouseButtonOnly`.
     pub(crate) follows_first_down: bool,
+    /// One change at a time, with each of a mouse's buttons (`hears_every_button`).
+    pub(crate) every_button: bool,
 }
 
 impl HitEntry {
@@ -334,6 +336,9 @@ impl UiTree {
                             follows_first_down: modifier_node
                                 .as_pointer_input()
                                 .is_some_and(|handler| handler.first_down_follows_the_host()),
+                            every_button: modifier_node
+                                .as_pointer_input()
+                                .is_some_and(|handler| handler.hears_every_button()),
                         });
                     };
                     if entry.state & entry_state::DELEGATING == 0 {
@@ -770,7 +775,9 @@ impl UiTree {
             {
                 continue;
             }
-            let view = if entry.follows_first_down && !self.first_down_primary_only {
+            let view = if entry.every_button
+                || (entry.follows_first_down && !self.first_down_primary_only)
+            {
                 change.as_any_button()
             } else {
                 change.as_primary_button()

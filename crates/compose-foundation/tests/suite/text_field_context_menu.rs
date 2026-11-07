@@ -1,0 +1,401 @@
+//! A state-based field's right-click menu: shown by a right click (not a left one, not while
+//! disabled), closed by a click off it or an item, its items by the clipboard, the selection, a
+//! password and read-only (D2040), from the `btf2` half of Compose's `TextFieldContextMenuTest`.
+//!
+//! The rule's root is 400 by 400 at density 1. The items match Compose's before API 26 (no
+//! autofill: compose-rs has none, D2035); the `afterApi26` tests, which expect it, wait on it.
+//! Compose's two process-text tests are `@Ignore`d upstream (b/472497302), left out.
+
+#![allow(non_snake_case)]
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use compose_foundation::layout::*;
+use compose_foundation::*;
+use compose_test::*;
+use compose_ui::platform::MemoryClipboard;
+use compose_ui::{ClipboardManager, IntSize, Offset, PointerEvent, PointerEventPass, TextRange};
+
+const TAG: &str = "BTF";
+const CUT: &str = "Cut";
+const COPY: &str = "Copy";
+const PASTE: &str = "Paste";
+const SELECT_ALL: &str = "Select all";
+const AUTOFILL: &str = "Autofill";
+
+/// A state kept for the test's length (its owner leaked).
+fn state(text: &str, selection: TextRange) -> TextFieldState {
+    **Box::leak(Box::new(TextFieldState::with_selection(text, selection)))
+}
+
+fn default_full_width_text() -> String {
+    "M".repeat(20)
+}
+
+/// A rule over `content` whose tree's clipboard is `clipboard`, as Compose's `LocalClipboard
+/// provides clipboard` around `setTextFieldTestContent`.
+fn rule_with(clipboard: Rc<MemoryClipboard>, content: impl Fn() + 'static) -> ComposeTestRule {
+    let mut ui = ComposeTestRule::sized(IntSize::new(400, 400), || {});
+    let shared: Rc<dyn ClipboardManager> = clipboard;
+    ui.host().with_tree(|tree| tree.set_clipboard(shared));
+    ui.set_content(content);
+    ui
+}
+
+fn field_rule(state: TextFieldState, enabled: bool) -> ComposeTestRule {
+    rule_with(Rc::new(MemoryClipboard::default()), move || {
+        BasicTextFieldOfState!(state, modifier = Modifier.test_tag(TAG), enabled = enabled);
+    })
+}
+
+fn right_click_field(ui: &mut ComposeTestRule) {
+    ui.on_node_with_tag(TAG).perform_mouse_input(|mouse| {
+        let center = mouse.center();
+        mouse.right_click(center);
+    });
+}
+
+/// Compose's `contextMenuItemInteraction`: the item labeled `label` in a popup.
+fn item<'a>(ui: &'a mut ComposeTestRule, label: &str) -> SemanticsNodeInteraction<'a> {
+    ui.on_node(has_any_ancestor(is_popup()).and(has_text(label)))
+}
+
+/// Compose's `clickOffPopup`, above its test framework (`UiDevice`): the host takes the click as
+/// the platform's.
+fn click_off_popup(ui: &mut ComposeTestRule, at: Offset) {
+    ui.host().send_pointer(PointerEvent::press(at));
+    ui.host().send_pointer(PointerEvent::release(at));
+    ui.wait_for_idle();
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ItemState {
+    Enabled,
+    DoesNotExist,
+}
+
+/// Compose's `assertContextMenuItem`.
+fn assert_item(ui: &mut ComposeTestRule, label: &str, state: ItemState) {
+    match state {
+        ItemState::DoesNotExist => {
+            item(ui, label).assert_does_not_exist();
+        }
+        ItemState::Enabled => {
+            item(ui, label)
+                .assert_exists()
+                .assert_is_displayed()
+                .assert_has_click_action()
+                .assert_is_enabled();
+        }
+    }
+}
+
+/// Compose's `assertContextMenuItems`: the popup exists, each item as said.
+fn assert_items(
+    ui: &mut ComposeTestRule,
+    [cut, copy, paste, select_all, autofill]: [ItemState; 5],
+) {
+    ui.on_node(is_popup()).assert_exists();
+    assert_item(ui, CUT, cut);
+    assert_item(ui, COPY, copy);
+    assert_item(ui, PASTE, paste);
+    assert_item(ui, SELECT_ALL, select_all);
+    assert_item(ui, AUTOFILL, autofill);
+}
+
+use ItemState::{DoesNotExist as NO, Enabled as YES};
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_rightClick_appears
+#[test]
+fn btf2_contextMenu_rightClick_appears() {
+    let state = state(&default_full_width_text(), TextRange::new(20, 20));
+    let mut ui = field_rule(state, true);
+    ui.on_node(is_popup()).assert_does_not_exist();
+    right_click_field(&mut ui);
+    ui.on_node(is_popup()).assert_exists();
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_leftClick_doesNotAppear
+#[test]
+fn btf2_contextMenu_leftClick_doesNotAppear() {
+    let state = state(&default_full_width_text(), TextRange::new(20, 20));
+    let mut ui = field_rule(state, true);
+    ui.on_node(is_popup()).assert_does_not_exist();
+    ui.on_node_with_tag(TAG).perform_mouse_input(|mouse| mouse.click());
+    ui.on_node(is_popup()).assert_does_not_exist();
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_disabled_rightClick_doesNotAppear
+#[test]
+fn btf2_contextMenu_disabled_rightClick_doesNotAppear() {
+    let state = state(&default_full_width_text(), TextRange::new(20, 20));
+    let mut ui = field_rule(state, false);
+    ui.on_node(is_popup()).assert_does_not_exist();
+    right_click_field(&mut ui);
+    ui.on_node(is_popup()).assert_does_not_exist();
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_disappearsOnClickOffOfPopup
+#[test]
+fn btf2_contextMenu_disappearsOnClickOffOfPopup() {
+    let state = state(&default_full_width_text(), TextRange::new(20, 20));
+    let mut ui = field_rule(state, true);
+    ui.on_node(is_popup()).assert_does_not_exist();
+    right_click_field(&mut ui);
+    ui.on_node(is_popup()).assert_exists();
+    // Halfway from the root's top left to its center.
+    click_off_popup(&mut ui, Offset::new(100.0, 100.0));
+    ui.on_node(is_popup()).assert_does_not_exist();
+}
+
+/// Compose's `runBtf2ClickContextMenuItemTest`: "Text Text Text" with its middle word selected,
+/// "clip" on the clipboard, `label` clicked from the right click's menu, which closes.
+fn run_click_item_test(
+    label: &str,
+    expected_text: &str,
+    expected_selection: TextRange,
+    expected_clipboard: &str,
+) {
+    let state = state("Text Text Text", TextRange::new(5, 9));
+    let clipboard = Rc::new(MemoryClipboard::default());
+    clipboard.set_text("clip");
+    let mut ui = rule_with(clipboard.clone(), move || {
+        BasicTextFieldOfState!(state, modifier = Modifier.test_tag(TAG));
+    });
+    right_click_field(&mut ui);
+    item(&mut ui, label).assert_has_click_action().assert_is_enabled().perform_click();
+    ui.wait_for_idle();
+    ui.on_node(is_popup()).assert_does_not_exist();
+    item(&mut ui, label).assert_does_not_exist();
+    assert_eq!(state.text().as_str(), expected_text);
+    assert_eq!(state.selection(), expected_selection);
+    assert_eq!(clipboard.get_text().as_deref(), Some(expected_clipboard));
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_onClickCut
+#[test]
+fn btf2_contextMenu_onClickCut() {
+    run_click_item_test(CUT, "Text  Text", TextRange::new(5, 5), "Text");
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_onClickCopy
+#[test]
+fn btf2_contextMenu_onClickCopy() {
+    run_click_item_test(COPY, "Text Text Text", TextRange::new(5, 9), "Text");
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_onClickPaste
+#[test]
+fn btf2_contextMenu_onClickPaste() {
+    run_click_item_test(PASTE, "Text clip Text", TextRange::new(9, 9), "clip");
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_onClickSelectAll
+#[test]
+fn btf2_contextMenu_onClickSelectAll() {
+    run_click_item_test(SELECT_ALL, "Text Text Text", TextRange::new(0, 14), "clip");
+}
+
+#[derive(Clone, Copy)]
+enum SelectionAmount {
+    None,
+    Partial,
+    All,
+}
+
+/// Compose's `runBtf2CorrectItemsTest`: "Text Text Text", selected as said, the clipboard empty
+/// or holding text, a secure field for a password, then a right click.
+fn run_correct_items_test(
+    password: bool,
+    read_only: bool,
+    empty_clipboard: bool,
+    amount: SelectionAmount,
+) -> ComposeTestRule {
+    assert!(!(password && read_only), "Can't be a password field and read-only.");
+    let selection = match amount {
+        SelectionAmount::None => TextRange::new(0, 0),
+        SelectionAmount::Partial => TextRange::new(5, 9),
+        SelectionAmount::All => TextRange::new(0, 14),
+    };
+    let state = state("Text Text Text", selection);
+    let clipboard = Rc::new(MemoryClipboard::default());
+    if !empty_clipboard {
+        clipboard.set_text("Clipboard Text");
+    }
+    let mut ui = rule_with(clipboard, move || {
+        if password {
+            BasicSecureTextField!(state, modifier = Modifier.test_tag(TAG));
+        } else {
+            BasicTextFieldOfState!(state, modifier = Modifier.test_tag(TAG), read_only = read_only);
+        }
+    });
+    right_click_field(&mut ui);
+    ui
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_emptyClipboard_noSelection_itemsMatch_beforeApi26
+#[test]
+fn btf2_contextMenu_emptyClipboard_noSelection_itemsMatch_beforeApi26() {
+    let mut ui = run_correct_items_test(false, false, true, SelectionAmount::None);
+    assert_items(&mut ui, [NO, NO, NO, YES, NO]);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_emptyClipboard_noSelection_itemsMatch_afterApi26
+#[test]
+#[ignore = "waits on autofill (D2035)"]
+fn btf2_contextMenu_emptyClipboard_noSelection_itemsMatch_afterApi26() {
+    let mut ui = run_correct_items_test(false, false, true, SelectionAmount::None);
+    assert_items(&mut ui, [NO, NO, NO, YES, YES]);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_emptyClipboard_partialSelection_itemsMatch
+#[test]
+fn btf2_contextMenu_emptyClipboard_partialSelection_itemsMatch() {
+    let mut ui = run_correct_items_test(false, false, true, SelectionAmount::Partial);
+    assert_items(&mut ui, [YES, YES, NO, YES, NO]);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_emptyClipboard_fullSelection_itemsMatch
+#[test]
+fn btf2_contextMenu_emptyClipboard_fullSelection_itemsMatch() {
+    let mut ui = run_correct_items_test(false, false, true, SelectionAmount::All);
+    assert_items(&mut ui, [YES, YES, NO, NO, NO]);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_nonEmptyClipboard_noSelection_itemsMatch_beforeApi26
+#[test]
+fn btf2_contextMenu_nonEmptyClipboard_noSelection_itemsMatch_beforeApi26() {
+    let mut ui = run_correct_items_test(false, false, false, SelectionAmount::None);
+    assert_items(&mut ui, [NO, NO, YES, YES, NO]);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_nonEmptyClipboard_noSelection_itemsMatch_afterApi26
+#[test]
+#[ignore = "waits on autofill (D2035)"]
+fn btf2_contextMenu_nonEmptyClipboard_noSelection_itemsMatch_afterApi26() {
+    let mut ui = run_correct_items_test(false, false, false, SelectionAmount::None);
+    assert_items(&mut ui, [NO, NO, YES, YES, YES]);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_nonEmptyClipboard_partialSelection_itemsMatch
+#[test]
+fn btf2_contextMenu_nonEmptyClipboard_partialSelection_itemsMatch() {
+    let mut ui = run_correct_items_test(false, false, false, SelectionAmount::Partial);
+    assert_items(&mut ui, [YES, YES, YES, YES, NO]);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_nonEmptyClipboard_fullSelection_itemsMatch
+#[test]
+fn btf2_contextMenu_nonEmptyClipboard_fullSelection_itemsMatch() {
+    let mut ui = run_correct_items_test(false, false, false, SelectionAmount::All);
+    assert_items(&mut ui, [YES, YES, YES, NO, NO]);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_password_noSelection_itemsMatch_beforeApi26
+#[test]
+fn btf2_contextMenu_password_noSelection_itemsMatch_beforeApi26() {
+    let mut ui = run_correct_items_test(true, false, false, SelectionAmount::None);
+    assert_items(&mut ui, [NO, NO, YES, YES, NO]);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_password_noSelection_itemsMatch_afterApi26
+#[test]
+#[ignore = "waits on autofill (D2035)"]
+fn btf2_contextMenu_password_noSelection_itemsMatch_afterApi26() {
+    let mut ui = run_correct_items_test(true, false, false, SelectionAmount::None);
+    assert_items(&mut ui, [NO, NO, YES, YES, YES]);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_password_partialSelection_itemsMatch
+#[test]
+fn btf2_contextMenu_password_partialSelection_itemsMatch() {
+    let mut ui = run_correct_items_test(true, false, false, SelectionAmount::Partial);
+    assert_items(&mut ui, [NO, NO, YES, YES, NO]);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_password_fullSelection_itemsMatch
+#[test]
+fn btf2_contextMenu_password_fullSelection_itemsMatch() {
+    let mut ui = run_correct_items_test(true, false, false, SelectionAmount::All);
+    assert_items(&mut ui, [NO, NO, YES, NO, NO]);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_readOnly_noSelection_itemsMatch
+#[test]
+fn btf2_contextMenu_readOnly_noSelection_itemsMatch() {
+    let mut ui = run_correct_items_test(false, true, true, SelectionAmount::None);
+    assert_items(&mut ui, [NO, NO, NO, YES, NO]);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_readOnly_partialSelection_itemsMatch
+#[test]
+fn btf2_contextMenu_readOnly_partialSelection_itemsMatch() {
+    let mut ui = run_correct_items_test(false, true, true, SelectionAmount::Partial);
+    assert_items(&mut ui, [NO, YES, NO, YES, NO]);
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldContextMenuTest.kt, btf2_contextMenu_readOnly_fullSelection_itemsMatch
+#[test]
+fn btf2_contextMenu_readOnly_fullSelection_itemsMatch() {
+    let mut ui = run_correct_items_test(false, true, true, SelectionAmount::All);
+    assert_items(&mut ui, [NO, YES, NO, NO, NO]);
+}
+
+/// The field, its middle word selected, inside a box telling whether each press and release
+/// reached it consumed (after the field, in the main pass).
+fn observed_field(consumed: Rc<RefCell<Vec<bool>>>) -> (ComposeTestRule, TextFieldState) {
+    let state = state("Text Text Text", TextRange::new(5, 9));
+    let ui = rule_with(Rc::new(MemoryClipboard::default()), move || {
+        let consumed = consumed.clone();
+        Box!(
+            modifier = Modifier.pointer_input((), move |scope| {
+                let consumed = consumed.clone();
+                async move {
+                    loop {
+                        let event = scope.await_pointer_event(PointerEventPass::Main).await;
+                        let pressed_or_lifted = |it: &&compose_ui::PointerInputChange| {
+                            it.changed_to_down_ignore_consumed()
+                                || it.changed_to_up_ignore_consumed()
+                        };
+                        if let Some(change) = event.changes.iter().find(pressed_or_lifted) {
+                            consumed.borrow_mut().push(change.is_consumed());
+                        }
+                    }
+                }
+            }),
+            {
+                BasicTextFieldOfState!(state, modifier = Modifier.test_tag(TAG));
+            }
+        );
+    });
+    (ui, state)
+}
+
+/// compose-rs's: the right click is the menu's, as Compose's `onRightClickDown` consumes its
+/// press and release before the selection's gestures, which take the primary button alone: the
+/// selection stays, the field isn't focused, and what's around sees both consumed.
+#[test]
+fn rightClick_isTheMenus_selectionAndFocusStay() {
+    let consumed: Rc<RefCell<Vec<bool>>> = Rc::default();
+    let (mut ui, state) = observed_field(consumed.clone());
+    ui.on_node_with_tag(TAG).perform_mouse_input(|mouse| mouse.right_click(Offset::new(1.0, 5.0)));
+    ui.on_node(is_popup()).assert_exists();
+    assert_eq!(state.selection(), TextRange::new(5, 9));
+    ui.on_node_with_tag(TAG).assert_is_not_focused();
+    assert_eq!(*consumed.borrow(), vec![true, true]);
+}
+
+/// compose-rs's: a middle click does nothing to the field, its selection's gestures taking the
+/// primary button alone (Compose's `isPrimaryPressed`); a left click there moves the cursor.
+#[test]
+fn middleClick_leavesTheSelection() {
+    let (mut ui, state) = observed_field(Rc::default());
+    ui.on_node_with_tag(TAG)
+        .perform_mouse_input(|mouse| mouse.click_at(Offset::new(1.0, 5.0), MouseButton::Tertiary));
+    ui.on_node(is_popup()).assert_does_not_exist();
+    assert_eq!(state.selection(), TextRange::new(5, 9));
+    ui.on_node_with_tag(TAG)
+        .perform_mouse_input(|mouse| mouse.click_at(Offset::new(1.0, 5.0), MouseButton::Primary));
+    assert_eq!(state.selection(), TextRange::new(0, 0));
+}

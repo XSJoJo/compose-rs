@@ -1570,6 +1570,13 @@ pub trait PointerInputModifierNode {
     fn first_down_follows_the_host(&self) -> bool {
         false
     }
+    /// One change at a time, but with each of a mouse's buttons: its pointer comes down with the
+    /// first and up with the last, `buttons` saying which are held, as a text field's node hears
+    /// a right click beside its primary button's gestures (D2040).
+    #[doc(hidden)]
+    fn hears_every_button(&self) -> bool {
+        false
+    }
     /// Whether it takes each platform event's changes together, in `on_pointer_events`, and not one
     /// at a time.
     fn takes_whole_events(&self) -> bool {

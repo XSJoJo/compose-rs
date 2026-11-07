@@ -364,3 +364,70 @@ fn whenContextMenuGestures_insertedAboveOtherPointerInputLate_correctlyDispatche
     assert!(is_open(&state));
     assert_eq!(*presses.borrow(), 2);
 }
+
+/// An area of 100 whose content is a clickable counting its clicks, inside a box telling whether
+/// each press and release reached it consumed (after the area, in the main pass).
+fn area_over_clickable(clicks: Rc<Cell<u32>>, consumed: Rc<RefCell<Vec<bool>>>) -> ComposeTestRule {
+    let state = closed();
+    rule(move || {
+        let (state, clicks, consumed) = (state.clone(), clicks.clone(), consumed.clone());
+        Box!(
+            modifier = Modifier.pointer_input((), move |scope| {
+                let consumed = consumed.clone();
+                async move {
+                    loop {
+                        let event = scope.await_pointer_event(PointerEventPass::Main).await;
+                        let pressed_or_lifted = |it: &&compose_ui::PointerInputChange| {
+                            it.changed_to_down_ignore_consumed()
+                                || it.changed_to_up_ignore_consumed()
+                        };
+                        if let Some(change) = event.changes.iter().find(pressed_or_lifted) {
+                            consumed.borrow_mut().push(change.is_consumed());
+                        }
+                    }
+                }
+            }),
+            {
+                let closing = state.clone();
+                let clicks = clicks.clone();
+                test_area(
+                    Modifier.size(100.dp()),
+                    state.clone(),
+                    item(Modifier.test_tag(ITEM_TAG), move || closing.close()),
+                    true,
+                    move || {
+                        let clicks = clicks.clone();
+                        Box!(
+                            modifier = Modifier
+                                .size(100.dp())
+                                .test_tag(CONTENT_TAG)
+                                .clickable(move || clicks.set(clicks.get() + 1))
+                        );
+                    },
+                );
+            }
+        );
+    })
+}
+
+/// compose-rs's: the right click's press and release are the area's, as Compose's
+/// `onRightClickDown` consumes them: a clickable inside isn't clicked, and what's around sees the
+/// press consumed; a left click is the clickable's.
+#[test]
+fn whenContextMenuArea_rightClickOnClickable_opensMenuWithoutClicking() {
+    let clicks = Rc::new(Cell::new(0));
+    let consumed: Rc<RefCell<Vec<bool>>> = Rc::default();
+    let mut ui = area_over_clickable(clicks.clone(), consumed.clone());
+    ui.on_node_with_tag(CONTENT_TAG).perform_mouse_input(|mouse| {
+        let center = mouse.center();
+        mouse.right_click(center);
+    });
+    ui.on_node_with_tag(ITEM_TAG).assert_is_displayed();
+    assert_eq!(clicks.get(), 0);
+    assert_eq!(*consumed.borrow(), vec![true, true]);
+    ui.on_node_with_tag(ITEM_TAG).perform_click();
+    ui.on_node_with_tag(ITEM_TAG).assert_does_not_exist();
+    ui.on_node_with_tag(CONTENT_TAG).perform_mouse_input(|mouse| mouse.click());
+    assert_eq!(clicks.get(), 1);
+    ui.on_node_with_tag(ITEM_TAG).assert_does_not_exist();
+}
