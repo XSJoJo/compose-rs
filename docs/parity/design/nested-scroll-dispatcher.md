@@ -1,6 +1,6 @@
 # `NestedScrollDispatcher`
 
-Design note for D1917 and D1918 (with D1920 to D1922), from Compose's `NestedScrollModifier.kt` and `NestedScrollNode.kt` (ui) and `Scrollable.kt` (foundation), and kept to what was built.
+Design note for D1917 and D1918 (with D1920 to D1923), from Compose's `NestedScrollModifier.kt` and `NestedScrollNode.kt` (ui) and `Scrollable.kt` (foundation), and kept to what was built.
 
 ## What Compose does
 
@@ -16,7 +16,7 @@ Foundation's scrollables delegate to `nestedScrollModifierNode(connection, dispa
 
 **The tree's chain.** Each `NestedScrollNode` now holds a shared link (`Rc`) with its connection and its parent's link, and is traversable under one key. Its `on_attach` takes a handle and finds its parent with `find_nearest_ancestor`. The tree is free for the node's own context then, and children attach before parents with every node already marked attached, so a fresh subtree links up as it attaches.
 
-What can change a parent after that is a nested-scroll node attaching above (a chain change or an insertion) or leaving, or the node itself moving. A thread-wide epoch counts these attaches and detaches, and the subtrees the tree's `Applier::attach` puts under an attached parent (D1920). That last one is how movable content moves a node: removed and attached again in one pass, its modifier nodes stay attached and are never told (docs/parity/design/modifier-nodes.md; Compose detaches and attaches them, a parity gap listed in missing.md), so no `on_detach` or `on_attach` would bump the epoch. A link resolved under an older epoch is resolved again at its next use, through `NodeHandle::with_node` (O(depth), as Compose's `findNearestAncestor` at each call).
+What can change a parent after that is a nested-scroll node attaching above (a chain change or an insertion) or leaving, or the node itself moving. A thread-wide epoch counts these attaches and detaches. Movable content moving a node detaches and attaches its modifier nodes, as Compose's (D1923), so a move bumps it too; D1920 had bumped it in `Applier::attach` while a moved node's modifier nodes stayed attached, untold. A link resolved under an older epoch is resolved again at its next use, through `NodeHandle::with_node` (O(depth), as Compose's `findNearestAncestor` at each call).
 
 When the tree is busy (a dispatch from inside a node callback, or anything holding the tree), the last link is used, and links to nodes that left are skipped, each giving way to the parent it had when it left. The cases a busy dispatch gets wrong are a nested-scroll node attached *above*, or the node moved, since the last free resolution and before the dispatch: the first misses the new parent, the second reaches the old one, still attached. No built-in dispatches from there (a click's handler and a task run with the tree free); a free dispatch, or the next one after it, puts it right.
 
@@ -28,7 +28,7 @@ When the tree is busy (a dispatch from inside a node callback, or anything holdi
 
 **Velocities stay `Offset`s.** The connection's fling callbacks take `Offset` (D891). The dispatcher does the same, so `Velocity(x, y)` in Compose's tests is `Offset::new(x, y)` here. Moving both to `Velocity` is one change, still listed under geometry-unit-api.
 
-**Cost.** Nothing for an app without `Modifier.nested_scroll` but an epoch bump (a thread-local add) per subtree the tree attaches under an attached parent (a paused composition's node, or movable content moved, D1920). A nested-scroll node costs a handle, an ancestor walk on attach, and an epoch bump on attach and detach. A dispatch costs a walk of the links, plus one ancestor walk per stale link while the tree is free.
+**Cost.** Nothing for an app without `Modifier.nested_scroll` (D1923 took out D1920's epoch bump per subtree attached). A nested-scroll node costs a handle, an ancestor walk on attach, and an epoch bump on attach and detach. A dispatch costs a walk of the links, plus one ancestor walk per stale link while the tree is free.
 
 ## Scrollables in the tree's chain (D1918)
 

@@ -64,16 +64,20 @@ MIRIFLAGS=-Zmiri-ignore-leaks cargo +nightly miri test -p compose-ui --test suit
     coordinates_in_passes layout_coordinates delegating_nodes rulers alignment_lines lookahead \
     focus_tests::attaching focus_tests::manager focus_tests::modal focus_tests::nodes \
     focus_tests::ordered focus_tests::owner focus_tests::properties focus_tests::directional \
-    focus_tests::requesting focus_tests::restoring focus_tests::states
+    focus_tests::requesting focus_tests::restoring focus_tests::states \
+    modifier_nodes::nodes_moved modifier_nodes::a_moved
 MIRIFLAGS="-Zmiri-ignore-leaks -Zmiri-tree-borrows" cargo +nightly miri test -p compose-ui --lib tree_access
 MIRIFLAGS="-Zmiri-ignore-leaks -Zmiri-tree-borrows" cargo +nightly miri test -p compose-ui --test suite -- \
     coordinates_in_passes layout_coordinates delegating_nodes rulers alignment_lines lookahead \
     focus_tests::attaching focus_tests::manager focus_tests::modal focus_tests::nodes \
     focus_tests::ordered focus_tests::owner focus_tests::properties focus_tests::directional \
-    focus_tests::requesting focus_tests::restoring focus_tests::states
+    focus_tests::requesting focus_tests::restoring focus_tests::states \
+    modifier_nodes::nodes_moved modifier_nodes::a_moved
 ```
 
 A change to `SubcomposeLayout` or what a slot's pass does in a measurement (D1309) adds `cargo +nightly miri test -p compose-foundation --test suite -- subcompose_layout`, in both models. It holds a custom node's `on_attach` and a focus callback asking coordinates in a lend (`a_node_attached_in_a_lend_asks_the_tree`, `a_focus_callback_in_a_lend_asks_the_tree`). A change to the tree's virtual nodes (`add_virtual_node`, `move_virtual_node`, `remove_virtual_nodes`) adds `cargo +nightly miri test -p compose-ui --lib tree::tests`, which holds them against a model at random (D1477).
+
+The `modifier_nodes` filters are the moves of movable content (D1923): a moved subtree detached in a release, in the step attaching it, or in its own, with its old parent above it.
 
 `-Zmiri-ignore-leaks` because of a leak that's deliberate and harmless: `compose_runtime`'s `EXECUTOR` is a `ManuallyDrop<Executor>` in a thread-local (`executor.rs`), so dropping tasks at a thread's exit can't run their drops after the runtime they use is gone: 3 allocations per test thread. Isolation doesn't need disabling. `focus_tests::candidates` is left out: its tables build a host per row, past what's useful here. `properties`, `ordered` and `directional` take about 10 minutes each under Stacked Borrows. `only_unsafe_module` in the suite fails if `unsafe` appears anywhere else in the crate.
 
