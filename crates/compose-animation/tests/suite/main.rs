@@ -44,6 +44,7 @@ mod review_round8;
 mod review_round9;
 mod seekable;
 mod shared_configuration;
+mod shared_transition;
 mod single_value;
 mod spline_decay;
 mod spring_estimation;

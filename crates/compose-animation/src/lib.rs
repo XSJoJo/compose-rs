@@ -29,6 +29,7 @@ mod keyframes;
 mod mono_spline;
 mod seekable;
 mod shared;
+mod shared_transition;
 mod spec;
 mod spline;
 mod spring;
@@ -92,6 +93,10 @@ pub use seekable::SeekableTransitionState;
 pub use shared::{
     BoundsTransform, DefaultSharedContentConfig, PlaceholderSize, ResizeMode, SharedContentConfig,
     SharedTransitionDefaults,
+};
+pub use shared_transition::{
+    OverlayClip, SharedContentState, SharedKey, SharedOptions, SharedTransitionLayout,
+    SharedTransitionScope,
 };
 pub use spec::{
     AnimationConstants, AnimationSpec, CustomDurationBasedSpec, CustomSpec,

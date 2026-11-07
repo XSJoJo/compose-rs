@@ -360,6 +360,9 @@ trait TransitionNode {
     fn on_duration_changed(&self);
     /// Whether its current state isn't its target.
     fn is_changing(&self) -> bool;
+    /// Whether its root's current state isn't the root's target, as `BoundsAnimation.isRunning`
+    /// (state reads).
+    fn root_is_changing(&self) -> bool;
     fn on_frame_play_time(&self, play_time_nanos: i64, scale_to_end: bool);
     fn on_transition_end(&self);
     fn total_duration_nanos(&self) -> i64;
@@ -824,6 +827,13 @@ impl<S: Clone + PartialEq + 'static> TransitionNode for TransitionInner<S> {
         self.target_untracked() != self.current_untracked()
     }
 
+    fn root_is_changing(&self) -> bool {
+        match self.parent.as_ref().and_then(Weak::upgrade) {
+            Some(parent) => parent.root_is_changing(),
+            None => self.target.get() != self.state.current_state(),
+        }
+    }
+
     fn on_frame_play_time(&self, play_time_nanos: i64, scale_to_end: bool) {
         self.frame_at(play_time_nanos, scale_to_end);
     }
@@ -931,6 +941,16 @@ impl<S: Clone + PartialEq + 'static> Transition<S> {
     /// deferred transition's deferred phase.
     pub fn pending_target_state(&self) -> Option<S> {
         self.inner.pending.as_ref().and_then(|pending| pending.state.get())
+    }
+
+    /// Whether its root's current state isn't the root's target (state reads).
+    pub(crate) fn root_is_changing(&self) -> bool {
+        TransitionNode::root_is_changing(&*self.inner)
+    }
+
+    /// Its identity, for a group keyed by it.
+    pub(crate) fn identity(&self) -> usize {
+        Rc::as_ptr(&self.inner) as *const () as usize
     }
 
     /// Whether it is a deferred transition or a child of one.

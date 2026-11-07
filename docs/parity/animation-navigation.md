@@ -35,8 +35,8 @@ The inventory of Compose's animation and navigation tests and public API against
 | `covered` | 0 | 0 |
 | `ported` | 73 | 807 |
 | `port` | 0 | 0 |
-| `partial` | 9 | 114 |
-| `feature:<name>` | 12 | 144 |
+| `partial` | 10 | 185 |
+| `feature:<name>` | 11 | 73 |
 | `n/a` | 14 | 154 |
 
 By module:
@@ -44,7 +44,7 @@ By module:
 | Module | Files | @Test | covered | ported | port | partial | feature | n/a |
 |---|---|---|---|---|---|---|---|---|
 | animation-core | 30 | 212 | 0 | 28 / 204 | 0 | 2 / 8 | 0 | 0 |
-| animation | 15 | 238 | 0 | 8 / 87 | 0 | 4 / 49 | 3 / 102 | 0 |
+| animation | 15 | 238 | 0 | 8 / 87 | 0 | 5 / 120 | 2 / 31 | 0 |
 | animation-graphics | 5 | 22 | 0 | 0 | 0 | 0 | 5 / 22 | 0 |
 | navigation-compose | 9 | 121 | 0 | 0 | 0 | 0 | 0 | 9 / 121 |
 | navigation3-runtime | 21 | 307 | 0 | 20 / 300 | 0 | 0 | 0 | 1 / 7 |
@@ -55,14 +55,14 @@ By module:
 
 | Feature | Files | @Test |
 |---|---|---|
-| shared-transition | 3 | 87 |
+| shared-transition | 2 | 16 |
 | movable-content | 3 | 19 |
 | animated-image-vector | 5 | 22 |
 | lookahead-visual-debug | 1 | 16 |
 
 Four parts:
 
-- **Animation** (50 files, 472 tests): 36 files `ported` (291 tests), 6 `partial` (57), 8 waiting on features (124), of which what's left needs shared elements (shared-transition, lookahead-visual-debug) or a full `ImageVector` (animated-image-vector).
+- **Animation** (50 files, 472 tests): 36 files `ported` (291 tests), 7 `partial` (128), 7 waiting on features (53), of which what's left needs shared elements' deferred hand-off or visual debugging (shared-transition, lookahead-visual-debug) or a full `ImageVector` (animated-image-vector).
 - **Navigation 3** (36 files, 428 tests): 29 files `ported` (353 tests), 2 `partial` (48), 4 waiting on features (20: movable content, shared elements), 1 `n/a` (7). It's what compose-rs models (D704).
 - **Navigation events and back** (13 files, 198 tests), what Navigation 3's back is built on: 8 files `ported` (163 tests), 1 `partial` (9), 4 `n/a` (26), in `compose-navigation-event` (D845).
 - **Navigation Compose** (9 files, 121 tests): all `n/a: replaced by Navigation 3 (D704)`. Their notes say which Navigation 3 tests check the same behaviour.
@@ -121,7 +121,7 @@ The "covered" notes cite compose-rs test files under `crates/compose-animation/t
 | 38 | `compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/DeferredAnimatedVisibilityTest.kt` | 21 | `DeferredAnimatedVisibility`: enter/exit gates, preview scale/offset, hand-off, interruption | ported | `deferred_visibility.rs` (D828; widths through `on_globally_positioned`, as Compose's, since D1187) |
 | 39 | `compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/DeferredSharedElementTest.kt` | 15 | shared elements under deferred transitions: previews, hand-off, cancellation | `feature:shared-transition` | deferred-transition is done (D828) |
 | 40 | `compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/LookaheadAnimationVisualDebugHelperTest.kt` | 16 | debug overlays for shared elements and animateBounds | `feature:lookahead-visual-debug` | experimental (`@ExperimentalLookaheadAnimationVisualDebugApi`) |
-| 41 | `compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt` | 71 | `SharedTransitionLayout`, `sharedElement`, `sharedBounds`, overlay, clip, placeholder size, scale-to-bounds, lazy lists, isTransitionActive, velocity | `feature:shared-transition` | needs ui lookahead |
+| 41 | `compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt` | 71 | `SharedTransitionLayout`, `sharedElement`, `sharedBounds`, overlay, clip, placeholder size, scale-to-bounds, lazy lists, isTransitionActive, velocity | partial | 7 ported (`shared_transition.rs`, D1329): `transitionInterruption`, `testKeyMatch`, `testBoundsTransform`, `testPlaceholderSize`, `testSkipToLookahead`, `testSharedElementRenderedInOverlayAboveOtherContent` (pixels as the display list's last rect over a point); the rest to port |
 | 42 | `compose/animation/animation/src/androidHostTest/kotlin/androidx/compose/animation/AndroidFlingSplineTest.kt` | 1 | the fling spline clamps positions out of range | ported | `spline_decay.rs`, with flings checked against values computed in Kotlin's numeric semantics |
 | 43 | `compose/animation/animation/src/androidHostTest/kotlin/androidx/compose/animation/ConverterTest.kt` | 5 | Color (Oklab, clamping), Rect, Dp, Offset converters | ported | `converters.rs` (the color clamp included: compose-rs clamps in Oklab first, as Compose's) |
 | 44 | `compose/animation/animation/src/androidHostTest/kotlin/androidx/compose/animation/EnterExitTransitionConfigTest.kt` | 13 | `EnterTransition/ExitTransition.config`: fade, slide, change size, scale, veil, combined; SizeTransform defaults | ported | `enter_exit_config.rs` (the offset and size functions checked by what they give) |
@@ -300,7 +300,7 @@ Deprecated and left out:
 | `CapturedAnimatedVisibility(visible, …)`, `CapturedAnimatedVisibility(MutableTransitionState, …)` | present | D1413 |
 | `DeferredAnimatedContent`, `DeferredAnimatedVisibility`, `MutableContentTransform(…)`, `MutableTransform`, `TransformScope` (`alpha`, `scale`, `offset`, `transformOrigin`, `veil`) | present: methods of `DeferredTransition`; `TransformScope`'s setters `set_alpha` and the like (D828) | deferred-transition |
 | `BoundsTransform`, `SharedTransitionDefaults` (`BoundsTransform`, `SharedContentConfig`), `SharedTransitionScope.PlaceholderSize` (`ContentSize`, `AnimatedSize`), `ResizeMode` (`RemeasureToBounds`, `scaleToBounds(contentScale, alignment)`), `SharedContentConfig`'s `shouldKeepEnabledForOngoingAnimation` and `permitTransformDuringDeferredTransition` | present (D829); what takes a `SharedContentState` comes with the scope | shared-transition |
-| `SharedTransitionLayout`, `SharedTransitionScope(content)`, the rest of the `SharedTransitionScope` interface:<br>• the modifiers: `sharedElement`, `sharedBounds`, `sharedElementWithCallerManagedVisibility`, `skipToLookaheadSize`, `skipToLookaheadPosition`, `renderInSharedTransitionScopeOverlay`;<br>• the state: `rememberSharedContentState(key[, config])`, `SharedContentConfig(…)`, `OverlayClip`, `isTransitionActive`;<br>• the nested types: `SharedContentState` (`key`, `isMatchFound`, `clipPathInOverlay`, `parentSharedContentState`, `prepareTransitionWithInitialVelocity`), `SharedContentConfig` (`isEnabled`, `shouldKeepEnabledForOngoingAnimation`, `permitTransformDuringDeferredTransition`, `alternativeTargetBoundsInTransitionScopeAfterRemoval`), `PlaceholderSize` (`ContentSize`, `AnimatedSize`), `ResizeMode` (`RemeasureToBounds`, `scaleToBounds(contentScale, alignment)`);<br>• `SharedTransitionDefaults` (`BoundsTransform`, `SharedContentConfig`) and `BoundsTransform` | missing | shared-transition |
+| `SharedTransitionLayout`, `SharedTransitionScope(content)`, the rest of the `SharedTransitionScope` interface (present, D1329: the modifiers as scope methods returning a `Modifier`, their parameters in `SharedOptions`; keys as `SharedKey`):<br>• the modifiers: `sharedElement`, `sharedBounds`, `sharedElementWithCallerManagedVisibility`, `skipToLookaheadSize`, `skipToLookaheadPosition`, `renderInSharedTransitionScopeOverlay`;<br>• the state: `rememberSharedContentState(key[, config])`, `SharedContentConfig(…)`, `OverlayClip`, `isTransitionActive`;<br>• the nested types: `SharedContentState` (`key`, `isMatchFound`, `clipPathInOverlay`, `parentSharedContentState`, `prepareTransitionWithInitialVelocity`), `SharedContentConfig` (`isEnabled`, `shouldKeepEnabledForOngoingAnimation`, `permitTransformDuringDeferredTransition`, `alternativeTargetBoundsInTransitionScopeAfterRemoval`), `PlaceholderSize` (`ContentSize`, `AnimatedSize`), `ResizeMode` (`RemeasureToBounds`, `scaleToBounds(contentScale, alignment)`);<br>• `SharedTransitionDefaults` (`BoundsTransform`, `SharedContentConfig`) and `BoundsTransform` | present (D1329) but `SharedContentConfig(…)`'s constructors (implement the trait) | shared-transition |
 | `Modifier.animateBounds(lookaheadScope, modifier, boundsTransform, animateMotionFrameOfReference)` | present: `animate_bounds`, `animate_bounds_with` (D1328) | animate-bounds |
 | `LookaheadAnimationVisualDebugging(…)`, `CustomizedLookaheadAnimationVisualDebugging(…)` (experimental) | missing | lookahead-visual-debug |
 | `splineBasedDecay(density)`, `rememberSplineBasedDecay()`, `SplineBasedFloatDecayAnimationSpec` | present (D820; foundation's flings decay along it, D826) | decay-animation |
@@ -584,6 +584,7 @@ One entry per feature. Sizes:
 
 #### shared-transition (XL, not exp.)
 
+- **Done (D1329):** the scope, the shared modifiers, the state machine, the overlay of recorded `GraphicsLayer`s, `skipToLookaheadSize` and `skipToLookaheadPosition`, `renderInSharedTransitionScopeOverlay`, the momentum of an initial velocity ([design](design/shared-elements.md)). **Left:** the deferred transitions' manual transforms (`DeferredSharedElementTest`), visual debugging, most of the tests.
 - **Done, without lookahead (D829):** `BoundsTransform`, `SharedTransitionDefaults`, `PlaceholderSize`, `ResizeMode` (`ContentScale` moved to compose-ui, as Compose's is in ui), the state-free part of `SharedContentConfig`. From deferred-transition (D828): `pending_target_state`, the manual transforms' state machine, forced initial values on deferred animations. **Left:** everything with a `SharedContentState` or a scope.
 - **API:** `SharedTransitionLayout`, `SharedTransitionScope` and its whole surface (see the API table), `BoundsTransform`, `SharedTransitionDefaults`.
 - **What it does:** matches elements across content changes and animates their bounds in an overlay.
@@ -674,7 +675,7 @@ Navigation 3 has replaced `compose-navigation`'s model (D704): its `NavControlle
 13. **After ui lookahead (and movable content) lands in its own area:**
     - lookahead in animations (S–M);
     - animate-bounds (L), done (D1328);
-    - shared-transition (XL);
+    - shared-transition (XL), its core done (D1329);
     - lookahead-visual-debug (M, experimental).
 14. **captured-animated-visibility (M)**: done but its lookahead tests.
 15. **animated-image-vector (L)**, after a full `ImageVector`.
