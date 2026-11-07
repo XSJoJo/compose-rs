@@ -103,6 +103,7 @@ mod rect_list_integration;
 mod review_api_d;
 mod review_c8;
 mod review_d470;
+mod review_shared_elements_2;
 mod review_d475;
 mod review_d479;
 mod review_d486;
