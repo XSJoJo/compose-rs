@@ -925,3 +925,159 @@ fn z_index_in_overlay() {
         assert!(frames < 300, "the transition ends");
     }
 }
+
+/// The rects of `color` drawn, at where they're drawn in the root, and the color drawn last over
+/// the first's top left.
+fn rects_of(ui: &mut ComposeTestRule, color: Color) -> (Vec<Offset>, Option<Color>) {
+    let flat = ui.host().display_list();
+    let mut origin = Offset::ZERO;
+    let mut found = Vec::new();
+    for op in &flat.ops {
+        match op {
+            DrawOp::Translate(by) => origin = origin + *by,
+            DrawOp::DrawRect(rect, paint) if paint.color == color => {
+                found.push(Offset::new(origin.x + rect.left, origin.y + rect.top));
+            }
+            _ => {}
+        }
+    }
+    let top = found.first().and_then(|at| top_color_at(ui, *at + Offset::new(0.5, 0.5)));
+    (found, top)
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testRenderInSharedTransitionOverlayInvalidationInTheSameFrameAsPlacementChange
+/// A box rendered in the overlay only when asked: not asked, it's drawn in place, once, under
+/// the content after it; asked, in the overlay, once, over it; either way where its parent's
+/// offset, read while placing, puts it in that frame.
+#[test]
+fn render_in_overlay_follows_placement_in_the_same_frame() {
+    let offset = mutable_state_of(0);
+    let render_in_overlay = mutable_state_of(false);
+    let overlay_background = Color::WHITE.with_alpha(0.5);
+    let color = Color::RED.with_alpha(0.5);
+    let (o, r) = (offset.handle(), render_in_overlay.handle());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        SharedTransitionLayout!(
+            modifier = Modifier.size(20.dp()).background(Color::WHITE),
+            move |scope: SharedTransitionScope| {
+                let s = scope.clone();
+                Box!(
+                    modifier =
+                        Modifier.offset_with(move |_| compose_ui::IntOffset::new(o.get(), o.get())),
+                    move |_| {
+                        Box!(
+                            modifier = s
+                                .render_in_shared_transition_scope_overlay_with(0.0, move || r
+                                    .get())
+                                .background(color)
+                                .size(1.dp())
+                        );
+                    }
+                );
+                Box!(modifier = Modifier.fill_max_size().background(overlay_background));
+            }
+        );
+    });
+    ui.wait_for_idle();
+    for _ in 0..3 {
+        offset.update(|it| it + 3);
+        ui.wait_for_idle();
+        let at = offset.get() as f32;
+        let (found, top) = rects_of(&mut ui, color);
+        assert_eq!(found, vec![Offset::new(at, at)], "in place, once");
+        assert_eq!(top, Some(overlay_background), "under what follows it");
+    }
+    render_in_overlay.set(true);
+    ui.wait_for_idle();
+    for _ in 0..3 {
+        offset.update(|it| it + 3);
+        ui.wait_for_idle();
+        let at = offset.get() as f32;
+        let (found, top) = rects_of(&mut ui, color);
+        assert_eq!(found, vec![Offset::new(at, at)], "in the overlay, once");
+        assert_eq!(top, Some(color), "over what follows it");
+    }
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, initialVelocityForExitIsUsed
+/// A shared element prepared with an initial velocity (right and up) moves off from a control
+/// element without one, that way; the next transition, without, keeps them together.
+#[test]
+fn initial_velocity_for_exit_is_used() {
+    let exit = mutable_state_of(false);
+    let state: Rc<RefCell<Option<SharedContentState>>> = Rc::default();
+    let positions: Rc<RefCell<Vec<Offset>>> = Rc::new(RefCell::new(vec![Offset::ZERO; 4]));
+    let (e, st, p) = (exit.handle(), state.clone(), positions.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let (st, p) = (st.clone(), p.clone());
+        SharedTransitionLayout!(move |scope: SharedTransitionScope| {
+            let (s, st, p) = (scope.clone(), st.clone(), p.clone());
+            AnimatedContent!(e.get(), move |content: AnimatedContentScope, exited: bool| {
+                let (s, st, p) = (s.clone(), st.clone(), p.clone());
+                let (side, first) = if exited { (200, 1) } else { (100, 0) };
+                Box!(
+                    modifier = Modifier.fill_max_size(),
+                    content_alignment = Alignment::CENTER,
+                    move |_| {
+                        let test = s.remember_shared_content_state("test");
+                        if !exited {
+                            *st.borrow_mut() = Some(test.clone());
+                        }
+                        let noting = |at: usize| {
+                            let p = p.clone();
+                            Modifier.on_globally_positioned(move |it: LayoutCoordinates| {
+                                p.borrow_mut()[at] = it.position_in_root();
+                            })
+                        };
+                        Box!(
+                            modifier = s
+                                .shared_element(&test, &content)
+                                .size(side.dp())
+                                .then(noting(first))
+                        );
+                        let control = s.remember_shared_content_state("control");
+                        Box!(
+                            modifier = s
+                                .shared_element(&control, &content)
+                                .size(side.dp())
+                                .then(noting(first + 2))
+                        );
+                    }
+                );
+            });
+        });
+    });
+    ui.wait_for_idle();
+    exit.set(true);
+    ui.set_auto_advance(false);
+    let last = positions.borrow()[0];
+    state
+        .borrow()
+        .as_ref()
+        .expect("composed")
+        .prepare_transition_with_initial_velocity(compose_ui::Velocity::new(11000.0, -12000.0));
+    let mut frames = 0;
+    while positions.borrow()[0] == last {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        frames += 1;
+        assert!(frames < 100, "it moves");
+    }
+    let (test, control) = (positions.borrow()[0], positions.borrow()[2]);
+    assert!(test.x - control.x > 0.0, "{test:?} {control:?}");
+    assert!(test.y - control.y < 0.0, "{test:?} {control:?}");
+    ui.set_auto_advance(true);
+    ui.wait_for_idle();
+    exit.set(false);
+    ui.set_auto_advance(false);
+    let last = positions.borrow()[1];
+    let mut frames = 0;
+    while positions.borrow()[1] == last {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        frames += 1;
+        assert!(frames < 100, "it moves");
+    }
+    let (test, control) = (positions.borrow()[1], positions.borrow()[3]);
+    assert_eq!(test, control);
+}

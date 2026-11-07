@@ -2327,8 +2327,6 @@ impl DrawModifierNode for SharedBoundsNode {
         if entry.should_render_in_place() {
             scope.draw_layer(&layer);
         }
-        // The overlay draws what was recorded.
-        entry.element().scope().invalidate_overlay();
     }
 }
 
@@ -2488,7 +2486,6 @@ impl DrawModifierNode for OverlayNode {
         if self.renderer.enabled.get() {
             let layer = self.renderer.obtain_layer();
             scope.record_layer(&layer, |content| content.draw_content());
-            self.scope.inner.invalidate_overlay();
         } else {
             self.renderer.release_layer();
             scope.draw_content();
