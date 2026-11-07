@@ -14,13 +14,14 @@ use compose_runtime::{ComposeArg, composable};
 
 use crate::alignment::LayoutDirection;
 use crate::annotated::{AnnotatedRange, AnnotatedString};
+use crate::color_filter::BlendMode;
 use crate::constraints::Constraints;
 use crate::draw::DrawScope;
 use crate::font::{FontFamilyResolver, LOCAL_FONT_FAMILY_RESOLVER, LOCAL_TREE_TEXT_MEASURER};
 use crate::graphics::{Color, DrawStyle, Shadow};
 use crate::intl::LocaleList;
 use crate::multi_paragraph::{MultiParagraph, MultiParagraphIntrinsics, StackedParagraph};
-use crate::paragraph::{Paragraph, TextLayoutInput};
+use crate::paragraph::{PaintOverrides, Paragraph, TextLayoutInput};
 use crate::path::Path;
 use crate::placeholder::{Placeholder, Placeholders, check_placeholders};
 use crate::text::{
@@ -195,8 +196,12 @@ fn lay_out(input: TextLayoutInput) -> TextLayoutResult {
     let platform = input.font_family_resolver.platform().clone();
     let measured = LaidOutParagraph::lay_out(&platform, input.source(), &input.style);
     let size = input.constraints.constrain(measured.0.metrics.size);
-    let queries: Rc<dyn Paragraph> = Rc::new(MeasuredParagraph::new(measured.clone()));
-    let multi_paragraph = Rc::new(MultiParagraph::of_paragraph(input.text.clone(), queries));
+    // What its `MultiParagraph` paints (D2052).
+    let part = StackedParagraph::new(0.0, measured.clone(), &input.style, input.source());
+    let queries: Rc<dyn Paragraph> = Rc::new(MeasuredParagraph::drawn(Rc::new(part)));
+    let max_lines = final_max_lines(&input);
+    let multi_paragraph =
+        Rc::new(MultiParagraph::of_paragraph(input.text.clone(), queries, max_lines));
     let drawable = Rc::new(DrawableParagraphs {
         measured: Some(measured.clone()),
         elsewhere: RefCell::default(),
@@ -224,23 +229,32 @@ fn lay_out_paragraphs(input: TextLayoutInput) -> TextLayoutResult {
     } else {
         Constraints::INFINITY
     };
-    let max_lines = if !input.soft_wrap && ellipsis { 1 } else { input.max_lines };
+    let max_lines = final_max_lines(&input);
     let width = if constraints.min_width == max_width {
         max_width
     } else {
         (intrinsics.max_intrinsic_width().ceil() as i32).clamp(constraints.min_width, max_width)
     };
-    let multi_paragraph = MultiParagraph::new(
+    // Each paragraph in the input's own paint, unresolved, what drawing it in its own style asks
+    // for: the resolved style's (black, say, for an unspecified color) would never match it.
+    let multi_paragraph = MultiParagraph::lay_out(
         Rc::new(intrinsics),
         Constraints::fit_prioritizing_width(0, width, 0, constraints.max_height),
         max_lines,
         input.overflow,
+        Some(&TextPaint::of(&input.style)),
     );
     let size = constraints.constrain(IntSize::new(
         multi_paragraph.width().ceil() as i32,
         multi_paragraph.height().ceil() as i32,
     ));
     TextLayoutResult::new(input, Rc::new(multi_paragraph), size)
+}
+
+/// The most lines `input` is laid out with, as Compose's `finalMaxLines`: one for an ellipsis
+/// without wrapping.
+fn final_max_lines(input: &TextLayoutInput) -> u32 {
+    if !input.soft_wrap && input.overflow.is_ellipsis() { 1 } else { input.max_lines }
 }
 
 /// What a draw scope draws of a [`TextLayoutResult`].
@@ -360,11 +374,21 @@ impl LaidOutParagraph {
         source: ParagraphSource<'_>,
         style: &TextStyle,
     ) -> LaidOutParagraph {
+        LaidOutParagraph::lay_out_in(platform, source, style, TextPaint::of(style))
+    }
+
+    /// `source`'s text laid out on `platform` in `style`, known as drawn in `paint` (what a
+    /// drawing in that paint finds it by).
+    pub(crate) fn lay_out_in(
+        platform: &SharedTextMeasurer,
+        source: ParagraphSource<'_>,
+        style: &TextStyle,
+        paint: TextPaint,
+    ) -> LaidOutParagraph {
         // Nothing draws what was dropped, and no measurement needs it: this keeps a measurer
         // that isn't a host's (or that draws between frames) from growing.
         platform.release_dropped();
         let options = source.options;
-        let paint = TextPaint::of(style);
         // As Compose's: a direction left unspecified is the layout's.
         let style = TextStyle::resolve_defaults(style, options.direction);
         let mut measurer = platform.borrow_mut();
@@ -417,6 +441,11 @@ impl LaidOutParagraph {
     /// A font it asked for arrived since it was laid out.
     pub(crate) fn has_stale_resolved_fonts(&self) -> bool {
         self.0.platform.borrow().has_stale_resolved_fonts(self.0.keeper.handle())
+    }
+
+    /// The paint it's drawn in.
+    pub(crate) fn paint(&self) -> &TextPaint {
+        &self.0.paint
     }
 
     fn of_handle(
@@ -473,18 +502,39 @@ impl LaidOutParagraph {
     }
 }
 
+/// `paint` for the paragraph at `top` of a text of `count` paragraphs, `size` big: a gradient
+/// spans the whole text, as Compose's `MultiParagraph.paint` with a shader brush (D2052); a color,
+/// or a text of one paragraph, as it is.
+fn spanning(
+    paint: &TextPaint,
+    count: usize,
+    size: Size,
+    top: f32,
+) -> std::borrow::Cow<'_, TextPaint> {
+    match &paint.foreground {
+        TextForegroundStyle::Brush { brush, alpha } if count > 1 => {
+            let brush = brush.placed(size, Offset::new(0.0, -top));
+            std::borrow::Cow::Owned(TextPaint {
+                foreground: TextForegroundStyle::Brush { brush, alpha: *alpha },
+                ..paint.clone()
+            })
+        }
+        _ => std::borrow::Cow::Borrowed(paint),
+    }
+}
+
 /// What a paragraph is drawn in, of a text's style: all the draw affecting attributes but the
 /// blend mode, which is the drawing's.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct TextPaint {
-    foreground: TextForegroundStyle,
-    shadow: Option<Shadow>,
-    decoration: Option<TextDecoration>,
-    draw_style: Option<DrawStyle>,
+    pub(crate) foreground: TextForegroundStyle,
+    pub(crate) shadow: Option<Shadow>,
+    pub(crate) decoration: Option<TextDecoration>,
+    pub(crate) draw_style: Option<DrawStyle>,
 }
 
 impl TextPaint {
-    fn of(style: &TextStyle) -> TextPaint {
+    pub(crate) fn of(style: &TextStyle) -> TextPaint {
         TextPaint {
             foreground: style.foreground(),
             shadow: style.shadow,
@@ -515,11 +565,18 @@ impl TextPaint {
 pub(crate) struct MeasuredParagraph {
     laid_out: LaidOutParagraph,
     queries: OnceCell<Rc<dyn Paragraph>>,
+    /// What it was laid out from, to paint it (D2052).
+    drawable: Rc<StackedParagraph>,
 }
 
 impl MeasuredParagraph {
-    pub(crate) fn new(laid_out: LaidOutParagraph) -> MeasuredParagraph {
-        MeasuredParagraph { laid_out, queries: OnceCell::new() }
+    /// `part`'s paragraph, which it paints.
+    pub(crate) fn drawn(part: Rc<StackedParagraph>) -> MeasuredParagraph {
+        MeasuredParagraph {
+            laid_out: part.measured.clone(),
+            queries: OnceCell::new(),
+            drawable: part,
+        }
     }
 
     fn queries(&self) -> &dyn Paragraph {
@@ -634,6 +691,17 @@ impl Paragraph for MeasuredParagraph {
     }
     fn fill_bounding_boxes(&self, range: TextRange, array: &mut [f32], array_start: usize) {
         self.queries().fill_bounding_boxes(range, array, array_start)
+    }
+    fn paint_overriding(
+        &self,
+        scope: &mut DrawScope<'_>,
+        overrides: &PaintOverrides,
+        blend_mode: BlendMode,
+    ) {
+        // One paragraph at the origin (one of a text's too), a gradient over its own size, as
+        // the platform paints it.
+        let parts = std::slice::from_ref(&self.drawable);
+        scope.paint_parts(parts, Size::ZERO, overrides, blend_mode, true);
     }
 }
 
@@ -888,10 +956,14 @@ impl DrawScope<'_> {
             self.list.laid_out_paragraphs.push(paragraph.keeper().clone());
             Some(paragraph.handle())
         } else {
-            // Each paragraph below the one before, as Compose's `MultiParagraph.paint`.
+            // Each paragraph below the one before, as Compose's `MultiParagraph.paint`, a
+            // gradient spanning them all.
+            let multi = &result.multi_paragraph;
+            let whole = Size::new(multi.width(), multi.height());
             for part in parts {
+                let paint = spanning(paint, parts.len(), whole, part.top);
                 let paragraph =
-                    self.drawable_of_part(part).in_paint(paint, &part.style, part.source());
+                    self.drawable_of_part(part).in_paint(&paint, &part.style, part.source());
                 self.list.laid_out_paragraphs.push(paragraph.keeper().clone());
                 stacked.push((paragraph.handle(), part.top));
             }
@@ -914,6 +986,65 @@ impl DrawScope<'_> {
         });
     }
 
+    /// Paints `parts`, each at its top of a text `size` big (at the origin if `alone`), in
+    /// `overrides` over its own paint, composited with `blend_mode`: Compose's
+    /// `MultiParagraph.paint` and `Paragraph.paint` (D2052).
+    pub(crate) fn paint_parts(
+        &mut self,
+        parts: &[Rc<StackedParagraph>],
+        size: Size,
+        overrides: &PaintOverrides,
+        blend_mode: BlendMode,
+        alone: bool,
+    ) {
+        let mut stacked: Vec<(ParagraphHandle, f32)> = Vec::with_capacity(parts.len());
+        for part in parts {
+            let own = part.measured.paint();
+            let foreground = match &overrides.foreground {
+                None => own.foreground.clone(),
+                // A brush at no alpha keeps the paint's, as Android's `setBrush` with NaN.
+                Some(TextForegroundStyle::Brush { brush, alpha }) if alpha.is_nan() => {
+                    let alpha = match &own.foreground {
+                        TextForegroundStyle::Brush { alpha, .. } => *alpha,
+                        TextForegroundStyle::Color(color) => color.alpha(),
+                        TextForegroundStyle::Unspecified => f32::NAN,
+                    };
+                    TextForegroundStyle::Brush { brush: brush.clone(), alpha }
+                }
+                Some(foreground) => foreground.clone(),
+            };
+            let paint = TextPaint {
+                foreground,
+                shadow: overrides.shadow.or(own.shadow),
+                decoration: overrides.text_decoration.or(own.decoration),
+                draw_style: overrides.draw_style.or(own.draw_style),
+            };
+            let paint = spanning(&paint, parts.len(), size, part.top);
+            let paragraph =
+                self.drawable_of_part(part).in_paint(&paint, &part.style, part.source());
+            self.list.laid_out_paragraphs.push(paragraph.keeper().clone());
+            stacked.push((paragraph.handle(), if alone { 0.0 } else { part.top }));
+        }
+        let layered = blend_mode != BlendMode::SrcOver;
+        if layered {
+            // The paragraphs drawn into a layer composited with the mode, as one draw with it.
+            let bounds = self.bounds();
+            let bounds = Rect::new(
+                bounds.left.min(0.0),
+                bounds.top.min(0.0),
+                bounds.right.max(size.width),
+                bounds.bottom.max(size.height),
+            );
+            self.save_layer(bounds, 1.0, None, blend_mode);
+        }
+        for (handle, top) in stacked {
+            self.draw_paragraph(handle, Offset::new(0.0, top));
+        }
+        if layered {
+            self.restore();
+        }
+    }
+
     /// The paragraph of a multi-paragraph text this drawing's renderer can draw, as
     /// [`drawable_of`](Self::drawable_of) a text's.
     fn drawable_of_part(&self, part: &StackedParagraph) -> LaidOutParagraph {
@@ -927,7 +1058,8 @@ impl DrawScope<'_> {
         {
             return laid_out.clone();
         }
-        let laid_out = LaidOutParagraph::lay_out(&platform, part.source(), &part.style);
+        let paint = part.measured.paint().clone();
+        let laid_out = LaidOutParagraph::lay_out_in(&platform, part.source(), &part.style, paint);
         *elsewhere = Some(laid_out.clone());
         laid_out
     }

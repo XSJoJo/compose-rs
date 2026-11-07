@@ -18,6 +18,7 @@ mod annotated;
 mod back;
 mod beyond_bounds;
 mod border;
+mod bounding_boxes_path;
 mod brush;
 pub mod canvas;
 mod clickable;
@@ -61,6 +62,7 @@ mod layout_callbacks;
 mod layout_modifiers;
 mod layout_rect_modifiers;
 mod lifecycle;
+mod locale_direction;
 mod logging;
 mod lookahead;
 mod math;
@@ -326,7 +328,9 @@ pub use motion::{
     await_positive_motion_duration_scale, motion_duration_scale, set_motion_duration_scale,
     set_motion_duration_scale_source, with_motion_duration_scale,
 };
-pub use multi_paragraph::{MultiParagraph, MultiParagraphIntrinsics};
+pub use multi_paragraph::{
+    MultiParagraph, MultiParagraphIntrinsics, paragraph, paragraph_intrinsics, paragraph_of_text,
+};
 pub use nested_scroll::{
     LocalBoxFuture, NestedScrollConnection, NestedScrollDispatcher, NestedScrollSource,
     nested_scroll_modifier_node,
@@ -335,7 +339,7 @@ pub use node_context::{NodeContext, NodeHandle};
 pub use observer_node::ObserverModifierNode;
 pub use overlay::{PopupPositionProvider, WindowPosition};
 pub use painter::{BitmapPainter, ColorPainter, CustomPainter, Painter};
-pub use paragraph::{Paragraph, TextLayoutInput};
+pub use paragraph::{PaintOverrides, Paragraph, ParagraphIntrinsics, TextLayoutInput};
 pub use paragraph_style::ParagraphStyle;
 pub use parent_data::{LayoutIdParentData, ParentDataModifierNode};
 pub use path::{

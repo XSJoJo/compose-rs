@@ -1129,6 +1129,7 @@ impl TextFieldNode {
         let multi_paragraph = compose_ui::MultiParagraph::of_paragraph(
             input.text.clone(),
             measurer.paragraph(paragraph),
+            input.max_lines,
         );
         Some(compose_ui::TextLayoutResult::new(input, std::rc::Rc::new(multi_paragraph), size))
     }

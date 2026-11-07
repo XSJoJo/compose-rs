@@ -43,14 +43,14 @@ impl Picture {
     }
 
     /// Whether nothing is drawn in the columns from `left` on and the rows from `top` on.
-    fn is_empty_from(&self, left: i32, top: i32) -> bool {
+    pub(super) fn is_empty_from(&self, left: i32, top: i32) -> bool {
         self.pixels.iter().enumerate().all(|(index, pixel)| {
             let (x, y) = (index as i32 % self.width, index as i32 / self.width);
             x < left || y < top || *pixel == Color::WHITE
         })
     }
 
-    fn contains(&self, color: Color) -> bool {
+    pub(super) fn contains(&self, color: Color) -> bool {
         self.pixels.contains(&color)
     }
 

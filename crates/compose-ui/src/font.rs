@@ -664,6 +664,11 @@ impl FontFamilyResolver {
         &self.0.platform
     }
 
+    /// The fonts it resolves families to.
+    pub(crate) fn fonts(&self) -> &Rc<crate::font_resolver::PlatformFonts> {
+        &self.0.fonts
+    }
+
     /// `family` (the default one if none) at `weight` and `style`, faked as far as `synthesis`
     /// lets it where it lacks them, as Compose's `resolve`.
     pub fn resolve(
