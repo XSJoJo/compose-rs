@@ -166,8 +166,9 @@ impl OverlayClip {
                         corner(radii[3]),
                     ));
                 }
-                // A path outline clips to its bounds here.
-                outline => path.add_rect(outline.bounds()),
+                Outline::Generic(data, offset) => {
+                    path.add_path(&Path::from_shared_data(data), offset)
+                }
             }
             path.translate(bounds.top_left());
             Some(path)

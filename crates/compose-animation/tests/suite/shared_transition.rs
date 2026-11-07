@@ -1081,3 +1081,87 @@ fn initial_velocity_for_exit_is_used() {
     let (test, control) = (positions.borrow()[1], positions.borrow()[3]);
     assert_eq!(test, control);
 }
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testSharedContentStateClipPathInOverlay
+/// Through a transition, shared bounds with a clip of their own and the shared element inside
+/// them, clipped by its parent's (the default), both report that path in the overlay; those of
+/// the content leaving, not drawn there, report none.
+#[test]
+fn shared_content_state_clip_path_in_overlay() {
+    let visible = mutable_state_of(true);
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let states: Rc<RefCell<Vec<Option<SharedContentState>>>> =
+        Rc::new(RefCell::new(vec![None, None, None, None]));
+    let predefined = compose_ui::Path::new();
+    predefined.add_rect(compose_ui::Rect::new(5.0, 5.0, 6.0, 6.0));
+    let (st1, st2, clip_path) = (states.clone(), states.clone(), predefined.clone());
+    let mut ui = two_visibilities(
+        visible.handle(),
+        seen.clone(),
+        Modifier.fill_max_size_with(0.5).offset(25.dp(), 25.dp()),
+        move |scope, visibility| {
+            let parent = scope.remember_shared_content_state("parent");
+            st1.borrow_mut()[0] = Some(parent.clone());
+            let (s, v, st) = (scope.clone(), visibility.clone(), st1.clone());
+            Box!(
+                modifier = scope.shared_bounds(&parent, visibility).fill_max_size(),
+                content_alignment = Alignment::CENTER,
+                move |_| {
+                    let child = s.remember_shared_content_state("child");
+                    st.borrow_mut()[1] = Some(child.clone());
+                    Box!(
+                        modifier =
+                            Modifier.fill_max_size_with(0.5).then(s.shared_element(&child, &v))
+                    );
+                }
+            );
+        },
+        move |scope, visibility| {
+            let parent = scope.remember_shared_content_state("parent");
+            st2.borrow_mut()[2] = Some(parent.clone());
+            let path = clip_path.clone();
+            let options = SharedOptions {
+                clip_in_overlay_during_transition: OverlayClip::new(move |_, _, _, _| {
+                    Some(path.clone())
+                }),
+                ..Default::default()
+            };
+            let (s, v, st) = (scope.clone(), visibility.clone(), st2.clone());
+            Box!(
+                modifier = Modifier
+                    .offset(20.dp(), 0.dp())
+                    .then(scope.shared_bounds_with(&parent, visibility, options)),
+                move |_| {
+                    let child = s.remember_shared_content_state("child");
+                    st.borrow_mut()[3] = Some(child.clone());
+                    Box!(
+                        modifier = Modifier
+                            .offset((-20).dp(), 0.dp())
+                            .then(s.shared_element(&child, &v))
+                            .fill_max_size()
+                    );
+                }
+            );
+        },
+    );
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    assert!(!scope.is_transition_active());
+    start_transition(&mut ui, &visible, &scope);
+    ui.wait_for_idle();
+    let clip_of = |at: usize| {
+        let state = states.borrow()[at].clone().expect("composed");
+        state.clip_path_in_overlay().map(|path| path.id())
+    };
+    let mut frames = 0;
+    while scope.is_transition_active() {
+        assert_eq!(clip_of(2), Some(predefined.id()));
+        assert_eq!(clip_of(3), Some(predefined.id()));
+        assert_eq!(clip_of(0), None);
+        assert_eq!(clip_of(1), None);
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        frames += 1;
+        assert!(frames < 300, "the transition ends");
+    }
+}
