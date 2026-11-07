@@ -559,3 +559,42 @@ fn a_frame_shares_a_kept_boundarys_recording() {
     assert!(matches!(first.ops[..], [DrawOp::DrawRect(_, paint)] if paint.color == Color::RED));
     assert!(host.display_list().dump().contains("#FF00FF00"));
 }
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testZIndexInOverlay (the overlay draws in the frame its contents record)
+/// A drawing that draws a `GraphicsLayer` a later drawing records in the same pass (a shared
+/// transition's overlay) shows the recording in that frame, its first and a change's (D1331).
+#[test]
+fn a_layer_recorded_later_in_the_pass_is_drawn_in_that_frame() {
+    let layer = GraphicsLayer::new();
+    let color = mutable_state_of(Color::RED);
+    let (drawn, recorded, shade) = (layer.clone(), layer.clone(), color.handle());
+    let mut host = host(move || {
+        let (drawn, recorded) = (drawn.clone(), recorded.clone());
+        Stack!(
+            modifier = Modifier.draw_with_content(move |scope| {
+                scope.draw_layer(&drawn);
+                scope.draw_content();
+            }),
+            {
+                let recorded = recorded.clone();
+                Leaf(
+                    Modifier
+                        .repaint_boundary()
+                        .draw_with_content(move |scope| {
+                            scope.record_layer(&recorded, |scope| {
+                                let size = scope.size();
+                                let rect = Rect::new(0.0, 0.0, size.width, size.height);
+                                scope.draw_rect(rect, Paint::fill(shade.get()));
+                            });
+                        })
+                        .size(10.dp()),
+                );
+            }
+        );
+    });
+    assert!(host.display_list().dump().contains("#FFFF0000"), "{}", host.display_list().dump());
+    color.set(Color::BLUE);
+    host.frame();
+    let dump = host.display_list().dump();
+    assert!(dump.contains("#FF0000FF") && !dump.contains("#FFFF0000"), "{dump}");
+}

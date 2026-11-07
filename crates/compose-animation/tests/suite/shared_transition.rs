@@ -629,3 +629,299 @@ fn shared_element_rendered_in_overlay_above_other_content() {
     ui.set_auto_advance(true);
     ui.wait_for_idle();
 }
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testIsTransitionActiveWhenNoMatch
+/// An `AnimatedContent` swapping contents with shared elements of different keys never makes the
+/// transition active: nothing matches.
+#[test]
+fn is_transition_active_when_no_match() {
+    let transitioned = mutable_state_of(false);
+    let record: Rc<RefCell<Vec<bool>>> = Rc::default();
+    let disposed = Rc::new(Cell::new(false));
+    let (t, r, d) = (transitioned.handle(), record.clone(), disposed.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let (r, d) = (r.clone(), d.clone());
+        SharedTransitionLayout!(move |scope: SharedTransitionScope| {
+            let (s, d) = (scope.clone(), d.clone());
+            Box!(modifier = Modifier.fill_max_size(), move |_| {
+                let (s, d) = (s.clone(), d.clone());
+                AnimatedContent!(t.get(), move |content: AnimatedContentScope, shown: bool| {
+                    let (s, d) = (s.clone(), d.clone());
+                    Box!(modifier = Modifier.fill_max_size(), move |box_scope| {
+                        if shown {
+                            let state = s.remember_shared_content_state("key1");
+                            Box!(
+                                modifier = s
+                                    .shared_element(&state, &content)
+                                    .aspect_ratio(2.0)
+                                    .background(Color::RED)
+                                    .align(box_scope, Alignment::TOP_CENTER)
+                            );
+                        } else {
+                            let state = s.remember_shared_content_state("key2");
+                            Box!(
+                                modifier = s
+                                    .shared_element(&state, &content)
+                                    .size((200.dp(), 300.dp()))
+                                    .background(Color::RED)
+                                    .align(box_scope, Alignment::BOTTOM_END)
+                            );
+                            let d = d.clone();
+                            DisposableEffect((), move |effect| {
+                                let d = d.clone();
+                                effect.on_dispose(move || d.set(true))
+                            });
+                        }
+                    });
+                });
+            });
+            r.borrow_mut().push(scope.is_transition_active());
+        });
+    });
+    ui.wait_for_idle();
+    assert!(!record.borrow().is_empty());
+    assert!(!record.borrow().iter().any(|it| *it));
+    ui.set_auto_advance(false);
+    transitioned.set(true);
+    ui.wait_for_idle();
+    let mut rounds = 0;
+    while !disposed.get() {
+        ui.advance_time_by(std::time::Duration::from_millis(200));
+        ui.wait_for_idle();
+        rounds += 1;
+        assert!(rounds < 100, "the old content leaves");
+    }
+    ui.set_auto_advance(true);
+    ui.wait_for_idle();
+    assert!(!record.borrow().iter().any(|it| *it));
+}
+
+/// A config never enabled.
+struct NeverEnabled;
+
+impl SharedContentConfig for NeverEnabled {
+    fn is_enabled(&self, _state: &SharedContentState) -> bool {
+        false
+    }
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testNoLayerWhenConfigDisabled
+/// Two contents of a key, one disabled for good: no match, no transition, no layer.
+#[test]
+fn no_layer_when_config_disabled() {
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let states: Rc<RefCell<Vec<SharedContentState>>> = Rc::default();
+    let (sc, st) = (seen.clone(), states.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let (sc, st) = (sc.clone(), st.clone());
+        SharedTransitionLayout!(move |scope: SharedTransitionScope| {
+            *sc.borrow_mut() = Some(scope.clone());
+            let (s, st) = (scope.clone(), st.clone());
+            Box!(modifier = Modifier.fill_max_size(), move |_| {
+                let config: Rc<dyn SharedContentConfig> =
+                    remember(|| Rc::new(NeverEnabled) as Rc<dyn SharedContentConfig>);
+                let disabled = s.remember_shared_content_state_with("box", config);
+                Box!(
+                    modifier = s
+                        .shared_element_with_caller_managed_visibility(&disabled, false)
+                        .size(200.dp())
+                );
+                let enabled = s.remember_shared_content_state("box");
+                Box!(
+                    modifier = s
+                        .shared_element_with_caller_managed_visibility(&enabled, true)
+                        .size(100.dp())
+                );
+                *st.borrow_mut() = vec![disabled, enabled];
+            });
+        });
+    });
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    assert!(scope.has_shared_element_for_key("box"));
+    assert!(!scope.is_transition_active());
+    assert!(!scope.has_layer_for(&states.borrow()[0]));
+    assert!(!states.borrow()[0].is_match_found());
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testLayerOnlyCreatedForOverlayRenderingEntry
+/// Only the content drawn in the overlay, the incoming one, gets a layer; the outgoing one,
+/// which isn't drawn, gets none; the incoming one's layer goes when it leaves.
+#[test]
+fn layer_only_created_for_overlay_rendering_entry() {
+    let show_match = mutable_state_of(false);
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let states: Rc<RefCell<Vec<SharedContentState>>> = Rc::default();
+    let (m, sc, st) = (show_match.handle(), seen.clone(), states.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let (sc, st) = (sc.clone(), st.clone());
+        SharedTransitionLayout!(move |scope: SharedTransitionScope| {
+            *sc.borrow_mut() = Some(scope.clone());
+            let (s, st0) = (scope.clone(), st.clone());
+            let outgoing = remember(|| {
+                movable_content_of(move || {
+                    let state = s.remember_shared_content_state("box");
+                    Box!(
+                        modifier = s
+                            .shared_element_with_caller_managed_visibility(&state, !m.get())
+                            .size(200.dp())
+                    );
+                    let mut states = st0.borrow_mut();
+                    if states.is_empty() {
+                        states.push(state);
+                    } else {
+                        states[0] = state;
+                    }
+                })
+            });
+            let (s, st) = (scope.clone(), st.clone());
+            Box!(modifier = Modifier.fill_max_size(), move |_| {
+                outgoing();
+                if m.get() {
+                    let state = s.remember_shared_content_state("box");
+                    Box!(
+                        modifier = s
+                            .shared_element_with_caller_managed_visibility(&state, true)
+                            .size(100.dp())
+                    );
+                    let mut states = st.borrow_mut();
+                    states.truncate(1);
+                    states.push(state);
+                }
+            });
+        });
+    });
+    ui.wait_for_idle();
+    show_match.set(true);
+    ui.set_auto_advance(false);
+    for _ in 0..5 {
+        ui.advance_time_by_frame();
+    }
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    let (outgoing, incoming) = (states.borrow()[0].clone(), states.borrow()[1].clone());
+    assert!(scope.has_layer_for(&incoming));
+    assert!(!scope.has_layer_for(&outgoing));
+    ui.set_auto_advance(true);
+    ui.wait_for_idle();
+    show_match.set(false);
+    ui.wait_for_idle();
+    assert!(!scope.has_layer_for(&incoming));
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testZIndexInOverlay
+/// In the overlay, what's drawn on top is what has the highest z-index: a green box rendered in
+/// the overlay and the red and blue shared bounds, their z-indices changing each frame.
+#[test]
+fn z_index_in_overlay() {
+    let visible = mutable_state_of(true);
+    let green = mutable_state_of(0.0f32);
+    let red = mutable_state_of(0.0f32);
+    let blue = mutable_state_of(0.0f32);
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let (v, g, r, b, sc) =
+        (visible.handle(), green.handle(), red.handle(), blue.handle(), seen.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let sc = sc.clone();
+        SharedTransitionLayout!(
+            modifier = Modifier.required_size(100.dp()).background(Color::WHITE),
+            move |scope: SharedTransitionScope| {
+                *sc.borrow_mut() = Some(scope.clone());
+                let in_overlay = {
+                    let scope = scope.clone();
+                    remember(|| Rc::new(move || scope.is_transition_active()))
+                };
+                let in_overlay = in_overlay.clone();
+                Box!(
+                    modifier = scope
+                        .render_in_shared_transition_scope_overlay_with(g.get(), move || {
+                            in_overlay()
+                        })
+                        .background(Color::GREEN)
+                        .fill_max_size()
+                );
+                let shared = |z: f32| SharedOptions {
+                    enter: EnterTransition::NONE,
+                    exit: ExitTransition::NONE,
+                    z_index_in_overlay: z,
+                    ..Default::default()
+                };
+                let s1 = scope.clone();
+                AnimatedVisibility!(
+                    v.get(),
+                    enter = EnterTransition::NONE,
+                    exit = fade_out_with(tween(100).easing(LINEAR_EASING), 0.0),
+                    move |visibility: AnimatedVisibilityScope| {
+                        let state = s1.remember_shared_content_state("child");
+                        Box!(
+                            modifier = s1
+                                .shared_bounds_with(&state, &visibility, shared(r.get()))
+                                .background(Color::RED)
+                                .fill_max_size()
+                        );
+                    }
+                );
+                let s2 = scope.clone();
+                AnimatedVisibility!(
+                    !v.get(),
+                    enter = fade_in_with(tween(100).easing(LINEAR_EASING), 0.0),
+                    exit = ExitTransition::NONE,
+                    move |visibility: AnimatedVisibilityScope| {
+                        let state = s2.remember_shared_content_state("child");
+                        Box!(
+                            modifier = s2
+                                .shared_bounds_with(&state, &visibility, shared(b.get()))
+                                .background(Color::BLUE)
+                                .fill_max_size()
+                        );
+                    }
+                );
+            }
+        );
+    });
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    assert!(!scope.is_transition_active());
+    assert_eq!(top_color_at(&mut ui, Offset::new(50.0, 50.0)), Some(Color::RED));
+
+    ui.set_auto_advance(false);
+    visible.set(false);
+    green.set(0.0);
+    red.set(0.0);
+    blue.set(1.0);
+    let mut expected = Color::BLUE;
+    let mut i = 0;
+    let mut frames = 0;
+    while !scope.is_transition_active() {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        frames += 1;
+        assert!(frames < 100, "the transition starts");
+    }
+    while scope.is_transition_active() {
+        assert_eq!(top_color_at(&mut ui, Offset::new(50.0, 50.0)), Some(expected), "at {i}");
+        let base = i as f32;
+        green.set(base);
+        red.set(base);
+        blue.set(base);
+        match i {
+            0 => {
+                red.set(base + 1.0);
+                expected = Color::RED;
+            }
+            1 => {
+                green.set(base + 1.0);
+                expected = Color::GREEN;
+            }
+            _ => {
+                blue.set(base + 1.0);
+                expected = Color::BLUE;
+            }
+        }
+        i = (i + 1) % 3;
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        frames += 1;
+        assert!(frames < 300, "the transition ends");
+    }
+}
