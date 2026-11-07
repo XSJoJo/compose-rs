@@ -227,6 +227,11 @@ pub struct LayoutNode {
     /// Reused by a paused composition's resume: its modifier nodes stay detached until that
     /// composition is applied (D1162).
     pub(crate) reattach_pending: bool,
+    /// Removed from an attached parent in the pass under way, its subtree's modifier nodes not
+    /// detached yet: they are when the pass ends, wherever it is then, and attached again if it's
+    /// back in the tree (a node movable content moved), as Compose's `removeAt` and `insertAt`
+    /// detach and attach it (D1923).
+    pub(crate) detach_pending: bool,
     /// Its own semantics, computed when a tree or an action asked and kept until invalidated
     /// (`UiTree::invalidate_semantics_of`, D1257): none for a node without semantics nodes, or
     /// not computed since.
@@ -295,6 +300,7 @@ impl LayoutNode {
             attached: false,
             attaching: false,
             reattach_pending: false,
+            detach_pending: false,
             semantics: None,
             semantics_id: 0,
             locals: compose_runtime::CompositionLocalAnchor::NONE,
@@ -579,6 +585,12 @@ pub struct UiTree {
     /// them for the traversals of their nodes' `on_detach`, as Compose's `LayoutNode.detach` runs
     /// before it unlinks a node from its parent.
     pub(crate) removed_parents: Vec<(NodeId, NodeId)>,
+    /// The root of a subtree being detached that's in the tree again (moved): above it, for its
+    /// nodes' `on_detach`, is the parent it left, not the one it went to (D1923).
+    pub(crate) detaching_moved: Option<NodeId>,
+    /// How many of `removed_parents` the releases of the pass under way went past: those before
+    /// are detached (D1923).
+    pub(crate) removed_detached: usize,
     /// What changed of modifier locals in the pass under way, looked at when it ends.
     pub(crate) modifier_local_changes: Vec<crate::modifier_local::LocalChange>,
     /// What the last layout node composed resolved of its locals: its siblings mostly share them.
@@ -730,6 +742,8 @@ impl UiTree {
             borrowed_by_handle: false,
             remeasure_after: Vec::new(),
             removed_parents: Vec::new(),
+            detaching_moved: None,
+            removed_detached: 0,
             modifier_local_changes: Vec::new(),
             resolved_locals: None,
             view_configurations: SmallVec::new(),
@@ -995,6 +1009,20 @@ impl UiTree {
 
     pub fn parent_of(&self, node: NodeId) -> Option<NodeId> {
         self.get(node)?.parent
+    }
+
+    /// What's above `node` (whose value is `value`) for its modifier nodes' callbacks: the parent
+    /// it was removed from in the pass under way, while it's being detached or isn't in the tree
+    /// (Compose detaches a node before it unlinks it), else its parent.
+    pub(crate) fn parent_for_callbacks(&self, node: NodeId, value: &LayoutNode) -> Option<NodeId> {
+        let removed = || {
+            let mut removed = self.removed_parents.iter();
+            removed.rfind(|(child, _)| *child == node).map(|(_, parent)| *parent)
+        };
+        if self.detaching_moved == Some(node) {
+            return removed().or(value.parent);
+        }
+        value.parent.or_else(removed)
     }
 
     /// The children of `node`, in order.
@@ -2014,6 +2042,8 @@ impl UiTree {
     fn free_subtree(&mut self, node: NodeId) {
         // Nodes its chains lost in this pass first, while their layout nodes live.
         self.release_removed_in_subtree(node);
+        // Then those removed before it, moved elsewhere (D1923).
+        self.detach_removed_before(node);
         self.detach_subtree(node);
         let mut stack = vec![node];
         while let Some(id) = stack.pop() {
@@ -2142,12 +2172,10 @@ impl Applier for UiTree {
         }
         self.invalidate_measure(parent);
         // In the tree now, its subtree too: their modifier nodes are attached when the pass ends.
+        // A node movable content moved here from an attached parent in this pass is detached
+        // first when the pass ends (`detach_pending`), then attached with what's attaching here.
         let parent_value = self.node(parent);
         if parent_value.attached {
-            // A node moved here (movable content) keeps its modifier nodes attached, untold
-            // (docs/parity/design/modifier-nodes.md): the nested-scroll links resolve their
-            // parents again (D1920).
-            crate::nested_scroll::nodes_moved();
             let under_attaching = parent_value.attaching;
             let mut stack = vec![id];
             while let Some(next) = stack.pop() {
@@ -2191,6 +2219,7 @@ impl Applier for UiTree {
                         self.release_selection_pins();
                     }
                 }
+                self.node_mut(child.node).detach_pending = true;
                 self.queue_lifecycle(crate::lifecycle::Lifecycle::Detach(child.node));
                 self.removed_parents.push((child.node, parent));
             }

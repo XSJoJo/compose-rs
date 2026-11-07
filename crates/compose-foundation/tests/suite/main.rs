@@ -131,6 +131,7 @@ mod review_image;
 mod review_lazy;
 mod review_lazy2;
 mod review_lazy_nested_scroll;
+mod review_moved_node_attach;
 mod review_nested_scroll;
 mod review_overlay;
 mod review_overlay2;

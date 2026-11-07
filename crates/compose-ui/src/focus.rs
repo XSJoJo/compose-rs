@@ -393,12 +393,7 @@ impl UiTree {
             if value.overlay && self.overlay_node(id).is_some_and(|it| it.focus_on_open) {
                 return Some(id);
             }
-            current = value.parent.or_else(|| {
-                self.removed_parents
-                    .iter()
-                    .rfind(|(child, _)| *child == id)
-                    .map(|(_, parent)| *parent)
-            });
+            current = self.parent_for_callbacks(id, value);
         }
         None
     }
@@ -638,12 +633,7 @@ impl UiTree {
         if value.overlay {
             return None;
         }
-        value.parent.or_else(|| {
-            self.removed_parents
-                .iter()
-                .rfind(|(child, _)| *child == node)
-                .map(|(_, parent)| *parent)
-        })
+        self.parent_for_callbacks(node, value)
     }
 
     /// The targets of entry `index` of `node`, as Compose's `dispatchForKind`.
