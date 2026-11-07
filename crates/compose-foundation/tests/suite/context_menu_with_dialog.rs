@@ -115,6 +115,50 @@ fn textField2_showToolbar_doesNotCrash() {
     }
 }
 
+/// compose-rs's, making `textField2_showToolbar_doesNotCrash` meaningful for the default
+/// toolbar: with no provider given, the platform toolbar's rect for a field in a dialog is in the
+/// window (D2035), the dialog's content centered away from the window's origin, so the field's
+/// rect in its own coordinates (the translation dropped) misses the field.
+#[test]
+fn textField2_showToolbar_inDialog_rectIsInTheWindow() {
+    let field: Rc<Cell<Option<LayoutCoordinates>>> = Rc::default();
+    let state: TextFieldState = **Box::leak(Box::new(TextFieldState::new("Dialog TextField")));
+    let placed = field.clone();
+    let mut ui = ComposeTestRule::sized(IntSize::new(400, 400), move || {
+        let placed = placed.clone();
+        Dialog!(on_dismiss_request = || {}, {
+            let placed = placed.clone();
+            BasicTextFieldOfState!(
+                state,
+                modifier =
+                    Modifier.test_tag(TAG).on_globally_positioned(move |it| placed.set(Some(it))),
+            );
+        });
+    });
+    ui.host().set_input_mode(InputMode::Touch);
+    ui.on_node_with_tag(TAG).perform_touch_input(|touch| touch.double_click());
+    ui.wait_for_idle();
+    let toolbar = ui.text_toolbar();
+    assert!(toolbar.is_shown(), "the toolbar wasn't shown");
+    let rect = toolbar.content_rect().expect("no rect");
+    let field = field.get().expect("the field wasn't placed");
+    let origin = field.position_in_window();
+    assert!(origin.x > 50.0 && origin.y > 50.0, "the dialog's field is at {origin:?}");
+    let size = field.size();
+    let bounds = Rect::from_offset_size(
+        origin,
+        compose_ui::Size::new(size.width as f32, size.height as f32),
+    );
+    assert!(rect.width() > 0.0 && rect.height() > 0.0, "{rect:?}");
+    assert!(
+        rect.left >= bounds.left
+            && rect.top >= bounds.top
+            && rect.right <= bounds.right
+            && rect.bottom <= bounds.bottom,
+        "the toolbar's rect {rect:?} isn't on the field {bounds:?}"
+    );
+}
+
 /// Compose's `TextField2TestCase` in `CustomizedContextMenu`: the field in a dialog, under a
 /// provider of both kinds checking what it's asked (D2040).
 fn field_in_dialog(checks: Rc<RefCell<Vec<[bool; 3]>>>) -> ComposeTestRule {
