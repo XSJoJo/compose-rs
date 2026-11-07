@@ -114,6 +114,7 @@ mod text_range;
 mod text_savers;
 mod text_selection;
 mod text_style;
+mod text_toolbar;
 mod trace;
 mod traversal;
 mod tree;
@@ -185,6 +186,7 @@ pub mod platform {
         resolve_text_unit_px,
     };
     pub use crate::text_measurer::{CacheTextLayoutInput, TextLayoutCache};
+    pub use crate::text_toolbar::text_action_modes_of_composing_tree;
     pub use crate::tree::{LayoutNode, NodeId, UiTree};
     pub use crate::unit::round_to_int;
     pub use crate::word_boundary::{word_boundary, word_breaks};
@@ -394,6 +396,11 @@ pub use text_measurer::{
 pub use text_range::TextRange;
 pub use text_selection::{ContainerHandles, ContainerHandlesShown, Selectable};
 pub use text_style::TextStyle;
+pub use text_toolbar::{
+    LOCAL_TEXT_TOOLBAR, PlatformTextToolbar, TextActionMenu, TextActionMenuItem, TextActionMode,
+    TextActionModeCallback, TextActionModes, TextToolbar, TextToolbarAction, TextToolbarStatus,
+    text_action_ids, text_action_labels,
+};
 pub use traversal::{TraversableNode, TraverseDescendantsAction, TraverseKey};
 pub use tree_access::TreeRef;
 pub use unit::{

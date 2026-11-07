@@ -383,6 +383,10 @@ pub struct UiTree {
     pub(crate) uri_handler: Rc<dyn crate::platform_services::UriHandler>,
     pub(crate) platform_uri_handler: crate::platform_services::PlatformUriHandler,
     pub(crate) haptic_feedback: Rc<dyn crate::platform_services::HapticFeedback>,
+    /// The platform's floating text toolbars (Android's action modes), and the text toolbar over
+    /// them (`LOCAL_TEXT_TOOLBAR`'s default), made at the first ask.
+    pub(crate) text_action_modes: Option<Rc<dyn crate::text_toolbar::TextActionModes>>,
+    pub(crate) text_toolbar: Option<Rc<dyn crate::text_toolbar::TextToolbar>>,
     /// The platform's edge effects, if it has any: overscroll's default on Android.
     pub(crate) edge_effects: Option<Rc<crate::edge_effect::PlatformEdgeEffects>>,
     pub(crate) density: Density,
@@ -647,6 +651,8 @@ impl UiTree {
             uri_handler: Rc::new(crate::platform_services::PlatformUriHandler::headless()),
             platform_uri_handler: crate::platform_services::PlatformUriHandler::headless(),
             haptic_feedback: Rc::new(crate::platform_services::NoHapticFeedback),
+            text_action_modes: None,
+            text_toolbar: None,
             edge_effects: None,
             density,
             view_configuration: None,

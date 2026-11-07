@@ -12,17 +12,17 @@ What Compose's `compose/foundation/foundation` tests and public API in this area
 
 | Status | Files | @Test |
 |---|---:|---:|
-| `ported` | 55 | 772 |
+| `ported` | 60 | 826 |
 | `covered` | 11 | 59 |
 | `port` | 18 | 146 |
 | `partial` | 49 | 1,400 |
-| `feature:<name>` | 115 | 1,531 |
+| `feature:<name>` | 110 | 1,477 |
 | `n/a` | 82 | 1,029 |
 | **Total** | **330** | **4,937** |
 
 Of the `n/a` tests, 578 (53 files) test the **deprecated** value-based `BasicTextField` and its internals (see below) or `ClickableText`/`onFocusedBoundsChanged`, 389 (23 files) test Compose-internal data structures or helpers whose behaviour other files check through public API, and 28 (4 files) test Compose's own test infrastructure or compare a golden image. Three `feature:` rows (`textfield/TextFieldContextMenuTest`, `textfield/TextFieldTextContextMenuBuilderTest`, `textfield/TextFieldToolbarTest`) mix the legacy and state-based fields: their 41 legacy (`btf1`) tests are n/a too.
 
-By feature, the `feature:` rows wait on: `text-context-menu` 294 tests (21 files), `touch-text-selection` 42 (2), `android-ime` 170 (13), `text-field-state` 118 (8), `style-api` 159 (9), `handwriting` 84 (6), `border-parity` 79 (3), `magnifier` 78 (5), `text-field-styles` 67 (4), `polygon-shapes` 64 (4), `text-links` 56 (3), `content-receiver` 40 (4), `selection-state` 34 (1), `drag-and-drop` 31 (4), `clickable-parity` 26 (4), `basic-marquee` 23 (1), `android-external-surface` 20 (2), `android-window-rects` 16 (2), `text-auto-size` 15 (1), `shapes` 14 (1), `smart-selection` 13 (4), `background-text-measurement` 11 (1), `cursor-blink` 11 (2), `basic-tooltip` 8 (1), `dead-keys` 6 (1), `inline-content` 6 (1), `ui-text-substitution` 6 (2), `bring-into-view-requester` 4 (1), `ui-text-async-fonts` 4 (1), `basic-text-drawing` 3 (1). The `partial` rows add more demand on `clickable-parity`, `focusable-parity` and `image-painter`, and on ui's input mode and indirect pointers (`ClickableTest`, `CombinedClickableTest`, `ToggleableTest`, `SelectableTest` and `FocusableTest`'s remaining scenarios).
+By feature, the `feature:` rows wait on: `text-context-menu` 240 tests (16 files), `touch-text-selection` 42 (2), `android-ime` 170 (13), `text-field-state` 118 (8), `style-api` 159 (9), `handwriting` 84 (6), `border-parity` 79 (3), `magnifier` 78 (5), `text-field-styles` 67 (4), `polygon-shapes` 64 (4), `text-links` 56 (3), `content-receiver` 40 (4), `selection-state` 34 (1), `drag-and-drop` 31 (4), `clickable-parity` 26 (4), `basic-marquee` 23 (1), `android-external-surface` 20 (2), `android-window-rects` 16 (2), `text-auto-size` 15 (1), `shapes` 14 (1), `smart-selection` 13 (4), `background-text-measurement` 11 (1), `cursor-blink` 11 (2), `basic-tooltip` 8 (1), `dead-keys` 6 (1), `inline-content` 6 (1), `ui-text-substitution` 6 (2), `bring-into-view-requester` 4 (1), `ui-text-async-fonts` 4 (1), `basic-text-drawing` 3 (1). The `partial` rows add more demand on `clickable-parity`, `focusable-parity` and `image-painter`, and on ui's input mode and indirect pointers (`ClickableTest`, `CombinedClickableTest`, `ToggleableTest`, `SelectableTest` and `FocusableTest`'s remaining scenarios).
 
 **The value-based `BasicTextField` is deprecated.** At this commit both `BasicTextField(value: String, onValueChange, …)` and `BasicTextField(value: TextFieldValue, …)` are `@Deprecated("Use the BasicTextField(state: TextFieldState, ...) overload instead …")` (`BasicTextField.kt` lines 799 and 970). compose-rs's only text field is the `String` one (D96). So its tests (`textfield/**`, `text/CoreTextField*`, the `Legacy*` IME tests and the legacy internals) are `n/a` here, and the state-based field's tests (`text/input/**`) wait on `text-field-state`, even where compose-rs's field already does what they check (the rows say so). `KeyboardActions`, `KeyboardOptions` and `VisualTransformation` aren't deprecated themselves, but in foundation only the deprecated field takes `KeyboardActions` and `VisualTransformation`.
 
@@ -190,13 +190,13 @@ Paths are relative to `frameworks/support`. A status cites the compose-rs tests 
 
 | File (relative to `frameworks/support`) | @Test | Covers | Status |
 |---|---:|---|---|
-| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/contextmenu/internal/AndroidTextContextMenuToolbarProviderTest.kt` | 13 | Android floating-toolbar provider: items, cancellation, replacement, closing | feature:text-context-menu |
+| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/contextmenu/internal/AndroidTextContextMenuToolbarProviderTest.kt` | 13 | Android floating-toolbar provider: items, cancellation, replacement, closing | ported: 13 (`text_context_menu_platform_toolbar.rs`, D2031), on the test rule's floating toolbar (Compose's spy on the platform's) |
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/contextmenu/internal/DefaultTextContextMenuDropdownProviderTest.kt` | 14 | default dropdown provider: items, cancellation, replacement, click off | feature:text-context-menu |
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/contextmenu/internal/PlatformDefaultTextContextMenuProvidersTest.kt` | 4 | default providers created only when none is provided | feature:text-context-menu |
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/contextmenu/modifier/TextContextMenuGesturesModifierTest.kt` | 6 | right click (not tap or left click) opens the menu at the right position | feature:text-context-menu — needs pointer buttons (ui area) |
-| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/contextmenu/modifier/TextContextMenuModifierTraversalTest.kt` | 7 | `appendTextContextMenuComponents`/`filterTextContextMenuComponents` traversal order | feature:text-context-menu |
-| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/contextmenu/modifier/TextContextMenuToolbarHandlerTest.kt` | 10 | toolbar show/hide through the provider, attach/detach | feature:text-context-menu |
-| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/contextmenu/provider/BasicTextContextMenuProviderTest.kt` | 9 | context menu provider: session close, cancellation, anchor removal and moves | feature:text-context-menu |
+| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/contextmenu/modifier/TextContextMenuModifierTraversalTest.kt` | 7 | `appendTextContextMenuComponents`/`filterTextContextMenuComponents` traversal order | ported: 7 (`text_context_menu_traversal.rs`, D2031) |
+| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/contextmenu/modifier/TextContextMenuToolbarHandlerTest.kt` | 10 | toolbar show/hide through the provider, attach/detach | ported: 9 (`text_context_menu_toolbar_handler.rs`, D2031); `whenConfigurationChanges_contextMenuDataUpdates` is `@Ignore`d upstream (b/520540939), left out |
+| `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/contextmenu/provider/BasicTextContextMenuProviderTest.kt` | 9 | context menu provider: session close, cancellation, anchor removal and moves | ported: 9 (`text_context_menu_provider.rs`, D2031) |
 | `compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/contextmenu/test/ContextMenuFlagFlipperRunnerTest.kt` | 12 | Compose's JUnit runner flipping the new-context-menu flag | n/a: tests Compose's own test runner |
 
 ### text/input (state-based BasicTextField): 33 files, 636 tests
@@ -406,7 +406,7 @@ Each test of these also checks the text toolbar (`text-context-menu`: the ports 
 | `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/UndoManagerTest.kt` | 5 | legacy field's undo manager | n/a: deprecated value-based `BasicTextField`; see `text/input/internal/undo/*` |
 | `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/ValidatingOffsetMappingKtTest.kt` | 5 | legacy `VisualTransformation` offset-mapping validation | n/a: only the deprecated value-based field takes a `VisualTransformation` |
 | `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/ValidatingOffsetMappingTest.kt` | 7 | legacy offset-mapping validation filter | n/a: only the deprecated value-based field takes a `VisualTransformation` |
-| `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/contextmenu/builder/TextContextMenuBuilderScopeTest.kt` | 15 | `TextContextMenuBuilderScope`: items, separators collapsed, icons, clicks | feature:text-context-menu |
+| `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/contextmenu/builder/TextContextMenuBuilderScopeTest.kt` | 15 | `TextContextMenuBuilderScope`: items, separators collapsed, icons, clicks | ported: 15 (`text_context_menu_builder.rs`, D2031) |
 | `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/contextmenu/test/ContextMenuFlagFlipperRunnerTest.kt` | 12 | Compose's JUnit runner flipping the new-context-menu flag | n/a: tests Compose's own test runner |
 | `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/input/AllCapsTransformationTest.kt` | 5 | `InputTransformation.allCaps`: keyboard option, new characters upper-cased, locale | ported (`input_transformation.rs` unit tests) |
 | `compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/input/ExpandPolicyTest.kt` | 5 | `ExpandPolicy` of tracked style ranges | feature:text-field-styles |
@@ -539,7 +539,7 @@ From `api/current.txt`, every public, non-deprecated API in this area that compo
 
 ### `androidx.compose.foundation.text.contextmenu.*`
 
-`builder.TextContextMenuBuilderScope` (`item`, `separator`), `data.TextContextMenuData`/`TextContextMenuItem`/`TextContextMenuSeparator`/`TextContextMenuComponent`/`TextContextMenuKeys`/`TextContextMenuSession`/`ProcessTextKey`, `modifier.appendTextContextMenuComponents`/`filterTextContextMenuComponents`, `provider.TextContextMenuProvider`/`TextContextMenuDataProvider`/`LocalTextContextMenuDropdownProvider`/`LocalTextContextMenuToolbarProvider`: all missing (`text-context-menu`).
+`builder.TextContextMenuBuilderScope` (`item`, `separator`), `data.TextContextMenuData`/`TextContextMenuItem`/`TextContextMenuSeparator`/`TextContextMenuComponent`/`TextContextMenuKeys`/`TextContextMenuSession`, `modifier.appendTextContextMenuComponents`/`filterTextContextMenuComponents`, `provider.TextContextMenuProvider`/`TextContextMenuDataProvider`/`LocalTextContextMenuDropdownProvider`/`LocalTextContextMenuToolbarProvider`: in (`compose_foundation::text_context_menu`, D2031): the separator is `TextContextMenuComponent::Separator`, a key any value with equality (`TextContextMenuKey`), an icon a `Painter`. `ProcessTextKey` is missing (Android's `PROCESS_TEXT` items, with `smart-selection`).
 
 ### `androidx.compose.foundation.text.handwriting`
 
@@ -807,6 +807,7 @@ Sizes: S under a day, M a few days, L a week or two, XL multi-week. "Other area"
 - **Tests:** `contextmenu/*`, `text/contextmenu/**`, `SelectionContainerContextMenu*Test`, `TextFieldTextContextMenuToolbarTest`, `TextFieldConfigChangeAppCompatActivityLocaleTest`, `ClipboardPasteStateTest`, the btf2 halves of `textfield/TextFieldContextMenuTest` and `TextFieldTextContextMenuBuilderTest`.
 - **Depends on:** other areas: pointer buttons on pointer events (right click), ui clipboard metadata; `touch-text-selection` for the toolbar; popups (exist).
 - **Size:** L. **Experimental:** no.
+- **Design:** [text-context-menu.md](design/text-context-menu.md). **In:** step 1 (D2031): compose-ui's `TextToolbar`, `LOCAL_TEXT_TOOLBAR` and the platform's floating toolbars (`TextActionModes`, Android's floating `ActionMode` shape), the test rule's `TestTextToolbar`; foundation's `text_context_menu` API (data, builder, modifiers, providers), `ProvideBasicTextContextMenu`, the toolbar handler and the platform toolbar's provider. **Next:** the dropdown, the field's toolbar and menu, the container's, Android's JNI toolbar.
 
 ### smart-selection
 - **Compose API:** `LocalTextClassifierCoroutineContext`.

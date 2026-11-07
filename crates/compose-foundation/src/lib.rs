@@ -32,6 +32,7 @@ mod secure_text_field;
 mod selection_handles;
 pub mod shape;
 mod text;
+pub mod text_context_menu;
 mod text_field;
 mod text_field_buffer;
 mod text_field_state;

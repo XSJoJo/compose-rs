@@ -76,6 +76,8 @@ pub struct ComposeTestRule {
     test_deadline: Option<(std::time::Instant, Duration)>,
     /// What waiting for idle also waits for, as `registerIdlingResource`.
     idling_resources: Vec<Rc<dyn IdlingResource>>,
+    /// The tree's floating text toolbars, as a device test's platform (D2031).
+    text_toolbar: Rc<crate::text_toolbar::TestTextToolbar>,
 }
 
 /// A test rule composing `content` in the default root, measuring text with the fixed-advance
@@ -116,6 +118,11 @@ impl ComposeTestRule {
             Rc::new(move || !auto_advance.get())
         };
         platform::set_infinite_animation_policy(Some(policy.clone()));
+        let text_toolbar = Rc::new(crate::text_toolbar::TestTextToolbar::new());
+        {
+            let modes: Rc<dyn compose_ui::TextActionModes> = text_toolbar.clone();
+            host.with_tree(|tree| tree.set_text_action_modes(Some(modes)));
+        }
         let mut rule = ComposeTestRule {
             host,
             auto_advance,
@@ -129,6 +136,7 @@ impl ComposeTestRule {
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
             test_deadline: None,
             idling_resources: Vec::new(),
+            text_toolbar,
         };
         if let Some(optimizations) = thread_optimizations() {
             rule.host.set_optimizations(optimizations);
@@ -166,6 +174,11 @@ impl ComposeTestRule {
 
     pub fn host(&mut self) -> &mut UiHost {
         &mut self.host
+    }
+
+    /// The floating text toolbar the tree shows its text toolbars in (D2031).
+    pub fn text_toolbar(&self) -> Rc<crate::text_toolbar::TestTextToolbar> {
+        self.text_toolbar.clone()
     }
 
     /// The root's density, as the rule's `density`.

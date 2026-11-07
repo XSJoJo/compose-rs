@@ -256,6 +256,13 @@ impl NodeContext<'_> {
         self.tree.input_mode.input_mode()
     }
 
+    /// The host's floating text toolbars (`UiTree::set_text_action_modes`), if it has any.
+    pub fn text_action_modes(
+        &self,
+    ) -> Option<std::rc::Rc<dyn crate::text_toolbar::TextActionModes>> {
+        self.tree.text_action_modes.clone()
+    }
+
     /// The layout node's layout direction, as `requireLayoutDirection()`.
     pub fn require_layout_direction(&self) -> LayoutDirection {
         self.tree.node(self.node).layout_direction

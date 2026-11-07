@@ -32,6 +32,7 @@ mod sample_font;
 mod script;
 mod selector;
 mod text_probe;
+mod text_toolbar;
 
 use compose_ui::platform::Optimizations;
 use compose_ui::{IntSize, platform::UiHost};
@@ -74,6 +75,7 @@ pub use run::{
 pub use sample_font::{basic_measure_font, basic_measure_font_bytes};
 pub use script::{check_script, run_script};
 pub use text_probe::{CountingTextMeasurer, LayoutCounts, TextLayoutCounter, draw_snapshot};
+pub use text_toolbar::TestTextToolbar;
 
 /// Hooks tests count composable runs with (the runtime keeps them in its unstable `platform`
 /// module; tests reach them here).
