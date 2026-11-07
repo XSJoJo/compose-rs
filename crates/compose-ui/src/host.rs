@@ -1198,6 +1198,18 @@ impl UiHost {
         self.with_tree(|tree| tree.semantics_changed)
     }
 
+    /// A number that moves whenever a node's semantics may have changed (each time the next
+    /// frame's `FrameStats::semantics_changed` is set): a reader between frames (Android's kept
+    /// semantics tree) builds them again only when it moved since it built them. What was written
+    /// since the last frame is applied first, so a write semantics read counts at once (D1689).
+    pub fn semantics_version(&self) -> u64 {
+        self.with_tree(|tree| {
+            compose_runtime::snapshots::Snapshot::send_apply_notifications();
+            tree.apply_observed_writes();
+            tree.semantics_version
+        })
+    }
+
     /// Performs `node`'s action `key` (an accessibility service's click or focus), as Compose's
     /// `performSemanticsAction`: the action is called outside the tree, then the focus moves
     /// it asked for. Returns what the action did (`false` if the node offers none).

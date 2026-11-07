@@ -18,7 +18,7 @@ The log is split by area into the files below, one table each, rows in number or
 | File | Covers | Rows |
 |---|---|---|
 | [runtime](decisions/runtime.md) | `#[composable]`, groups and keys, skipping, lambdas, the call macro, the composer, recomposition, `remember`, effects, state handles, pausable composition. | 182 |
-| [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 458 |
+| [ui-and-layout](decisions/ui-and-layout.md) | Modifiers and nodes, layout and intrinsics, drawing in the tree, input, focus, semantics, animation, Material 3, navigation, platform values. | 459 |
 | [text](decisions/text.md) | Text measurement and layout on each platform, fonts, text fields and editing. | 143 |
 | [lazy-and-prefetch](decisions/lazy-and-prefetch.md) | Lazy lists and grids, item reuse, the policy of composing only what is in view, prefetch. | 120 |
 | [android-drawing](decisions/android-drawing.md) | The display list and its replayer, render nodes and repaint boundaries, paths, shadows, layers. | 34 |
@@ -1028,7 +1028,8 @@ The log is split by area into the files below, one table each, rows in number or
 | D1685 | [ui-and-layout](decisions/ui-and-layout.md#d1685) | current |
 | D1686 | [ui-and-layout](decisions/ui-and-layout.md#d1686) | current |
 | D1687 | [ui-and-layout](decisions/ui-and-layout.md#d1687) | revised by [D1688](decisions/ui-and-layout.md#d1688) |
-| D1688 | [ui-and-layout](decisions/ui-and-layout.md#d1688) | current |
+| D1688 | [ui-and-layout](decisions/ui-and-layout.md#d1688) | revised by [D1689](decisions/ui-and-layout.md#d1689) |
+| D1689 | [ui-and-layout](decisions/ui-and-layout.md#d1689) | current |
 | D1900 | [android-drawing](decisions/android-drawing.md#d1900) | current |
 | D1901 | [ui-and-layout](decisions/ui-and-layout.md#d1901) | current |
 | D1902 | [ui-and-layout](decisions/ui-and-layout.md#d1902) | current |

@@ -563,8 +563,12 @@ pub struct UiTree {
     /// (lifecycle.rs); kept for its capacity.
     pub(crate) lifecycle: Vec<crate::lifecycle::Lifecycle>,
     /// A node's semantics changed outside what recomposition and layout say (its
-    /// `invalidate_semantics`, a semantics node's update): the frame's stats tell it.
+    /// `invalidate_semantics`, a semantics node's update): the frame's stats tell it. Set by
+    /// `mark_semantics_changed`.
     pub(crate) semantics_changed: bool,
+    /// How many times `semantics_changed` was set: a reader between frames (a kept semantics tree)
+    /// knows whether something changed since it read (D1689).
+    pub(crate) semantics_version: u64,
     /// The platform's autofill and what it was told, if installed (D1680).
     pub(crate) autofill: Option<Box<crate::autofill::AutofillTracking>>,
     /// The platform has autofill, a manager installed or not (`set_autofill_available`).
@@ -748,6 +752,7 @@ impl UiTree {
             key,
             lifecycle: Vec::new(),
             semantics_changed: false,
+            semantics_version: 0,
             autofill: None,
             autofill_available: false,
             hover_stale: false,
@@ -1751,7 +1756,7 @@ impl UiTree {
             // Only for what the tree shows: a prefetched item, or a slot kept in use but not
             // placed, isn't in the semantics (D1265).
             if shown && self.is_placed_in_root(node) {
-                self.semantics_changed = true;
+                self.mark_semantics_changed();
             }
         }
         // A pointer node come or gone (a change of its hit area comes with a layout, which

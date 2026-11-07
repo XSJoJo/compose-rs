@@ -812,6 +812,16 @@ impl<'a> MeasureScope<'a> {
         block(&mut Measured { scope: self, placeable })
     }
 
+    /// The measuring node's semantics changed with what it took in to measure (a state-based
+    /// text field's text, D1689), as `invalidateSemantics` called from a node's `measure`: its
+    /// layout node's semantics are computed again when next asked, and the frame says they
+    /// changed (accessibility and the platform's autofill hear of it). In an intrinsic
+    /// measurement too: what changed is the node's.
+    pub fn invalidate_semantics(&mut self) {
+        let node = self.base.node;
+        self.base.tree.enter().invalidate_semantics_of(node);
+    }
+
     /// `ModifierNode::baselines` of the node measuring changed, or came: who read one hears.
     pub fn baselines_changed(&mut self) {
         if self.base.tree.alignment_lines_read {

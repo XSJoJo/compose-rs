@@ -304,8 +304,10 @@ impl UiTree {
     }
 
     /// What autofill reads of `node`'s own semantics (D1688): the kept ones if they are, else
-    /// each modifier's `apply_autofill_semantics`, computed as `own_semantics` (their state reads
-    /// observed, under the same key: nothing's kept to go stale) but neither kept nor bound.
+    /// each modifier's `apply_autofill_semantics`, computed as `own_semantics` but neither kept
+    /// nor bound. Their state reads are observed under the same key, added to what the last full
+    /// computation read (D1689): what a service was given from it (a scroll's position) goes
+    /// stale with a write to any of those, and the frame says the semantics changed.
     pub(crate) fn autofill_semantics(&mut self, node: NodeId) -> Option<AutofillSemantics> {
         let value = self.get(node)?;
         if !value.kinds.any(NodeKinds::SEMANTICS) {
@@ -318,7 +320,7 @@ impl UiTree {
         let observer = self.semantics_observer.clone().or_else(|| self.observer.clone());
         let computed = match observer.filter(|_| observed) {
             Some(observer) => observer
-                .observe(observation_key(node, Observation::Semantics), || {
+                .observe_adding(observation_key(node, Observation::Semantics), || {
                     self.compute_own_semantics_for(node, true)
                 }),
             None => self.compute_own_semantics_for(node, true),
@@ -433,13 +435,21 @@ impl UiTree {
         }
     }
 
+    /// Says the semantics may have changed: the next frame's `semantics_changed`, and a new
+    /// `semantics_version` for a reader between frames (D1689).
+    #[inline]
+    pub(crate) fn mark_semantics_changed(&mut self) {
+        self.semantics_changed = true;
+        self.semantics_version = self.semantics_version.wrapping_add(1);
+    }
+
     /// Forgets `node`'s semantics, to be computed again when asked, and says they may have
     /// changed (the frame's `semantics_changed`), as `invalidateSemantics`.
     pub(crate) fn invalidate_semantics_of(&mut self, node: NodeId) {
         if let Some(value) = self.get_mut(node) {
             value.semantics = None;
             if value.attached && !value.deactivated {
-                self.semantics_changed = true;
+                self.mark_semantics_changed();
             }
             self.note_autofill_dirty(node);
         }

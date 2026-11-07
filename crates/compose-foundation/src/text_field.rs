@@ -1380,10 +1380,12 @@ impl TextFieldNode {
         Some(width)
     }
 
-    /// `adopt_state` at a measurement, and a new paint given to the paragraph (D1141).
+    /// `adopt_state` at a measurement, and a new paint given to the paragraph (D1141). Returns
+    /// whether what its semantics read changed: the state's value, or what a transformation
+    /// shows of it (D1689).
     #[inline(never)]
-    fn adopt_state_to_measure(&mut self, scope: &mut MeasureScope<'_>) {
-        self.adopt_state_now();
+    fn adopt_state_to_measure(&mut self, scope: &mut MeasureScope<'_>) -> bool {
+        let mut changed = self.adopt_state_now();
         // What's shown may read states of its own (a secure field's revealed character, its
         // mask): read here, observed, so a change measures it again, and shown anew (D1142).
         if self.paragraph.is_some()
@@ -1398,14 +1400,16 @@ impl TextFieldNode {
             };
             let value = TextFieldCharSequence::new(text, TextRange::ZERO, None);
             if !shows_as(&value, transformation, self.shown_text.as_deref()) {
+                // Its semantics tell what's shown, but a password's own text (D1143).
+                changed |= link.password.is_none();
                 self.invalidate_paragraph();
             }
         }
-        let Some(link) = self.state.as_mut() else { return };
+        let Some(link) = self.state.as_mut() else { return changed };
         if !std::mem::take(&mut link.restyle) {
-            return;
+            return changed;
         }
-        let Some(old) = self.paragraph else { return };
+        let Some(old) = self.paragraph else { return changed };
         let mut measurer = scope.text_measurer();
         self.paragraph = measurer.restyle(old, &self.style);
         if self.paragraph.is_none() {
@@ -1414,6 +1418,7 @@ impl TextFieldNode {
         }
         // Heard again, as Compose's `onTextLayout` hears a new result of the same layout.
         link.heard_layout = None;
+        changed
     }
 
     /// `adopt_state`, out of the value-based field's way.
@@ -2567,9 +2572,8 @@ impl LayoutModifierNode for TextFieldNode {
     ) -> MeasureResult {
         // A state-based field takes in its state's value, the read observed: an edit of the state
         // measures it again.
-        if self.state.is_some() {
-            self.adopt_state_to_measure(scope);
-        }
+        let selection = (self.anchor, self.cursor);
+        let adopted = self.state.is_some() && self.adopt_state_to_measure(scope);
         // A font arrived: laid out anew (D2007).
         if let Some(paragraph) = self.paragraph
             && self.is_stale(&*scope.text_measurer(), paragraph)
@@ -2661,6 +2665,12 @@ impl LayoutModifierNode for TextFieldNode {
             self.perform_haptics(scope);
             paragraph
         };
+        // What its semantics read changed here, not in an event that said so: the state's value
+        // or what it shows taken in, a tap or a drag resolved (D1689), as Compose's decorator's
+        // semantics observe the state.
+        if adopted || selection != (self.anchor, self.cursor) {
+            scope.invalidate_semantics();
+        }
         self.cursor_rect =
             Some(scope.text_measurer().cursor_rect(paragraph, self.shown(self.cursor)));
         self.selection_rects.clear();

@@ -135,6 +135,10 @@ pub struct KeptSemanticsTree {
     tree: Option<SemanticsSnapshot>,
     /// What's covered was taken out of it: only a service's asking pays for that.
     pruned: bool,
+    /// The host's `semantics_version` when it was built: a change since builds it again.
+    version: u64,
+    /// How many times it was built, for tests.
+    builds: usize,
 }
 
 impl KeptSemanticsTree {
@@ -159,13 +163,25 @@ impl KeptSemanticsTree {
         tree
     }
 
+    /// How many times it was built: once per change between frames, not at each query (D1689).
+    #[doc(hidden)]
+    pub fn builds(&self) -> usize {
+        self.builds
+    }
+
     fn build(&mut self, ui: &UiHost) {
-        if ui.semantics_changed_since_frame() {
+        // Only a change since it was built (a focus moved, a write a semantics block read, D1689):
+        // the frame's flag stays set until the next frame, and the tree would be built at each
+        // query until then.
+        let version = ui.semantics_version();
+        if version != self.version {
+            self.version = version;
             self.tree = None;
         }
         if self.tree.is_none() {
             self.pruned = false;
             self.tree = Some(ui.accessibility_tree_with_covered());
+            self.builds += 1;
         }
     }
 }

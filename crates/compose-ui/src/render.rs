@@ -818,7 +818,9 @@ impl UiTree {
                 let mut recording =
                     Arc::get_mut(&mut inner.recording).map(mem::take).unwrap_or_default();
                 recording.clear();
-                tree.semantics_changed |= transparency_changed;
+                if transparency_changed {
+                    tree.mark_semantics_changed();
+                }
                 tree.draw_chain::<P>(node, entry + 1, layer, origins, &mut recording, observer);
                 let inner = &mut tree.node_mut(node).inner_layers[slot];
                 match Arc::get_mut(&mut inner.recording) {
@@ -905,7 +907,9 @@ impl UiTree {
                 let mut recording =
                     Arc::get_mut(&mut inner.recording).map(mem::take).unwrap_or_default();
                 recording.clear();
-                tree.semantics_changed |= transparency_changed;
+                if transparency_changed {
+                    tree.mark_semantics_changed();
+                }
                 let outer = tree.recording_placed.replace((node, start));
                 tree.draw_chain::<true>(node, start, layer, origins, &mut recording, observer);
                 tree.recording_placed = outer;
@@ -939,7 +943,7 @@ impl UiTree {
         };
         let graphics = value.chain[index as usize].node.downcast_ref::<GraphicsLayerNode>();
         if graphics.is_some_and(|graphics| graphics.note_transparency(properties)) {
-            self.semantics_changed = true;
+            self.mark_semantics_changed();
         }
     }
 
@@ -949,7 +953,7 @@ impl UiTree {
     fn note_layer_transparency_placed(&mut self, node: NodeId, properties: &LayerProperties) {
         let graphics = self.group_graphics_node(node);
         if graphics.is_some_and(|graphics| graphics.note_transparency(properties)) {
-            self.semantics_changed = true;
+            self.mark_semantics_changed();
         }
     }
 

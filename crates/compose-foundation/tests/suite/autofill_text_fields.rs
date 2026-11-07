@@ -261,7 +261,7 @@ fn long_press(ui: &mut ComposeTestRule) {
 #[test]
 fn without_autofill_no_item() {
     // No platform manager either, whatever `COMPOSE_TEST_AUTOFILL` says (D1688).
-    compose_test::use_autofill(false);
+    let _autofill = compose_test::use_autofill(false);
     let mut ui = ComposeTestRule::empty(default_host());
     ui.host().with_tree(|tree| tree.set_autofill_available(false));
     ui.host().set_input_mode(InputMode::Touch);

@@ -84,7 +84,7 @@ Beyond these, many files are `partial`: the feature exists and some of their tes
 
 Written and tested on the host, but not yet confirmed on a phone:
 
-- **Autofill** (D1687, D1688): the Android host's bridge to `AutofillManager` builds and lints; the virtual structure, the notifications, filling and the switch following `AutofillManager.isEnabled` (read when the view gets its host and when its window takes the focus) haven't been tried with a service on a phone.
+- **Autofill** (D1687, D1688, D1689): the Android host's bridge to `AutofillManager` builds and lints; the virtual structure, the notifications, filling and the switch following `AutofillManager.isEnabled` (read when the view gets its host and when its window takes the focus) haven't been tried with a service on a phone.
 - **TalkBack's speech and announcements.** The accessibility tree was read directly, but no agent can enable a service.
 - **A keyboard that really composes.** Gboard on the test phone doesn't compose, so long-lived composition hasn't run on a real keyboard (D1671).
 - A real D-pad and a real mouse, rotation, voice typing.

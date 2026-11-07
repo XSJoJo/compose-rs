@@ -529,6 +529,42 @@ fn the_kept_tree_shows_a_focus_moved_between_frames() {
     assert!(!focused(&mut kept, &host, "second"));
 }
 
+/// Between frames, the kept tree is built again once per change, not at each query until the next
+/// frame (the frame's flag stays set until then): a focus moved, a scroll's write its semantics
+/// read (applied at the query, D1688's S2, which the tree kept from before missed). D1689.
+#[test]
+fn the_kept_tree_is_built_once_per_change_between_frames() {
+    use compose_foundation::gestures::ScrollableState;
+    let kept_scroll = std::rc::Rc::new(std::cell::Cell::new(None));
+    let into = kept_scroll.clone();
+    let mut host = kept_host(move || {
+        let scroll = remember_scroll_state(0);
+        into.set(Some(scroll));
+        Column!(modifier = Modifier.size(10.dp()).vertical_scroll(scroll).test_tag("scroll"), {
+            Box!(modifier = Modifier.size(10.dp()).focusable().test_tag("first"));
+            Box!(modifier = Modifier.size(30.dp()));
+        });
+    });
+    let mut kept = KeptSemanticsTree::default();
+    let first = node_with_tag(kept.get(&host), "first").unwrap().id;
+    assert_eq!(kept.builds(), 1);
+    host.request_focus(first);
+    for _ in 0..3 {
+        kept.get(&host);
+    }
+    assert_eq!(kept.builds(), 2, "once for the focus");
+    let scroll = kept_scroll.get().expect("composed");
+    scroll.dispatch_raw_delta(5.0);
+    for _ in 0..3 {
+        kept.get(&host);
+    }
+    assert_eq!(kept.builds(), 3, "once for the scroll");
+    assert!(kept.after_frame(&host.frame()));
+    kept.get(&host);
+    kept.get(&host);
+    assert_eq!(kept.builds(), 4, "once after the frame");
+}
+
 /// A lazy list's item reused: its record and its action go under a new id, the old one no longer
 /// finds anything. What a service focused on the old content isn't told the new is it.
 #[test]
