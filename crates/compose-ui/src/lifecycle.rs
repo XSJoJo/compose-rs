@@ -437,6 +437,7 @@ impl UiTree {
         for &node in &nodes {
             self.node_mut(node).attaching = false;
             self.mark_attached(node);
+            self.note_autofill_attached(node);
         }
         for node in nodes {
             self.run_attach(node);

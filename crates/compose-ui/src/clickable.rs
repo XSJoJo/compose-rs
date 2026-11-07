@@ -853,6 +853,13 @@ impl PointerInputModifierNode for ClickableNode {
 }
 
 impl SemanticsModifierNode for ClickableNode {
+    /// Only a toggle's semantics hold what autofill reads (D1683, D1688).
+    fn apply_autofill_semantics(&self, config: &mut SemanticsConfiguration) {
+        if !matches!(self.spec.action, ClickAction::Click(..)) {
+            self.apply_semantics(config);
+        }
+    }
+
     /// As Compose's clickable: merging its descendants, its role, its click (labelled
     /// `on_click_label`; called whether enabled or not, as Compose's: refusing a disabled node's
     /// actions is the platform bridges', D1255), its toggle state, a long click with its label

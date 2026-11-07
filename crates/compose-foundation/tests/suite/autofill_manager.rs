@@ -897,6 +897,8 @@ fn a_node_of_data_type_none_focused_tells_nothing() {
 /// Without a platform manager (desktop, a rule that installed none), the local is `None`.
 #[test]
 fn without_a_platform_manager_the_local_is_none() {
+    // Whatever `COMPOSE_TEST_AUTOFILL` says (D1688).
+    compose_test::use_autofill(false);
     let seen = Rc::new(Cell::new(true));
     let into = seen.clone();
     let _ui = compose_test(move || into.set(LOCAL_AUTOFILL_MANAGER.current().is_some()));

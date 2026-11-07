@@ -36,7 +36,6 @@ fn square(ui: &ComposeTestRule) -> IntRect {
 // sync, where the node is gone and `autofillable_owner` finds nothing: nothing's told, and the
 // platform's session stays on a field that isn't there (its fill UI anchored to it).
 #[test]
-#[ignore = "review: a focused filling node removed is never told exited (the sync looks it up after it's gone)"]
 fn a_focused_filling_node_removed_exits() {
     let shown = mutable_state_of(true);
     let is_shown = shown.handle();
@@ -66,7 +65,6 @@ fn a_focused_filling_node_removed_exits() {
 // The same for a text field: Compose tells the field it exited as it goes (then its input text
 // gone hides it).
 #[test]
-#[ignore = "review: a focused text field removed is never told exited"]
 fn a_focused_field_removed_exits() {
     let shown = mutable_state_of(true);
     let is_shown = shown.handle();
@@ -124,7 +122,6 @@ fn a_filling_focus_target_focused_alone_enters() {
 // can focus it; compose-rs's sync tells the focus's moves first, then the nodes come: the platform
 // hears a node entered before it hears it's visible.
 #[test]
-#[ignore = "review (nit): a node focused as it appears enters before it's shown"]
 fn a_node_focused_as_it_appears_shows_before_it_enters() {
     let shown = mutable_state_of(false);
     let is_shown = shown.handle();
@@ -292,7 +289,6 @@ fn handles(ui: &mut ComposeTestRule) -> usize {
 // The author's case: with a platform autofill, every frame computes semantics, and the semantics
 // cache check (debug builds) finds a handle's kept info stale during a long press's drag.
 #[test]
-#[ignore = "review: a container's end handle keeps stale SelectionHandleInfo after a drag crosses the selection (also on main, next test)"]
 fn with_autofill_a_long_press_dragged_in_a_scrolling_column_keeps_fresh_handle_semantics() {
     let state = *ScrollState::new(0);
     let mut ui = scrolling_texts(state, true);
@@ -312,7 +308,6 @@ fn with_autofill_a_long_press_dragged_in_a_scrolling_column_keeps_fresh_handle_s
 // The same on main's terms, no autofill: a semantics read between the long press and its drag
 // keeps the handles' info, then the drag.
 #[test]
-#[ignore = "review: a container's end handle keeps stale SelectionHandleInfo after a drag crosses the selection (positions written in the tree's pass don't invalidate the handle's semantics)"]
 fn a_semantics_read_mid_drag_then_the_drag_keeps_fresh_handle_semantics() {
     let state = *ScrollState::new(0);
     let mut ui = scrolling_texts(state, false);
@@ -354,4 +349,109 @@ fn a_scroll_after_a_selection_keeps_fresh_handle_semantics() {
     });
     ui.wait_for_idle();
     assert!(handles(&mut ui) > 0);
+}
+
+// ---- Fixed with D1688 --------------------------------------------------------------------------
+
+// Compose's structure lists a node's children in `childrenInfo`'s order (the layout node's
+// children), not their drawing order: a child drawn over its sibling by its `z_index` stays
+// first.
+#[test]
+fn the_structure_lists_children_in_their_order_not_their_drawing_order() {
+    let mut ui = ComposeTestRule::empty(default_host());
+    ui.autofill();
+    ui.set_content(|| {
+        Box!({
+            Box!(
+                modifier = Modifier
+                    .z_index(1.0)
+                    .semantics(|config| {
+                        config.set_test_tag("first");
+                        config.set_content_type(ContentType::USERNAME);
+                    })
+                    .size(SIDE.dp())
+            );
+            Box!(
+                modifier = Modifier
+                    .semantics(|config| {
+                        config.set_test_tag("second");
+                        config.set_content_type(ContentType::PASSWORD);
+                    })
+                    .size(SIDE.dp())
+            );
+        });
+    });
+    let (first, second) = (id(&mut ui, "first"), id(&mut ui, "second"));
+    let structure = ui.run_on_idle(|ui| {
+        ui.host().with_tree(|tree| tree.populate_autofill_structure(Some("rs.compose.test")))
+    });
+    let ids: Vec<i32> = structure.children.iter().map(|child| child.virtual_id).collect();
+    assert_eq!(ids, vec![first, second]);
+}
+
+/// A field 200 dp wide in touch mode, focused, "hello" selected, its handles hidden by a
+/// hardware key (which ends the touch interaction).
+fn field_without_handles(content: impl Fn() + 'static) -> ComposeTestRule {
+    use compose_ui::platform::{FixedFontMetrics, FixedTextMeasurer, UiHost};
+    let measurer = FixedTextMeasurer::with_metrics(FixedFontMetrics::SAMPLE_FONT);
+    let host = UiHost::new(IntSize::new(400, 400), Density::new(1.0), Box::new(measurer));
+    let mut ui = ComposeTestRule::empty(host);
+    ui.set_content(content);
+    ui.host().set_input_mode(InputMode::Touch);
+    ui.on_node_with_tag("field").request_focus();
+    ui.wait_for_idle();
+    ui.on_node_with_tag("field").perform_semantics_action_with(
+        &SemanticsActions::SET_SELECTION,
+        |action| {
+            action(0, 5, false);
+        },
+    );
+    ui.wait_for_idle();
+    ui.press_key(Key::ShiftLeft);
+    ui.wait_for_idle();
+    ui
+}
+
+fn field_style() -> TextStyle {
+    TextStyle { font_size: 10.sp(), ..TextStyle::DEFAULT }
+}
+
+// Compose's `CoreTextField` long click (`enterSelectionMode`) sets its handles' state to the
+// selection's: they show whatever touched the field last.
+#[test]
+fn a_value_field_s_long_click_shows_its_selection_handles() {
+    let mut ui = field_without_handles(|| {
+        let text = remember(|| mutable_state_of(String::from("hello")));
+        BasicTextField!(
+            text.get(),
+            move |value| text.set(value),
+            modifier = Modifier.test_tag("field").width(200.dp()),
+            text_style = field_style()
+        );
+    });
+    assert_eq!(handles(&mut ui), 0);
+    ui.on_node_with_tag("field").perform_semantics_action(&SemanticsActions::ON_LONG_CLICK);
+    ui.wait_for_idle();
+    let end = crate::text_field_touch_support::is_selection_handle(Some(Handle::SelectionEnd));
+    assert_eq!(ui.on_all_nodes(end).fetch_semantics_nodes().len(), 1);
+    assert_eq!(handles(&mut ui), 2);
+}
+
+// The state-based field's long click asks for the toolbar only, as Compose's decorator
+// (`updateTextToolbarState(Selection)`): its handles stay as the interaction left them.
+#[test]
+fn a_state_field_s_long_click_leaves_its_handles() {
+    let state = TextFieldState::with_selection("hello", TextRange::new(0, 5));
+    let state = **Box::leak(Box::new(state));
+    let mut ui = field_without_handles(move || {
+        BasicTextFieldOfState!(
+            state,
+            modifier = Modifier.test_tag("field").width(200.dp()),
+            text_style = field_style()
+        );
+    });
+    assert_eq!(handles(&mut ui), 0);
+    ui.on_node_with_tag("field").perform_semantics_action(&SemanticsActions::ON_LONG_CLICK);
+    ui.wait_for_idle();
+    assert_eq!(handles(&mut ui), 0);
 }

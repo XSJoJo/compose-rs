@@ -14,7 +14,7 @@ use crate::injection::InputState;
 use crate::interaction::{SemanticsNodeInteraction, SemanticsNodeInteractionCollection};
 use crate::matcher::{Matcher, TreeView, has_content_description, has_test_tag, has_text, is_root};
 use crate::selector::Selector;
-use crate::{default_host, thread_optimizations};
+use crate::{default_host, thread_autofill, thread_optimizations};
 
 /// One frame's duration on the test clock, as Compose's test frame clock (16 ms).
 pub const FRAME_DURATION: Duration = Duration::from_millis(16);
@@ -146,6 +146,11 @@ impl ComposeTestRule {
         };
         if let Some(optimizations) = thread_optimizations() {
             rule.host.set_optimizations(optimizations);
+        }
+        // A recording autofill manager from the first frame, as on a phone, if asked
+        // (`COMPOSE_TEST_AUTOFILL=1`, `use_autofill`, D1688).
+        if thread_autofill() {
+            rule.autofill();
         }
         rule
     }

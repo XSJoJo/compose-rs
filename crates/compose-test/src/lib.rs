@@ -106,6 +106,30 @@ pub fn use_optimizations(optimizations: Optimizations) {
     OPTIMIZATIONS.with(|cell| cell.set(Some(optimizations)));
 }
 
+thread_local! {
+    /// What [`use_autofill`] said for the rules made on this thread, if anything.
+    static AUTOFILL: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// The rules made on this thread from now on install a recording platform autofill manager before
+/// their content (`on`: [`ComposeTestRule::autofill`] returns it), as Android has on every view, or
+/// don't (`!on`), whatever `COMPOSE_TEST_AUTOFILL` says. Without it a rule installs one when the
+/// variable is `1`, else only when its test asks (D1688): `COMPOSE_TEST_AUTOFILL=1 cargo test`
+/// runs the suite with the sync Android runs after every frame. A test counting the semantics
+/// computed or the frames run says `false`.
+pub fn use_autofill(on: bool) {
+    AUTOFILL.with(|cell| cell.set(Some(on)));
+}
+
+/// Whether this thread's rules install a recording autofill manager (`use_autofill`, else
+/// `COMPOSE_TEST_AUTOFILL=1`).
+fn thread_autofill() -> bool {
+    static FROM_ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    AUTOFILL.with(std::cell::Cell::get).unwrap_or_else(|| {
+        *FROM_ENV.get_or_init(|| std::env::var("COMPOSE_TEST_AUTOFILL").is_ok_and(|v| v == "1"))
+    })
+}
+
 /// The optimizations [`use_optimizations`] set for this thread's rules, if any.
 fn thread_optimizations() -> Option<Optimizations> {
     OPTIMIZATIONS.with(std::cell::Cell::get)

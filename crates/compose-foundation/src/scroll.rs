@@ -686,6 +686,9 @@ impl ScrollNode {
 }
 
 impl compose_ui::SemanticsModifierNode for ScrollNode {
+    /// Nothing autofill reads (D1688).
+    fn apply_autofill_semantics(&self, _config: &mut compose_ui::SemanticsConfiguration) {}
+
     /// Its offset and the largest, along its axis, as `Modifier.verticalScroll`'s semantics:
     /// accessibility services scroll it a page at a time (D478).
     fn apply_semantics(&self, config: &mut compose_ui::SemanticsConfiguration) {

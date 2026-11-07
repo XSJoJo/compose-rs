@@ -13,7 +13,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::hash::BuildHasherDefault;
 use std::rc::Rc;
+
+use smallvec::SmallVec;
 
 use compose_runtime::CompositionLocal;
 
@@ -21,7 +24,7 @@ use crate::modifier::Modifier;
 use crate::node_chain::NodeKinds;
 use crate::platform_services::of_composing_tree;
 use crate::semantics::{
-    PART_OF_PARENT, PARTS_HOST, Role, SemanticsActions, SemanticsConfiguration,
+    OwnSemantics, PART_OF_PARENT, PARTS_HOST, Role, SemanticsActions, SemanticsConfiguration,
     SemanticsProperties, ToggleableState,
 };
 use crate::text::SharedString;
@@ -389,6 +392,9 @@ struct Snapshot {
     /// It has a content type: it counts for the commit when every such node is gone
     /// (`isRelatedToAutoCommit`).
     has_content_type: bool,
+    /// It fills (`OnFillData`): with its data type, whether it's autofillable, for the focus's
+    /// moves (`isAutofillable`).
+    fills: bool,
 }
 
 impl Snapshot {
@@ -399,6 +405,7 @@ impl Snapshot {
             toggleable_state: config.get(&SemanticsProperties::TOGGLEABLE_STATE).copied(),
             fillable_data: config.get(&SemanticsProperties::FILLABLE_DATA).cloned(),
             has_content_type: config.contains(&SemanticsProperties::CONTENT_TYPE),
+            fills: config.contains(&SemanticsActions::ON_FILL_DATA),
         }
     }
 
@@ -417,27 +424,137 @@ impl Snapshot {
             self.fillable_data = part.fillable_data.clone();
         }
         self.has_content_type |= part.has_content_type;
+        self.fills |= part.fills;
     }
 
     fn is_empty(&self) -> bool {
         *self == Snapshot::default()
     }
+
+    /// Compose's `isAutofillable`: it fills, and its data type isn't `NONE`.
+    fn is_autofillable(&self) -> bool {
+        self.fills && self.content_data_type != Some(ContentDataType::NONE)
+    }
 }
 
-/// The tree's autofill bookkeeping while a platform manager is installed (D1680).
+/// Whether two configurations hold the same for autofill: what it reads, and whether each is a
+/// part or a parts' host (`apply_autofill_semantics` against `apply_semantics`, checked in tests).
+pub(crate) fn same_for_autofill(a: &SemanticsConfiguration, b: &SemanticsConfiguration) -> bool {
+    Snapshot::of(a) == Snapshot::of(b)
+        && a.contains(&PART_OF_PARENT) == b.contains(&PART_OF_PARENT)
+        && a.contains(&PARTS_HOST) == b.contains(&PARTS_HOST)
+}
+
+/// Whether `config` has something the bookkeeping reads (`Snapshot`): a node measured again is
+/// looked at only then, and a node noted told of only then (D1688).
+fn is_autofill_related(config: &SemanticsConfiguration) -> bool {
+    config.contains(&SemanticsProperties::CONTENT_DATA_TYPE)
+        || config.contains(&SemanticsProperties::INPUT_TEXT)
+        || config.contains(&SemanticsProperties::TOGGLEABLE_STATE)
+        || config.contains(&SemanticsProperties::FILLABLE_DATA)
+        || config.contains(&SemanticsProperties::CONTENT_TYPE)
+        || config.contains(&SemanticsActions::ON_FILL_DATA)
+}
+
+type NodeMap<V> = HashMap<NodeId, V, BuildHasherDefault<compose_runtime::KeyHasher>>;
+
+/// The platform's autofill a host installed (D1680), and what's tracked for it while it's
+/// enabled (D1688).
 pub(crate) struct AutofillTracking {
     platform: Rc<dyn PlatformAutofillManager>,
     manager: Rc<dyn AutofillManager>,
-    /// The ids of the nodes in use (attached, not deactivated) at the last sync.
-    present: HashSet<i32>,
-    /// Their layout nodes and snapshots, those not empty.
-    known: HashMap<i32, (NodeId, Snapshot)>,
+    /// `None` while the platform's autofill is off (`set_platform_autofill_enabled`).
+    live: Option<Live>,
+}
+
+/// What the platform was told, and what may have changed since, noted as it happened (D1688):
+/// Compose hears of each node's change, attach and detach; compose-rs notes the node, and the
+/// sync after the frame looks at the nodes noted only.
+#[derive(Default)]
+struct Live {
+    /// The nodes whose semantics were forgotten since the last sync (invalidated, a chain changed,
+    /// attached, detached, deactivated, reused; measured, if what they had was autofill's), each
+    /// maybe more than once.
+    dirty: Vec<NodeId>,
+    /// Those attached since (or reused, with a new id): `onPostAttach`.
+    attached: Vec<NodeId>,
+    /// Every node in use is to be looked at: installed or enabled since.
+    scan: bool,
+    /// The focus's moves since the last sync, in order.
+    focus_moves: Vec<FocusMove>,
+    /// The nodes that aren't parts with a snapshot not empty at the last sync: their ids then and
+    /// snapshots (a part's taken into its owner's).
+    known: NodeMap<(i32, Snapshot)>,
+    /// The parts (`PART_OF_PARENT`) in use at the last sync: their owners and own snapshots.
+    parts: NodeMap<Part>,
     /// The nodes with a content type on screen, as Compose's `currentlyDisplayedIDs`.
     displayed: HashSet<i32>,
     /// Some were displayed since the last commit, as `pendingAutofillCommit`.
     pending_commit: bool,
-    /// The focus's moves since the last sync: the layout nodes of the targets.
-    focus_changes: Vec<(Option<NodeId>, Option<NodeId>)>,
+    /// How many noted nodes the syncs looked at, for tests.
+    looked_at: usize,
+    /// The sync's owners to look at, kept for its capacity.
+    owners: Vec<NodeId>,
+    /// Those of them found in use as their parts were routed, in this sync.
+    in_use: Vec<NodeId>,
+    /// The owners with parts: their own snapshots, for a sync where only a part was noted (a
+    /// field's text at each key: its host's semantics not computed again).
+    hosts: NodeMap<Snapshot>,
+}
+
+impl Live {
+    fn new() -> Live {
+        Live { scan: true, ..Live::default() }
+    }
+
+    /// The focus moved (`note_autofill_focus`).
+    fn note_focus(&mut self, previous: Option<NodeId>, current: Option<NodeId>) {
+        if let Some(previous) = previous {
+            // What the last sync knew of it: its owner's id and whether it was autofillable.
+            let known = match self.parts.get(&previous) {
+                Some(part) => Some(part.owner.and_then(|owner| self.known.get(&owner))),
+                None => self.known.get(&previous).map(Some),
+            };
+            match known {
+                Some(Some((id, snapshot))) => {
+                    if snapshot.is_autofillable() {
+                        self.focus_moves.push(FocusMove::Exited(*id));
+                    }
+                }
+                // A part of no owner, or of one not autofillable.
+                Some(None) => {}
+                // Not known: looked at at the sync if it may have changed since.
+                None => {
+                    if self.scan || self.dirty.contains(&previous) {
+                        self.focus_moves.push(FocusMove::ExitedIfAutofillable(previous));
+                    }
+                }
+            }
+        }
+        if let Some(current) = current {
+            self.focus_moves.push(FocusMove::Entered(current));
+        }
+    }
+}
+
+/// A part known at the last sync.
+struct Part {
+    /// The node whose semantics it's part of (`part_owner`).
+    owner: Option<NodeId>,
+    /// Its semantics id, for its order among its owner's parts.
+    id: i32,
+    snapshot: Snapshot,
+}
+
+/// A move of the focus, as `onFocusChanged` hears it.
+enum FocusMove {
+    /// A node autofillable at the last sync lost the focus: its id, found as it lost it (it may
+    /// be gone by the sync).
+    Exited(i32),
+    /// A node not looked at since it changed lost it: told at the sync if it's autofillable then.
+    ExitedIfAutofillable(NodeId),
+    /// A node took it.
+    Entered(NodeId),
 }
 
 impl UiTree {
@@ -451,15 +568,26 @@ impl UiTree {
             Box::new(AutofillTracking {
                 manager: Rc::new(PlatformAutofill(platform.clone())),
                 platform,
-                present: HashSet::new(),
-                known: HashMap::new(),
-                displayed: HashSet::new(),
-                pending_commit: false,
-                focus_changes: Vec::new(),
+                live: Some(Live::new()),
             })
         });
-        // The next frame tells it of what's there.
-        self.semantics_changed = true;
+    }
+
+    /// Says whether the platform's autofill is on (Android's `AutofillManager.isEnabled`; on
+    /// when a manager is installed). While it's off nothing is tracked nor told, and frames pay
+    /// nothing for it; the manager stays `LOCAL_AUTOFILL_MANAGER`'s value and the platform has
+    /// autofill still (a field's menu offers it). On again, it's told of what's there, as when
+    /// installed (D1688).
+    pub fn set_platform_autofill_enabled(&mut self, enabled: bool) {
+        let Some(autofill) = &mut self.autofill else { return };
+        if enabled != autofill.live.is_some() {
+            autofill.live = enabled.then(Live::new);
+        }
+    }
+
+    /// Whether a platform's autofill is installed and on.
+    pub fn is_platform_autofill_enabled(&self) -> bool {
+        self.autofill.as_ref().is_some_and(|autofill| autofill.live.is_some())
     }
 
     /// `LOCAL_AUTOFILL_MANAGER`'s value: the platform's, if installed.
@@ -479,16 +607,67 @@ impl UiTree {
         self.autofill_available || self.autofill.is_some()
     }
 
+    /// What's tracked, if a platform's autofill is installed and on.
+    #[inline]
+    fn autofill_live(&mut self) -> Option<&mut Live> {
+        self.autofill.as_deref_mut()?.live.as_mut()
+    }
+
+    /// `node`'s semantics were forgotten: looked at at the next sync, if tracked (D1688).
+    #[inline]
+    pub(crate) fn note_autofill_dirty(&mut self, node: NodeId) {
+        if let Some(live) = self.autofill_live() {
+            live.dirty.push(node);
+        }
+    }
+
+    /// `node` was attached: looked at at the next sync, which tells its visibility as
+    /// `onPostAttach` (D1688).
+    #[inline]
+    pub(crate) fn note_autofill_attached(&mut self, node: NodeId) {
+        // A node without semantics has nothing autofill reads.
+        if self.autofill.is_some()
+            && self.get(node).is_some_and(|value| value.kinds.any(NodeKinds::SEMANTICS))
+        {
+            self.note_autofill_reused(node);
+        }
+    }
+
+    /// `node` was reused for new content, with a new id: looked at at the next sync, as attached
+    /// (`onPostLayoutNodeReused`), whatever its content (its new modifiers are to come).
+    #[inline]
+    pub(crate) fn note_autofill_reused(&mut self, node: NodeId) {
+        if let Some(live) = self.autofill_live() {
+            live.dirty.push(node);
+            live.attached.push(node);
+        }
+    }
+
+    /// `node` was measured, its kept semantics `dropped`: looked at at the next sync only if they
+    /// had something the bookkeeping reads (a field's text, a toggle's state). Compose doesn't
+    /// compute semantics again for a measurement; compose-rs forgets them (D1257), and what
+    /// autofill reads changes with one only where it was there (D1688).
+    #[inline]
+    pub(crate) fn note_autofill_measured(&mut self, node: NodeId, dropped: &OwnSemantics) {
+        if let Some(live) = self.autofill_live()
+            && is_autofill_related(&dropped.config)
+        {
+            live.dirty.push(node);
+        }
+    }
+
     /// The focus moved from one target's layout node to another's (`activeFocusTargetNode`'s
-    /// setter telling its listeners): told to the platform at the next sync.
+    /// setter telling its listeners). The node losing it is resolved now, from what the last
+    /// sync knew of it, as Compose reads its configuration then: it may be gone by the sync (a
+    /// focused field removed, D1688). The node taking it is told at the sync, with its bounds.
     #[inline]
     pub(crate) fn note_autofill_focus(
         &mut self,
         previous: Option<NodeId>,
         current: Option<NodeId>,
     ) {
-        if let Some(tracking) = &mut self.autofill {
-            tracking.focus_changes.push((previous, current));
+        if let Some(live) = self.autofill_live() {
+            live.note_focus(previous, current);
         }
     }
 
@@ -504,7 +683,12 @@ impl UiTree {
         if !is_part {
             return Some(node);
         }
-        // The nearest host above, else the nearest node with semantics.
+        self.part_owner(node)
+    }
+
+    /// The node part `node` belongs to: the nearest host above, else the nearest node with
+    /// semantics, short of an overlay's root.
+    fn part_owner(&mut self, node: NodeId) -> Option<NodeId> {
         let mut nearest = None;
         let mut at = node;
         loop {
@@ -546,7 +730,17 @@ impl UiTree {
         else {
             return;
         };
-        let Some(owner) = self.autofill_owner(node) else { return };
+        // Its owner as the tracking knows it: the node asking runs its own code, out of its
+        // chain, so its semantics can't be computed now. While the platform's autofill is off,
+        // nothing (the platform would drop it).
+        let Some(live) = self.autofill.as_ref().and_then(|autofill| autofill.live.as_ref()) else {
+            return;
+        };
+        let owner = match live.parts.get(&node) {
+            Some(part) => part.owner,
+            None => live.known.contains_key(&node).then_some(node),
+        };
+        let Some(owner) = owner else { return };
         let Some(bounds) = self.autofill_bounds(owner) else { return };
         let semantics_id = self.node(owner).semantics_id;
         self.pending_actions.push(crate::input::Action::Run(Box::new(move || {
@@ -554,25 +748,40 @@ impl UiTree {
         })));
     }
 
+    /// Whether the platform's autofill has something to hear of (a node noted, the focus moved):
+    /// a frame with nothing of the sort syncs nothing (D1688).
+    #[doc(hidden)]
+    pub fn autofill_pending(&self) -> bool {
+        self.autofill
+            .as_ref()
+            .and_then(|autofill| autofill.live.as_ref())
+            .is_some_and(|live| live.scan || !live.dirty.is_empty() || !live.focus_moves.is_empty())
+    }
+
     /// What the platform's autofill is told of since the last sync, as Compose's
-    /// `AndroidAutofillManager` hears of each change: the focus's moves, the nodes come, changed,
-    /// deactivated and gone, then the commit once every node with a content type is gone
-    /// (`onEndApplyChanges`). A frame that may have changed the semantics syncs (D1680).
+    /// `AndroidAutofillManager` hears of each change: the focus's moves, the nodes noted that
+    /// came, changed, were deactivated or went, then the commit once every node with a content
+    /// type is gone (`onEndApplyChanges`). Only the nodes noted since are looked at (D1688).
     #[doc(hidden)]
     pub fn sync_autofill(&mut self) -> Vec<PlatformAutofillCall> {
-        let Some(mut tracking) = self.autofill.take() else { return Vec::new() };
+        let Some(mut live) = self.autofill.as_deref_mut().and_then(|autofill| autofill.live.take())
+        else {
+            return Vec::new();
+        };
         let mut calls = Vec::new();
-        self.sync_autofill_focus(&mut tracking, &mut calls);
-        self.sync_autofill_nodes(&mut tracking, &mut calls);
-        if tracking.displayed.is_empty() && tracking.pending_commit {
-            calls.push(PlatformAutofillCall::Commit);
-            tracking.pending_commit = false;
+        self.sync_autofill_live(&mut live, &mut calls);
+        if let Some(autofill) = self.autofill.as_deref_mut() {
+            autofill.live = Some(live);
         }
-        if !tracking.displayed.is_empty() {
-            tracking.pending_commit = true;
-        }
-        self.autofill = Some(tracking);
         calls
+    }
+
+    /// How many noted nodes the syncs looked at since the platform's autofill was installed or
+    /// turned on: what the frames cost it. For tests.
+    #[doc(hidden)]
+    pub fn autofill_nodes_looked_at(&self) -> usize {
+        let live = self.autofill.as_ref().and_then(|autofill| autofill.live.as_ref());
+        live.map_or(0, |live| live.looked_at)
     }
 
     /// The platform's manager, if installed, and what `sync_autofill` tells it.
@@ -584,22 +793,303 @@ impl UiTree {
         Some((platform, self.sync_autofill()))
     }
 
-    /// Compose's `onFocusChanged`: the node losing the focus exits, the one taking it enters,
-    /// each if autofillable.
-    fn sync_autofill_focus(
+    fn sync_autofill_live(&mut self, live: &mut Live, calls: &mut Vec<PlatformAutofillCall>) {
+        if std::mem::take(&mut live.scan) {
+            self.autofill_scan(live);
+        }
+        // Its buffers, back with their capacity at the end: a frame allocates nothing for them.
+        let mut dirty = std::mem::take(&mut live.dirty);
+        dirty.sort_unstable_by_key(|node| node.to_bits());
+        dirty.dedup();
+        let mut attached = std::mem::take(&mut live.attached);
+        attached.sort_unstable_by_key(|node| node.to_bits());
+        attached.dedup();
+        // The owners to look at: each node noted, a part's owner for a part.
+        let mut owners = std::mem::take(&mut live.owners);
+        live.looked_at += dirty.len();
+        for &node in &dirty {
+            let newly = attached.binary_search_by_key(&node.to_bits(), |each| each.to_bits());
+            self.route_autofill_node(live, node, newly.is_ok(), &mut owners);
+        }
+        owners.sort_unstable_by_key(|node| node.to_bits());
+        owners.dedup();
+        let newly = |node: &NodeId| {
+            attached.binary_search_by_key(&node.to_bits(), |each| each.to_bits()).is_ok()
+        };
+        // A host noted, not just its parts: its own semantics looked at again.
+        let noted = |node: &NodeId| {
+            dirty.binary_search_by_key(&node.to_bits(), |each| each.to_bits()).is_ok()
+        };
+        // Compose's `onFocusChanged`, each move as it came. A node taking the focus that came
+        // since is looked at first: Compose shows it (`onPostAttach`) before anything can focus
+        // it.
+        let mut gone = Vec::new();
+        for focus_move in std::mem::take(&mut live.focus_moves) {
+            match focus_move {
+                FocusMove::Exited(id) => {
+                    calls.push(PlatformAutofillCall::NotifyViewExited { semantics_id: id })
+                }
+                FocusMove::ExitedIfAutofillable(node) => {
+                    if let Some((_, id)) = self.autofillable_owner(node) {
+                        calls.push(PlatformAutofillCall::NotifyViewExited { semantics_id: id });
+                    }
+                }
+                FocusMove::Entered(node) => {
+                    // Its owner as the tracking knows it, the parts in use all routed by now.
+                    let owner = match live.parts.get(&node) {
+                        Some(part) => part.owner,
+                        None => Some(node),
+                    };
+                    let Some(owner) = owner else { continue };
+                    if let Ok(index) =
+                        owners.binary_search_by_key(&owner.to_bits(), |each| each.to_bits())
+                    {
+                        owners.remove(index);
+                        self.sync_autofill_owner(
+                            live,
+                            owner,
+                            newly(&owner),
+                            noted(&owner),
+                            calls,
+                            &mut gone,
+                        );
+                    }
+                    let id = self.get(owner).map(|value| value.semantics_id);
+                    if let Some((known_id, snapshot)) = live.known.get(&owner)
+                        && Some(*known_id) == id
+                        && snapshot.is_autofillable()
+                        && let Some(bounds) = self.autofill_bounds(owner)
+                    {
+                        calls.push(PlatformAutofillCall::NotifyViewEntered {
+                            semantics_id: *known_id,
+                            bounds,
+                        });
+                    }
+                }
+            }
+        }
+        // In the order of their ids (the order they came in), those gone told after.
+        let id_of = |node: &NodeId| {
+            let id = self.get(*node).map(|value| value.semantics_id);
+            id.or_else(|| live.known.get(node).map(|known| known.0)).unwrap_or(0)
+        };
+        owners.sort_unstable_by_key(id_of);
+        for &owner in &owners {
+            self.sync_autofill_owner(live, owner, newly(&owner), noted(&owner), calls, &mut gone);
+        }
+        calls.append(&mut gone);
+        live.in_use.clear();
+        for (buffer, into) in
+            [(dirty, &mut live.dirty), (attached, &mut live.attached), (owners, &mut live.owners)]
+        {
+            let mut buffer = buffer;
+            buffer.clear();
+            *into = buffer;
+        }
+        if live.displayed.is_empty() && live.pending_commit {
+            calls.push(PlatformAutofillCall::Commit);
+            live.pending_commit = false;
+        }
+        if !live.displayed.is_empty() {
+            live.pending_commit = true;
+        }
+    }
+
+    /// Notes every node in use, as attached: installed or enabled.
+    fn autofill_scan(&mut self, live: &mut Live) {
+        let mut stack = vec![self.root_id()];
+        stack.extend(self.overlays.iter().copied());
+        while let Some(node) = stack.pop() {
+            let Some(value) = self.get(node) else { continue };
+            if !value.attached || value.deactivated {
+                continue;
+            }
+            live.dirty.push(node);
+            live.attached.push(node);
+            stack.extend(value.children.iter().map(|child| child.node));
+        }
+    }
+
+    /// Whether `node` is in use: attached, not deactivated (each node of deactivated content is
+    /// noted, another composition's under it too).
+    fn autofill_in_use(&self, node: NodeId) -> bool {
+        self.get(node).is_some_and(|value| value.attached) && !self.is_deactivated(node)
+    }
+
+    /// The owners noting `node` asks to look at: itself, or for a part its owner, and the owner
+    /// it had if that changed.
+    fn route_autofill_node(
         &mut self,
-        tracking: &mut AutofillTracking,
-        calls: &mut Vec<PlatformAutofillCall>,
+        live: &mut Live,
+        node: NodeId,
+        newly: bool,
+        owners: &mut Vec<NodeId>,
     ) {
-        for (previous, current) in std::mem::take(&mut tracking.focus_changes) {
-            if let Some((_, id)) = previous.and_then(|node| self.autofillable_owner(node)) {
-                calls.push(PlatformAutofillCall::NotifyViewExited { semantics_id: id });
+        // (Most trees have no node autofill reads: no lookup then.)
+        let known = !live.known.is_empty() && live.known.contains_key(&node);
+        let tracked = known || (!live.parts.is_empty() && live.parts.contains_key(&node));
+        let in_use = match self.get(node) {
+            None => false,
+            Some(value) if !value.attached => false,
+            // Nothing autofill reads, now or at the last sync.
+            Some(value) if !value.kinds.any(NodeKinds::SEMANTICS) && !tracked => return,
+            Some(_) => self.autofill_in_use(node),
+        };
+        if !in_use {
+            if known {
+                owners.push(node);
             }
-            if let Some((owner, id)) = current.and_then(|node| self.autofillable_owner(node))
-                && let Some(bounds) = self.autofill_bounds(owner)
-            {
-                calls.push(PlatformAutofillCall::NotifyViewEntered { semantics_id: id, bounds });
+            if tracked && let Some(Part { owner: Some(owner), .. }) = live.parts.remove(&node) {
+                owners.push(owner);
             }
+            return;
+        }
+        match self.autofill_semantics(node) {
+            Some(own) if own.config.contains(&PART_OF_PARENT) => {
+                // The owner it had, unless it came since (its place in the tree the same).
+                let owner = match live.parts.get(&node) {
+                    Some(part) if !newly => part.owner,
+                    _ => self.part_owner(node),
+                };
+                let part = Part {
+                    owner,
+                    id: self.node(node).semantics_id,
+                    snapshot: Snapshot::of(&own.config),
+                };
+                if let Some(Part { owner: Some(previous), .. }) = live.parts.insert(node, part)
+                    && Some(previous) != owner
+                {
+                    owners.push(previous);
+                }
+                owners.extend(owner);
+                // In use: it's above a part in use (no walk up again for it).
+                live.in_use.extend(owner);
+                // An owner that became a part.
+                if known {
+                    owners.push(node);
+                }
+            }
+            own => {
+                if tracked
+                    && let Some(Part { owner: Some(previous), .. }) = live.parts.remove(&node)
+                {
+                    owners.push(previous);
+                }
+                // Nothing autofill reads, now or at the last sync: nothing to tell (its parts, if
+                // any, are noted themselves when they change).
+                if known || own.is_some_and(|own| is_autofill_related(&own.config)) {
+                    owners.push(node);
+                }
+            }
+        }
+    }
+
+    /// Compose's `onSemanticsChanged` and `onPostAttach` for `owner` (`newly` attached), its
+    /// snapshot against the last sync's; `onDetach` or `onLayoutNodeDeactivated` if it's gone,
+    /// told in `gone`.
+    fn sync_autofill_owner(
+        &mut self,
+        live: &mut Live,
+        owner: NodeId,
+        newly: bool,
+        noted: bool,
+        calls: &mut Vec<PlatformAutofillCall>,
+        gone: &mut Vec<PlatformAutofillCall>,
+    ) {
+        if !live.in_use.contains(&owner) && !self.autofill_in_use(owner) {
+            live.hosts.remove(&owner);
+            self.autofill_gone(live, owner, gone);
+            return;
+        }
+        let id = self.node(owner).semantics_id;
+        // A host not noted itself (a part was) has its own snapshot of the last sync.
+        let kept = if noted { None } else { live.hosts.get(&owner).cloned() };
+        let own = match kept {
+            Some(own) => Some(own),
+            None => match self.autofill_semantics(owner) {
+                // A part's values are its owner's.
+                Some(own) if own.config.contains(&PART_OF_PARENT) => None,
+                own => Some(own.map(|own| Snapshot::of(&own.config)).unwrap_or_default()),
+            },
+        };
+        let snapshot = match own {
+            None => {
+                live.hosts.remove(&owner);
+                Snapshot::default()
+            }
+            Some(own) => {
+                let mut snapshot = own.clone();
+                // Its parts' values over its own, in their order.
+                let mut parts: SmallVec<[(i32, &Snapshot); 2]> = live
+                    .parts
+                    .values()
+                    .filter(|part| part.owner == Some(owner))
+                    .map(|part| (part.id, &part.snapshot))
+                    .collect();
+                parts.sort_unstable_by_key(|(id, _)| *id);
+                let has_parts = !parts.is_empty();
+                for (_, part) in parts {
+                    snapshot.apply(part);
+                }
+                if has_parts {
+                    live.hosts.insert(owner, own);
+                } else if !live.hosts.is_empty() {
+                    live.hosts.remove(&owner);
+                }
+                snapshot
+            }
+        };
+        let known_id = live.known.get(&owner).map(|known| known.0);
+        let previous = match live.known.remove(&owner) {
+            Some((known_id, previous)) if known_id == id => previous,
+            // Reused, with a new id: the content that was there is gone, told only of its
+            // visibility (`onPostLayoutNodeReused`).
+            Some((known_id, _)) => {
+                if live.displayed.remove(&known_id) {
+                    calls.push(PlatformAutofillCall::NotifyViewVisibilityChanged {
+                        semantics_id: known_id,
+                        is_visible: false,
+                    });
+                }
+                Snapshot::default()
+            }
+            None => Snapshot::default(),
+        };
+        if previous != snapshot {
+            semantics_changed(live, calls, id, &previous, &snapshot);
+        }
+        // `onPostAttach`: attached, or reused, since (a node moved, detached and attached again
+        // in one pass, isn't told).
+        if newly && known_id != Some(id) && snapshot.has_content_type {
+            live.displayed.insert(id);
+            calls.push(PlatformAutofillCall::NotifyViewVisibilityChanged {
+                semantics_id: id,
+                is_visible: true,
+            });
+        }
+        if !snapshot.is_empty() {
+            live.known.insert(owner, (id, snapshot));
+        }
+    }
+
+    /// `node`, known, is no longer in use: `onDetach` (its configuration gone,
+    /// `notifySemanticsChange` with none) if it's detached, `onLayoutNodeDeactivated` if it's
+    /// still attached (deactivated: its configuration gone untold).
+    fn autofill_gone(
+        &mut self,
+        live: &mut Live,
+        node: NodeId,
+        gone: &mut Vec<PlatformAutofillCall>,
+    ) {
+        let Some((id, previous)) = live.known.remove(&node) else { return };
+        if live.displayed.remove(&id) {
+            gone.push(PlatformAutofillCall::NotifyViewVisibilityChanged {
+                semantics_id: id,
+                is_visible: false,
+            });
+        }
+        if !self.get(node).is_some_and(|value| value.attached) {
+            semantics_changed(live, gone, id, &previous, &Snapshot::default());
         }
     }
 
@@ -616,101 +1106,6 @@ impl UiTree {
             .then(|| (owner, self.node(owner).semantics_id))
     }
 
-    /// Each node in use with its layout node and snapshot, in tree order (a part's taken into its
-    /// owner's). Deactivated content is left out.
-    fn autofill_snapshots(&mut self) -> Vec<(i32, NodeId, Snapshot)> {
-        let mut out: Vec<(i32, NodeId, Snapshot)> = Vec::new();
-        // (node, the nearest semantics node's index, the nearest host's)
-        let mut roots = vec![self.root_id()];
-        roots.extend(self.overlays.iter().copied());
-        let mut stack: Vec<(NodeId, Option<usize>, Option<usize>)> =
-            roots.into_iter().rev().map(|root| (root, None, None)).collect();
-        let mut visited = HashSet::new();
-        while let Some((node, nearest, host)) = stack.pop() {
-            let Some(value) = self.get(node) else { continue };
-            if !value.attached || value.deactivated || !visited.insert(node) {
-                continue;
-            }
-            let id = value.semantics_id;
-            let (nearest, host) = if value.overlay { (None, None) } else { (nearest, host) };
-            let children: Vec<NodeId> = value.children.iter().rev().map(|c| c.node).collect();
-            let own =
-                if value.kinds.any(NodeKinds::SEMANTICS) { self.own_semantics(node) } else { None };
-            let index = out.len();
-            let (mut child_nearest, mut child_host) = (nearest, host);
-            match own {
-                Some(own) if own.config.contains(&PART_OF_PARENT) => {
-                    out.push((id, node, Snapshot::default()));
-                    let part = Snapshot::of(&own.config);
-                    if let Some(owner) = host.or(nearest) {
-                        out[owner].2.apply(&part);
-                    }
-                }
-                Some(own) => {
-                    out.push((id, node, Snapshot::of(&own.config)));
-                    if !own.config.is_empty() {
-                        child_nearest = Some(index);
-                    }
-                    if own.config.contains(&PARTS_HOST) {
-                        child_host = Some(index);
-                    }
-                }
-                None => out.push((id, node, Snapshot::default())),
-            }
-            stack.extend(children.into_iter().map(|child| (child, child_nearest, child_host)));
-        }
-        out
-    }
-
-    /// Compose's `onSemanticsChanged`, `onPostAttach`, `onLayoutNodeDeactivated` and `onDetach`,
-    /// from the nodes' snapshots against the last sync's.
-    fn sync_autofill_nodes(
-        &mut self,
-        tracking: &mut AutofillTracking,
-        calls: &mut Vec<PlatformAutofillCall>,
-    ) {
-        let nodes = self.autofill_snapshots();
-        let previous_present = std::mem::take(&mut tracking.present);
-        let mut previous_known = std::mem::take(&mut tracking.known);
-        let empty = Snapshot::default();
-        for (id, node, snapshot) in nodes {
-            tracking.present.insert(id);
-            let previous = previous_known.remove(&id).map(|(_, snapshot)| snapshot);
-            let previous = previous.as_ref().unwrap_or(&empty);
-            if *previous != snapshot {
-                semantics_changed(tracking, calls, id, previous, &snapshot);
-            }
-            // Attached (or reused, with a new id) since: `onPostAttach`.
-            if !previous_present.contains(&id) && snapshot.has_content_type {
-                tracking.displayed.insert(id);
-                calls.push(PlatformAutofillCall::NotifyViewVisibilityChanged {
-                    semantics_id: id,
-                    is_visible: true,
-                });
-            }
-            if !snapshot.is_empty() {
-                tracking.known.insert(id, (node, snapshot));
-            }
-        }
-        // Those no longer in use, in the order of their ids.
-        let mut gone: Vec<(i32, (NodeId, Snapshot))> = previous_known.into_iter().collect();
-        gone.sort_by_key(|(id, _)| *id);
-        for (id, (node, previous)) in gone {
-            if tracking.displayed.remove(&id) {
-                calls.push(PlatformAutofillCall::NotifyViewVisibilityChanged {
-                    semantics_id: id,
-                    is_visible: false,
-                });
-            }
-            // Detached, its configuration gone (`notifySemanticsChange` with none); a node still
-            // attached was deactivated (or reused since, with a new id), its configuration gone
-            // without telling (`onDeactivate`).
-            if !self.get(node).is_some_and(|value| value.attached) {
-                semantics_changed(tracking, calls, id, &previous, &empty);
-            }
-        }
-    }
-
     /// The virtual structure the platform's autofill asks for, as Compose's
     /// `populateViewStructure`: the root, and under it the nodes related to autofill (a content
     /// type or data type, filling), placed and in use, each under the nearest such ancestor, in
@@ -724,7 +1119,10 @@ impl UiTree {
         arena.push((structure, Vec::new()));
         let mut stack: Vec<(NodeId, usize)> = vec![(root, 0)];
         while let Some((parent, parent_structure)) = stack.pop() {
-            for child in self.z_sorted_children(parent) {
+            // In the children's order, as Compose's `childrenInfo` (not their drawing order).
+            let children: SmallVec<[NodeId; 8]> =
+                self.node(parent).children.iter().map(|child| child.node).collect();
+            for child in children {
                 let value = self.node(child);
                 if !value.attached || !value.placed || self.is_deactivated(child) {
                     continue;
@@ -893,7 +1291,7 @@ fn legacy_class_name(role: Role) -> Option<&'static str> {
 /// Compose's `onSemanticsChanged` for one node (`notifyAutofillManager`, then whether it counts
 /// for the commit).
 fn semantics_changed(
-    tracking: &mut AutofillTracking,
+    tracking: &mut Live,
     calls: &mut Vec<PlatformAutofillCall>,
     id: i32,
     previous: &Snapshot,

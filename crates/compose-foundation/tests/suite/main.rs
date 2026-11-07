@@ -9,6 +9,7 @@ mod anchored_draggable;
 mod autofill_manager;
 mod autofill_semantics;
 mod autofill_text_fields;
+mod autofill_tracking;
 mod autofill_view_structure;
 mod bring_into_view;
 mod clickable_parity;

@@ -20,6 +20,13 @@ internal class ComposeRsAutofill(private val view: View) {
         view.context.getSystemService(AutofillManager::class.java)
     }
 
+    /**
+     * Whether the platform's autofill is on: a service is set and the user hasn't turned it off
+     * (`AutofillManager.isEnabled`). Read when the view gets a host and when its window takes the
+     * focus (back from the settings, D1688).
+     */
+    fun isEnabled(): Boolean = manager?.isEnabled == true
+
     /** Rust's call ([ComposeRsView.autofillCall]): one of `autofill::kind`'s. */
     fun call(kind: Int, id: Int, bounds: Rect, valueType: Int, text: String?, number: Long) {
         val manager = manager ?: return

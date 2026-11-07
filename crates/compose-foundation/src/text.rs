@@ -850,6 +850,9 @@ impl SemanticsModifierNode for TextNode {
         config.get_text_layout_result_of_node();
     }
 
+    /// Nothing autofill reads (D1688).
+    fn apply_autofill_semantics(&self, _config: &mut SemanticsConfiguration) {}
+
     fn text_layout_result(
         &mut self,
         context: &mut compose_ui::EventContext<'_>,

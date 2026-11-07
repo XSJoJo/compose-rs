@@ -3731,6 +3731,9 @@ impl LazyScrollNode {
 }
 
 impl compose_ui::SemanticsModifierNode for LazyScrollNode {
+    /// Nothing autofill reads (D1688).
+    fn apply_autofill_semantics(&self, _config: &mut compose_ui::SemanticsConfiguration) {}
+
     /// How far it's scrolled and can be, along its axis, as Compose's lazy layouts' semantics:
     /// accessibility services scroll it a page at a time (D478). Where an end isn't laid out,
     /// the room that way is estimated from the average item size.

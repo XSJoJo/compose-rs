@@ -1034,9 +1034,13 @@ fn create(
     let text_action_modes = crate::text_toolbar::JniTextActionModes::new(env, view, &view_ref);
     ui.with_tree(|tree| tree.set_text_action_modes(Some(Rc::new(text_action_modes))));
     // The platform's autofill: every view has it from Android 8, below the library's minimum, as
-    // Compose's `AndroidAutofillManager` (D1687).
+    // Compose's `AndroidAutofillManager` (D1687). Off until the view says it's on
+    // (`setAutofillEnabled`, `AutofillManager.isEnabled`): nothing's tracked meanwhile (D1688).
     let autofill = crate::autofill::JniAutofill::new(env, view, &view_ref);
-    ui.with_tree(|tree| tree.set_platform_autofill_manager(Some(Rc::new(autofill))));
+    ui.with_tree(|tree| {
+        tree.set_platform_autofill_manager(Some(Rc::new(autofill)));
+        tree.set_platform_autofill_enabled(false);
+    });
     if rtl {
         ui.set_layout_direction(LayoutDirection::Rtl);
     }
@@ -2415,6 +2419,21 @@ pub extern "system" fn Java_rs_compose_android_ComposeRsNative_autofill(
     if let Some(value) = crate::autofill::fillable_data(data_type, text, number) {
         host.ui.perform_autofill(vec![(id, value)]);
     }
+}
+
+/// `ComposeRsNative.setAutofillEnabled(host, enabled)`: whether the platform's autofill is on
+/// (`AutofillManager.isEnabled`, read when the view gets its host and when its window takes the
+/// focus). Off, the tree tracks and tells nothing; on again, it's told of what's there (D1688).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_rs_compose_android_ComposeRsNative_setAutofillEnabled(
+    _env: EnvUnowned,
+    _class: JClass,
+    host: jlong,
+    enabled: jboolean,
+) {
+    // SAFETY: a live host, on the main thread.
+    let host = unsafe { self::host(host) };
+    host.ui.with_tree(|tree| tree.set_platform_autofill_enabled(enabled));
 }
 
 /// `ComposeRsNative.semanticsChanges(host)`: what changed since a service was last told

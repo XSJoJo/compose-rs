@@ -171,6 +171,25 @@ impl UiHost {
         // Writes to state read while measuring or drawing ask for a frame, as composition's do.
         let observer = compose_runtime::platform::ReadObserver::new(move || request());
         composition.with_applier(|tree: &mut UiTree| tree.set_read_observer(observer));
+        // Those to state semantics read, outside a frame: one made in a frame (a lazy list's
+        // layout state, which its semantics read) is applied before it draws, and that frame
+        // tells the semantics changed (D1688).
+        let semantics_observer = {
+            let (requested, framing, wake) =
+                (frame_requested.clone(), framing.clone(), waker.clone());
+            compose_runtime::platform::ReadObserver::new(move || {
+                if framing.get() {
+                    return;
+                }
+                requested.set(true);
+                let waker = wake.borrow().clone();
+                if let Some(waker) = waker {
+                    waker();
+                }
+            })
+        };
+        composition
+            .with_applier(|tree: &mut UiTree| tree.set_semantics_read_observer(semantics_observer));
         let saveable_registry = compose_runtime::SaveableStateRegistry::new(None);
         let window_insets = Rc::new(crate::configuration::HostInsets::new());
         let insets_source = crate::configuration::WindowInsetsSource::of(window_insets.clone());
@@ -730,10 +749,11 @@ impl UiHost {
             self.wake();
         }
         let (semantics_changed, autofill) = self.with_tree(|tree| {
-            (std::mem::take(&mut tree.semantics_changed), tree.autofill.is_some())
+            (std::mem::take(&mut tree.semantics_changed), tree.autofill_pending())
         });
-        // The platform's autofill hears of what changed, if installed (D1680).
-        if autofill && (recomposed || measured || semantics_changed) {
+        // The platform's autofill hears of what changed, if installed, on and anything was noted
+        // for it (D1680, D1688).
+        if autofill {
             self.sync_autofill();
         }
         FrameStats {

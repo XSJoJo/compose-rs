@@ -44,6 +44,8 @@ fn run_correct_items_test_before_api26(
     expected: &[TextContextMenuKeys],
 ) {
     API_26.with(|it| it.set(false));
+    // Nor a platform autofill manager, whatever `COMPOSE_TEST_AUTOFILL` says (D1688).
+    compose_test::use_autofill(false);
     run_correct_items_test(password, read_only, empty_clipboard, amount, expected);
     API_26.with(|it| it.set(true));
 }

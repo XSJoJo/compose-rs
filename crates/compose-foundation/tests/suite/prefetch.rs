@@ -972,3 +972,25 @@ fn a_scroll_frame_after_prefetch_asks_for_no_other_frame() {
         assert!(!ui.host().has_pending_work(), "the scroll frame asked for another");
     }
 }
+
+/// The same with a platform autofill manager, as on a phone: its sync computes the list's
+/// semantics, which read the layout state the scroll frame writes. Applied in that frame, the
+/// write asks for no other (D1688).
+#[test]
+fn with_autofill_a_scroll_frame_after_prefetch_asks_for_no_other_frame() {
+    compose_test::use_autofill(true);
+    crate::legacy::lazy_lists();
+    let state = LazyListState::new(0, 0);
+    let given = *state;
+    let mut ui = ComposeTestRule::sized(IntSize::new(300, 600), move || {
+        LazyColumn!(modifier = Modifier.fill_max_size(), state = given, |scope: LazyListScope| {
+            scope.items(5000, VariedRow);
+        });
+    });
+    for _ in 0..5 {
+        ui.host().prefetch(later());
+        state.dispatch_raw_delta(60.0);
+        ui.host().frame();
+        assert!(!ui.host().has_pending_work(), "the scroll frame asked for another");
+    }
+}

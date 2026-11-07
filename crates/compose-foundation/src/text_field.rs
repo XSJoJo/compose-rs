@@ -3953,6 +3953,29 @@ impl KeyInputModifierNode for TextFieldNode {
 }
 
 impl SemanticsModifierNode for TextFieldNode {
+    /// What autofill reads of `apply_semantics`, with its values (D1688): a part, text to fill
+    /// through the node, its fillable data and a state-based field's input text, without the
+    /// rest (its actions bound at each key).
+    fn apply_autofill_semantics(&self, config: &mut SemanticsConfiguration) {
+        config.part_of_parent();
+        let text = &self.text;
+        if let Some(link) = &self.state {
+            let shown: compose_ui::SharedString = match &self.shown_text {
+                Some(shown) if link.password.is_none() => shown.clone().into(),
+                _ => text.clone().into(),
+            };
+            if let Some(data) = FillableData::create_from_text(shown) {
+                config.set_fillable_data(data);
+            }
+            config.set_input_text(text.clone());
+        } else if let Some(data) = FillableData::create_from_text(text.clone()) {
+            // The field's own text, transformed or not, as `apply_semantics`.
+            config.set_fillable_data(data);
+        }
+        config.set_content_data_type(ContentDataType::TEXT);
+        config.on_fill_data_of_node();
+    }
+
     fn apply_semantics(&self, config: &mut SemanticsConfiguration) {
         // The field's node is its decoration's, as Compose's `CoreTextField`.
         config.part_of_parent();
@@ -4099,10 +4122,14 @@ impl TextFieldNode {
                 true
             }
             // As Compose's: focused, the selection's toolbar asked for (`updateTextToolbarState`,
-            // `enterSelectionMode`).
+            // `enterSelectionMode`); a value-based field's handles in selection mode too.
             Action::LongClick => {
                 if !self.focused {
                     context.request_focus();
+                }
+                if self.state.is_none() {
+                    self.touch_enter_selection_mode();
+                    context.invalidate_measure();
                 }
                 self.set_toolbar_state(toolbar::ToolbarState::Selection);
                 true

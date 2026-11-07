@@ -222,6 +222,9 @@ class ComposeRsView @JvmOverloads constructor(
     private val accessibility = Accessibility(this)
     /** The platform's autofill, as Compose's `AndroidAutofillManager` (D1687). */
     private val autofill = ComposeRsAutofill(this)
+
+    /** What the host was last told of [ComposeRsAutofill.isEnabled]: off when it starts (D1688). */
+    private var autofillEnabled = false
     private val accessibilityManager = context.getSystemService(AccessibilityManager::class.java)
 
     /** What the last composition saved (or the instance state restored), for the next one. */
@@ -330,6 +333,26 @@ class ComposeRsView @JvmOverloads constructor(
         if (width > 0 && height > 0) create()
     }
 
+    override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+        super.onWindowFocusChanged(hasWindowFocus)
+        // Autofill may have been turned on or off in the settings meanwhile.
+        if (hasWindowFocus) updateAutofillEnabled()
+    }
+
+    /**
+     * Tells the host whether the platform's autofill is on, if that changed: while it's off, the
+     * frames pay nothing for it (D1688).
+     */
+    private fun updateAutofillEnabled() {
+        if (host == 0L) return
+        val enabled = autofill.isEnabled()
+        if (enabled == autofillEnabled) return
+        autofillEnabled = enabled
+        ComposeRsNative.setAutofillEnabled(host, enabled)
+        // On, it's told of what's there at the end of a frame.
+        if (enabled) requestFrame()
+    }
+
     override fun onDetachedFromWindow() {
         removeCallbacks(sendHoverExit)
         hoverExitPending = false
@@ -377,6 +400,8 @@ class ComposeRsView @JvmOverloads constructor(
         )
         savedState = null
         ComposeRsNative.setInputMode(host, isInTouchMode)
+        autofillEnabled = false
+        updateAutofillEnabled()
         sendConfiguration(resources.configuration)
         ComposeRsNative.setWindowInsets(host, insets.values)
         insets.cutoutPath?.let { ComposeRsNative.setWindowCutoutPath(host, it) }

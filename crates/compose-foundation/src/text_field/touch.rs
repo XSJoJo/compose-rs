@@ -218,6 +218,14 @@ impl TextFieldNode {
     }
 
     /// A hardware key ends the touch interaction: the handles hide until a finger comes back.
+    /// A value-based field's long click from its semantics, as `CoreTextField`'s
+    /// `enterSelectionMode` (`setHandleState(Selection)`): its selection's handles show, its
+    /// cursor handle doesn't, whatever touched it last (D1688).
+    pub(super) fn touch_enter_selection_mode(&mut self) {
+        self.touch.direct = true;
+        self.touch.cursor_handle = None;
+    }
+
     pub(super) fn touch_hardware_key(&mut self, context: &mut EventContext<'_>) {
         self.touch.direct = false;
         if self.touch.shown.any() {
