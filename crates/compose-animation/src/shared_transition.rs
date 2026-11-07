@@ -639,6 +639,12 @@ impl SharedTransitionScope {
         self.inner.lookahead_root.get()
     }
 
+    /// The layout's coordinates, for tests, as `root`.
+    #[doc(hidden)]
+    pub fn root_for_test(&self) -> Option<LayoutCoordinates> {
+        self.inner.root.get()
+    }
+
     /// Whether an overlay renderer that's not a shared content holds a layer, for tests, as
     /// `hasRenderInOverlayLayer`.
     #[doc(hidden)]
@@ -1372,6 +1378,13 @@ impl StateMachine {
     }
 
     fn set_state(&self, state: MatchState) {
+        // Compose's `NoMatchFound` is an object: setting it again is no change, which a
+        // composition reading `isMatchFound` would hear, again each time it resets the machine.
+        if matches!(state, MatchState::NoMatchFound)
+            && matches!(*self.current(), MatchState::NoMatchFound)
+        {
+            return;
+        }
         self.state.set(StateRef(Rc::new(state)));
     }
 

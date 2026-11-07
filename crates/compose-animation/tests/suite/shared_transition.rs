@@ -9,8 +9,10 @@ use std::rc::Rc;
 
 use compose_animation::*;
 use compose_foundation::layout::*;
+use compose_foundation::{LazyColumn, LazyListScope, LazyListState, ScrollableStateExt};
 use compose_runtime::*;
 use compose_test::*;
+use compose_ui::ContentScale;
 use compose_ui::platform::DrawOp;
 use compose_ui::{Color, IntSize, LayoutCoordinates, Offset, UnitExt};
 
@@ -1367,4 +1369,1058 @@ fn a_reversal_turns_back_after_the_frames_step() {
     ui.set_auto_advance(true);
     ui.wait_for_idle();
     assert_eq!(positions.borrow()[0], Offset::ZERO);
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, transitionInterruptionSelfManagedVisibility
+/// The same swap with the caller managing visibility: in sync with their match through the
+/// transition and when it's interrupted, changing continuously.
+#[test]
+fn transition_interruption_self_managed_visibility() {
+    let visible = mutable_state_of(true);
+    let positions: Rc<RefCell<Vec<Offset>>> = Rc::new(RefCell::new(vec![Offset::ZERO; 4]));
+    let sizes: Rc<RefCell<Vec<IntSize>>> = Rc::new(RefCell::new(vec![
+        IntSize::new(-1, -1),
+        IntSize::new(-1, -1),
+        IntSize::ZERO,
+        IntSize::ZERO,
+    ]));
+    let scope_seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let (p, s, seen, v) = (positions.clone(), sizes.clone(), scope_seen.clone(), visible.handle());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let (p, s, seen) = (p.clone(), s.clone(), seen.clone());
+        SharedTransitionLayout!(move |scope: SharedTransitionScope| {
+            *seen.borrow_mut() = Some(scope.clone());
+            let options = SharedOptions { bounds_transform: linear(500), ..Default::default() };
+            let (p1, s1, sc1, o1) = (p.clone(), s.clone(), scope.clone(), options.clone());
+            Column!(move |_| {
+                let (p, s, scope, options) = (&p1, &s1, &sc1, &o1);
+                let cat = scope.remember_shared_content_state("cat");
+                let dog = scope.remember_shared_content_state("dog");
+                Box!(
+                    modifier = scope
+                        .shared_element_with_caller_managed_visibility_with(
+                            &cat,
+                            v.get(),
+                            options.clone(),
+                        )
+                        .then(noting(scope, p, s, 0))
+                        .size(200.dp())
+                );
+                Box!(
+                    modifier = scope
+                        .shared_bounds_with_caller_managed_visibility(
+                            &dog,
+                            v.get(),
+                            options.clone()
+                        )
+                        .then(noting(scope, p, s, 1))
+                        .size(50.dp())
+                );
+            });
+            let (p2, s2, sc2, o2) = (p.clone(), s.clone(), scope.clone(), options.clone());
+            Row!(move |_| {
+                let (p, s, scope, options) = (&p2, &s2, &sc2, &o2);
+                let dog = scope.remember_shared_content_state("dog");
+                let cat = scope.remember_shared_content_state("cat");
+                Box!(
+                    modifier = scope
+                        .shared_element_with_caller_managed_visibility_with(
+                            &dog,
+                            !v.get(),
+                            options.clone(),
+                        )
+                        .then(noting(scope, p, s, 2))
+                        .size(50.dp())
+                );
+                Box!(
+                    modifier = scope
+                        .shared_bounds_with_caller_managed_visibility(
+                            &cat,
+                            !v.get(),
+                            options.clone(),
+                        )
+                        .then(noting(scope, p, s, 3))
+                        .size(200.dp())
+                );
+            });
+        });
+    });
+    ui.wait_for_idle();
+    let scope = scope_seen.borrow().clone().expect("the scope");
+    assert!(!scope.is_transition_active());
+    assert_eq!(sizes.borrow()[0], IntSize::new(200, 200));
+    assert_eq!(sizes.borrow()[1], IntSize::new(50, 50));
+    assert_eq!(positions.borrow()[0], Offset::ZERO);
+    assert_eq!(positions.borrow()[1], Offset::new(0.0, 200.0));
+
+    ui.set_auto_advance(false);
+    visible.set(false);
+    for _ in 0..20 {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+    }
+    let in_sync = |positions: &[Offset], sizes: &[IntSize]| {
+        assert!(near_offset(positions[0], positions[3], 5.0), "{positions:?}");
+        assert!(near_offset(positions[1], positions[2], 5.0), "{positions:?}");
+        assert!(near_size(sizes[0], sizes[3], 5), "{sizes:?}");
+        assert!(near_size(sizes[1], sizes[2], 5), "{sizes:?}");
+    };
+    in_sync(&positions.borrow(), &sizes.borrow());
+    assert!(scope.is_transition_active());
+
+    // Interrupted.
+    visible.set(true);
+    let mut last_sizes = sizes.borrow().clone();
+    let mut last_positions = positions.borrow().clone();
+    let mut frames = 0;
+    while scope.is_transition_active() {
+        let (p, s) = (positions.borrow().clone(), sizes.borrow().clone());
+        in_sync(&p, &s);
+        // The first grows and the second shrinks from where they were, continuously.
+        assert!(s[0].width >= last_sizes[0].width && s[0].height >= last_sizes[0].height);
+        assert!(near_size(s[0], last_sizes[0], 10), "{s:?} after {last_sizes:?}");
+        assert!(s[1].width <= last_sizes[1].width && s[1].height <= last_sizes[1].height);
+        assert!(near_size(s[1], last_sizes[1], 10), "{s:?} after {last_sizes:?}");
+        assert!(near_offset(p[0], last_positions[0], 20.0), "{p:?} after {last_positions:?}");
+        assert!(near_offset(p[1], last_positions[1], 40.0), "{p:?} after {last_positions:?}");
+        assert_eq!(p[0].y, 0.0);
+        assert_eq!(p[1].x, 0.0);
+        last_sizes = s;
+        last_positions = p;
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        frames += 1;
+        assert!(frames < 500, "the transition ends");
+    }
+    assert_eq!(sizes.borrow()[0], IntSize::new(200, 200));
+    assert_eq!(sizes.borrow()[1], IntSize::new(50, 50));
+    assert_eq!(positions.borrow()[0], Offset::ZERO);
+    assert_eq!(positions.borrow()[1], Offset::new(0.0, 200.0));
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testMatchFoundUpdatedPromptly
+/// A seekable transition's `AnimatedContent` going to a state whose content has the other
+/// content's key finds the match within a few frames, and loses it in the frame it goes to a
+/// state without the key.
+#[test]
+fn match_found_updated_promptly() {
+    let set: Rc<RefCell<Vec<SharedContentState>>> = Rc::default();
+    let seekable = SeekableTransitionState::new(1);
+    let target = mutable_state_of(1);
+    let first_frame = Rc::new(Cell::new(true));
+    let (st, sk, t, ff) = (set.clone(), seekable.clone(), target.handle(), first_frame.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let seeking = sk.clone();
+        let goal = t.get();
+        LaunchedEffect(goal, async move {
+            if seeking.current_state() != goal {
+                seeking.animate_to(goal).await;
+            }
+        });
+        let transition = remember_transition(&sk, None);
+        let (st, ff) = (st.clone(), ff.clone());
+        SharedTransitionLayout!(move |scope: SharedTransitionScope| {
+            let state1 = scope.remember_shared_content_state("key1");
+            let state2 = scope.remember_shared_content_state("key1");
+            let (st, ff, scope) = (st.clone(), ff.clone(), scope.clone());
+            transition.AnimatedContent(
+                Modifier,
+                |_| default_content_transform(),
+                Alignment::TOP_START,
+                ContentKey::state(),
+                move |content: AnimatedContentScope, it: i32| {
+                    let tracked = |state: &SharedContentState, size: i32| {
+                        let (st, state) = (st.clone(), state.clone());
+                        Box!(
+                            modifier = scope.shared_element(&state, &content).size(size.dp()),
+                            move |_| {
+                                let (st, state) = (st.clone(), state.clone());
+                                DisposableEffect((), move |effect| {
+                                    st.borrow_mut().push(state.clone());
+                                    let (st, state) = (st.clone(), state.clone());
+                                    effect.on_dispose(move || {
+                                        st.borrow_mut().retain(|it| *it != state);
+                                    })
+                                });
+                            }
+                        );
+                    };
+                    match it {
+                        1 => tracked(&state1, 200),
+                        2 => tracked(&state2, 600),
+                        _ => {
+                            let ff = ff.clone();
+                            Box!(modifier = Modifier.size(200.dp()), move |_| {
+                                if ff.get() {
+                                    ff.set(false);
+                                }
+                            });
+                        }
+                    }
+                },
+            );
+        });
+    });
+    ui.wait_for_idle();
+    assert_eq!(set.borrow().len(), 1);
+    assert!(set.borrow().iter().all(|it| !it.is_match_found()));
+
+    // The second content comes in, matching the first.
+    target.set(2);
+    let tracked = set.clone();
+    ui.wait_until(move |_| tracked.borrow().len() == 2);
+    for _ in 0..5 {
+        ui.advance_time_by_frame();
+    }
+    assert_eq!(set.borrow().len(), 2);
+    assert!(set.borrow().iter().all(|it| it.is_match_found()));
+    target.set(3);
+    let first = first_frame.clone();
+    ui.wait_until(move |_| !first.get());
+    for it in set.borrow().iter() {
+        assert_eq!(set.borrow().len(), 2);
+        assert!(!it.is_match_found());
+    }
+    ui.advance_time_by(std::time::Duration::from_millis(50000));
+}
+
+/// Two `AnimatedVisibility`s with no enter or exit, the first shown while `visible`, the second
+/// while not, each a full-size `shared_bounds` of key "test" fading in and out over 100 ms,
+/// holding a half-wide box: `colors.0` at the start, `colors.1` at the end. Their transitions go
+/// in `transitions`, the first's first.
+fn half_boxes(
+    scope: &SharedTransitionScope,
+    visible: bool,
+    colors: (Color, Color),
+    transitions: &Rc<RefCell<Vec<Option<Transition<EnterExitState>>>>>,
+) {
+    for (at, shown, color, align) in [
+        (0, visible, colors.0, Alignment::CENTER_START),
+        (1, !visible, colors.1, Alignment::CENTER_END),
+    ] {
+        let (scope, transitions) = (scope.clone(), transitions.clone());
+        AnimatedVisibility!(
+            shown,
+            enter = EnterTransition::NONE,
+            exit = ExitTransition::NONE,
+            move |visibility: AnimatedVisibilityScope| {
+                transitions.borrow_mut()[at] = Some(visibility.transition().clone());
+                let state = scope.remember_shared_content_state("test");
+                let options = SharedOptions {
+                    enter: fade_in_with(tween(100).easing(LINEAR_EASING), 0.0),
+                    exit: fade_out_with(tween(100).easing(LINEAR_EASING), 0.0),
+                    ..Default::default()
+                };
+                Box!(
+                    modifier =
+                        scope.shared_bounds_with(&state, &visibility, options).fill_max_size(),
+                    move |inner| {
+                        Box!(
+                            modifier = Modifier
+                                .fill_max_height()
+                                .fill_max_width_with(0.5)
+                                .background(color)
+                                .align(inner, align)
+                        );
+                    }
+                );
+            }
+        );
+    }
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testObserverScopeClearedAfterDisposing
+/// A `SharedTransitionLayout` removed right after its contents swapped leaves without failing.
+#[test]
+fn observer_scope_cleared_after_disposing() {
+    let visible = mutable_state_of(false);
+    let should_dispose = mutable_state_of(false);
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let transitions = Rc::new(RefCell::new(vec![None, None]));
+    let (v, d, sc) = (visible.handle(), should_dispose.handle(), seen.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        if d.get() {
+            return;
+        }
+        let (sc, transitions) = (sc.clone(), transitions.clone());
+        SharedTransitionLayout!(
+            modifier = Modifier.required_size(100.dp()).background(Color::WHITE),
+            move |scope: SharedTransitionScope| {
+                *sc.borrow_mut() = Some(scope.clone());
+                half_boxes(&scope, v.get(), (Color::RED, Color::BLUE), &transitions);
+            }
+        );
+    });
+    ui.wait_for_idle();
+    assert!(!seen.borrow().clone().expect("the scope").is_transition_active());
+    visible.set(true);
+    ui.wait_for_idle();
+    should_dispose.set(true);
+    ui.wait_for_idle();
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testParentSharedContentState
+/// A shared element inside shared bounds has their state as its parent, in both contents, and
+/// all four are matched through the transition.
+#[test]
+fn parent_shared_content_state() {
+    let visible = mutable_state_of(true);
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let states: Rc<RefCell<Vec<Option<SharedContentState>>>> =
+        Rc::new(RefCell::new(vec![None, None, None, None]));
+    let (first, second) = (states.clone(), states.clone());
+    let mut ui = two_visibilities(
+        visible.handle(),
+        seen.clone(),
+        Modifier.fill_max_size_with(0.5).offset(25.dp(), 25.dp()),
+        move |scope, visibility| {
+            let parent = scope.remember_shared_content_state("parent");
+            first.borrow_mut()[0] = Some(parent.clone());
+            let (s, v, states) = (scope.clone(), visibility.clone(), first.clone());
+            Box!(
+                modifier = scope.shared_bounds(&parent, visibility).fill_max_size(),
+                content_alignment = Alignment::CENTER,
+                move |_| {
+                    let child = s.remember_shared_content_state("child");
+                    states.borrow_mut()[1] = Some(child.clone());
+                    Box!(
+                        modifier =
+                            Modifier.fill_max_size_with(0.5).then(s.shared_element(&child, &v))
+                    );
+                }
+            );
+        },
+        move |scope, visibility| {
+            let parent = scope.remember_shared_content_state("parent");
+            second.borrow_mut()[2] = Some(parent.clone());
+            let (s, v, states) = (scope.clone(), visibility.clone(), second.clone());
+            Box!(
+                modifier =
+                    Modifier.offset(20.dp(), 0.dp()).then(scope.shared_bounds(&parent, visibility)),
+                move |_| {
+                    let child = s.remember_shared_content_state("child");
+                    states.borrow_mut()[3] = Some(child.clone());
+                    Box!(
+                        modifier = Modifier
+                            .offset((-20).dp(), 0.dp())
+                            .then(s.shared_element(&child, &v))
+                            .fill_max_size()
+                    );
+                }
+            );
+        },
+    );
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    assert!(!scope.is_transition_active());
+    start_transition(&mut ui, &visible, &scope);
+    // Another frame, for the drawing.
+    ui.wait_for_idle();
+    ui.advance_time_by_frame();
+    let mut frames = 0;
+    while scope.is_transition_active() {
+        let states = states.borrow();
+        let state = |at: usize| states[at].clone().expect("composed");
+        assert_eq!(state(1).parent_shared_content_state(), Some(state(0)));
+        assert_eq!(state(3).parent_shared_content_state(), Some(state(2)));
+        for at in 0..4 {
+            assert!(state(at).is_match_found(), "{at}");
+        }
+        drop(states);
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        frames += 1;
+        assert!(frames < 300, "the transition ends");
+    }
+}
+
+/// The x and y scales from `it`'s parent to it.
+fn scales_from_parent(it: &LayoutCoordinates) -> (f32, f32) {
+    let mut matrix = compose_ui::Matrix::default();
+    it.transform_from(&it.parent_layout_coordinates().expect("a parent"), &mut matrix);
+    (matrix.values[compose_ui::Matrix::SCALE_X], matrix.values[compose_ui::Matrix::SCALE_Y])
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testScaleTransitionInterruption
+/// Shared bounds scaled to fit between a detail and a lazy list's item scale gradually both ways,
+/// and, interrupted for another item, from where they were.
+#[test]
+fn scale_transition_interruption() {
+    let show_list = mutable_state_of(false);
+    let selected = mutable_state_of(1usize);
+    let scales: Rc<RefCell<Vec<(f32, f32)>>> = Rc::new(RefCell::new(vec![(0.0, 0.0); 5]));
+    let detail = Rc::new(Cell::new((0.0f32, 0.0f32)));
+    let (sl, sel, sc, dt) = (show_list.handle(), selected.handle(), scales.clone(), detail.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let (sc, dt) = (sc.clone(), dt.clone());
+        SharedTransitionLayout!(move |scope: SharedTransitionScope| {
+            let (sc, dt) = (sc.clone(), dt.clone());
+            AnimatedContent!(
+                sl.get(),
+                transition_spec = |_| fade_in().together_with(fade_out()).using(None),
+                move |content: AnimatedContentScope, it: bool| {
+                    let options = SharedOptions {
+                        bounds_transform: linear(160),
+                        resize_mode: ResizeMode::scale_to_bounds(
+                            ContentScale::Fit,
+                            Alignment::CENTER,
+                        ),
+                        ..Default::default()
+                    };
+                    if it {
+                        let (scope, content, sc) = (scope.clone(), content.clone(), sc.clone());
+                        LazyColumn!(move |list: LazyListScope| {
+                            for id in 0..5usize {
+                                let (scope, content, sc, options) =
+                                    (scope.clone(), content.clone(), sc.clone(), options.clone());
+                                list.item(move || {
+                                    let (scope, content, sc, options) = (
+                                        scope.clone(),
+                                        content.clone(),
+                                        sc.clone(),
+                                        options.clone(),
+                                    );
+                                    Box!(modifier = Modifier.fill_max_width(), move |_| {
+                                        let state = scope.remember_shared_content_state(id);
+                                        let sc = sc.clone();
+                                        let color =
+                                            if sel.get() == id { Color::RED } else { Color::WHITE };
+                                        Box!(
+                                            modifier = scope
+                                                .shared_bounds_with(
+                                                    &state,
+                                                    &content,
+                                                    options.clone()
+                                                )
+                                                .size((200.dp(), 50.dp()))
+                                                .background(color)
+                                                .on_placed(move |it: LayoutCoordinates| {
+                                                    sc.borrow_mut()[id] = scales_from_parent(&it);
+                                                })
+                                        );
+                                    });
+                                });
+                            }
+                        });
+                    } else {
+                        let (scope, dt) = (scope.clone(), dt.clone());
+                        Box!(modifier = Modifier.fill_max_size(), move |_| {
+                            let state = scope.remember_shared_content_state(sel.get());
+                            let dt = dt.clone();
+                            Box!(
+                                modifier = scope
+                                    .shared_bounds_with(&state, &content, options.clone())
+                                    .size(100.dp())
+                                    .on_placed(move |it: LayoutCoordinates| {
+                                        dt.set(scales_from_parent(&it));
+                                    })
+                            );
+                        });
+                    }
+                }
+            );
+        });
+    });
+    ui.wait_for_idle();
+    assert_eq!(detail.get(), (1.0, 1.0));
+    ui.set_auto_advance(false);
+    // Detail to list to detail, interrupted.
+    show_list.set(true);
+    let mut frames = 0;
+    while detail.get().0 == 1.0 {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        frames += 1;
+        assert!(frames < 100, "the detail scales");
+    }
+    let list_x = |at: usize| scales.borrow()[at].0;
+    let mut last_detail = detail.get().0;
+    let mut last_list = list_x(selected.get());
+    for frame in 0..6 {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        let at = selected.get();
+        let (x, y) = scales.borrow()[at];
+        assert_eq!(x, y, "at {frame}");
+        assert_eq!(detail.get().0, detail.get().1, "at {frame}");
+        // The list's item shrinks gradually, the detail grows.
+        let shrunk = last_list - x;
+        assert!(shrunk > 0.05 && shrunk < 0.2, "{shrunk} at {frame}");
+        last_list = x;
+        let grown = detail.get().0 - last_detail;
+        assert!(grown > 0.05 && grown < 0.2, "{grown} at {frame}");
+        last_detail = detail.get().0;
+    }
+    // Interrupted.
+    selected.set(3);
+    show_list.set(false);
+    let mut frames = 0;
+    while list_x(3) == 1.0 {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        frames += 1;
+        assert!(frames < 100, "the item scales");
+    }
+    let mut last_list = list_x(3);
+    let mut last_detail = detail.get().0;
+    for frame in 0..6 {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        let (x, y) = scales.borrow()[3];
+        assert_eq!(x, y, "at {frame}");
+        assert_eq!(detail.get().0, detail.get().1, "at {frame}");
+        let grown = x - last_list;
+        assert!(grown > 0.05 && grown < 0.2, "{grown} at {frame}");
+        last_list = x;
+        let shrunk = last_detail - detail.get().0;
+        assert!(shrunk > 0.05 && shrunk < 0.2, "{shrunk} at {frame}");
+        last_detail = detail.get().0;
+    }
+    ui.set_auto_advance(true);
+    ui.wait_for_idle();
+    assert_eq!(detail.get(), (1.0, 1.0));
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testFoundMatchBeforeSharedContentComposed
+/// While an `AnimatedContent` swaps two shared bounds of a key, each finds the match once the
+/// other is composed, not before: the entering one reads no match in its first composition.
+#[test]
+fn found_match_before_shared_content_composed() {
+    let is_square = mutable_state_of(true);
+    let box2_composed = Rc::new(Cell::new(false));
+    let checked = Rc::new(Cell::new(0));
+    let (sq, b2, ch) = (is_square.handle(), box2_composed.clone(), checked.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let (b2, ch) = (b2.clone(), ch.clone());
+        SharedTransitionLayout!(
+            modifier = Modifier.background(Color::WHITE).padding(20.dp()),
+            move |scope: SharedTransitionScope| {
+                let (b2, ch) = (b2.clone(), ch.clone());
+                AnimatedContent!(
+                    sq.get(),
+                    transition_spec = |_| {
+                        EnterTransition::NONE.together_with(ExitTransition::NONE).using(None)
+                    },
+                    move |content: AnimatedContentScope, square: bool| {
+                        let transition = content.transition();
+                        let settled = transition.current_state() == transition.target_state();
+                        let state = scope.remember_shared_content_state("test");
+                        ch.set(ch.get() + 1);
+                        if square {
+                            if settled {
+                                assert!(!state.is_match_found());
+                            } else {
+                                assert_eq!(b2.get(), state.is_match_found());
+                            }
+                            Box!(
+                                modifier = scope
+                                    .shared_bounds(&state, &content)
+                                    .size(80.dp())
+                                    .background(Color::RED)
+                            );
+                        } else {
+                            if !settled {
+                                // No match when made; one the next frame.
+                                assert_eq!(b2.get(), state.is_match_found());
+                            }
+                            b2.set(true);
+                            Box!(
+                                modifier = scope
+                                    .shared_bounds(&state, &content)
+                                    .size((40.dp(), 160.dp()))
+                                    .background(Color::GRAY)
+                            );
+                        }
+                    }
+                );
+            }
+        );
+    });
+    is_square.set(false);
+    ui.wait_for_idle();
+    assert!(checked.get() > 2, "{}", checked.get());
+}
+
+/// Four colors, as the scrolling tests'.
+const COLORS: [Color; 4] = [
+    Color::from_argb(0xffff6f69),
+    Color::from_argb(0xffffcc5c),
+    Color::from_argb(0xff2a9d84),
+    Color::from_argb(0xff264653),
+];
+
+/// The list screen or an item's details, as the scrolling tests' `Screen`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Screen {
+    List,
+    Details(usize),
+}
+
+impl Screen {
+    fn key(self) -> u32 {
+        match self {
+            Screen::List => 1,
+            Screen::Details(_) => 2,
+        }
+    }
+}
+
+/// Scrolls `state` to `index` at once, as `runBlocking { scrollToItem(index) }`, and lets the
+/// layout follow.
+fn scroll_to_item(ui: &mut ComposeTestRule, state: LazyListState, index: usize) {
+    let scope = CoroutineScope::new();
+    scope.launch(async move {
+        let _ = state.scroll_to_item(index, 0).await;
+    });
+    ui.wait_for_idle();
+}
+
+/// A slide by `by` of the width, with the default spec.
+fn slide_in(by: i32) -> EnterTransition {
+    let spec = AnimationSpec::Spring(
+        spring_with(Spring::DAMPING_RATIO_NO_BOUNCY, Spring::STIFFNESS_MEDIUM_LOW)
+            .visibility_threshold(compose_ui::IntOffset::VISIBILITY_THRESHOLD),
+    );
+    slide_in_horizontally_with(spec, move |it| by * it)
+}
+
+/// A slide out by `by` of the width, with the default spec.
+fn slide_out(by: i32) -> ExitTransition {
+    let spec = AnimationSpec::Spring(
+        spring_with(Spring::DAMPING_RATIO_NO_BOUNCY, Spring::STIFFNESS_MEDIUM_LOW)
+            .visibility_threshold(compose_ui::IntOffset::VISIBILITY_THRESHOLD),
+    );
+    slide_out_horizontally_with(spec, move |it| by * it)
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testRandomScrollingWithInterruption
+/// A list's item image shared with its details, the transition interrupted and the list
+/// scrolled about while it runs: nothing fails.
+#[test]
+fn random_scrolling_with_interruption() {
+    let screen = mutable_state_of(Screen::List);
+    let state = LazyListState::new(0, 0);
+    let (s, list_state) = (screen.handle(), *state);
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        SharedTransitionLayout!(
+            modifier = Modifier.fill_max_width().height(800.dp()),
+            move |scope: SharedTransitionScope| {
+                AnimatedContent!(
+                    s.get(),
+                    content_key = ContentKey::of(|it: &Screen| it.key()),
+                    transition_spec = |change: AnimatedContentTransitionScope<Screen>| {
+                        if *change.initial_state() == Screen::List {
+                            (slide_in(-1) + fade_in()).together_with(slide_out(1) + fade_out())
+                        } else {
+                            (slide_in(1) + fade_in()).together_with(slide_out(-1) + fade_out())
+                        }
+                    },
+                    move |content: AnimatedContentScope, it: Screen| match it {
+                        Screen::List => {
+                            let scope = scope.clone();
+                            LazyColumn!(state = list_state, move |list: LazyListScope| {
+                                let (scope, content) = (scope.clone(), content.clone());
+                                list.items(50, move |item| {
+                                    let state = scope
+                                        .remember_shared_content_state(format!("item-image{item}"));
+                                    let (scope, content) = (scope.clone(), content.clone());
+                                    Row!(modifier = Modifier.fill_max_width(), move |_| {
+                                        Box!(
+                                            modifier = Modifier
+                                                .size(100.dp())
+                                                .then(scope.shared_element(&state, &content))
+                                                .background(COLORS[item % 4])
+                                        );
+                                        Spacer(Modifier.size(15.dp()));
+                                    });
+                                });
+                            });
+                        }
+                        Screen::Details(item) => {
+                            let scope = scope.clone();
+                            Column!(modifier = Modifier.fill_max_size(), move |_| {
+                                let state = scope
+                                    .remember_shared_content_state(format!("item-image{item}"));
+                                Box!(
+                                    modifier = scope
+                                        .shared_element(&state, &content)
+                                        .background(COLORS[item % 4])
+                                        .fill_max_width()
+                                );
+                            });
+                        }
+                    }
+                );
+            }
+        );
+    });
+    ui.wait_for_idle();
+    ui.set_auto_advance(false);
+    screen.set(Screen::Details(5));
+    for _ in 0..3 {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+    }
+    screen.set(Screen::List);
+    ui.wait_for_idle();
+    ui.advance_time_by_frame();
+    for _ in 0..3 {
+        for it in 0..5 {
+            scroll_to_item(&mut ui, *state, 40 - it * 10);
+        }
+        ui.advance_time_by_frame();
+        for it in 0..10 {
+            scroll_to_item(&mut ui, *state, it * 5);
+        }
+        ui.advance_time_by_frame();
+        scroll_to_item(&mut ui, *state, 0);
+    }
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, vigorouslyScrollingSharedElementsInLazyList
+/// Items of a list, each in its own `AnimatedVisibility`, shared with a details screen, the list
+/// scrolled to random items while the transition back runs: nothing fails.
+#[test]
+fn vigorously_scrolling_shared_elements_in_lazy_list() {
+    let screen = mutable_state_of(Screen::List);
+    let state = LazyListState::new(0, 0);
+    let (s, list_state) = (screen.handle(), *state);
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        SharedTransitionLayout!(
+            modifier = Modifier.fill_max_size(),
+            move |scope: SharedTransitionScope| {
+                let in_list = scope.clone();
+                LazyColumn!(state = list_state, move |list: LazyListScope| {
+                    let scope = in_list.clone();
+                    list.items(50, move |item| {
+                        let scope = scope.clone();
+                        AnimatedVisibility!(
+                            s.get() != Screen::Details(item),
+                            move |visibility: AnimatedVisibilityScope| {
+                                let state = scope
+                                    .remember_shared_content_state(format!("item-image{item}"));
+                                let scope = scope.clone();
+                                Row!(modifier = Modifier.fill_max_width(), move |_| {
+                                    Box!(
+                                        modifier = Modifier
+                                            .size(100.dp())
+                                            .then(scope.shared_element(&state, &visibility))
+                                            .background(COLORS[item % 4])
+                                    );
+                                    Spacer(Modifier.size(15.dp()));
+                                });
+                            }
+                        );
+                    });
+                });
+                let scope = scope.clone();
+                AnimatedVisibility!(
+                    matches!(s.get(), Screen::Details(_)),
+                    move |visibility: AnimatedVisibilityScope| {
+                        let item = remember(|| mutable_state_of(None::<usize>));
+                        if let Screen::Details(shown) = s.get() {
+                            item.set(Some(shown));
+                        }
+                        let shown = item.get();
+                        let scope = scope.clone();
+                        Column!(modifier = Modifier.fill_max_size(), move |_| {
+                            let state = scope.remember_shared_content_state(format!(
+                                "item-image{}",
+                                shown.map_or("null".to_string(), |it| it.to_string())
+                            ));
+                            Box!(
+                                modifier = scope
+                                    .shared_element(&state, &visibility)
+                                    .fill_max_width()
+                                    .background(COLORS[shown.expect("an item") % 4])
+                            );
+                        });
+                    }
+                );
+            }
+        );
+    });
+    ui.wait_for_idle();
+    ui.set_auto_advance(false);
+    screen.set(Screen::Details(5));
+    for _ in 0..5 {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+    }
+    screen.set(Screen::List);
+    for _ in 0..3 {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+    }
+    for it in 0..5 {
+        scroll_to_item(&mut ui, *state, it + 1);
+        ui.advance_time_by_frame();
+    }
+    // A fixed sequence for Compose's random items below 20.
+    let mut seed = 17u32;
+    for _ in 0..20 {
+        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        let id = ((seed >> 16) % 20) as usize;
+        scroll_to_item(&mut ui, *state, id);
+        ui.advance_time_by_frame();
+    }
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testPlaceholderLogicSkippedWhenNoMatch
+/// Shared bounds with no match are the size of their content, whatever an approach inside them
+/// does: no placeholder logic.
+#[test]
+fn placeholder_logic_skipped_when_no_match() {
+    let parent_size: Rc<Cell<Option<IntSize>>> = Rc::default();
+    let test_size = mutable_state_of(IntSize::ZERO);
+    let (ps, ts) = (parent_size.clone(), test_size.handle());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let ps = ps.clone();
+        AnimatedVisibility!(true, move |visibility: AnimatedVisibilityScope| {
+            let ps = ps.clone();
+            SharedTransitionLayout!(move |scope: SharedTransitionScope| {
+                let state = scope.remember_shared_content_state("test");
+                let ps = ps.clone();
+                Box!(
+                    modifier = Modifier
+                        .on_size_changed(move |it: IntSize| ps.set(Some(it)))
+                        .then(scope.shared_bounds(&state, &visibility)),
+                    move |_| {
+                        Box!(
+                            modifier = Modifier
+                                .approach_layout(
+                                    |_| true,
+                                    |_, _| false,
+                                    move |scope, measurable, constraints| {
+                                        let placeable = scope.measure(measurable, constraints);
+                                        let size = ts.get();
+                                        scope.layout_with(size.width, size.height, move |at| {
+                                            at.place(&placeable, 0, 0)
+                                        })
+                                    },
+                                )
+                                .required_size((40.dp(), 40.dp()))
+                        );
+                    }
+                );
+            });
+        });
+    });
+    ui.wait_for_idle();
+    assert_eq!(parent_size.get(), Some(test_size.get()));
+    for size in [IntSize::new(20, 25), IntSize::new(35, 10)] {
+        test_size.set(size);
+        ui.wait_for_idle();
+        assert_eq!(parent_size.get(), Some(size));
+    }
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testUserModifierInSharedTransitionLayout
+/// The layout's own modifier moves it: its coordinates are where the offset puts it.
+#[test]
+fn user_modifier_in_shared_transition_layout() {
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let sc = seen.clone();
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let sc = sc.clone();
+        SharedTransitionLayout!(
+            modifier = Modifier.offset_with(|_| compose_ui::IntOffset::new(65, 536)),
+            move |scope: SharedTransitionScope| {
+                *sc.borrow_mut() = Some(scope.clone());
+                Box!(modifier = Modifier.fill_max_size());
+            }
+        );
+    });
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    let root = scope.root_for_test().expect("placed");
+    assert_eq!(root.position_in_window(), Offset::new(65.0, 536.0));
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testNoAdditionalPlacementWhenNoMatch
+/// A lazy list of shared elements with no match places its items as often as the same list
+/// without them, scrolled alike.
+#[test]
+#[ignore = "compose-ui doesn't tell a lazy item moved by a scroll `on_placed`, where Compose \
+            tells each placement; the shared items are told, through their approach node \
+            reading where it is (missing.md)"]
+fn no_additional_placement_when_no_match() {
+    let state = LazyListState::new(0, 0);
+    let control = LazyListState::new(0, 0);
+    let placements = Rc::new(RefCell::new(vec![0u32; 20]));
+    let control_placements = Rc::new(RefCell::new(vec![0u32; 20]));
+    let (s, c, p, cp) = (*state, *control, placements.clone(), control_placements.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let (p, cp) = (p.clone(), cp.clone());
+        Row!(move |_| {
+            let p = p.clone();
+            AnimatedVisibility!(true, move |visibility: AnimatedVisibilityScope| {
+                let p = p.clone();
+                SharedTransitionLayout!(move |scope: SharedTransitionScope| {
+                    let (p, scope, visibility) = (p.clone(), scope.clone(), visibility.clone());
+                    LazyColumn!(
+                        modifier = Modifier.size(100.dp()),
+                        state = s,
+                        move |list: LazyListScope| {
+                            for id in 0..20usize {
+                                let (p, scope, visibility) =
+                                    (p.clone(), scope.clone(), visibility.clone());
+                                list.item_keyed(id, move || {
+                                    let state = scope.remember_shared_content_state(id.to_string());
+                                    let p = p.clone();
+                                    Box!(
+                                        modifier = scope
+                                            .shared_element(&state, &visibility)
+                                            .on_placed(move |_: LayoutCoordinates| {
+                                                p.borrow_mut()[id] += 1;
+                                            })
+                                            .size(10.dp())
+                                            .background(Color::BLACK)
+                                    );
+                                });
+                            }
+                        }
+                    );
+                });
+            });
+            let cp = cp.clone();
+            LazyColumn!(
+                modifier = Modifier.size(100.dp()),
+                state = c,
+                move |list: LazyListScope| {
+                    for id in 0..20usize {
+                        let cp = cp.clone();
+                        list.item_keyed(id, move || {
+                            let cp = cp.clone();
+                            Box!(
+                                modifier = Modifier
+                                    .on_placed(move |_: LayoutCoordinates| cp.borrow_mut()[id] += 1)
+                                    .size(10.dp())
+                                    .background(Color::BLACK)
+                            );
+                        });
+                    }
+                }
+            );
+        });
+    });
+    ui.wait_for_idle();
+    for _ in 0..20 {
+        let scope = CoroutineScope::new();
+        let (s, c) = (*state, *control);
+        scope.launch(async move {
+            let _ = s.scroll_by(5.0).await;
+            let _ = c.scroll_by(5.0).await;
+        });
+        // One after the other, as Compose's `runBlocking`.
+        ui.wait_for_idle();
+    }
+    assert_eq!(*control_placements.borrow(), *placements.borrow());
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testLookaheadPositionInSkipToLookaheadSize
+/// A layout inside shared bounds sizing itself otherwise in the approach than ahead doesn't move
+/// the lookahead placement: ahead, it's at its parent's origin.
+#[test]
+fn lookahead_position_in_skip_to_lookahead_size() {
+    let target = mutable_state_of(true);
+    let target_positions: Rc<RefCell<Vec<Option<Offset>>>> = Rc::default();
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let (t, tp, sc) = (target.handle(), target_positions.clone(), seen.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let (tp, sc) = (tp.clone(), sc.clone());
+        SharedTransitionLayout!(move |scope: SharedTransitionScope| {
+            *sc.borrow_mut() = Some(scope.clone());
+            let tp = tp.clone();
+            AnimatedContent!(
+                t.get(),
+                transition_spec = |_| EnterTransition::NONE.together_with(ExitTransition::NONE),
+                move |content: AnimatedContentScope, state: bool| {
+                    let state_now = scope.remember_shared_content_state("test");
+                    let tp = tp.clone();
+                    let noting = Modifier.layout(move |measure, measurable, constraints| {
+                        let placeable = measure.measure(measurable, constraints);
+                        let ahead = measure.is_looking_ahead();
+                        let (w, h) =
+                            if ahead { (placeable.width, placeable.height) } else { (200, 300) };
+                        let tp = tp.clone();
+                        measure.layout_with(w, h, move |placement| {
+                            if ahead && state == t.get() && !t.get() {
+                                // Sized otherwise in the approach, it's still placed ahead at
+                                // its parent's origin.
+                                let at = placement.coordinates().map(|it| it.position_in_parent());
+                                tp.borrow_mut().insert(0, at);
+                            }
+                            placement.place(&placeable, 0, 0);
+                        })
+                    });
+                    Box!(
+                        modifier = Modifier
+                            .size_in(compose_ui::SizeSpec {
+                                min_width: compose_ui::Dp::UNSPECIFIED,
+                                min_height: compose_ui::Dp::UNSPECIFIED,
+                                max_width: 400.dp(),
+                                max_height: 400.dp(),
+                                enforce_incoming: false,
+                            })
+                            .then(scope.shared_bounds(&state_now, &content))
+                            .then(noting)
+                            .background(Color::RED),
+                        |_| {
+                            Box!(modifier = Modifier.fill_max_size().background(Color::BLACK));
+                        }
+                    );
+                }
+            );
+        });
+    });
+    ui.wait_for_idle();
+    ui.set_auto_advance(false);
+    target.set(false);
+    ui.advance_time_by_frame();
+    ui.wait_for_idle();
+    ui.advance_time_by_frame();
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    assert!(scope.is_transition_active());
+    for at in target_positions.borrow().iter().flatten() {
+        assert_eq!(*at, Offset::ZERO);
+    }
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testScaleToBoundsCaching
+/// `scale_to_bounds` of the same content scale and alignment is the same resize mode, and of
+/// another one another. (Compose caches the objects for identity; here they're values. Its
+/// custom scales and alignments, never cached, have no counterpart: both are enums.)
+#[test]
+fn scale_to_bounds_caching() {
+    let alignments = [
+        Alignment::TOP_START,
+        Alignment::TOP_CENTER,
+        Alignment::TOP_END,
+        Alignment::CENTER_START,
+        Alignment::CENTER,
+        Alignment::CENTER_END,
+        Alignment::BOTTOM_START,
+        Alignment::BOTTOM_CENTER,
+        Alignment::BOTTOM_END,
+    ];
+    let content_scales = [
+        ContentScale::FillWidth,
+        ContentScale::FillHeight,
+        ContentScale::FillBounds,
+        ContentScale::Fit,
+        ContentScale::Crop,
+        ContentScale::None,
+        ContentScale::Inside,
+    ];
+    let mut previous: Option<ResizeMode> = None;
+    for alignment in alignments {
+        for content_scale in content_scales {
+            let mode = ResizeMode::scale_to_bounds(content_scale, alignment);
+            assert!(mode == ResizeMode::scale_to_bounds(content_scale, alignment));
+            assert!(previous.as_ref() != Some(&mode));
+            previous = Some(mode);
+        }
+    }
 }
