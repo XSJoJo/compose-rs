@@ -468,3 +468,76 @@ fn text_style_priority() {
         move || Box!(modifier = Modifier.padding(10.dp()), content = text),
     );
 }
+
+// `StyleUxTaskTests`' `style_modifier_equivalence_*`: shown side by side there, compared here.
+
+fn label(_: RowScope) {
+    BasicText!("Press me!", style = TextStyle { color: Color::BLACK, ..TextStyle::default() });
+}
+
+/// A 5 dp blue border, a green background and 10 dp of content padding, `external` around.
+fn check_button(background: bool, content: bool, external: bool) {
+    check_equivalence(
+        move || {
+            BaseStyleableButton(
+                block(move |s| {
+                    border(s, 5.dp(), Color::BLUE);
+                    if background {
+                        s.provide(&BACKGROUND, Fill::Color(Color::GREEN));
+                    }
+                    if content {
+                        content_padding(s, 10.dp());
+                    }
+                    if external {
+                        for property in [
+                            &EXTERNAL_PADDING_START,
+                            &EXTERNAL_PADDING_TOP,
+                            &EXTERNAL_PADDING_END,
+                            &EXTERNAL_PADDING_BOTTOM,
+                        ] {
+                            s.provide(property, 10.dp());
+                        }
+                    }
+                }),
+                label,
+            )
+        },
+        move || {
+            let spec = Modifiers {
+                border: Some(BorderStroke::new(5.dp(), Color::BLUE)),
+                background: background.then_some(Brush::Solid(Color::GREEN)),
+                content_padding: content.then_some(10.dp()),
+                external_padding: external.then_some(10.dp()),
+                ..Modifiers::default()
+            };
+            BaseModifierButton(spec, label)
+        },
+    );
+}
+
+#[test]
+fn style_modifier_equivalence_background() {
+    check_equivalence(
+        || BaseStyleableButton(block(|s| s.provide(&BACKGROUND, Fill::Color(Color::BLUE))), label),
+        || {
+            let spec =
+                Modifiers { background: Some(Brush::Solid(Color::BLUE)), ..Modifiers::default() };
+            BaseModifierButton(spec, label)
+        },
+    );
+}
+
+#[test]
+fn style_modifier_equivalence_border() {
+    check_button(false, false, false);
+}
+
+#[test]
+fn style_modifier_equivalence_border_background_content_padding() {
+    check_button(true, true, false);
+}
+
+#[test]
+fn style_modifier_equivalence_external_padding() {
+    check_button(true, true, true);
+}
