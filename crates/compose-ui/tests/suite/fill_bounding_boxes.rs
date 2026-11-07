@@ -1,5 +1,6 @@
-//! `fill_bounding_boxes` (D2048), adapted from Compose's `ParagraphFillBoundingBoxesTest` and
-//! `MultiParagraphFillBoundingBoxesTest`: laid out by the fixed measurer with Compose's test
+//! `fill_bounding_boxes` (D2048), adapted from Compose's `ParagraphFillBoundingBoxesTest`,
+//! `MultiParagraphFillBoundingBoxesTest` and `TextLayoutFillBoundingBoxesTest` (its internal
+//! `TextLayout`'s, through the paragraph; its line spacing multiplier through a line height): laid out by the fixed measurer with Compose's test
 //! font metrics (`FixedFontMetrics::SAMPLE_FONT`: one em wide, lines one em high), as Compose's
 //! tests lay out with its `sample_font`. Four floats a character, where Compose has four a UTF-16
 //! unit: its texts here are all in the basic plane.
@@ -113,6 +114,8 @@ fn rtl_boxes(text: &str, width: f32, size: f32) -> Vec<Rect> {
 
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphFillBoundingBoxesTest.kt, startEqualToLength
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphFillBoundingBoxesTest.kt, negativeStart
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, startEqualToLength
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, negativeStart
 #[test]
 #[should_panic(expected = "startOffset must be less than text length")]
 fn a_start_at_the_text_s_end_panics() {
@@ -120,6 +123,7 @@ fn a_start_at_the_text_s_end_panics() {
 }
 
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphFillBoundingBoxesTest.kt, endGreaterThanLength
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, endGreaterThanLength
 #[test]
 #[should_panic(expected = "endOffset must be smaller or equal to text length")]
 fn an_end_past_the_text_panics() {
@@ -127,6 +131,7 @@ fn an_end_past_the_text_panics() {
 }
 
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphFillBoundingBoxesTest.kt, endEqualToStart
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, endEqualToStart
 #[test]
 #[should_panic(expected = "endOffset must be greater than startOffset")]
 fn an_empty_range_panics() {
@@ -134,6 +139,7 @@ fn an_empty_range_panics() {
 }
 
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphFillBoundingBoxesTest.kt, arraySizeSmallerThanTextLength
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, arraySizeSmallerThanTextLength
 #[test]
 #[should_panic(expected = "array.size - arrayStart must be greater or equal")]
 fn an_array_smaller_than_the_text_panics() {
@@ -141,6 +147,7 @@ fn an_array_smaller_than_the_text_panics() {
 }
 
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphFillBoundingBoxesTest.kt, arraySizeSmallerThanRange
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, arraySizeSmallerThanRange
 #[test]
 #[should_panic(expected = "array.size - arrayStart must be greater or equal")]
 fn an_array_smaller_than_the_range_panics() {
@@ -148,6 +155,7 @@ fn an_array_smaller_than_the_range_panics() {
 }
 
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphFillBoundingBoxesTest.kt, arraySizeSmallerThanTextLengthWithStart
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, arraySizeSmallerThanTextLengthWithStart
 #[test]
 #[should_panic(expected = "array.size - arrayStart must be greater or equal")]
 fn an_array_too_small_after_its_start_panics() {
@@ -155,6 +163,7 @@ fn an_array_too_small_after_its_start_panics() {
 }
 
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphFillBoundingBoxesTest.kt, singleCharacter
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, singleCharacter
 #[test]
 fn a_character_s_box() {
     assert_eq!(all_boxes(&*plain("a")), ltr_boxes("a", SIZE, SIZE));
@@ -187,6 +196,7 @@ fn the_boxes_replace_what_the_array_held() {
 }
 
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphFillBoundingBoxesTest.kt, singleCharacterLineHeight
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, singleCharacterLineHeight
 #[test]
 fn a_single_line_s_line_height_is_trimmed() {
     let style = TextStyle { line_height: (2.0 * SIZE).sp(), ..TextStyle::DEFAULT };
@@ -220,6 +230,7 @@ fn every_line_s_boxes_are_its_line_height() {
 }
 
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphFillBoundingBoxesTest.kt, singleCharacterRtl
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, singleCharacterRtl
 #[test]
 fn a_right_to_left_character_s_box() {
     let width = 2.0 * SIZE;
@@ -228,12 +239,14 @@ fn a_right_to_left_character_s_box() {
 }
 
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphFillBoundingBoxesTest.kt, singleLineLtr
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, singleLineLtr
 #[test]
 fn a_left_to_right_line_s_boxes() {
     assert_eq!(all_boxes(&*plain("abc")), ltr_boxes("abc", SIZE, SIZE));
 }
 
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphFillBoundingBoxesTest.kt, singleLineRtl
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, singleLineRtl
 #[test]
 fn a_right_to_left_line_s_boxes() {
     let text = "\u{05D0}\u{05D1}\u{05D2}";
@@ -245,6 +258,7 @@ fn a_right_to_left_line_s_boxes() {
 }
 
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphFillBoundingBoxesTest.kt, bidiLtrLine
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, bidiLtrLine
 #[test]
 fn a_left_to_right_line_s_boxes_with_a_right_to_left_run() {
     let text = "a\u{05D0}\u{05D1}b";
@@ -255,6 +269,7 @@ fn a_left_to_right_line_s_boxes_with_a_right_to_left_run() {
 }
 
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphFillBoundingBoxesTest.kt, bidiRtlLine
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, bidiRtlLine
 #[test]
 fn a_right_to_left_line_s_boxes_with_a_left_to_right_run() {
     let text = "\u{05D0}ab\u{05D1}";
@@ -266,6 +281,7 @@ fn a_right_to_left_line_s_boxes_with_a_left_to_right_run() {
 }
 
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphFillBoundingBoxesTest.kt, multiLineLtr
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, multiLineLtr
 #[test]
 fn left_to_right_lines_boxes() {
     assert_eq!(all_boxes(&*plain("a\nb\nc")), ltr_boxes("a\nb\nc", SIZE, SIZE));
@@ -280,6 +296,72 @@ fn right_to_left_lines_boxes() {
         all_boxes(&*styled(text, TextStyle::DEFAULT, Some(width))),
         rtl_boxes(text, width, SIZE)
     );
+}
+
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, multiLineRtl
+#[test]
+fn right_to_left_lines_boxes_as_wide_as_two() {
+    let text = "\u{05D0}\n\u{05D1}\n\u{05D2}";
+    let width = 2.0 * SIZE;
+    assert_eq!(
+        all_boxes(&*styled(text, TextStyle::DEFAULT, Some(width))),
+        rtl_boxes(text, width, SIZE)
+    );
+}
+
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, multiLineCenterAligned
+#[test]
+fn centered_lines_boxes() {
+    let style = TextStyle { text_align: Some(TextAlign::Center), ..TextStyle::DEFAULT };
+    let boxes = all_boxes(&*styled("a\nb\nc", style, Some(3.0 * SIZE)));
+    // Each letter in the middle third, its line feed zero wide at its right.
+    let (left, right) = (SIZE, 2.0 * SIZE);
+    assert_eq!(
+        boxes,
+        [
+            Rect::new(left, 0.0, right, SIZE),
+            Rect::new(right, 0.0, right, SIZE),
+            Rect::new(left, SIZE, right, 2.0 * SIZE),
+            Rect::new(right, SIZE, right, 2.0 * SIZE),
+            Rect::new(left, 2.0 * SIZE, right, 3.0 * SIZE),
+        ]
+    );
+}
+
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, multiLineRtlCenterAligned
+#[test]
+fn centered_right_to_left_lines_boxes() {
+    let style = TextStyle { text_align: Some(TextAlign::Center), ..TextStyle::DEFAULT };
+    let text = "\u{05D0}\n\u{05D1}\n\u{05D2}";
+    let boxes = all_boxes(&*styled(text, style, Some(3.0 * SIZE)));
+    // Each letter in the middle third, its line feed zero wide at its left.
+    let (left, right) = (SIZE, 2.0 * SIZE);
+    assert_eq!(
+        boxes,
+        [
+            Rect::new(left, 0.0, right, SIZE),
+            Rect::new(left, 0.0, left, SIZE),
+            Rect::new(left, SIZE, right, 2.0 * SIZE),
+            Rect::new(left, SIZE, left, 2.0 * SIZE),
+            Rect::new(left, 2.0 * SIZE, right, 3.0 * SIZE),
+        ]
+    );
+}
+
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, zwjEmoji
+#[test]
+fn a_cluster_s_later_characters_are_zero_wide_at_its_first_s_right() {
+    // Compose's is an emoji of four joined by zero width joiners, one glyph in Android's emoji
+    // font; the fixed measurer's font has no such glyph and draws each emoji. A letter with two
+    // combining marks is one cluster in any font.
+    let text = "e\u{0301}\u{0323}";
+    let boxes = all_boxes(&*plain(text));
+    assert_eq!(boxes.len(), 3);
+    let first = boxes[0];
+    assert!(first.width() > 0.0, "{first:?}");
+    for rect in &boxes[1..] {
+        assert_eq!(*rect, Rect::new(first.right, first.top, first.right, first.bottom));
+    }
 }
 
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphFillBoundingBoxesTest.kt, withIndent
@@ -304,6 +386,7 @@ fn indented_lines_boxes() {
 }
 
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphFillBoundingBoxesTest.kt, variableFontSize
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt, withStyling
 #[test]
 fn a_larger_span_s_box_is_wider_and_the_line_taller() {
     let text = AnnotatedString::build(|builder| {

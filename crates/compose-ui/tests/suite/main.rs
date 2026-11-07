@@ -27,6 +27,7 @@ mod graphics_matrix;
 mod intrinsics;
 mod layout_aware_nodes;
 mod layout_coordinates;
+mod layout_get_horizontal;
 mod lookahead;
 mod modifier_locals;
 mod modifier_nodes;
