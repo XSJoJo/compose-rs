@@ -148,8 +148,9 @@ impl LayoutModifierNode for PlacementNode {
         let end = to_px(placement.right);
         let top = to_px(placement.top);
         let bottom = to_px(placement.bottom);
-        let zero = |px: f32| if px.is_nan() { 0.0 } else { px };
-        let (start, end, top, bottom) = (zero(start), zero(end), zero(top), zero(bottom));
+        // An unspecified side is NaN, and so is a sum with it, which rounds to 0 (`as i32`), as
+        // `fastRoundToInt`: a side given alone moves the content without growing the node, as
+        // Compose's (D1587).
         let horizontal = round(start + end);
         let vertical = round(top + bottom);
         let (min_width, max_width) = resolve_axis(

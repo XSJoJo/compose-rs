@@ -886,3 +886,44 @@ fn nested_styles_apply_outermost_first() {
     }
     child.resolve(|scope| assert_eq!(scope.value(&CUSTOM_FLOAT), 2.0));
 }
+
+/// A test collection counts as read, as Compose's `collectForTests`: the next one isn't a first
+/// one (D1587), so a property it no longer sets is kept one collection, at its default, as
+/// `discardUnneededProperties`, then dropped.
+#[test]
+fn a_property_no_longer_set_is_kept_one_collection_at_its_default() {
+    let state = MutableStyleState::new(None);
+    state.set_pressed(true);
+    let resolver =
+        StyleResolver::new(style(|s| s.pressed(|s| custom_float(s, 5.0))), state.clone());
+    let density = Density::new(1.0);
+    resolver.collect_for_test(density);
+    state.set_pressed(false);
+    resolver.collect_for_test(density);
+    resolver.resolve(|scope| {
+        assert!(scope.is_set(&CUSTOM_FLOAT), "dropped at once");
+        assert_eq!(scope.value(&CUSTOM_FLOAT), 0.0);
+    });
+    resolver.collect_for_test(density);
+    resolver.resolve(|scope| assert!(!scope.is_set(&CUSTOM_FLOAT)));
+}
+
+/// Two properties of the same name and type are two properties, as Compose's are two objects
+/// (D1587).
+static SAME_NAME_FLOAT: ProvidableStyleProperty<f32> =
+    style_property_of_with("customFloatProperty", |a, b, t| compose_ui::lerp(*a, *b, t), || 0.0);
+
+#[test]
+fn properties_of_one_name_are_distinct() {
+    let both = style(|s| {
+        custom_float(s, 1.0);
+        s.provide(&SAME_NAME_FLOAT, 2.0);
+    });
+    collect(&both, None, |scope| {
+        assert_eq!(scope.value(&CUSTOM_FLOAT), 1.0);
+        assert_eq!(scope.value(&SAME_NAME_FLOAT), 2.0);
+    });
+    // A provider and the property it derefs to are one property.
+    let one = style(|s| custom_float(s, 3.0));
+    collect(&one, None, |scope| assert_eq!(scope.value(CUSTOM_FLOAT.property()), 3.0));
+}

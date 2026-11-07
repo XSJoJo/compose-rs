@@ -1,9 +1,14 @@
 //! The predefined style properties, as Compose's `StyleProperties.kt`: what `style_appearance`,
-//! `style_placement`, `style_graphics_layer` and the style paddings read. Compose keeps them
-//! internal while it moves to properties a design system defines (they're set through its
-//! deprecated `StyleScope`); compose-rs makes them public so those modifiers have something to
-//! read without the deprecated scope (D1580). The content fill and the text properties are
-//! locals, inherited by the resolvers below (D1586).
+//! `style_placement`, `style_graphics_layer` and the style paddings read. The content fill and
+//! the text properties are locals, inherited by the resolvers below (D1586).
+//!
+//! **A compose-rs addition, transitional.** Compose keeps these properties internal, set only
+//! through its deprecated `StyleScope`, and is removing them with it ("the predefined set of
+//! properties, are being removed") as it moves to properties a design system defines. compose-rs
+//! makes them public so the `style_*` modifiers have something to read without the deprecated
+//! scope (D1580); expect this module to follow whatever Compose replaces them with. A property is
+//! its `static` (D1587): a design system's own property of one of these names is another
+//! property.
 
 use compose_ui::{
     BaselineShift, ColorFilter, Dp, FontFamily, FontStyle, FontSynthesis, FontWeight, Hyphens,

@@ -365,8 +365,8 @@ fn a_new_spec_for_the_same_value_restarts_the_animation() {
     assert!(left < 8, "finished with the 50 ms spec: {left} frames");
 }
 
-/// An interrupted animation draws on from where it was in the frame it's interrupted (its
-/// restart waits for the frame's tasks), never a jump.
+/// An interrupted animation draws on from where it was in the frame it's interrupted, never a
+/// jump.
 #[test]
 fn an_interrupted_animation_draws_on_from_where_it_was() {
     let state = MutableStyleState::new(None);
@@ -391,6 +391,131 @@ fn an_interrupted_animation_draws_on_from_where_it_was() {
     for pair in drawn.windows(2) {
         assert!((pair[1] - pair[0]).abs() < 0.2, "jumped: {drawn:?}");
     }
+}
+
+/// The red drawn each frame of a background animated to white while pressed, released after
+/// `frames` frames (never if none).
+fn reds_released_after(frames: Option<usize>) -> Vec<f32> {
+    let state = MutableStyleState::new(None);
+    let style = CommonStyle::new(|s| {
+        s.size(20.dp());
+        s.background(Color::BLACK);
+        s.pressed(|s| s.animate_with(tween(500), |s| s.background(Color::WHITE)));
+    });
+    let mut ui = animated(StyleResolver::new(style, state.clone()), Rc::new(Cell::new(0)));
+    state.set_pressed(true);
+    let mut drawn = Vec::new();
+    for frame in 0..20 {
+        if Some(frame) == frames {
+            state.set_pressed(false);
+        }
+        ui.advance_time_by_frame();
+        drawn.push(fills(&mut ui).last().map_or(0.0, |color| color.red()));
+    }
+    drawn
+}
+
+/// The frame an animation is interrupted in draws the value it showed (its new start, from
+/// which it turns back), D1585.
+#[test]
+fn the_frame_an_animation_is_interrupted_draws_where_it_was() {
+    let pressed = reds_released_after(None);
+    let released = reds_released_after(Some(12));
+    assert_eq!(released[..12], pressed[..12]);
+    assert!(pressed[11] > 0.2 && pressed[11] < 0.9, "partway: {pressed:?}");
+    assert_eq!(released[12], pressed[11], "{released:?}");
+    assert!(released[19] < released[12], "turned back: {released:?}");
+}
+
+/// Between the collection that interrupts an entry and its restart's task, the entry reads the
+/// value it showed, as Compose's `Interrupted` state (its animation still at the old fraction
+/// would lerp the new start), D1585. The collection here is a test's, in a scope of its own
+/// whose task hasn't run.
+#[test]
+fn an_interrupted_entry_shows_where_it_was_until_its_restart_runs() {
+    let state = MutableStyleState::new(None);
+    let style = CommonStyle::new(|s| {
+        s.provide(&CUSTOM_FLOAT, 0.0);
+        s.pressed(|s| s.animate_with(tween(500), |s| s.provide(&CUSTOM_FLOAT, 100.0)));
+    });
+    let resolver = StyleResolver::new(style, state.clone());
+    let mut ui = animated(resolver.clone(), Rc::new(Cell::new(0)));
+    state.set_pressed(true);
+    for _ in 0..12 {
+        ui.advance_time_by_frame();
+    }
+    let read = || resolver.resolve(|s| s.value(&CUSTOM_FLOAT));
+    let shown = read();
+    assert!(shown > 10.0 && shown < 90.0, "partway: {shown}");
+    state.set_pressed(false);
+    let scope = compose_runtime::CoroutineScope::new();
+    resolver.collect_for_test_in(ui.density(), *scope);
+    assert_eq!(read(), shown);
+}
+
+static NESTED: NestedStyleKey = NestedStyleKey::new("nested");
+
+/// A parent whose child attached (and reached it) first: the parent's own collection is still
+/// its first (a resolver not yet collected isn't read by a traversal reaching it), and shows its
+/// animated values at once (D1587).
+#[test]
+fn a_parent_reached_by_its_child_first_shows_its_animated_values_at_once() {
+    let parent = StyleResolver::of(CommonStyle::new(|s| {
+        s.animate_with(tween(1000), |s| s.provide(&CUSTOM_FLOAT, 100.0));
+        s.provide_nested_style(&NESTED, &CommonStyle::new(|s| s.provide(&CUSTOM_FLOAT, 1.0)));
+    }));
+    let child = StyleResolver::of(CommonStyle::new(|s| s.apply_nested_style(&NESTED)));
+    let (bound_parent, bound_child) = (parent.clone(), child.clone());
+    let mut ui = ComposeTestRule::with_manual_clock(move || {
+        let child = bound_child.clone();
+        Box!(modifier = styleable(Modifier.size(40.dp()), &bound_parent), move |_| {
+            Box!(modifier = styleable(Modifier.size(20.dp()), &child));
+        });
+    });
+    let read = || parent.resolve(|s| s.value(&CUSTOM_FLOAT));
+    let mut values = vec![read()];
+    for _ in 0..5 {
+        ui.advance_time_by_frame();
+        values.push(read());
+    }
+    assert!(values.iter().all(|value| *value == 100.0), "animated in: {values:?}");
+    assert_eq!(child.resolve(|s| s.value(&CUSTOM_FLOAT)), 1.0);
+}
+
+static PARENT_LOCAL: ProvidableStyleProperty<f32> =
+    style_local_of_with("parentLocal", |a, b, t| compose_ui::lerp(*a, *b, t), || 0.0);
+
+/// A parent resolver nothing applies, read only through a child (its local), animates: a read
+/// through a descendant is a read (Compose's traversal resolves each ancestor it reaches), so
+/// its later collections aren't first ones (D1587).
+#[test]
+fn a_parent_read_only_through_its_child_animates_its_locals() {
+    let state = MutableStyleState::new(None);
+    let parent = StyleResolver::new(
+        CommonStyle::new(|s| {
+            s.provide(&PARENT_LOCAL, 0.0);
+            s.pressed(|s| s.animate_with(tween(500), |s| s.provide(&PARENT_LOCAL, 100.0)));
+        }),
+        state.clone(),
+    );
+    let child = StyleResolver::of(CommonStyle::EMPTY);
+    let (bound_parent, bound_child) = (parent.clone(), child.clone());
+    let mut ui = ComposeTestRule::with_manual_clock(move || {
+        let child = bound_child.clone();
+        Box!(modifier = Modifier.style_resolver(bound_parent.clone()), move |_| {
+            Box!(modifier = styleable(Modifier.size(20.dp()), &child));
+        });
+    });
+    let read = || child.resolve(|s| s.value(&PARENT_LOCAL));
+    assert_eq!(read(), 0.0);
+    state.set_pressed(true);
+    let mut values = Vec::new();
+    for _ in 0..40 {
+        ui.advance_time_by_frame();
+        values.push(read());
+    }
+    assert!(values.iter().any(|value| *value > 0.0 && *value < 100.0), "jumped: {values:?}");
+    assert_eq!(*values.last().unwrap(), 100.0);
 }
 
 /// `animating_font_weight`: the font weight and content color locals animate on press, as

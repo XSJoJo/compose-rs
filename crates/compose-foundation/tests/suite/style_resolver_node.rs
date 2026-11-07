@@ -411,6 +411,40 @@ fn the_interaction_source_sets_the_state() {
     assert_eq!(fills(&mut ui), vec![Color::RED]);
 }
 
+/// Each interaction writes only its own flag (D1587), as `processInteractions`: a press leaves
+/// a hover set by hand, and hovers are counted until each ends.
+#[test]
+fn an_interaction_writes_only_its_own_flag() {
+    let source = MutableInteractionSource::new();
+    let state = MutableStyleState::new(Some(source.as_source().clone()));
+    let style = CommonStyle::new(|s| s.size(40.dp()));
+    let mut ui = counted_box(style, &state, Rc::new(Cell::new(0)));
+    let alone = Press::new(Offset::ZERO);
+    source.try_emit(PressInteraction::Press(alone));
+    ui.wait_for_idle();
+    assert!(state.is_pressed() && !state.is_hovered() && !state.is_focused(), "{state:?}");
+    source.try_emit(PressInteraction::Release(alone));
+    state.set_hovered(true);
+    let press = Press::new(Offset::ZERO);
+    source.try_emit(PressInteraction::Press(press));
+    ui.wait_for_idle();
+    assert!(state.is_pressed() && state.is_hovered(), "{state:?}");
+    source.try_emit(PressInteraction::Release(press));
+    ui.wait_for_idle();
+    assert!(!state.is_pressed() && state.is_hovered(), "{state:?}");
+    state.set_hovered(false);
+    let (first, second) = (HoverEnter::new(), HoverEnter::new());
+    source.try_emit(HoverInteraction::Enter(first));
+    source.try_emit(HoverInteraction::Enter(second));
+    source.try_emit(HoverInteraction::Exit(first));
+    ui.wait_for_idle();
+    assert!(state.is_hovered(), "a hover is still under way");
+    assert!(!state.is_pressed() && !state.is_focused(), "{state:?}");
+    source.try_emit(HoverInteraction::Exit(second));
+    ui.wait_for_idle();
+    assert!(!state.is_hovered());
+}
+
 static TOUCHES: StyleStateKey<i32> = StyleStateKey::with_interactions(
     "touches",
     || 0,
@@ -525,4 +559,27 @@ fn a_border_under_two_pixels_wide_is_not_drawn() {
     };
     assert_eq!(strokes(0.8), 0);
     assert_eq!(strokes(1.2), 1);
+}
+
+/// A state changed after the resolver's node is attached and before anything reads it (here in
+/// a side effect of the composition that attached it): the collection the first read sees is a
+/// first one, as Compose's lazy collection at the first read, and keeps nothing only the earlier
+/// collection set (D1587).
+#[test]
+fn a_collection_before_the_first_read_keeps_nothing_it_does_not_set() {
+    let state = MutableStyleState::new(None);
+    state.set_pressed(true);
+    let resolver = StyleResolver::new(
+        CommonStyle::new(|s| s.pressed(|s| s.provide(&TEST_PROP, 5))),
+        state.clone(),
+    );
+    let set = Rc::new(Cell::new(None));
+    let (bound, out) = (resolver.clone(), set.clone());
+    let _ui = rule(move || {
+        let released = state.clone();
+        SideEffect(move || released.set_pressed(false));
+        let read = reading(bound.clone(), |scope| scope.is_set(&TEST_PROP), out.clone());
+        Box!(modifier = Modifier.style_resolver(bound.clone()).then(read).size(10.dp()));
+    });
+    assert_eq!(set.get(), Some(false), "kept a property only an earlier collection set");
 }

@@ -360,3 +360,29 @@ fn test_text_simple_text() {
         ]
     );
 }
+
+/// The style graphics layer places with a layer only while a layer property (or the clip) is
+/// set, as Compose's `layerRequired`: a plain styled box is no group of the display list, one
+/// with an alpha is one with it.
+#[test]
+fn the_style_layer_is_placed_only_while_a_layer_property_is_set() {
+    let layers = |style: Block| -> Vec<f32> {
+        let mut ui = on_leaf_with(style);
+        let list = ui.host().display_list();
+        list.groups
+            .iter()
+            .filter_map(|group| group.layer.as_ref().map(|layer| layer.alpha))
+            .collect()
+    };
+    let plain = layers(|s| {
+        s.size(20.dp());
+        s.background(Color::RED);
+    });
+    assert!(plain.is_empty(), "{plain:?}");
+    let faded = layers(|s| {
+        s.size(20.dp());
+        s.background(Color::RED);
+        s.alpha(0.5);
+    });
+    assert_eq!(faded, vec![0.5]);
+}
