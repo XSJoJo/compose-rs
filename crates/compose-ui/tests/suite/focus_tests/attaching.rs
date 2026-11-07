@@ -4,7 +4,7 @@
 //! The listeners here are new at each composition: an element updated hears the state of the
 //! target it now covers, which is what these rows are about.
 
-use compose_runtime::{ReusableContent, ReusableContentHost};
+use compose_runtime::{ReusableContent, ReusableContentHost, composable, movable_content_of};
 
 use super::support::*;
 
@@ -560,6 +560,81 @@ fn a_target_in_content_put_aside_for_reuse_loses_the_focus() {
     active.set(false);
     scene.idle();
     assert_eq!(held.state(), Inactive);
+}
+
+// ---- Nodes moved by movable content -----------------------------------------------------------------
+
+/// `content` in a layout of each branch of `moved`, of `old`'s modifier or `new`'s: the move
+/// takes it from one to the other.
+#[composable]
+fn Moving(moved: bool, old: Modifier, new: Modifier, content: impl Fn() + 'static) {
+    if moved {
+        Stack(new, content.clone());
+    } else {
+        Stack(old, content.clone());
+    }
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/focus/FocusTargetAttachDetachTest.kt, moveInactiveFocusTarget_stateInactive, moveActiveFocusTarget_stateInactive, moveCapturedFocusTarget_stateInactive, moveActiveParentFocusTarget_stateInactive
+#[test]
+fn a_target_moved_by_movable_content_is_left_without_the_focus() {
+    for (holds, before) in [
+        (Holds::Nothing, Inactive),
+        (Holds::Focus, Active),
+        (Holds::Capture, Captured),
+        (Holds::Child, ActiveParent),
+    ] {
+        let held = HeldTarget::new(Focusability::ALWAYS);
+        let scene = Scene::empty();
+        let content = movable_content_of(move || {
+            if holds == Holds::Child {
+                Stack!(modifier = held.modifier(), {
+                    Leaf(scene.req("y").focus_target());
+                });
+            } else {
+                Leaf(scene.req("y").then(held.modifier()));
+            }
+        });
+        // Compose's layouts are of sizes 10 and 5: what the old one had isn't the new one's.
+        let scene = scene.compose(move |scene| {
+            let (old, new) = (Modifier.size(10.dp()), Modifier.size(5.dp()));
+            Moving(scene.flag("moved").get(), old, new, content.clone());
+        });
+        if holds != Holds::Nothing {
+            assert!(scene.request("y"));
+        }
+        if holds == Holds::Capture {
+            assert!(scene.capture("y"));
+        }
+        assert_eq!(held.state(), before);
+        scene.set("moved", true);
+        assert_eq!(held.state(), Inactive, "{before:?} before the move");
+        assert!(!scene.root_has_focus(), "{before:?} before the move: nothing has the focus");
+    }
+}
+
+/// The focus a moved target takes with it is cleared where it was: the target it left tells its
+/// listener, the one it went to has nothing to say.
+#[test]
+fn a_moved_target_s_focus_is_cleared_from_the_layouts_it_left() {
+    let scene = Scene::empty();
+    let content = movable_content_of(move || Leaf(scene.target("y")));
+    let scene = scene.compose(move |scene| {
+        let old = scene.listen_anew("old").focus_target();
+        let new = scene.listen_anew("new").focus_target();
+        Moving(scene.flag("moved").get(), old, new, content.clone());
+    });
+    assert!(scene.request("y"));
+    assert_eq!(scene.states(["old", "y"]), [ActiveParent, Active]);
+    scene.forget();
+    scene.set("moved", true);
+    assert_eq!(scene.heard("old"), [Inactive], "the old parent is told");
+    assert_eq!(scene.heard("y"), [Inactive]);
+    assert_eq!(scene.state("new"), Inactive);
+    assert!(!scene.heard("new").contains(&ActiveParent), "the new parent never has the focus");
+    // It can take it again where it is.
+    assert!(scene.request("y"));
+    assert_eq!(scene.states(["new", "y"]), [ActiveParent, Active]);
 }
 
 // ---- A node that is a target and something else --------------------------------------------------------

@@ -884,6 +884,214 @@ fn nodes_added_in_the_middle_of_two_layouts_attach_parent_first() {
     assert_eq!(take(&log), ["attach(b)", "attach(c)", "attach(f)", "attach(g)"]);
 }
 
+// ---- Moved by movable content ----------------------------------------------------------------------
+
+/// `content` in a layout of each branch of `moved`, as Compose's
+/// `if (moveContent) Box { content() } else Box { content() }`: the move takes it from one to the
+/// other.
+#[composable]
+fn Moving(moved: bool, content: impl Fn() + 'static) {
+    if moved {
+        Stack(Modifier, content.clone());
+    } else {
+        Stack(Modifier, content.clone());
+    }
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/node/ModifierNodeAttachOrderTest.kt, nodesAreAttachedAndDetachedWhenMovedBetweenLayouts
+#[test]
+fn nodes_moved_between_layouts_are_detached_and_attached_again() {
+    let log = Log::default();
+    let moved = mutable_state_of(false);
+    let (there, content_log) = (moved.handle(), log.clone());
+    let content = movable_content_of(move || Leaf(logger(&content_log, "a")));
+    let mut host = host(move || {
+        let content = content.clone();
+        let moved = there.get();
+        Stack(Modifier, callback(move || Moving(moved, content.clone())));
+    });
+    assert_eq!(take(&log), ["attach(a)"]);
+    moved.set(true);
+    host.frame();
+    // Never reset: a move isn't a reuse.
+    assert_eq!(take(&log), ["detach(a)", "attach(a)"]);
+}
+
+/// `content` in one of four places: two layouts that stay, at 0 and 1, and two the pass inserts
+/// for it, one before them (2) and one after (3).
+#[composable]
+fn Places(place: usize, content: impl Fn() + 'static) {
+    if place == 2 {
+        Stack(Modifier, content.clone());
+    }
+    let first = content.clone();
+    Stack!({
+        if place == 0 {
+            first();
+        }
+    });
+    let second = content.clone();
+    Stack!({
+        if place == 1 {
+            second();
+        }
+    });
+    if place == 3 {
+        Stack(Modifier, content.clone());
+    }
+}
+
+/// A moved subtree is detached as a removed one (parents first, tail to head) and attached as an
+/// inserted one (children first, head to tail), each time it moves, to a layout that stays or to
+/// one the pass inserts, before where it was (attached before it's taken from there) or after.
+#[test]
+fn a_moved_subtree_is_detached_and_attached_in_compose_s_orders() {
+    let log = Log::default();
+    let place = mutable_state_of(0);
+    let (at, content_log) = (place.handle(), log.clone());
+    let content = movable_content_of(move || {
+        let inner = logger(&content_log, "c").then(logger(&content_log, "d"));
+        Stack!(modifier = logger(&content_log, "a").then(logger(&content_log, "b")), {
+            Leaf(inner.clone());
+        });
+    });
+    let mut host = host(move || {
+        let (content, place) = (content.clone(), at.get());
+        Stack(Modifier, callback(move || Places(place, content.clone())));
+    });
+    assert_eq!(take(&log), ["attach(c)", "attach(d)", "attach(a)", "attach(b)"]);
+    let moved = ["detach(b)", "detach(a)", "detach(d)", "detach(c)"]
+        .into_iter()
+        .chain(["attach(c)", "attach(d)", "attach(a)", "attach(b)"])
+        .collect::<Vec<_>>();
+    for to in [1, 0, 2, 1, 3, 0, 2, 3] {
+        place.set(to);
+        host.frame();
+        assert_eq!(take(&log), moved, "moved to {to}");
+    }
+}
+
+/// `content` leaving the first of two layouts that stay for the second when `moved`, and a leaf
+/// of `z`'s modifier leaving then, before them or after.
+#[composable]
+fn LeavingWith(moved: bool, before: bool, z: Modifier, content: impl Fn() + 'static) {
+    if before && !moved {
+        Leaf(z.clone());
+    }
+    let first = content.clone();
+    Stack!({
+        if !moved {
+            first();
+        }
+    });
+    let second = content.clone();
+    Stack!({
+        if moved {
+            second();
+        }
+    });
+    if !before && !moved {
+        Leaf(z.clone());
+    }
+}
+
+/// A moved node is detached where the pass removed it, as Compose's `removeAt` detaches at once:
+/// after a node removed before it, before one removed after it, and before it's attached where
+/// it went.
+#[test]
+fn a_moved_node_is_detached_in_the_order_of_the_removals() {
+    for before in [false, true] {
+        let log = Log::default();
+        let moved = mutable_state_of(false);
+        let (there, content_log, z) = (moved.handle(), log.clone(), logger(&log, "z"));
+        let content = movable_content_of(move || Leaf(logger(&content_log, "a")));
+        let mut host = host(move || {
+            let (content, z, moved) = (content.clone(), z.clone(), there.get());
+            Stack(
+                Modifier,
+                callback(move || LeavingWith(moved, before, z.clone(), content.clone())),
+            );
+        });
+        let mut attached = take(&log);
+        attached.sort();
+        assert_eq!(attached, ["attach(a)", "attach(z)"]);
+        moved.set(true);
+        host.frame();
+        let detached = if before { ["detach(z)", "detach(a)"] } else { ["detach(a)", "detach(z)"] };
+        let expected: Vec<&str> = detached.into_iter().chain(["attach(a)"]).collect();
+        assert_eq!(take(&log), expected, "removed before it: {before}");
+    }
+}
+
+/// As above, a node leaving a chain after the move: the moved node is detached first.
+#[test]
+fn a_moved_node_is_detached_before_a_chain_s_node_removed_after_it() {
+    let log = Log::default();
+    let moved = mutable_state_of(false);
+    let (there, content_log, own_log) = (moved.handle(), log.clone(), log.clone());
+    let content = movable_content_of(move || Leaf(logger(&content_log, "a")));
+    let mut host = host(move || {
+        let (content, log) = (content.clone(), own_log.clone());
+        let moved = there.get();
+        Stack(
+            Modifier,
+            callback(move || {
+                let (first, second) = (content.clone(), content.clone());
+                Stack!({
+                    if !moved {
+                        first();
+                    }
+                });
+                Stack!({
+                    if moved {
+                        second();
+                    }
+                });
+                Leaf(if moved { Modifier } else { logger(&log, "z") });
+            }),
+        );
+    });
+    assert_eq!(take(&log), ["attach(a)", "attach(z)"]);
+    moved.set(true);
+    host.frame();
+    assert_eq!(take(&log), ["detach(a)", "detach(z)", "attach(a)"]);
+}
+
+/// Content moved and its chain changed in the same pass: the node it keeps is detached and
+/// attached, the one it drops only detached, the one it gains only attached.
+#[test]
+fn a_moved_node_s_chain_change_in_the_same_pass() {
+    let log = Log::default();
+    let moved = mutable_state_of(false);
+    let (there, content_log) = (moved.handle(), log.clone());
+    let content = movable_content_of_with(move |moved: bool| {
+        let b = if moved { Modifier } else { logger(&content_log, "b") };
+        Leaf(logger(&content_log, "a").then(b));
+    });
+    let mut host = host(move || {
+        let content = content.clone();
+        let moved = there.get();
+        Stack(
+            Modifier,
+            callback(move || {
+                let content = content.clone();
+                Moving(moved, callback(move || content(moved)));
+            }),
+        );
+    });
+    assert_eq!(take(&log), ["attach(a)", "attach(b)"]);
+    let sorted = |mut heard: Vec<String>| {
+        heard.sort();
+        heard
+    };
+    moved.set(true);
+    host.frame();
+    assert_eq!(sorted(take(&log)), ["attach(a)", "detach(a)", "detach(b)"]);
+    moved.set(false);
+    host.frame();
+    assert_eq!(sorted(take(&log)), ["attach(a)", "attach(b)", "detach(a)"]);
+}
+
 /// As `NodeChainTests`' `AttachedStateDebuggerNode`: checks it's attached in its callbacks, and
 /// keeps a handle the test checks afterwards.
 struct Debugger(Rc<RefCell<Vec<NodeHandle>>>);

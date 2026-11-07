@@ -711,6 +711,11 @@ impl ModifierNode for PointerInputNode {
     fn on_reset(&mut self, _context: &mut crate::node_context::NodeContext<'_>) {
         self.driver.stop();
     }
+    /// Detached (moved by movable content, D1923), its block starts again at the next event, as
+    /// Compose's `onDetach`.
+    fn on_detach(&mut self, _context: &mut crate::node_context::NodeContext<'_>) {
+        self.driver.stop();
+    }
 }
 
 impl PointerInputModifierNode for PointerInputNode {

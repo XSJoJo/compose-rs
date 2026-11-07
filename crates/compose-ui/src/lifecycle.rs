@@ -41,7 +41,8 @@ pub(crate) enum Lifecycle {
     /// New entries of a node attached before the pass (a chain change): their `on_attach`.
     AttachEntries(NodeId),
     /// A subtree removed in the pass: its nodes' `on_detach`, parents before children, tail to
-    /// head in each chain (if it wasn't released first: `UiTree::release` detaches it then).
+    /// head in each chain (if it wasn't released first: `UiTree::release` detaches it then, nor
+    /// detached already, by the step attaching it where it moved).
     Detach(NodeId),
     /// Entries a chain change removed from a node, each with where it was in the new chain:
     /// `on_detach` (those attached), then `on_release`.
@@ -367,6 +368,10 @@ impl UiTree {
         }
         self.reset_alignment_lines(node);
         self.forget_semantics(node);
+        // Its entries detached now: none is left for a step to detach.
+        if let Some(value) = self.get_mut(node) {
+            value.detach_pending = false;
+        }
         let count = self.get(node).map_or(0, |value| value.chain.len());
         for index in 0..count {
             let Some(entry) = self.get(node).and_then(|value| value.chain.get(index)) else {
@@ -414,10 +419,21 @@ impl UiTree {
     }
 
     /// Attaches the modifier nodes of the subtree at `root`, as `LayoutNode.attach`: every one
-    /// marked attached first, then their `on_attach`, children before parents.
+    /// marked attached first, then their `on_attach`, children before parents. Those of a node
+    /// moved into it in the pass, still attached where it was, are detached first, as Compose
+    /// detached them when it left (D1923).
     fn attach_subtree(&mut self, root: NodeId) {
         // Post-order, each node's children in their order, as `LayoutNode.attach`.
         let nodes = self.subtree_post_order(root);
+        // Only a pass that removed an attached node has one waiting for its detach.
+        if !self.removed_parents.is_empty() {
+            // Outer first: detaching a node detaches what's under it.
+            for &node in nodes.iter().rev() {
+                if self.get(node).is_some_and(|value| value.detach_pending) {
+                    self.detach_removed(node);
+                }
+            }
+        }
         for &node in &nodes {
             self.node_mut(node).attaching = false;
             self.mark_attached(node);
@@ -443,6 +459,24 @@ impl UiTree {
         }
         for &node in &nodes {
             self.mark_detached(node);
+        }
+    }
+
+    /// Detaches the subtree at `node`, removed from an attached parent in the pass, wherever it
+    /// is now: above it, for their `on_detach`, is the parent it left, as Compose's `removeAt`
+    /// detaches a node before it unlinks it (D1923).
+    fn detach_removed(&mut self, node: NodeId) {
+        let outer = self.detaching_moved.replace(node);
+        self.detach_subtree(node);
+        self.detaching_moved = outer;
+        // What pointers hit or hover there is let go untold, as Compose's hit paths drop the
+        // nodes detached: hit again where it went (a resting mouse enters it again).
+        if !self.captures.is_empty() || !self.hovered.is_empty() || !self.stylus_hovered.is_empty()
+        {
+            for each in self.subtree(node) {
+                let value = self.node_mut(each);
+                value.chain_version = value.chain_version.wrapping_add(1);
+            }
         }
     }
 
@@ -562,6 +596,27 @@ impl UiTree {
         }
     }
 
+    /// Detaches now, in the order the pass removed them, the subtrees it removed before `root`,
+    /// which it removed too and is releasing, if they're still to be: moved elsewhere by movable
+    /// content (or left for a later pass). Compose detaches each at its removal: they are while
+    /// what they left is still there to be told (an ancestor's focus listener), before what was
+    /// removed after them (D1923).
+    pub(crate) fn detach_removed_before(&mut self, root: NodeId) {
+        // Only one the pass removed has some before it; each is gone past once in a pass.
+        if !self.get(root).is_some_and(|value| value.detach_pending) {
+            return;
+        }
+        while let Some(&(child, _)) = self.removed_parents.get(self.removed_detached) {
+            self.removed_detached += 1;
+            if child == root {
+                return;
+            }
+            if self.get(child).is_some_and(|value| value.detach_pending) {
+                self.detach_removed(child);
+            }
+        }
+    }
+
     /// Queues `step` for the end of the pass.
     pub(crate) fn queue_lifecycle(&mut self, step: Lifecycle) {
         self.lifecycle.push(step);
@@ -575,6 +630,7 @@ impl UiTree {
         self.run_lifecycle_steps();
         self.flush_focus_invalidations();
         self.removed_parents.clear();
+        self.removed_detached = 0;
     }
 
     fn run_lifecycle_steps(&mut self) {
@@ -601,8 +657,13 @@ impl UiTree {
                         self.run_attach(node);
                     }
                     Lifecycle::Detach(root) => {
-                        if self.get(root).is_some_and(|value| !value.attached) {
-                            self.detach_subtree(root);
+                        // Not if released (detached then), nor if detached already (moved, by
+                        // the step attaching it there, or with an ancestor).
+                        let Some(value) = self.get(root) else { continue };
+                        if value.detach_pending {
+                            // Moved: a step attaching it there is still to come.
+                            debug_assert!(!value.attached || value.attaching);
+                            self.detach_removed(root);
                         }
                     }
                     Lifecycle::Removed(node, entries) => self.release_removed(node, entries),

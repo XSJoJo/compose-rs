@@ -172,14 +172,7 @@ impl NodeContext<'_> {
             let Some(value) = self.tree.get(node) else { return };
             let end = before.take().unwrap_or(value.chain.len());
             // A popup is a root of its own, as Compose's.
-            layout = if value.overlay {
-                None
-            } else {
-                value.parent.or_else(|| {
-                    let mut removed = self.tree.removed_parents.iter();
-                    removed.rfind(|(child, _)| *child == node).map(|(_, parent)| *parent)
-                })
-            };
+            layout = if value.overlay { None } else { self.tree.parent_for_callbacks(node, value) };
             if !value.kinds.any(kinds) {
                 continue;
             }
