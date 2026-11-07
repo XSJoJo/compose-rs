@@ -167,6 +167,25 @@ impl NodeContext<'_> {
         }
     }
 
+    /// A handle naming this node, not registered (nothing to do on its attach or detach): it
+    /// reaches the node with `NodeHandle::with_node` and the nested-scroll chain above it
+    /// (`NestedScrollChain::above`), but says it's never attached, has no coroutine scope and
+    /// asks for nothing. For a node to keep at no cost where it may never use it.
+    #[doc(hidden)]
+    pub fn unregistered_handle(&self) -> NodeHandle {
+        let owner = match self.index {
+            Some(index) => self.tree.node(self.node).chain[index].id,
+            None => self.entry,
+        };
+        NodeHandle {
+            tree: self.tree.key,
+            node: self.node,
+            entry: self.entry,
+            owner,
+            _not_send: PhantomData,
+        }
+    }
+
     /// The layout node the modifier node is on.
     pub fn layout_node(&self) -> NodeId {
         self.node

@@ -3797,7 +3797,7 @@ impl compose_ui::KeyInputModifierNode for LazyScrollNode {
             set_outer: Some(&self.set_outer),
             overscroll: self.overscroll.as_ref(),
         };
-        self.drag.on_key_event(event, self.vertical, reverse, context, &driver)
+        self.drag.on_key_event(event, self.vertical, reverse, context, &driver, None)
     }
 }
 

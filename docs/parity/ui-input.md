@@ -15,8 +15,8 @@ This ledger maps Jetpack Compose UI's tests and public API in input, focus, sema
 | `covered` | 5 | 39 |
 | `ported` | 44 | 775 |
 | `port` | 8 | 56 |
-| `partial` | 40 | 1,203 |
-| `feature:*` | 92 | 996 |
+| `partial` | 41 | 1,237 |
+| `feature:*` | 91 | 962 |
 | `n/a` | 50 | 456 |
 | **Total** | **239** | **3,525** |
 
@@ -33,7 +33,6 @@ By feature (rows whose status is that feature; `partial` rows needing it are in 
 | scroll-capture | 3 | 44 |
 | semantics-tree-api | 2 | 21 |
 | media-query | 2 | 42 |
-| nested-scroll-dispatcher | 1 | 34 |
 | clipboard-api | 2 | 30 |
 | platform-window-modifiers | 4 | 25 |
 | content-capture | 1 | 22 |
@@ -169,7 +168,7 @@ By feature (rows whose status is that feature; `partial` rows needing it are in 
 
 | Path | `@Test` | Covers | Status | Detail |
 |---|---|---|---|---|
-| `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/nestedscroll/NestedScrollModifierTest.kt` | 34 | Dispatch order and deltas through `NestedScrollDispatcher` chains, removal and swaps, scope, mouse vs touch flings | `feature:nested-scroll-dispatcher` | Connections exist (D188, `crates/compose-ui/src/nested_scroll.rs`); the 6 tests driven by real scrollables are portable now and partly covered (`fnd/review_nested_scroll.rs`); the 28 others dispatch by hand through a `NestedScrollDispatcher`. |
+| `compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/nestedscroll/NestedScrollModifierTest.kt` | 34 | Dispatch order and deltas through `NestedScrollDispatcher` chains, removal and swaps, scope, mouse vs touch flings | `partial` | `fnd/nested_scroll_dispatcher.rs`: the 26 that dispatch by hand through a `NestedScrollDispatcher` (D1917), and one more of its own (a fling's end through parents removed with the node); `fnd/nested_scroll_tree_links.rs`: a reviewer's scenarios and their fixes' tests (a node moved by movable content, D1920; a disabled scrollable, D1921; a dispatch from a busy tree past a parent that left). Left: the 8 driven by real scrollables (a `LazyColumn` swiped or wheeled), partly covered by `fnd/review_nested_scroll.rs`. |
 
 ### Rotary and indirect input (8 files, 137 methods)
 
@@ -391,7 +390,7 @@ From `compose/ui/ui/api/current.txt` (deprecated entries left out; `restricted_c
 
 ### `androidx.compose.ui.input.nestedscroll`
 
-- **nested-scroll-dispatcher:** `NestedScrollDispatcher` (`dispatchPreScroll`, `dispatchPostScroll`, `dispatchPreFling`, `dispatchPostFling`, `coroutineScope`), `Modifier.nestedScroll(connection, dispatcher)` (compose-rs takes the connection only), `nestedScrollModifierNode(connection, dispatcher)`, suspending `onPreFling`/`onPostFling` with `Velocity` (compose-rs's are synchronous with `Offset`). `NestedScrollConnection` and `NestedScrollSource.UserInput`/`SideEffect` are present (D188).
+- **nested-scroll-dispatcher:** `NestedScrollDispatcher` (`dispatchPreScroll`, `dispatchPostScroll`, `dispatchPreFling`, `dispatchPostFling`, `coroutineScope`), `Modifier.nestedScroll(connection, dispatcher)`, `nestedScrollModifierNode(connection, dispatcher)`: **done** (D1917, `nested_scroll_with`), velocities as `Offset`s. Left: `onPreFling`/`onPostFling` with `Velocity` (compose-rs's suspend, with `Offset`, D891). `NestedScrollConnection` and `NestedScrollSource.UserInput`/`SideEffect` are present (D188).
 
 ### `androidx.compose.ui.semantics` and `androidx.compose.ui.node` (semantics parts)
 
@@ -525,7 +524,7 @@ Sizes: S under a day, M a few days, L one to two weeks, XL several weeks. "Tests
 - **Depends on:** none.
 - **Experimental:** no.
 
-### nested-scroll-dispatcher (M)
+### nested-scroll-dispatcher (M) — done (D1917)
 - **Compose API:** `NestedScrollDispatcher`, `nestedScroll(connection, dispatcher)`, `nestedScrollModifierNode`, suspending fling callbacks with `Velocity`.
 - **What:** a chain of nested-scroll nodes through layout ancestors (not the pointer's hit path, D188), dispatchers any code can drive (custom scrollables, animations), a coroutine scope tied to the node.
 - **Tests:** NestedScrollModifierTest; the interop rows in host-view-interop.
@@ -682,7 +681,7 @@ Sizes: S under a day, M a few days, L one to two weeks, XL several weeks. "Tests
 2. **key-input-api** (M): real `Key`s fix two behaviour differences (up without down, Shift changing the key) and, with the preview pass there (D1044), unblock rotary and soft-keyboard interception.
 3. **focus-hierarchy** (L), then **focus-properties** (L), **focus-requester-api** (M), **focus-search-tree** (M), **key-focus-navigation** (S): the largest block of Compose tests (41 files, 682 methods, about 1,600 cases once parameterized) becomes portable; the 2D geometry tests can be ported first, now.
 4. **pointer-event-model** (L), **hit-test-extensions** (M), **velocity-tracker** (M), **pointer-icon-api** (S): coordinate with the foundation agent, whose detectors and scrollables move onto them.
-5. **nested-scroll-dispatcher** (M), **bring-into-view-api** (M): also coordinated with foundation.
+5. *(Done, D1917.)* **nested-scroll-dispatcher** (M); **bring-into-view-api** (M): also coordinated with foundation.
 6. **semantics-properties** (XL), then **semantics-tree-api** (L): every area's tests assert semantics, so this unblocks ports elsewhere too.
 7. **android-accessibility-parity** (XL), **rotary-input** (S), **sound-effects** (S), **platform-locals** (S), **platform-window-modifiers** (S), **clipboard-api** (M), **popup-dialog-properties** (M).
 8. **host-view-interop** (L), together with an instrumented Android test harness.
@@ -737,7 +736,7 @@ Sizes: S under a day, M a few days, L one to two weeks, XL several weeks. "Tests
 14. *(Ended by D1288.)* **Semantics children were in composition order**, not sorted by placement and z-index. Caught by `SemanticsTests.testChildrenAreZSorted`, `AndroidComposeViewAccessibilityDelegateCompatTest.drawingOrder_customZIndex`, the `AndroidAccessibilityTest.testSortedAccessibilityNodeInfo_*` cases.
 15. *(Ended by D1287, D1290, D1293.)* **Transparent nodes stayed in accessibility.** Compose hides alpha-0 content. Caught by `SemanticsInfoTest.transparent`, `AndroidAccessibilityTest.testTransparentNode_withAlphaModifier_notAccessible`.
 16. *(Ended by D1291.)* **Every frame that recomposed or measured sent one subtree content change** (D630); Compose sends per-node change types (state description, text, pane title…) and only when properties change. Caught by `WindowContentChangeTest.sendWindowContentChangeUndefinedEventByDefault_onlyOnce_whenMultiplePropertiesChange`, `AndroidAccessibilityTest.sendStateChangeEvent_whenStateChange`.
-17. **Nested-scroll connections are found through the pointer's hit path**, not layout ancestors (D188, docs/11). A connection on an ancestor that isn't on the hit path (a sibling layer placed over) is skipped, and scrolls not started by a pointer have no chain. Caught by `NestedScrollModifierTest.nestedScroll_twoNodes_hierarchyDispatch` and the dispatcher cases.
+17. *(Dispatchers ended by D1917.)* **A drag's and the wheel's nested-scroll connections are found through the pointer's hit path**, not layout ancestors (D188, docs/11). A connection on an ancestor that isn't on the hit path (a sibling layer placed over) is skipped. A `NestedScrollDispatcher` reaches its layout ancestors' nested-scroll nodes, as Compose's. Caught by `NestedScrollModifierTest.nestedScroll_twoNodes_hierarchyDispatch` and the dispatcher cases.
 18. **`ComposeRsView` takes every touch.** `onTouchEvent` returns `true` whatever the content does with it. Compose returns `false` when no pointer node was hit. (A mouse's hover and a stylus's reach content now, with their tool types: D1658, D1678.) Caught by `AndroidPointerInputTest.dispatchTouchEvent_noPointerInputModifiers_returnsFalse`, `dispatchHoverEnter`, `dispatchHoverExit`, `MotionEventAdapterTest.convertToolType`.
 19. *(Their focus ended by D1284.)* **Overlays aren't windows** (D130): as far as the focus goes they are now, with `is_window_focused` false on what's under one. Left: the platform's window isn't asked, so a host in the background still says `true` (`WindowInfoTest.isWindowFocused` in a fragment, `windowIsFocused_onLaunch` only as far as a window with nothing over it).
 20. *(Ended by D1284.)* **What's behind a modal overlay wasn't in another window**: it was told `Inactive`, a request behind answered `true` with `is_focused` false, a capture behind was lost. One `{active, captured}` per window, `is_window_focused` and a scoped `LOCAL_FOCUS_MANAGER` ended it. Caught by `compose-ui/tests/suite/focus_tests/modal.rs` and `compose-foundation/tests/suite/focus_model.rs`, `a_text_fields_selection_survives_a_dialog_with_a_field_of_its_own`.

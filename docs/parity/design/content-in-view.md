@@ -43,6 +43,6 @@ The walk returns the futures, and the request waits for all of them (`join_all`)
 
 ## What's left out
 
-- Nested scrolling and overscroll during the animation. Compose scrolls through `ScrollingLogic`, so the connections around see the deltas. compose-rs finds connections only on a pointer's path (D1459), so `focusScroll_nestedScroll_childPartialConsumptionForSemantics` waits on nested-scroll-dispatcher.
+- Overscroll during the animation. *(Nested scrolling is in, D1918: the deltas go through the nested-scroll nodes above the container's dispatcher, as Compose's through `ScrollingLogic`; `focusScroll_nestedScroll_childPartialConsumptionForSemantics` is ported. Not the lazy layouts', which jump.)*
 - The lazy layouts still jump, and don't keep their focused item in view (C8).
 - Keeping the focused child in view stops when the animation ends, or once the child shows, as Compose's. No test sees the second apart from the first: they differ only while a request is still queued after the focused child shows.

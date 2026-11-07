@@ -1424,10 +1424,26 @@ pub trait ModifierNode: Any {
     ) -> Option<&mut dyn crate::relocation::BringIntoViewResponderNode> {
         None
     }
+    /// It as a node taking part in nested scrolling as Compose's `NestedScrollNode`s do, without
+    /// being one (a scrollable, D1918): asked by a nested-scroll node inside it looking for its
+    /// parent, it makes its participant then if it has none.
+    #[doc(hidden)]
+    fn as_nested_scroll_participant(
+        &mut self,
+        _context: &mut crate::node_context::NodeContext<'_>,
+    ) -> Option<crate::nested_scroll::NestedScrollParticipant> {
+        None
+    }
     /// Whether it lays out content beyond its bounds for a focus search from inside it, as
-    /// Compose's `BeyondBoundsLayout` (a lazy list's).
+    /// Compose's `BeyondBoundsLayout` (a lazy list's). A node answering `beyond_bounds_layout`
+    /// says `true` here too, which is what the nodes inside find it by.
     fn is_beyond_bounds_layout(&self) -> bool {
         false
+    }
+    /// The beyond-bounds layout it provides, as `BeyondBoundsLayoutProviderModifierNode`, for
+    /// `NodeContext::find_nearest_beyond_bounds_layout_ancestor` (D1919).
+    fn beyond_bounds_layout(&mut self) -> Option<std::rc::Rc<dyn crate::BeyondBoundsLayout>> {
+        None
     }
     /// A focus search from inside it going `direction` found nothing more inside: lays out more
     /// content that way, beyond its bounds (a lazy list: one more item, composed and placed at
