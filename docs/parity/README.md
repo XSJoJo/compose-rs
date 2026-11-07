@@ -10,7 +10,7 @@ The androidx checkout at `/Users/jdemeulenaere/Development/androidx-main` (Compo
 
 ## The ledgers
 
-[What's missing](missing.md) is a short overview of the big gaps. The ledgers have the detail.
+[What's missing](missing.md) is a short overview of the big gaps. The ledgers have the detail. [Continuing the work](handoff.md) explains how it has been run and what is in flight.
 
 One per area. Each lists every Compose test file with its status, the public API compose-rs lacks, the missing features with their dependencies and sizes, and notes for porting:
 
