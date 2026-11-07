@@ -910,7 +910,7 @@ impl ScrollableNode {
     /// Tells its tree connection what it scrolls now, if it takes part.
     fn tell_tree(&self) {
         if self.tree.takes_part() {
-            self.tree.set_target(self.tree_target());
+            self.tree.set_target(self.tree_target(), self.enabled);
         }
     }
 
@@ -1039,7 +1039,7 @@ impl ModifierNode for ScrollableNode {
             self.density = context.require_density().density;
         }
         let target = self.tree_target();
-        Some(self.tree.participant(context, || target))
+        Some(self.tree.participant(context, self.enabled, || target))
     }
 
     fn as_bring_into_view_responder(

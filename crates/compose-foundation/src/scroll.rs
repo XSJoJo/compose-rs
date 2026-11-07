@@ -600,7 +600,7 @@ impl ScrollNode {
     /// Tells its tree connection what it scrolls now, if it takes part.
     fn tell_tree(&self) {
         if self.tree.takes_part() {
-            self.tree.set_target(self.tree_target());
+            self.tree.set_target(self.tree_target(), self.enabled);
         }
     }
 
@@ -803,7 +803,7 @@ impl ModifierNode for ScrollNode {
             self.density = context.require_density().density;
         }
         let target = self.tree_target();
-        Some(self.tree.participant(context, || target))
+        Some(self.tree.participant(context, self.enabled, || target))
     }
     fn on_detach(&mut self, context: &mut compose_ui::NodeContext<'_>) {
         self.tree.on_detach(context);
@@ -1517,16 +1517,22 @@ pub(crate) struct NestedTree {
 }
 
 /// A scrollable's connection for the nested-scroll nodes inside it, as
-/// `ScrollableNestedScrollConnection`: what they leave scrolls it, a velocity flings it.
+/// `ScrollableNestedScrollConnection`: what they leave scrolls it, a velocity flings it; disabled,
+/// it takes nothing, and what they leave goes on to the parents above it.
 struct TreeConnection {
     /// What it scrolls, as the node last told it.
     target: std::cell::RefCell<ScrollTarget>,
+    /// Its node is enabled, as the node last told it.
+    enabled: Cell<bool>,
     /// Its node, for its fling's parents.
     handle: Option<compose_ui::NodeHandle>,
 }
 
 impl NestedScrollConnection for TreeConnection {
     fn on_post_scroll(&self, _: Offset, available: Offset, _: NestedScrollSource) -> Offset {
+        if !self.enabled.get() {
+            return Offset::ZERO;
+        }
         let target = self.target.borrow().clone();
         // The content scrolls the pointer's other way.
         let delta = -target.along(available);
@@ -1542,6 +1548,9 @@ impl NestedScrollConnection for TreeConnection {
     /// As [`ScrollableConnection::on_post_fling`], its fling's parents found through the tree.
     fn on_post_fling(&self, _: Offset, available: Offset) -> LocalBoxFuture<'_, Offset> {
         Box::pin(async move {
+            if !self.enabled.get() {
+                return Offset::ZERO;
+            }
             let mut target = self.target.borrow().clone();
             target.chain = chain_above(self.handle);
             let along = target.along(available);
@@ -1622,18 +1631,22 @@ impl NestedTree {
         self.handle
     }
 
-    /// Its participant, made now if it has none, scrolling `target`.
+    /// Its participant, made now if it has none, scrolling `target` if `enabled`.
     pub(crate) fn participant(
         &mut self,
         context: &mut compose_ui::NodeContext<'_>,
+        enabled: bool,
         target: impl FnOnce() -> ScrollTarget,
     ) -> compose_ui::platform::NestedScrollParticipant {
         // Asked by a node inside before its own `on_attach` (children attach first).
         let handle = *self.handle.get_or_insert_with(|| context.unregistered_handle());
         let handle = Some(handle);
         let (participant, _) = self.participant.get_or_insert_with(|| {
-            let connection =
-                Rc::new(TreeConnection { target: std::cell::RefCell::new(target()), handle });
+            let connection = Rc::new(TreeConnection {
+                target: std::cell::RefCell::new(target()),
+                enabled: Cell::new(enabled),
+                handle,
+            });
             let participant =
                 compose_ui::platform::NestedScrollParticipant::new(context, connection.clone());
             (participant, connection)
@@ -1646,10 +1659,11 @@ impl NestedTree {
         self.participant.is_some()
     }
 
-    /// What it scrolls now, if it takes part.
-    pub(crate) fn set_target(&self, target: ScrollTarget) {
+    /// What it scrolls now, and whether it's enabled, if it takes part.
+    pub(crate) fn set_target(&self, target: ScrollTarget, enabled: bool) {
         if let Some((_, connection)) = &self.participant {
             *connection.target.borrow_mut() = target;
+            connection.enabled.set(enabled);
         }
     }
 }

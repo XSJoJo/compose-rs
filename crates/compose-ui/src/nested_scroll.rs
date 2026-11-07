@@ -164,8 +164,8 @@ impl NestedScrollChain {
 }
 
 thread_local! {
-    /// Counts the nested-scroll nodes attached and detached on this thread: a link resolved
-    /// before the last of them is resolved again at its next use.
+    /// Counts the nested-scroll nodes attached and detached on this thread, and the subtrees
+    /// moved: a link resolved before the last of them is resolved again at its next use.
     static EPOCH: Cell<u64> = const { Cell::new(1) };
     /// A scope that's never active, for a dispatcher without a node, as Compose's
     /// `CancelledScope`.
@@ -174,6 +174,13 @@ thread_local! {
         scope.cancel();
         *scope
     };
+}
+
+/// A subtree was attached to a parent in the tree outside a node's `on_attach`: moved there by
+/// movable content, its modifier nodes staying attached (D1920). The links resolve their parents
+/// again at their next use, as Compose's `findNearestAncestor` at each call.
+pub(crate) fn nodes_moved() {
+    next_epoch();
 }
 
 fn next_epoch() -> u64 {

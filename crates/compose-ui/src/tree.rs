@@ -2144,6 +2144,10 @@ impl Applier for UiTree {
         // In the tree now, its subtree too: their modifier nodes are attached when the pass ends.
         let parent_value = self.node(parent);
         if parent_value.attached {
+            // A node moved here (movable content) keeps its modifier nodes attached, untold
+            // (docs/parity/design/modifier-nodes.md): the nested-scroll links resolve their
+            // parents again (D1920).
+            crate::nested_scroll::nodes_moved();
             let under_attaching = parent_value.attaching;
             let mut stack = vec![id];
             while let Some(next) = stack.pop() {
