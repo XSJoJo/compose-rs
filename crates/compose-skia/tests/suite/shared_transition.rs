@@ -11,7 +11,10 @@ use compose::foundation::layout::*;
 use compose::foundation::shape::CIRCLE_SHAPE;
 use compose::runtime::*;
 use compose::test::*;
-use compose::ui::{Alignment, Color, ContentScale, IntSize, LayoutCoordinates, Modifier, UnitExt};
+use compose::ui::{
+    Alignment, ClickableOptions, Color, ContentScale, Indication, IntSize, LayoutCoordinates,
+    Modifier, MutableInteractionSource, UnitExt,
+};
 
 const TAG: &str = "scope";
 
@@ -758,4 +761,149 @@ fn scale_transition_crop() {
             }
         });
     });
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testSharedElementsDroppedFromOverlayAfterTransition
+/// Shared elements leave the overlay after their transition though their match stays: the black
+/// box rendered in the overlay at z-index 1 shows through each frame, both ways.
+#[test]
+fn shared_elements_dropped_from_overlay_after_transition() {
+    set_capture_renderer(compose_skia::raster_colors);
+    let show_overlay = mutable_state_of(false);
+    let s = show_overlay.handle();
+    let mut ui = ComposeTestRule::sized(IntSize::new(200, 200), move || {
+        SharedTransitionLayout!(
+            modifier = Modifier.required_size(120.dp()).test_tag("root"),
+            move |scope: SharedTransitionScope| {
+                let options = || SharedOptions {
+                    bounds_transform: BoundsTransform::new(|_, _| tween(500).into()),
+                    ..Default::default()
+                };
+                let first = scope.remember_shared_content_state("box");
+                Box!(
+                    modifier = scope
+                        .shared_element_with_caller_managed_visibility_with(
+                            &first,
+                            !s.get(),
+                            options(),
+                        )
+                        .background(Color::LIGHT_GRAY)
+                        .fill_max_size()
+                );
+                let second = scope.remember_shared_content_state("box");
+                Box!(
+                    modifier = scope
+                        .shared_element_with_caller_managed_visibility_with(
+                            &second,
+                            s.get(),
+                            options(),
+                        )
+                        .background(Color::LIGHT_GRAY)
+                        .size(110.dp())
+                );
+                let overlay = scope.clone();
+                Box!(
+                    modifier = scope
+                        .render_in_shared_transition_scope_overlay_with(1.0, move || {
+                            overlay.is_transition_active()
+                        })
+                        .size(100.dp())
+                        .background(Color::BLACK)
+                );
+            }
+        );
+    });
+    for _ in 0..2 {
+        ui.wait_for_idle();
+        ui.set_auto_advance(false);
+        show_overlay.set(!show_overlay.get());
+        ui.wait_for_idle();
+        for _ in 0..6 {
+            ui.advance_time_by(std::time::Duration::from_millis(100));
+            ui.on_node_with_tag("root").capture_to_image().assert_contains_color(Color::BLACK);
+        }
+        ui.set_auto_advance(true);
+    }
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, testSharedTransitionScopeIsInvalidated
+/// The layout's overlay draws again as contents come and go under nested `AnimatedContent`s:
+/// each new color shows half-way through its transition (b/347520198).
+#[test]
+fn shared_transition_scope_is_invalidated() {
+    set_capture_renderer(compose_skia::raster_colors);
+    let state = mutable_state_of(0);
+    let anim_duration_millis = 500;
+    let s = state.handle();
+    let mut ui = ComposeTestRule::sized(IntSize::new(200, 200), move || {
+        SharedTransitionLayout!(
+            modifier = Modifier.size(100.dp()).test_tag("STL"),
+            move |scope: SharedTransitionScope| {
+                // An outer AnimatedContent doing nothing, which the issue needed.
+                let scope = scope.clone();
+                AnimatedContent!(true, move |_: AnimatedContentScope, _outer: bool| {
+                    let scope = scope.clone();
+                    AnimatedContent!(
+                        s.get(),
+                        transition_spec = move |_| {
+                            fade_in_with(snap(0), 0.0)
+                                .together_with(fade_out_with(snap(anim_duration_millis), 0.0))
+                        },
+                        move |inner: AnimatedContentScope, current: i32| {
+                            let source = remember(MutableInteractionSource::new);
+                            let options = ClickableOptions {
+                                interaction_source: Some(source),
+                                indication: Indication::NONE,
+                                ..ClickableOptions::DEFAULT
+                            };
+                            let scope = scope.clone();
+                            Box!(
+                                modifier = Modifier
+                                    .test_tag("click-target")
+                                    .clickable_with(options, move || {
+                                        s.set(match current {
+                                            0 | 1 => 2,
+                                            _ => 1,
+                                        });
+                                    })
+                                    .fill_max_size(),
+                                move |_| {
+                                    let color = match current {
+                                        0 => Color::GREEN,
+                                        1 => Color::RED,
+                                        _ => Color::BLUE,
+                                    };
+                                    let key =
+                                        if current == 0 { "no match" } else { "matching key" };
+                                    let shared = scope.remember_shared_content_state(key);
+                                    let options = SharedOptions {
+                                        enter: fade_in_with(snap(0), 0.0),
+                                        exit: fade_out_with(snap(0), 0.0),
+                                        ..Default::default()
+                                    };
+                                    Box!(
+                                        modifier = scope
+                                            .shared_bounds_with(&shared, &inner, options)
+                                            .background(color)
+                                            .fill_max_size()
+                                    );
+                                }
+                            );
+                        }
+                    );
+                });
+            }
+        );
+    });
+    ui.wait_for_idle();
+    ui.on_node_with_tag("STL").capture_to_image().assert_contains_color(Color::GREEN);
+    for color in [Color::BLUE, Color::RED] {
+        ui.set_auto_advance(false);
+        ui.on_node_with_tag("click-target").perform_click();
+        ui.advance_time_by_frame();
+        ui.advance_time_by(std::time::Duration::from_millis(anim_duration_millis as u64 / 2));
+        ui.on_node_with_tag("STL").capture_to_image().assert_contains_color(color);
+        ui.set_auto_advance(true);
+        ui.wait_for_idle();
+    }
 }

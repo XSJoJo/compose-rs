@@ -8,12 +8,14 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use compose_animation::*;
+use compose_foundation::BasicText;
 use compose_foundation::layout::*;
 use compose_foundation::{LazyColumn, LazyListScope, LazyListState, ScrollableStateExt};
 use compose_runtime::*;
 use compose_test::*;
 use compose_ui::ContentScale;
 use compose_ui::platform::DrawOp;
+use compose_ui::subcompose::SubcomposeLayout;
 use compose_ui::{Color, IntSize, LayoutCoordinates, Offset, UnitExt};
 
 /// A linear tween of `millis` for bounds.
@@ -2422,5 +2424,439 @@ fn scale_to_bounds_caching() {
             assert!(previous.as_ref() != Some(&mode));
             previous = Some(mode);
         }
+    }
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, foundMatchedElementButNeverMeasured
+/// Shared bounds composed in a slot its layout never measures, matched across an
+/// `AnimatedContent`'s change: nothing fails.
+#[test]
+fn found_matched_element_but_never_measured() {
+    let target = mutable_state_of(true);
+    let t = target.handle();
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        SharedTransitionLayout!(move |scope: SharedTransitionScope| {
+            let scope = scope.clone();
+            AnimatedContent!(t.get(), move |content: AnimatedContentScope, _: bool| {
+                let (scope, content) = (scope.clone(), content.clone());
+                SubcomposeLayout!(
+                    measure_policy =
+                        compose_ui::subcompose::subcompose_policy(move |measure, _| {
+                            let (scope, content) = (scope.clone(), content.clone());
+                            measure.subcompose(
+                                0,
+                                Callback::new(move || {
+                                    let state = scope.remember_shared_content_state("test");
+                                    Box!(
+                                        modifier = scope
+                                            .shared_bounds(&state, &content)
+                                            .size(200.dp())
+                                            .background(Color::RED)
+                                    );
+                                }),
+                            );
+                            // Measures nothing.
+                            measure.layout(200, 200)
+                        })
+                );
+                Box!(modifier = Modifier.size(200.dp()).background(Color::BLACK));
+            });
+        });
+    });
+    ui.wait_for_idle();
+    ui.set_auto_advance(false);
+    target.set(!target.get());
+    ui.advance_time_by_frame();
+    ui.wait_for_idle();
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, intrinsicsQueryComingFromAboveLookaheadRoot
+/// A layout above a `SharedTransitionLayout` asking its intrinsic width gets its content's,
+/// through `skip_to_lookahead_size`.
+#[test]
+fn intrinsics_query_coming_from_above_lookahead_root() {
+    let intrinsic_width = Rc::new(Cell::new(0));
+    let iw = intrinsic_width.clone();
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let iw = iw.clone();
+        compose_ui::Layout(
+            Modifier,
+            compose_ui::measure_policy(move |scope, measurables, constraints| {
+                let measurable = measurables[0];
+                iw.set(scope.max_intrinsic_width(measurable, constraints.max_height));
+                let placeable = scope.measure(measurable, constraints);
+                scope.place(&placeable, 0, 0);
+                scope.layout(constraints.max_width, constraints.max_height)
+            }),
+            Callback::new(|| {
+                SharedTransitionLayout!(move |scope: SharedTransitionScope| {
+                    Box!(modifier = scope.skip_to_lookahead_size().size(100.dp()));
+                });
+            }),
+        );
+    });
+    ui.wait_for_idle();
+    assert_eq!(intrinsic_width.get(), 100);
+}
+
+/// Places the content at `offset` under a motion frame of reference, as the test's
+/// `offsetWithMFR`.
+fn offset_with_mfr(offset: compose_ui::IntOffset) -> Modifier {
+    Modifier.layout(move |scope, measurable, constraints| {
+        let placeable = scope.measure(measurable, constraints);
+        scope.layout_with(placeable.width, placeable.height, move |placement| {
+            placement.with_motion_frame_of_reference_placement(|placement| {
+                placement.place(&placeable, offset.x, offset.y);
+            });
+        })
+    })
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, SharedElementWithStructuralChangesAmidAnimation
+/// Shared bounds whose target's alignment changes amid their animation turn towards the new
+/// target and end there, both ways.
+#[test]
+fn shared_element_with_structural_changes_amid_animation() {
+    let select_first = mutable_state_of(true);
+    let alignment = mutable_state_of(Alignment::TOP_START);
+    let position: Rc<Cell<Option<Offset>>> = Rc::default();
+    let first_position: Rc<Cell<Option<Offset>>> = Rc::default();
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let (sf, al, p, fp, sc) = (
+        select_first.handle(),
+        alignment.handle(),
+        position.clone(),
+        first_position.clone(),
+        seen.clone(),
+    );
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let key = remember(|| "key");
+        let (p, fp, sc) = (p.clone(), fp.clone(), sc.clone());
+        SharedTransitionLayout!(
+            modifier = Modifier.size(400.dp()),
+            move |scope: SharedTransitionScope| {
+                *sc.borrow_mut() = Some(scope.clone());
+                let (p, fp) = (p.clone(), fp.clone());
+                AnimatedContent!(sf.get(), move |content: AnimatedContentScope, first: bool| {
+                    let state = scope.remember_shared_content_state(key);
+                    if !first {
+                        let (scope, content, p) = (scope.clone(), content.clone(), p.clone());
+                        Box!(modifier = Modifier.fill_max_size(), move |inner| {
+                            let p = p.clone();
+                            Box!(
+                                modifier = Modifier
+                                    .align(inner, al.get())
+                                    .then(scope.shared_bounds(&state, &content))
+                                    .background(Color::RED)
+                                    .on_globally_positioned(move |it: LayoutCoordinates| {
+                                        p.set(Some(it.position_in_root()))
+                                    })
+                                    .size(100.dp()),
+                                |_| {
+                                    BasicText!("false");
+                                }
+                            );
+                        });
+                    } else {
+                        let fp = fp.clone();
+                        Box!(
+                            modifier = offset_with_mfr(compose_ui::IntOffset::new(10, 180))
+                                .then(scope.shared_bounds(&state, &content))
+                                .on_globally_positioned(move |it: LayoutCoordinates| {
+                                    fp.set(Some(it.position_in_root()))
+                                })
+                                .alpha(0.5)
+                                .background(Color::BLUE)
+                                .size(180.dp()),
+                            |_| {
+                                BasicText!("true");
+                            }
+                        );
+                    }
+                });
+            }
+        );
+    });
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    ui.set_auto_advance(false);
+    select_first.set(false);
+    for _ in 0..3 {
+        ui.advance_time_by_frame();
+        ui.wait_for_idle();
+    }
+    assert!(position.get().is_some());
+    assert!(scope.is_transition_active());
+    let last = position.get().unwrap();
+    alignment.set(Alignment::BOTTOM_CENTER);
+    // Five frames, for the spring's overshoot.
+    for _ in 0..5 {
+        ui.advance_time_by_frame();
+        ui.wait_for_idle();
+    }
+    // Turned towards the bottom center.
+    let now = position.get().unwrap();
+    assert!(now.y > last.y && now.x > last.x, "{now:?} after {last:?}");
+    ui.set_auto_advance(true);
+    ui.wait_for_idle();
+    assert_eq!(position.get().unwrap().round(), compose_ui::IntOffset::new(150, 300));
+    // The other way, the alignment changed during the transition.
+    ui.set_auto_advance(false);
+    first_position.set(None);
+    select_first.set(true);
+    for _ in 0..3 {
+        ui.advance_time_by_frame();
+        ui.wait_for_idle();
+    }
+    assert!(first_position.get().is_some());
+    assert!(scope.is_transition_active());
+    alignment.set(Alignment::TOP_START);
+    ui.set_auto_advance(true);
+    ui.wait_for_idle();
+    assert_eq!(first_position.get().unwrap().round(), compose_ui::IntOffset::new(10, 180));
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, TestSharedElementWithFixedMfrOffset
+/// Two shared bounds whose motion frame of reference and structural offsets differ but add up
+/// to the same place stay there through the transition and its interruption.
+#[test]
+fn shared_element_with_fixed_mfr_offset() {
+    let select_first = mutable_state_of(true);
+    let position1: Rc<Cell<Option<Offset>>> = Rc::default();
+    let position2: Rc<Cell<Option<Offset>>> = Rc::default();
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let (sf, p1, p2, sc) =
+        (select_first.handle(), position1.clone(), position2.clone(), seen.clone());
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let key = remember(|| "key");
+        let (p1, p2, sc) = (p1.clone(), p2.clone(), sc.clone());
+        SharedTransitionLayout!(
+            modifier = Modifier.fill_max_size(),
+            move |scope: SharedTransitionScope| {
+                *sc.borrow_mut() = Some(scope.clone());
+                let (p1, p2) = (p1.clone(), p2.clone());
+                AnimatedContent!(
+                    sf.get(),
+                    transition_spec = |_| {
+                        EnterTransition::NONE.together_with(ExitTransition::NONE).using(None)
+                    },
+                    move |content: AnimatedContentScope, first: bool| {
+                        let state = scope.remember_shared_content_state(key);
+                        if !first {
+                            let p1 = p1.clone();
+                            Box!(
+                                modifier = offset_with_mfr(compose_ui::IntOffset::new(80, 80))
+                                    .then(scope.shared_bounds(&state, &content))
+                                    .on_globally_positioned(move |it: LayoutCoordinates| {
+                                        p1.set(Some(it.position_in_root()))
+                                    })
+                                    .background(Color::RED)
+                                    .size(100.dp()),
+                                |_| {
+                                    BasicText!("false");
+                                }
+                            );
+                        } else {
+                            let p2 = p2.clone();
+                            Box!(
+                                modifier = Modifier
+                                    .offset_with(|_| compose_ui::IntOffset::new(180, 180))
+                                    .then(offset_with_mfr(compose_ui::IntOffset::new(-100, -100)))
+                                    .then(scope.shared_bounds(&state, &content))
+                                    .on_globally_positioned(move |it: LayoutCoordinates| {
+                                        p2.set(Some(it.position_in_root()))
+                                    })
+                                    .alpha(0.5)
+                                    .background(Color::BLUE)
+                                    .size(180.dp()),
+                                |_| {
+                                    BasicText!("true");
+                                }
+                            );
+                        }
+                    }
+                );
+            }
+        );
+    });
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    ui.set_auto_advance(false);
+    select_first.set(false);
+    let mut frames = 0;
+    while !scope.is_transition_active() {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        frames += 1;
+        assert!(frames < 100, "the transition starts");
+    }
+    let at = Some(Offset::new(80.0, 80.0));
+    assert_eq!(position1.get(), at);
+    assert_eq!(position2.get(), at);
+    // Interrupted.
+    select_first.set(true);
+    while !scope.is_transition_active() {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+    }
+    while scope.is_transition_active() {
+        assert_eq!(position1.get(), at);
+        assert_eq!(position2.get(), at);
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        frames += 1;
+        assert!(frames < 300, "the transition ends");
+    }
+}
+
+// Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/SharedTransitionTest.kt, SharedElementWithChangingMfrOffset
+/// A shared element in a lazy list scrolled during its animation follows each scroll at once;
+/// going back with the list scrolled nearly to the target, it stays within a pixel of it.
+#[test]
+fn shared_element_with_changing_mfr_offset() {
+    let target = mutable_state_of(true);
+    let position1: Rc<Cell<Option<Offset>>> = Rc::default();
+    let position2: Rc<Cell<Option<Offset>>> = Rc::default();
+    let seen: Rc<RefCell<Option<SharedTransitionScope>>> = Rc::default();
+    let state = LazyListState::new(0, 0);
+    let (t, p1, p2, sc, list_state) =
+        (target.handle(), position1.clone(), position2.clone(), seen.clone(), *state);
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let key = remember(|| "key");
+        let (p1, p2, sc) = (p1.clone(), p2.clone(), sc.clone());
+        SharedTransitionLayout!(
+            modifier = Modifier.fill_max_size(),
+            move |scope: SharedTransitionScope| {
+                *sc.borrow_mut() = Some(scope.clone());
+                let (p1, p2) = (p1.clone(), p2.clone());
+                AnimatedContent!(
+                    t.get(),
+                    modifier = Modifier.fill_max_size(),
+                    transition_spec = |_| {
+                        EnterTransition::NONE.together_with(ExitTransition::NONE).using(None)
+                    },
+                    move |content: AnimatedContentScope, target: bool| {
+                        if target {
+                            let (scope, content, p1) = (scope.clone(), content.clone(), p1.clone());
+                            Box!(move |_| {
+                                let state = scope.remember_shared_content_state(key);
+                                let p1 = p1.clone();
+                                // After the offsets, the target is at (40, 80).
+                                Box!(
+                                    modifier = offset_with_mfr(compose_ui::IntOffset::new(80, 80))
+                                        .offset((-40).dp(), 0.dp())
+                                        .then(scope.shared_element(&state, &content))
+                                        .on_globally_positioned(move |it: LayoutCoordinates| {
+                                            p1.set(Some(it.position_in_root()))
+                                        })
+                                        .background(Color::RED)
+                                        .size(300.dp()),
+                                    |_| {
+                                        BasicText!("false");
+                                    }
+                                );
+                            });
+                        } else {
+                            let (scope, content, p2) = (scope.clone(), content.clone(), p2.clone());
+                            let gray = || {
+                                Box!(
+                                    modifier = Modifier
+                                        .size(100.dp())
+                                        .padding(10.dp())
+                                        .background(Color::GRAY)
+                                );
+                            };
+                            LazyColumn!(
+                                modifier =
+                                    Modifier.padding(PaddingValues::symmetric(40.dp(), 80.dp())),
+                                state = list_state,
+                                move |list: LazyListScope| {
+                                    for _ in 0..5 {
+                                        list.item(gray);
+                                    }
+                                    // Item 5.
+                                    let (scope, content, p2) =
+                                        (scope.clone(), content.clone(), p2.clone());
+                                    list.item(move || {
+                                        let state = scope.remember_shared_content_state(key);
+                                        let p2 = p2.clone();
+                                        Box!(
+                                            modifier = scope
+                                                .shared_element(&state, &content)
+                                                .on_globally_positioned(
+                                                    move |it: LayoutCoordinates| {
+                                                        p2.set(Some(it.position_in_root()))
+                                                    },
+                                                )
+                                                .background(Color::BLUE)
+                                                .size(100.dp()),
+                                            |_| {
+                                                BasicText!("true");
+                                            }
+                                        );
+                                    });
+                                    for _ in 0..30 {
+                                        list.item(gray);
+                                    }
+                                }
+                            );
+                        }
+                    }
+                );
+            }
+        );
+    });
+    ui.wait_for_idle();
+    let scope = seen.borrow().clone().expect("the scope");
+    ui.set_auto_advance(false);
+    target.set(false);
+    ui.wait_for_idle();
+    let mut frames = 0;
+    while !scope.is_transition_active() {
+        ui.advance_time_by_frame();
+        ui.wait_for_idle();
+        frames += 1;
+        assert!(frames < 100, "the transition starts");
+    }
+    let before = position2.get().expect("placed");
+    let scroll = |ui: &mut ComposeTestRule, by: f32| {
+        let coroutines = CoroutineScope::new();
+        coroutines.launch(async move {
+            let _ = list_state.scroll_by(by).await;
+        });
+        ui.wait_for_idle();
+        // Compose measures a scroll at once (`forceRemeasure`), its clock paused; here the
+        // layout waits for a frame: one at the same time, which moves no animation.
+        ui.host().frame();
+    };
+    for it in 0..4 {
+        scroll(&mut ui, 100.0);
+        let expected = Offset::new(before.x, before.y - 100.0 * (it + 1) as f32);
+        assert_eq!(position2.get(), Some(expected), "after {} scrolls", it + 1);
+    }
+    scroll(&mut ui, 99.0);
+    assert_eq!(position2.get(), Some(Offset::new(before.x, before.y - 499.0)));
+    ui.set_auto_advance(true);
+    ui.wait_for_idle();
+    // Back, with the list scrolled nearly to the target.
+    ui.set_auto_advance(false);
+    target.set(true);
+    while !scope.is_transition_active() {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+    }
+    let near = |position: Option<Offset>| {
+        let position = position.expect("placed");
+        assert_eq!(position.x, 40.0);
+        assert!(position.y >= 80.0 && position.y <= 81.0, "{position:?}");
+    };
+    near(position1.get());
+    // Never out of that pixel: no jump.
+    while scope.is_transition_active() {
+        ui.wait_for_idle();
+        ui.advance_time_by_frame();
+        near(position1.get());
+        frames += 1;
+        assert!(frames < 300, "the transition ends");
     }
 }
