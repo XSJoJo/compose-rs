@@ -21,6 +21,7 @@ mod placeholders;
 mod review_f;
 mod review_f2;
 mod review_f3;
+mod review_multi_paragraph_2;
 mod review_rtl;
 mod review_skia;
 mod review_text;
