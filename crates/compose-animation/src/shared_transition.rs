@@ -27,6 +27,7 @@ use compose_ui::{
 };
 
 use crate::animatable::Animatable;
+use crate::deferred::SharedMutableTransformState;
 use crate::shared::{
     BoundsTransform, PlaceholderSize, ResizeMode, SharedContentConfig, SharedTransitionDefaults,
 };
@@ -37,7 +38,8 @@ use crate::transition::{
 use crate::vector::{AnimationVector, VisibilityThreshold};
 use crate::visibility::{
     AnimatedVisibilityScope, EnterExitState, EnterTransition, ExitTransition,
-    create_enter_exit_modifier_enabled, fade_in, fade_out, update_enter_exit_modifier_state,
+    LOCAL_TRANSFORM_STATE, create_enter_exit_modifier_enabled, fade_in, fade_out,
+    update_enter_exit_modifier_state,
 };
 
 // ---- Keys ----------------------------------------------------------------------------------
@@ -445,6 +447,34 @@ impl SharedTransitionScope {
         });
         state.0.config.set(config);
         state
+    }
+
+    /// The default config, as `SharedContentConfig()`: one shared value.
+    pub fn shared_content_config(&self) -> Rc<dyn SharedContentConfig> {
+        thread_local! {
+            static DEFAULT: Rc<dyn SharedContentConfig> =
+                Rc::new(SharedTransitionDefaults::shared_content_config());
+        }
+        DEFAULT.with(Rc::clone)
+    }
+
+    /// The default config but whether a deferred transition's manual transforms move the content,
+    /// as `SharedContentConfig(permitTransformDuringDeferredTransition)`: not permitted, the
+    /// content stays where it was while its container is moved by hand, drawn in the overlay.
+    pub fn shared_content_config_with(
+        &self,
+        permit_transform_during_deferred_transition: bool,
+    ) -> Rc<dyn SharedContentConfig> {
+        if permit_transform_during_deferred_transition {
+            return self.shared_content_config();
+        }
+        struct NotPermitting;
+        impl SharedContentConfig for NotPermitting {
+            fn permit_transform_during_deferred_transition(&self) -> bool {
+                false
+            }
+        }
+        Rc::new(NotPermitting)
     }
 
     /// A shared element of `state`'s key in `animated_visibility_scope`'s content, as
@@ -1784,6 +1814,11 @@ struct Entry {
     /// The layer it's recorded into for the overlay (a state, as `layer`).
     layer: RefCell<Option<GraphicsLayer>>,
     layer_version: OwnedState<u32>,
+    /// The deferred state it followed in the deferred phase, kept through the hand-off, as
+    /// `deferredTransformState`.
+    deferred_transform_state: RefCell<Option<Rc<SharedMutableTransformState>>>,
+    /// Whether its node took the hand-off's start already, as `hasHandoffOccurred`.
+    has_handoff_occurred: Cell<bool>,
 }
 
 impl Entry {
@@ -1812,6 +1847,8 @@ impl Entry {
             bounds_provider: RefCell::new(None),
             layer: RefCell::new(None),
             layer_version: mutable_state_of(0),
+            deferred_transform_state: RefCell::new(None),
+            has_handoff_occurred: Cell::new(false),
         }
     }
 
@@ -1880,14 +1917,65 @@ impl Entry {
             || !self.render_only_when_visible.get()
     }
 
-    /// As `shouldRenderInOverlay` (state reads).
+    /// As `shouldRenderInOverlay` (state reads): also while its content is moved by hand.
     fn should_render_in_overlay(&self) -> bool {
         let element = self.element();
         self.should_render_at_all()
             && element.bounds_transform_is_active()
             && self.is_enabled()
             && self.render_in_overlay_during_transition.get()
-            && element.scope().is_transition_active.get()
+            && (element.scope().is_transition_active.get() || self.is_mutating())
+    }
+
+    /// The deferred state of the content its node is in, as `boundsProvider`'s
+    /// `modifierLocalTransformState`.
+    fn container_transform_state(&self) -> Option<Rc<SharedMutableTransformState>> {
+        let provider = self.bounds_provider.borrow().clone()?;
+        provider.transform_state()
+    }
+
+    /// Whether the content it's in is moved by hand, as `isMutating` (a state read).
+    fn is_mutating(&self) -> bool {
+        self.container_transform_state().is_some_and(|state| state.is_mutating())
+    }
+
+    /// The deferred state moving it, as `activeMutableTransformState` (state reads): none unless
+    /// its config permits it and its transition is a deferred one's. During the deferred phase,
+    /// the leaving content's, for both contents, so they move together; kept through the
+    /// hand-off.
+    fn active_mutable_transform_state(&self) -> Option<Rc<SharedMutableTransformState>> {
+        if !self.user_state.borrow().config().permit_transform_during_deferred_transition() {
+            return None;
+        }
+        if !self.bounds_animation().transition.is_deferred() {
+            return None;
+        }
+        let state = self.container_transform_state()?;
+        if state.is_handoff_active()
+            && let Some(kept) = self.deferred_transform_state.borrow().clone()
+        {
+            return Some(kept);
+        }
+        let mutating = state.is_mutating();
+        // During the deferred phase the transition is held at its old state: the target is the
+        // leaving content.
+        let is_incoming = if mutating { !self.target() } else { self.target() };
+        let resolved = if is_incoming {
+            self.element()
+                .enabled_entries()
+                .into_iter()
+                .find(|it| if it.is_mutating() { it.target() } else { !it.target() })
+                .and_then(|it| it.container_transform_state())
+                .unwrap_or_else(|| state.clone())
+        } else {
+            state.clone()
+        };
+        if mutating {
+            *self.deferred_transform_state.borrow_mut() = Some(resolved.clone());
+        } else if !state.is_handoff_active() {
+            *self.deferred_transform_state.borrow_mut() = None;
+        }
+        Some(resolved)
     }
 
     /// As `shouldRenderInPlace`.
@@ -1901,6 +1989,9 @@ impl Entry {
         self.target();
         self.is_enabled();
         self.bounds_animation().is_running();
+        if let Some(state) = self.active_mutable_transform_state() {
+            state.is_mutating();
+        }
     }
 
     /// As `updateTransitionActiveness`.
@@ -1909,7 +2000,8 @@ impl Entry {
         let active = compose_runtime::snapshots::Snapshot::without_read_observation(|| {
             self.is_enabled()
                 && self.element().found_match()
-                && self.bounds_animation().is_running()
+                && (self.bounds_animation().is_running()
+                    || self.active_mutable_transform_state().is_some_and(|it| it.is_mutating()))
         });
         self.is_transition_active.set(active);
         if active != old {
@@ -1947,15 +2039,55 @@ impl Entry {
         let Some(bounds) = self.element().state().current_bounds() else { return };
         if render {
             let (x, y) = (bounds.left, bounds.top);
-            let clip = self.clip_path_in_overlay.borrow().clone();
-            match clip {
-                Some(clip) => scope.clip_path(&clip, |scope| {
-                    scope.translate(x, y, |scope| scope.draw_layer(&layer));
-                }),
-                None => scope.translate(x, y, |scope| scope.draw_layer(&layer)),
+            // Moved with its content by hand: the content's scale around its pivot in the layout,
+            // and its offset.
+            let mut scale = 1.0;
+            let mut offset = IntOffset::ZERO;
+            let mut pivot = Offset::ZERO;
+            let state = self.active_mutable_transform_state();
+            if let Some(state) = state.filter(|it| it.is_mutating())
+                && let Some(parent) = state.parent_layout_coordinates()
+                && let Some(root) = self.element().scope().root()
+                && parent.is_attached()
+                && root.is_attached()
+            {
+                scale = state.active_scale();
+                offset = state.active_offset();
+                pivot = calculate_pivot(&parent, &root, state.active_transform_origin());
             }
+            let clip = self.clip_path_in_overlay.borrow().clone();
+            scope.translate(offset.x as f32, offset.y as f32, |scope| {
+                scope.scale(scale, scale, pivot, |scope| match clip {
+                    Some(clip) => scope.clip_path(&clip, |scope| {
+                        scope.translate(x, y, |scope| scope.draw_layer(&layer));
+                    }),
+                    None => scope.translate(x, y, |scope| scope.draw_layer(&layer)),
+                });
+            });
         }
     }
+}
+
+/// The pivot of a content's scale in the layout, as `calculatePivot`: its origin in the content's
+/// bounds in the layout, so a shared element drawn in the overlay scales with its content.
+fn calculate_pivot(
+    parent: &LayoutCoordinates,
+    root: &LayoutCoordinates,
+    transform_origin: TransformOrigin,
+) -> Offset {
+    let bounds = root.local_bounding_box_of(parent, false);
+    Offset::new(
+        bounds.left + bounds.width() * transform_origin.pivot_fraction_x,
+        bounds.top + bounds.height() * transform_origin.pivot_fraction_y,
+    )
+}
+
+/// `point` scaled around `pivot` and moved by `offset`, as `Offset.transform`.
+fn transform_point(point: Offset, pivot: Offset, scale: f32, offset: IntOffset) -> Offset {
+    Offset::new(
+        (point.x - pivot.x) * scale + pivot.x + offset.x as f32,
+        (point.y - pivot.y) * scale + pivot.y + offset.y as f32,
+    )
 }
 
 // ---- The shared node ---------------------------------------------------------------------------
@@ -1976,9 +2108,77 @@ struct NodeShared {
     handle: Cell<Option<NodeHandle>>,
     is_placed: Cell<bool>,
     bounds_before_detached: Cell<Option<Rect>>,
+    /// The deferred state of the content it's in, read when attached, as
+    /// `resolvedTransformState`.
+    transform_state: RefCell<Option<Rc<SharedMutableTransformState>>>,
+    /// Where the hand-off from a deferred phase starts, and at what velocity, as
+    /// `forcedHandoffBounds` and `forcedHandoffVelocity`.
+    forced_handoff_bounds: Cell<Option<Rect>>,
+    forced_handoff_velocity: Cell<Option<AnimationVector>>,
 }
 
 impl NodeShared {
+    /// As `modifierLocalTransformState`: none once detached.
+    fn transform_state(&self) -> Option<Rc<SharedMutableTransformState>> {
+        self.handle.get().filter(|it| it.is_attached())?;
+        self.transform_state.borrow().clone()
+    }
+
+    /// Where the hand-off starts: its bounds where the deferred phase left them, as
+    /// `updateDeferredHandoffValues`. Once per hand-off.
+    fn update_deferred_handoff_values(&self) {
+        let entry = self.entry();
+        let element = entry.element();
+        let state = element.state();
+        if state.target_data().is_none() {
+            return;
+        }
+        let Some(current) = state.current_bounds() else { return };
+        let mutable = entry.active_mutable_transform_state();
+        let Some(mutable) = mutable.filter(|it| it.is_handoff_active()) else {
+            entry.has_handoff_occurred.set(false);
+            return;
+        };
+        if entry.has_handoff_occurred.get() {
+            return;
+        }
+        let (Some(parent), Some(root)) = (mutable.parent_layout_coordinates(), self.scope().root())
+        else {
+            return;
+        };
+        if !parent.is_attached() || !root.is_attached() {
+            return;
+        }
+        let manual_scale = mutable.last_manual_scale();
+        let manual_offset = mutable.last_manual_slide();
+        let pivot = calculate_pivot(&parent, &root, mutable.last_transform_origin());
+        let top_left = transform_point(current.top_left(), pivot, manual_scale, manual_offset);
+        let own_container = self.transform_state().is_some_and(|it| Rc::ptr_eq(&it, &mutable));
+        // Drawn in place in its own content, the content's layer scales it already.
+        let container_applies = !entry.should_render_in_overlay() && own_container;
+        let scale = if container_applies { 1.0 } else { manual_scale };
+        self.forced_handoff_bounds.set(Some(Rect::new(
+            top_left.x,
+            top_left.y,
+            top_left.x + current.width() * scale,
+            top_left.y + current.height() * scale,
+        )));
+        if container_applies {
+            self.forced_handoff_velocity.set(None);
+        } else {
+            let scale_velocity = mutable.scale_handoff_velocity().map_or(0.0, |it| it[0]);
+            let (offset_x, offset_y) =
+                mutable.slide_handoff_velocity().map_or((0.0, 0.0), |it| (it[0], it[1]));
+            let left = (current.left - pivot.x) * scale_velocity + offset_x;
+            let top = (current.top - pivot.y) * scale_velocity + offset_y;
+            let right = (current.right - pivot.x) * scale_velocity + offset_x;
+            let bottom = (current.bottom - pivot.y) * scale_velocity + offset_y;
+            self.forced_handoff_velocity
+                .set(Some(AnimationVector::from([left, top, right, bottom])));
+        }
+        entry.has_handoff_occurred.set(true);
+    }
+
     fn entry(&self) -> Rc<Entry> {
         self.entry.borrow().clone()
     }
@@ -2022,6 +2222,9 @@ impl ModifierNodeElement for SharedBoundsElement {
             handle: Cell::new(None),
             is_placed: Cell::new(false),
             bounds_before_detached: Cell::new(None),
+            transform_state: RefCell::new(None),
+            forced_handoff_bounds: Cell::new(None),
+            forced_handoff_velocity: Cell::new(None),
         });
         SharedBoundsNode {
             shared,
@@ -2065,6 +2268,8 @@ impl SharedBoundsNode {
         self.locals.provide(&LOCAL_ENTRY, Some(EntryArg(entry.clone())));
         let parent = context.modifier_local_current(&LOCAL_ENTRY);
         *entry.parent_state.borrow_mut() = parent.map(|it| Rc::downgrade(&it.0));
+        *self.shared.transform_state.borrow_mut() =
+            context.modifier_local_current(&LOCAL_TRANSFORM_STATE);
         entry.element().scope().renderers_changed();
         entry.set_layer(None);
         self.shared.is_placed.set(false);
@@ -2107,6 +2312,7 @@ impl ModifierNode for SharedBoundsNode {
     }
 
     fn on_detach(&mut self, _context: &mut NodeContext<'_>) {
+        *self.shared.transform_state.borrow_mut() = None;
         let entry = self.shared.entry();
         let root = entry.element().scope().root();
         if root.is_some() {
@@ -2197,11 +2403,14 @@ impl ApproachLayoutModifierNode for SharedBoundsNode {
         content: Measurable,
         constraints: Constraints,
     ) -> MeasureResult {
+        self.shared.update_deferred_handoff_values();
         let entry = self.shared.entry();
         let element = entry.element();
-        let resolved = entry
-            .bounds_animation()
-            .value()
+        let resolved = self
+            .shared
+            .forced_handoff_bounds
+            .get()
+            .or_else(|| entry.bounds_animation().value())
             .or_else(|| element.try_initializing_current_bounds())
             .map(|bounds| {
                 let size = bounds.size().round_to_int_size();
@@ -2293,7 +2502,13 @@ fn place_match_in_transition(
             )
         })
     });
-    animation.animate(current, target_bounds, forced, None, None);
+    animation.animate(
+        current,
+        target_bounds,
+        forced,
+        shared.forced_handoff_bounds.take(),
+        shared.forced_handoff_velocity.take(),
+    );
     let animated = animation.value();
     let animated_top_left = animated.map(|it| target_data.offset_from_direct_manipulation(it));
     let top_left = if entry.target() || removed {
@@ -2310,7 +2525,24 @@ fn place_match_in_transition(
     } else {
         animated_top_left.unwrap_or(current.top_left())
     };
-    let local = coordinates.local_position_of(&root, top_left);
+    // Moved by hand with its content: placed where its content's scale and offset take it, which
+    // the content's layer then maps back (Compose sets the position in the scope first, then
+    // overwrites it when the content has coordinates).
+    let mut final_top_left = top_left;
+    if let Some(state) = entry.active_mutable_transform_state().filter(|it| it.is_mutating()) {
+        if !animation.is_running() {
+            final_top_left = in_scope;
+        }
+        if let Some(parent) = state.parent_layout_coordinates()
+            && parent.is_attached()
+            && root.is_attached()
+        {
+            let pivot = calculate_pivot(&parent, &root, state.active_transform_origin());
+            final_top_left =
+                transform_point(top_left, pivot, state.active_scale(), state.active_offset());
+        }
+    }
+    let local = coordinates.local_position_of(&root, final_top_left);
     placement.place(placeable, local.x.round() as i32, local.y.round() as i32);
 }
 

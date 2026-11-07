@@ -71,8 +71,14 @@ fn CapturedEnterExit(
         Rc::new(CapturedMeasurePolicy { exiting: Cell::new(false), size: Cell::new(IntSize::ZERO) })
     });
     policy.exiting.set(is_exiting);
-    let enter_exit =
-        create_enter_exit_modifier(&child, active_enter, active_exit, None, "CapturedBuiltIn");
+    let enter_exit = create_enter_exit_modifier(
+        &child,
+        active_enter,
+        active_exit,
+        None,
+        false,
+        "CapturedBuiltIn",
+    );
     let (drawn, kept) = (capture.clone(), capture);
     Layout(
         modifier.then(enter_exit).draw_behind(move |scope| {

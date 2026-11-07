@@ -958,6 +958,12 @@ impl<S: Clone + PartialEq + 'static> Transition<S> {
         self.inner.pending.is_some()
     }
 
+    /// Whether it is a deferred transition itself, not a child of one, as Compose's
+    /// `transition is DeferredTransition<*>`.
+    pub(crate) fn is_deferred_root(&self) -> bool {
+        self.inner.pending.is_some() && self.inner.parent.is_none()
+    }
+
     /// The change it plays, as `segment` (a state read): from the state it was at, or heading
     /// for when interrupted, to the target.
     pub fn segment(&self) -> Segment<S> {

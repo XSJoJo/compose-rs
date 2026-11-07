@@ -19,6 +19,7 @@ mod converters;
 mod crossfade;
 mod crossfade_ported;
 mod deferred_content;
+mod deferred_shared_elements;
 mod deferred_target;
 mod deferred_transition;
 mod deferred_visibility;
