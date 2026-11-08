@@ -8,6 +8,7 @@
 //! and a box with a 16:9 aspect ratio.
 
 #![allow(non_snake_case)]
+#![allow(clippy::redundant_closure)]
 
 use std::cell::Cell;
 use std::rc::Rc;

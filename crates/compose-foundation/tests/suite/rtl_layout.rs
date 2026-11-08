@@ -22,6 +22,9 @@ const SIZE: i32 = 100;
 
 type Seen<T> = Rc<Cell<Option<T>>>;
 
+/// Where a layout is in the window, and its width.
+type Positioned = Seen<(Offset, i32)>;
+
 fn rule(content: impl Fn() + 'static) -> ComposeTestRule {
     ComposeTestRule::sized(IntSize::new(400, 400), content)
 }
@@ -223,7 +226,7 @@ fn minimum_touch_target(size: DpSize) -> Modifier {
 // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/RtlLayoutTest.kt, testChildGetsPlacedWithinContainerWithPaddingAndMinimumTouchTarget
 #[test]
 fn test_child_gets_placed_within_container_with_padding_and_minimum_touch_target() {
-    let (outer, inner): (Seen<(Offset, i32)>, Seen<(Offset, i32)>) = Default::default();
+    let (outer, inner): (Positioned, Positioned) = Default::default();
     let (o, i) = (outer.clone(), inner.clone());
     let record = |seen: &Seen<(Offset, i32)>| {
         let seen = seen.clone();
