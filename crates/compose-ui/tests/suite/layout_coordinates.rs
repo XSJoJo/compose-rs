@@ -339,7 +339,8 @@ fn cousins_answer_through_their_common_ancestor_alone() {
     assert_eq!(matrix.map(Offset::ZERO), Offset::new(20.0, 0.0));
 }
 
-// Compose: compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/node/LayoutNodeTest.kt, testPxLocalToGlobalUsesOwnerPosition
+// Compose: compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/node/LayoutNodeTest.kt, testPxLocalToGlobalUsesOwnerPosition,
+// testIntPxLocalToGlobalUsesOwnerPosition (the same test)
 #[test]
 fn the_screen_is_the_window_s_origin_away() {
     let coordinates = told();
@@ -1695,4 +1696,177 @@ fn a_motion_frame_is_of_the_last_placing() {
     motion.set(false);
     host.frame();
     assert!(!kept.introduces_motion_frame_of_reference());
+}
+
+// ---- The rest of LayoutNodeTest's coordinates ----------------------------------------------------
+
+/// A zero-sized parent at `parent_at` with a zero-sized child at `child_at`, as the tests'
+/// `ZeroSizedLayoutNode`s placed: both coordinates, the inner ones of each node.
+fn parent_and_child(
+    parent_at: (i32, i32),
+    child_at: (i32, i32),
+) -> (LayoutCoordinates, LayoutCoordinates, compose_ui::platform::UiHost) {
+    let (parent, child) = (told(), told());
+    let (p, c) = (parent.clone(), child.clone());
+    let host = host(move || {
+        let c = c.clone();
+        Stack!(modifier = moved(parent_at.0, parent_at.1).then(keep(&p)).then(sized(0)), {
+            Leaf(moved(child_at.0, child_at.1).then(keep(&c)).then(sized(0)));
+        });
+    });
+    (of(&parent), of(&child), host)
+}
+
+// Compose: compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/node/LayoutNodeTest.kt, testPxGlobalToLocal, testIntPxGlobalToLocal
+#[test]
+fn a_window_position_in_a_child_takes_off_both_offsets() {
+    let (_, child, _host) = parent_and_child((100, 10), (50, 80));
+    assert_eq!(child.window_to_local(Offset::new(250.0, 300.0)), Offset::new(100.0, 210.0));
+}
+
+// Compose: compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/node/LayoutNodeTest.kt, testPxLocalToGlobal, testIntPxLocalToGlobal
+#[test]
+fn a_child_s_position_in_the_window_adds_both_offsets() {
+    let (_, child, _host) = parent_and_child((100, 10), (50, 80));
+    assert_eq!(child.local_to_window(Offset::new(5.0, 15.0)), Offset::new(155.0, 105.0));
+}
+
+// Compose: compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/node/LayoutNodeTest.kt, testChildToLocal
+#[test]
+fn a_child_s_position_in_its_parent_adds_its_offset() {
+    let (parent, child, _host) = parent_and_child((100, 10), (50, 80));
+    assert_eq!(parent.local_position_of(&child, Offset::new(5.0, 15.0)), Offset::new(55.0, 95.0));
+}
+
+// Compose: compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/node/LayoutNodeTest.kt, testChildToLocalTheSameNode
+#[test]
+fn a_position_in_the_same_coordinates_is_itself() {
+    let (_, child, _host) = parent_and_child((0, 0), (0, 0));
+    assert_eq!(child.local_position_of(&child, Offset::new(5.0, 15.0)), Offset::new(5.0, 15.0));
+}
+
+// Compose: compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/node/LayoutNodeTest.kt, testChildToLocalFailedWhenNotAncestorNoParent
+#[test]
+#[should_panic]
+#[ignore = "coordinates of another tree are a source compose-rs doesn't find: `local_position_of` \
+            answers zero, as for detached ones, where Compose throws (not in the same hierarchy)"]
+fn a_position_from_another_tree_panics() {
+    let (_, first, _first_host) = parent_and_child((0, 0), (0, 0));
+    let (_, second, _second_host) = parent_and_child((0, 0), (0, 0));
+    second.local_position_of(&first, Offset::new(5.0, 15.0));
+}
+
+// Compose: compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/node/LayoutNodeTest.kt, testPositionRelativeToRoot
+#[test]
+fn a_child_s_position_in_the_root_adds_a_negative_offset_too() {
+    let (_, child, _host) = parent_and_child((-100, 10), (50, 80));
+    assert_eq!(child.position_in_root(), Offset::new(-50.0, 90.0));
+}
+
+// Compose: compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/node/LayoutNodeTest.kt, testPositionRelativeToRootIsNotAffectedByOwnerPosition
+#[test]
+fn a_child_s_position_in_the_root_isn_t_moved_by_the_window_s_origin() {
+    let (_, child, mut host) = parent_and_child((0, 0), (50, 80));
+    host.set_window_origin(Offset::new(20.0, 20.0));
+    host.frame();
+    assert_eq!(child.position_in_root(), Offset::new(50.0, 80.0));
+}
+
+// Compose: compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/node/LayoutNodeTest.kt, testPositionRelativeToAncestorWithParent
+#[test]
+fn a_child_s_origin_in_its_parent_is_its_offset() {
+    let (parent, child, _host) = parent_and_child((-100, 10), (50, 80));
+    assert_eq!(parent.local_position_of(&child, Offset::ZERO), Offset::new(50.0, 80.0));
+}
+
+// Compose: compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/node/LayoutNodeTest.kt, testPositionRelativeToAncestorWithGrandParent
+#[test]
+fn a_grandchild_s_origin_in_its_grandparent_adds_two_offsets() {
+    let (grandparent, child) = (told(), told());
+    let (g, c) = (grandparent.clone(), child.clone());
+    let _host = host(move || {
+        let c = c.clone();
+        Stack!(modifier = moved(-7, 17).then(keep(&g)).then(sized(0)), {
+            let c = c.clone();
+            Stack!(modifier = moved(23, -13).then(sized(0)), {
+                Leaf(moved(-3, 11).then(keep(&c)).then(sized(0)));
+            });
+        });
+    });
+    let (grandparent, child) = (of(&grandparent), of(&child));
+    assert_eq!(grandparent.local_position_of(&child, Offset::ZERO), Offset::new(20.0, -2.0));
+}
+
+// Compose: compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/node/LayoutNodeTest.kt, nodeCoordinator_transformFrom_offsets
+#[test]
+fn offsets_transform_both_ways_in_a_matrix() {
+    let (parent, child, _host) = parent_and_child((-100, 10), (50, 80));
+    let mut matrix = Matrix::new();
+    child.transform_from(&parent, &mut matrix);
+    assert_eq!(matrix.map(Offset::ZERO), Offset::new(-50.0, -80.0));
+    parent.transform_from(&child, &mut matrix);
+    assert_eq!(matrix.map(Offset::ZERO), Offset::new(50.0, 80.0));
+}
+
+// Compose: compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/node/LayoutNodeTest.kt, nodeCoordinator_transformFrom_siblings
+#[test]
+fn scaled_siblings_transform_both_ways_in_a_matrix() {
+    let (first, second) = (told(), told());
+    let (f, s) = (first.clone(), second.clone());
+    let scaled = |x: f32, y: f32| {
+        Modifier.graphics_layer(move |layer| {
+            layer.scale_x = x;
+            layer.scale_y = y;
+            layer.transform_origin =
+                TransformOrigin { pivot_fraction_x: 0.0, pivot_fraction_y: 0.0 };
+        })
+    };
+    let _host = host(move || {
+        let (f, s) = (f.clone(), s.clone());
+        Stack!(modifier = sized(0), {
+            Leaf(moved(100, 200).then(scaled(0.5, 0.25)).then(keep(&f)).then(sized(0)));
+            Leaf(moved(5, 11).then(scaled(5.0, 2.0)).then(keep(&s)).then(sized(0)));
+        });
+    });
+    let (first, second) = (of(&first), of(&second));
+    let mut matrix = Matrix::new();
+    // (20, 36) is (10, 9) scaled, (110, 209) in the parent, (105, 198) from the second's origin,
+    // (21, 99) in it.
+    second.transform_from(&first, &mut matrix);
+    assert!(close(matrix.map(Offset::new(20.0, 36.0)), Offset::new(21.0, 99.0)));
+    first.transform_from(&second, &mut matrix);
+    assert!(close(matrix.map(Offset::new(21.0, 99.0)), Offset::new(20.0, 36.0)));
+}
+
+// Compose: compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/node/LayoutNodeTest.kt, coordinatesAttachedWhenLayoutNodeAttached
+#[test]
+fn a_node_s_coordinates_are_attached_while_it_is() {
+    let (shown, coordinates) = (mutable_state_of(true), told());
+    let (s, c) = (shown.handle(), coordinates.clone());
+    let mut host = host(move || {
+        if s.get() {
+            Leaf(Modifier.graphics_layer(|_| {}).then(keep(&c)).then(sized(10)));
+        }
+    });
+    let coordinates = of(&coordinates);
+    assert!(coordinates.is_attached());
+    shown.set(false);
+    host.frame();
+    assert!(!coordinates.is_attached());
+}
+
+// Compose: compose/ui/ui/src/androidHostTest/kotlin/androidx/compose/ui/node/LayoutNodeTest.kt, nodeCoordinatorParentLayoutCoordinates
+#[test]
+fn a_child_s_coordinates_have_its_parent_s_inner_ones_as_parent_layout() {
+    let (parent, outer, inner) = (told(), told(), told());
+    let (p, o, i) = (parent.clone(), outer.clone(), inner.clone());
+    let _host = host(move || {
+        let (o, i) = (o.clone(), i.clone());
+        Stack!(modifier = sized(20).then(keep(&p)), {
+            Leaf(keep(&o).then(Modifier.graphics_layer(|_| {})).then(keep(&i)).then(sized(10)));
+        });
+    });
+    let (parent, outer, inner) = (of(&parent), of(&outer), of(&inner));
+    assert_eq!(inner.parent_layout_coordinates(), Some(parent));
+    assert_eq!(outer.parent_layout_coordinates(), Some(parent));
 }
