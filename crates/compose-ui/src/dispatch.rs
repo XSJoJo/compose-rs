@@ -10,6 +10,31 @@ use crate::node_chain::{EntryId, NodeKinds, entry_state};
 use crate::tree::{NodeId, UiTree};
 use crate::unit::{IntSize, Offset};
 
+/// Appends the entries of `paths` (each from the root down) to `order` as Compose's hit path
+/// tree cancels them (D1931): the paths merged where they start alike, each node after the
+/// nodes below it (`Node.dispatchCancel`: its children, then itself), a node told once.
+fn cancel_order(paths: &[&[HitEntry]], order: &mut Vec<HitEntry>) {
+    let mut firsts: Vec<HitEntry> = Vec::new();
+    for path in paths {
+        if let Some(first) = path.first()
+            && !firsts.contains(first)
+        {
+            firsts.push(*first);
+        }
+    }
+    for first in firsts {
+        let below: Vec<&[HitEntry]> = paths
+            .iter()
+            .filter(|path| path.first() == Some(&first))
+            .map(|path| &path[1..])
+            .collect();
+        cancel_order(&below, order);
+        if !order.contains(&first) {
+            order.push(first);
+        }
+    }
+}
+
 /// A pointer input node on a hit path.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct HitEntry {
@@ -680,7 +705,8 @@ impl UiTree {
             return;
         };
         let (_, path) = self.captures.remove(index);
-        for entry in path {
+        // Innermost first, as Compose's `Node.dispatchCancel` (D1931).
+        for entry in path.into_iter().rev() {
             // Compose has no cancel of one pointer: a node's pointers go together, and it hears the
             // others no more until a new press.
             for (_, other) in &mut self.captures {
@@ -1025,25 +1051,21 @@ impl UiTree {
     pub fn cancel_pointers(&mut self) {
         self.pointer_states.clear();
         self.panning = false;
+        let captures = std::mem::take(&mut self.captures);
+        let paths: Vec<&[HitEntry]> = captures.iter().map(|(_, path)| &path[..]).collect();
         let mut told: Vec<HitEntry> = Vec::new();
-        for (_, path) in std::mem::take(&mut self.captures) {
-            for entry in path {
-                // Told once, whichever pointers it has.
-                if told.contains(&entry) {
-                    continue;
-                }
-                told.push(entry);
-                if let Some(value) = self.get_mut(entry.node)
-                    && value.chain_version == entry.version
-                    && let Some(handler) = value.chain[entry.index as usize]
-                        .resolve(entry.delegate)
-                        .and_then(|node| node.as_pointer_input())
-                {
-                    handler.on_cancel_pointer_input();
-                    self.note_delegates_changed(entry.node, entry.index as usize);
-                    // A gesture's drawing (a press, a drag) ends without a context to say so.
-                    self.invalidate_draw_of(entry.node);
-                }
+        cancel_order(&paths, &mut told);
+        for entry in told {
+            if let Some(value) = self.get_mut(entry.node)
+                && value.chain_version == entry.version
+                && let Some(handler) = value.chain[entry.index as usize]
+                    .resolve(entry.delegate)
+                    .and_then(|node| node.as_pointer_input())
+            {
+                handler.on_cancel_pointer_input();
+                self.note_delegates_changed(entry.node, entry.index as usize);
+                // A gesture's drawing (a press, a drag) ends without a context to say so.
+                self.invalidate_draw_of(entry.node);
             }
         }
         self.sync_noted_delegates();

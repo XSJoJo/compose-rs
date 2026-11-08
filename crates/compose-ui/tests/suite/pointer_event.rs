@@ -1065,6 +1065,155 @@ fn moves_consumed_on_two_independent_paths_stay_on_their_own() {
     );
 }
 
+/// Writes down "<name> cancel" when cancelled, and for each event in the main pass "<name> down"
+/// if a pointer of it comes down, else "<name> moved".
+struct CancelLog(&'static str, Rc<RefCell<Vec<String>>>);
+
+struct CancelLogNode(&'static str, Rc<RefCell<Vec<String>>>);
+
+impl ModifierNodeElement for CancelLog {
+    type Node = CancelLogNode;
+    fn create(&self) -> CancelLogNode {
+        CancelLogNode(self.0, self.1.clone())
+    }
+    fn update(&self, _: &mut CancelLogNode) {}
+    fn same(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl ModifierNode for CancelLogNode {
+    fn as_pointer_input(&mut self) -> Option<&mut dyn PointerInputModifierNode> {
+        Some(self)
+    }
+}
+
+impl PointerInputModifierNode for CancelLogNode {
+    fn takes_whole_events(&self) -> bool {
+        true
+    }
+    fn on_pointer_events(
+        &mut self,
+        event: &PointerEvents,
+        pass: PointerEventPass,
+        _: IntSize,
+        _: &mut EventContext<'_>,
+    ) {
+        if pass == PointerEventPass::Main {
+            let down = event.changes.iter().any(|it| it.changed_to_down_ignore_consumed());
+            let what = if down { "down" } else { "moved" };
+            self.1.borrow_mut().push(format!("{} {what}", self.0));
+        }
+    }
+    fn on_cancel_pointer_input(&mut self) {
+        self.1.borrow_mut().push(format!("{} cancel", self.0));
+    }
+}
+
+/// Each layout's nodes, outer first, in a row: the cancels and what's heard, and the host.
+fn cancel_logs(rows: &'static [&'static [&'static str]]) -> (UiHost, Rc<RefCell<Vec<String>>>) {
+    let log: Rc<RefCell<Vec<String>>> = Rc::default();
+    let seen = log.clone();
+    let host = host(move || {
+        let leaves: Vec<Modifier> = rows
+            .iter()
+            .map(|names| {
+                names.iter().fold(Modifier.size(50.dp()), |modifier, name| {
+                    modifier.then_custom(CancelLog(name, seen.clone()))
+                })
+            })
+            .collect();
+        Row!({
+            for leaf in &leaves {
+                Leaf(leaf.clone());
+            }
+        });
+    });
+    (host, log)
+}
+
+fn cancels(log: &Rc<RefCell<Vec<String>>>) -> Vec<String> {
+    log.borrow().iter().filter(|line| line.ends_with("cancel")).cloned().collect()
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/pointer/HitPathTrackerTest.kt, processCancel_nothingTracked_doesNotCrash
+#[test]
+fn a_cancel_with_no_pointer_down_tells_no_node() {
+    let (host, log) = cancel_logs(&[&["pif"]]);
+    host.with_tree(|tree| tree.cancel_pointers());
+    assert!(log.borrow().is_empty());
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/pointer/HitPathTrackerTest.kt, processCancel_singlePin_cancelHandlerIsCalled, processCancel_3Pins_cancelHandlersCalledOnceInOrder, processCancel_singlePin_cleared, processCancel_3Pins_cleared
+/// A cancel tells each node of the path once, innermost first; nothing of the gesture is kept:
+/// the pointer's next event is a new press (Compose's processor hit tests a pointer it doesn't
+/// know as coming down).
+#[test]
+fn a_cancel_tells_a_path_innermost_first_and_keeps_nothing() {
+    let (mut host, log) = cancel_logs(&[&["parent", "middle", "child"]]);
+    host.send_pointer(finger_down(3, 10.0, 10.0));
+    log.borrow_mut().clear();
+    host.with_tree(|tree| tree.cancel_pointers());
+    assert_eq!(*log.borrow(), ["child cancel", "middle cancel", "parent cancel"]);
+    log.borrow_mut().clear();
+    host.send_pointer(finger(3, 12.0, 10.0));
+    assert_eq!(*log.borrow(), ["child down", "middle down", "parent down"]);
+
+    let (mut host, log) = cancel_logs(&[&["pif"]]);
+    host.send_pointer(finger_down(3, 10.0, 10.0));
+    host.with_tree(|tree| tree.cancel_pointers());
+    assert_eq!(cancels(&log), ["pif cancel"]);
+
+    // One pointer's cancel, the same order.
+    let (mut host, log) = cancel_logs(&[&["parent", "middle", "child"]]);
+    host.send_pointer(finger_down(3, 10.0, 10.0));
+    host.with_tree(|tree| tree.cancel_pointer(PointerId(3)));
+    assert_eq!(cancels(&log), ["child cancel", "middle cancel", "parent cancel"]);
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/pointer/HitPathTrackerTest.kt, processCancel_2IndependentPathsFromRoot_cancelHandlersCalledOnceInOrder, processCancel_2IndependentPathsFromRoot_cleared
+/// Two independent paths: each path's nodes cancelled innermost first, a path at a time; both
+/// pointers' next events are new presses.
+#[test]
+fn a_cancel_tells_two_independent_paths_one_after_the_other() {
+    let (mut host, log) = cancel_logs(&[&["parent1", "child1"], &["parent2", "child2"]]);
+    host.send_pointers(&[finger_down(3, 10.0, 10.0), finger_down(5, 60.0, 10.0)]);
+    log.borrow_mut().clear();
+    host.with_tree(|tree| tree.cancel_pointers());
+    assert_eq!(
+        *log.borrow(),
+        ["child1 cancel", "parent1 cancel", "child2 cancel", "parent2 cancel"]
+    );
+    log.borrow_mut().clear();
+    host.send_pointers(&[finger(3, 12.0, 10.0), finger(5, 62.0, 10.0)]);
+    assert_eq!(*log.borrow(), ["child1 down", "parent1 down", "child2 down", "parent2 down"]);
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/pointer/HitPathTrackerTest.kt, processCancel_2BranchingPaths_cancelHandlersCalledOnceInOrder, processCancel_2BranchingPaths_cleared
+/// Two paths sharing a parent: the children, then the parent once; both pointers' next events
+/// are new presses.
+#[test]
+fn a_cancel_tells_a_shared_parent_once_after_its_children() {
+    let log: Rc<RefCell<Vec<String>>> = Rc::default();
+    let seen = log.clone();
+    let mut host = host(move || {
+        let parent = Modifier.then_custom(CancelLog("parent", seen.clone()));
+        let child1 = Modifier.size(50.dp()).then_custom(CancelLog("child1", seen.clone()));
+        let child2 = Modifier.size(50.dp()).then_custom(CancelLog("child2", seen.clone()));
+        Row!(modifier = parent, {
+            Leaf(child1.clone());
+            Leaf(child2.clone());
+        });
+    });
+    host.send_pointers(&[finger_down(3, 10.0, 10.0), finger_down(5, 60.0, 10.0)]);
+    log.borrow_mut().clear();
+    host.with_tree(|tree| tree.cancel_pointers());
+    assert_eq!(*log.borrow(), ["child1 cancel", "child2 cancel", "parent cancel"]);
+    log.borrow_mut().clear();
+    host.send_pointers(&[finger(3, 12.0, 10.0), finger(5, 62.0, 10.0)]);
+    assert_eq!(*log.borrow(), ["child1 down", "child2 down", "parent down"]);
+}
+
 // ---- A mouse's buttons ---------------------------------------------------------------------------
 
 // Compose: compose/ui/ui/src/commonMain/kotlin/androidx/compose/ui/input/pointer/PointerEvent.kt, PointerButtons

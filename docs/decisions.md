@@ -1064,6 +1064,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D1928 | [ui-and-layout](decisions/ui-and-layout.md#d1928) | current |
 | D1929 | [ui-and-layout](decisions/ui-and-layout.md#d1929) | current |
 | D1930 | [ui-and-layout](decisions/ui-and-layout.md#d1930) | current |
+| D1931 | [ui-and-layout](decisions/ui-and-layout.md#d1931) | current |
 | D1950 | [runtime](decisions/runtime.md#d1950) | current |
 | D1951 | [runtime](decisions/runtime.md#d1951) | current |
 | D2000 | [text](decisions/text.md#d2000) | current |
