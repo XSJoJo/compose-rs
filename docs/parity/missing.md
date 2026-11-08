@@ -18,7 +18,7 @@ The largest `feature:` gaps in the ledgers on 2026-11-07 (`python3 tools/parity/
 | Handwriting | ~84 | foundation-text-misc | |
 | Floating toolbar (Material 3) | ~82 | material3 | |
 | Border parity | ~79 | foundation-text-misc | Mostly in (D1050–D1054); the tag lags, its semantics are left |
-| Magnifier | ~78 | foundation-text-misc | |
+| Magnifier leftovers | ~10 | foundation-text-misc | In (D2072–D2074); left: `TextFieldMagnifierTest`'s drag-and-drop tests (with drag and drop), a device run of `PlatformMagnifierTest`, the selection gesture tests' magnifier checks |
 | Android text device tests | ~68 | ui-text-and-test | |
 | Search bar (Material 3) | ~66 | material3 | |
 | Polygon shapes | ~64 | foundation-text-misc | |

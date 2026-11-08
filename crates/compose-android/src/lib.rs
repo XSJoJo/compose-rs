@@ -29,6 +29,7 @@ pub mod autofill;
 mod bridge;
 mod frame_time;
 mod logging;
+mod magnifier;
 mod performance_hint;
 mod pointer_icon;
 mod services;

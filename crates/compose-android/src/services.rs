@@ -5,7 +5,7 @@
 //! looper, as it does host events (D226). Links are checked first, in Rust
 //! (`PlatformUriHandler`: allowed schemes only, D283). The edge effects of overscroll are here too:
 //! `android.widget.EdgeEffect`s, in Kotlin's `ComposeRsEdgeEffect`, called only from a scroller's
-//! first pull at an edge on (D1476).
+//! first pull at an edge on (D1476). The magnifier is `magnifier.rs`'s (D2074).
 
 use std::cell::OnceCell;
 use std::rc::Rc;
@@ -45,10 +45,14 @@ pub(crate) fn install(
         release: method(env, view, jni_str!("releaseEdgeEffects"), jni_sig!("(I)V")),
         methods: OnceCell::new(),
     });
+    // The platform's magnifier (API 28 and up; the module's minimum is 29), D2074.
+    let magnifiers: Rc<dyn compose_ui::PlatformMagnifierFactory> =
+        Rc::new(crate::magnifier::JniMagnifiers::new(env, view, view_ref));
     ui.with_tree(|tree| {
         tree.set_platform_uri_handler(uri_handler);
         tree.set_haptic_feedback(haptic_feedback);
         tree.set_edge_effect_factory(edge_effects);
+        tree.set_platform_magnifier_factory(Some(magnifiers));
     });
 }
 

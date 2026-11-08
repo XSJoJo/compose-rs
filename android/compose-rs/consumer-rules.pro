@@ -4,6 +4,7 @@
 -keep class rs.compose.android.TextMeasurer { *; }
 -keep class rs.compose.android.ComposeRsImages { *; }
 -keep class rs.compose.android.ComposeRsEdgeEffect { *; }
+-keep class rs.compose.android.ComposeRsMagnifier { *; }
 # AndroidX activity is compile-only: back goes through it only when the app has it.
 -dontwarn androidx.activity.**
 -keepnames class androidx.activity.OnBackPressedDispatcherOwner

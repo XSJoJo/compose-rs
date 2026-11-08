@@ -1570,6 +1570,30 @@ class ComposeRsView @JvmOverloads constructor(
 
     fun releaseEdgeEffects(owner: Int) = edgeEffects.release(owner)
 
+    /**
+     * A platform magnifier over this view, as Rust's magnifier nodes make them (D2074): a size of
+     * -1 and NaN values are the platform's defaults.
+     */
+    fun createMagnifier(
+        useTextDefault: Boolean,
+        width: Int,
+        height: Int,
+        cornerRadius: Float,
+        elevation: Float,
+        clippingEnabled: Boolean,
+        initialZoom: Float,
+    ): ComposeRsMagnifier =
+        ComposeRsMagnifier.create(
+            this,
+            useTextDefault,
+            width,
+            height,
+            cornerRadius,
+            elevation,
+            clippingEnabled,
+            initialZoom,
+        )
+
     fun openUri(uri: String) {
         mainHandler.post {
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uri))
