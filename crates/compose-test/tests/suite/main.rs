@@ -8,6 +8,7 @@ extern crate compose_runtime as compose;
 mod support;
 
 mod actions;
+mod assert_text;
 mod bounds;
 mod clock;
 mod configuration_override;

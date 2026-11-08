@@ -61,10 +61,10 @@ pub use matcher::{
     has_progress_bar_range_info, has_request_focus_action, has_role, has_scroll_action,
     has_scroll_to_index_action, has_scroll_to_key_action, has_scroll_to_node_action,
     has_set_text_action, has_state_description, has_test_tag, has_text, has_text_containing,
-    has_text_exactly, has_text_with, is_dialog, is_editable, is_enabled, is_focusable, is_focused,
-    is_heading, is_hidden_from_accessibility, is_not_enabled, is_not_focusable, is_not_focused,
-    is_not_selected, is_off, is_on, is_popup, is_root, is_selectable, is_selected, is_toggleable,
-    key_is_defined, key_not_defined,
+    has_text_exactly, has_text_exactly_including, has_text_with, is_dialog, is_editable,
+    is_enabled, is_focusable, is_focused, is_heading, is_hidden_from_accessibility, is_not_enabled,
+    is_not_focusable, is_not_focused, is_not_selected, is_off, is_on, is_popup, is_root,
+    is_selectable, is_selected, is_toggleable, key_is_defined, key_not_defined,
 };
 pub use restoration::StateRestorationTester;
 pub use rule::{
