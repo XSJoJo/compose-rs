@@ -18,6 +18,10 @@
 // module that a public signature uses must be re-exported.
 #![deny(unnameable_types)]
 
+// The composable macros' paths, for the unit tests composing content (`bridge.rs`).
+#[cfg(test)]
+extern crate compose_runtime as compose;
+
 pub mod accessibility;
 mod image;
 pub mod input_method;

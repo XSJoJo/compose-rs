@@ -1930,8 +1930,24 @@ pub extern "system" fn Java_rs_compose_android_ComposeRsNative_key(
     meta: jint,
     soft: jboolean,
 ) -> jboolean {
+    let Some((event, text)) = key_event(key, character, down, meta, soft) else {
+        return false;
+    };
     // SAFETY: a live host, on the main thread.
     let host = unsafe { self::host(host) };
+    host.ui.send_key_and_text(event, text.as_deref())
+}
+
+/// The key event `ComposeRsNative.key`'s arguments describe, with its typed text; `None` for a
+/// key compose-rs doesn't know. As Compose's `KeyEvent(android.view.KeyEvent)`: the modifiers
+/// from Android's meta state (`isAltPressed` and the others).
+fn key_event(
+    key: jint,
+    character: jint,
+    down: bool,
+    meta: jint,
+    soft: bool,
+) -> Option<(KeyEvent, Option<String>)> {
     let character = char::from_u32(character as u32).filter(|c| *c != '\0');
     let key = match key {
         1 => Key::Enter,
@@ -1956,10 +1972,7 @@ pub extern "system" fn Java_rs_compose_android_ComposeRsNative_key(
         20 => Key::Cut,
         21 => Key::Paste,
         22 => Key::Insert,
-        _ => match character {
-            Some(c) => Key::Character(c),
-            None => return false,
-        },
+        _ => Key::Character(character?),
     };
     // Android's meta state: shift 1, alt 2, ctrl 0x1000, meta 0x10000.
     let modifiers = KeyModifiers {
@@ -1974,7 +1987,7 @@ pub extern "system" fn Java_rs_compose_android_ComposeRsNative_key(
         .filter(|c| down && !modifiers.ctrl && !modifiers.meta && !c.is_control())
         .map(|c| c.to_string());
     let event = KeyEvent { key, kind, modifiers, from_soft_keyboard: soft };
-    host.ui.send_key_and_text(event, text.as_deref())
+    Some((event, text))
 }
 
 // ---- The keyboard's connection (`ComposeRsInputConnection`, `input_method.rs`) --------------
@@ -2946,6 +2959,115 @@ mod tests {
     }
 
     use super::*;
+
+    // ---- Keys: `ComposeRsNative.key`'s arguments, as `KeyEvent(android.view.KeyEvent)` ----
+
+    // Android's `KeyEvent.META_*_ON`.
+    const META_SHIFT_ON: i32 = 0x1;
+    const META_ALT_ON: i32 = 0x2;
+    const META_CTRL_ON: i32 = 0x1000;
+    const META_META_ON: i32 = 0x10000;
+
+    /// The modifiers of a key down on A with `meta`, as `isAltPressed`, `isCtrlPressed`,
+    /// `isMetaPressed` and `isShiftPressed`. The view sends A as its character (key 0).
+    fn pressed(meta: i32) -> (bool, bool, bool, bool) {
+        let (event, _) = key_event(0, 'a' as i32, true, meta, false).unwrap();
+        assert_eq!((event.key, event.kind), (Key::Character('a'), KeyEventType::KeyDown));
+        let it = event.modifiers;
+        (it.alt, it.ctrl, it.meta, it.shift)
+    }
+
+    // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/key/MetaKeyTest.kt, noMetaKeyIsPressed
+    #[test]
+    fn no_meta_key_is_pressed() {
+        assert_eq!(pressed(0), (false, false, false, false));
+    }
+
+    // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/key/MetaKeyTest.kt, altIsPressed
+    #[test]
+    fn alt_is_pressed() {
+        assert_eq!(pressed(META_ALT_ON), (true, false, false, false));
+    }
+
+    // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/key/MetaKeyTest.kt, ctrlIsPressed
+    #[test]
+    fn ctrl_is_pressed() {
+        assert_eq!(pressed(META_CTRL_ON), (false, true, false, false));
+    }
+
+    // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/key/MetaKeyTest.kt, metaIsPressed
+    #[test]
+    fn meta_is_pressed() {
+        assert_eq!(pressed(META_META_ON), (false, false, true, false));
+    }
+
+    // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/key/MetaKeyTest.kt, shiftIsPressed
+    #[test]
+    fn shift_is_pressed() {
+        assert_eq!(pressed(META_SHIFT_ON), (false, false, false, true));
+    }
+
+    // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/key/MetaKeyTest.kt, CtrlShiftIsPressed
+    #[test]
+    fn ctrl_shift_is_pressed() {
+        assert_eq!(pressed(META_CTRL_ON | META_SHIFT_ON), (false, true, false, true));
+    }
+
+    // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/key/MetaKeyTest.kt, AltCtrlShiftIsPressed
+    #[test]
+    fn alt_ctrl_shift_is_pressed() {
+        assert_eq!(pressed(META_ALT_ON | META_CTRL_ON | META_SHIFT_ON), (true, true, false, true));
+    }
+
+    // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/key/MetaKeyTest.kt, AltCtrlMetaShiftIsPressed
+    #[test]
+    fn alt_ctrl_meta_shift_is_pressed() {
+        let all = META_ALT_ON | META_CTRL_ON | META_META_ON | META_SHIFT_ON;
+        assert_eq!(pressed(all), (true, true, true, true));
+    }
+
+    /// A key from the view reaches a focused node's `on_key_event`, which consumes it, for a
+    /// down alone and a down then an up (the Kotlin test's two parameters).
+    // Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/key/AndroidProcessKeyInputTest.kt, onKeyEvent_triggered
+    #[test]
+    fn on_key_event_triggered() {
+        use compose_foundation::layout::*;
+        use compose_test::compose_test;
+        use std::cell::Cell;
+        use std::rc::Rc;
+        for downs in [&[true][..], &[true, false]] {
+            let received: Rc<Cell<Option<KeyEvent>>> = Rc::default();
+            let seen = received.clone();
+            let focus_requester = compose_ui::FocusRequester::new();
+            let mut ui = compose_test(move || {
+                let seen = seen.clone();
+                Box!(
+                    modifier = compose_ui::Modifier
+                        .focus_requester(focus_requester)
+                        .focus_target()
+                        .on_key_event(move |event: KeyEvent| {
+                            seen.set(Some(event));
+                            true
+                        })
+                );
+            });
+            ui.wait_for_idle();
+            assert!(focus_requester.request_focus());
+            ui.wait_for_idle();
+            let mut last_consumed = false;
+            for &down in downs {
+                let (event, text) = key_event(0, 'a' as i32, down, 0, false).unwrap();
+                last_consumed = ui.host().send_key_and_text(event, text.as_deref());
+            }
+            ui.wait_for_idle();
+            let event = received.get().expect("the node received the key");
+            let last =
+                if *downs.last().unwrap() { KeyEventType::KeyDown } else { KeyEventType::KeyUp };
+            assert_eq!(event.kind, last);
+            assert_eq!(event.key, Key::Character('a'));
+            assert!(last_consumed);
+        }
+    }
 
     #[test]
     fn a_taken_drawing_says_when_its_memory_moved() {
