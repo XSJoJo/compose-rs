@@ -16,6 +16,26 @@ Moving to a newer androidx means re-checking the ledgers' test lists and `api/cu
 - **Why things are the way they are:** [docs/decisions.md](../decisions.md) indexes every decision (`D<number>`), with the text in `docs/decisions/<area>.md`. Decision numbers are allocated in blocks per area; before using a number, check it isn't used on `origin/main` or on any open branch (`git log --all -S'| D1234 |'`).
 - **Work in flight:** the section [In flight](#in-flight) below, updated when work stops. Unmerged branches are pushed as `wip/<name>`.
 
+## Coverage by area
+
+From the ledgers after the audit of 2026-11-08, in Compose `@Test` methods. "Partial" counts whole files, of which part is ported, so the work left there is smaller than the number. A few files appear in two ledgers (22 between ui-core and ui-input, `SystemGestureExclusionTest` in both foundation ledgers), so the rows don't add up to a total.
+
+| Area (ledger) | Ported or covered | Partial (files, tests) | Ready to port now (`port`) | Waiting on a feature | n/a | The biggest missing features |
+|---|---:|---:|---:|---:|---:|---|
+| Runtime ([runtime](runtime.md)) | 731 | 9, 303 | 0 | 0 | 968 | The rest of error traces (11), `rememberSerializable` (needs serde: a decision for the user), saved-state owners; 4 `rememberSaveable` tests are portable now |
+| ui: layout, nodes, drawing, graphics ([ui-core](ui-core.md)) | 1,168 | 49, 1,257 | 129 | 318 | 293 | Progressive blur (60), brush extras (42), media queries (42), a graphics layer's shape semantics (28), rulers (23), non-linear font scaling (21) |
+| ui: input, focus, semantics, hosts ([ui-input](ui-input.md)) | 1,057 | 46, 1,293 | 62 | 654 | 459 | Android view interop (279), scroll capture (44), platform text input (43), media queries (42), the clipboard API (30) |
+| ui-text and ui-test ([ui-text-and-test](ui-text-and-test.md)) | 1,478 | 42, 1,138 | 284 | 409 | 533 | Android text device tests (68), fonts (60), device configuration override (35), text actions (27), line-height style modes (25) |
+| foundation: layout, gestures, scrolling, lazy, pager ([foundation-layout-lazy](foundation-layout-lazy.md)) | 1,527 | 51, 1,353 | 16 | 101 | 132 | Layout modifiers (`Modifier.visible`, `matchParentSize`, `absolutePadding`, `Arrangement.Absolute`), foundation reading trackpad and indirect pointer events, lazy semantics (`IndexForKey`, `CollectionItemInfo` set by the lazy layouts), gesture detectors (`awaitEachGesture`, `PressGestureScope`), `scrollableArea`, `fitInside`/`fitOutside` |
+| foundation: text, fields, selection, the rest ([foundation-text-misc](foundation-text-misc.md)) | 1,376 | 51, 1,492 | 179 | 820 | 1,070 | Android IME details (194), handwriting (84), text field styles (67), polygon shapes (64), text links (56), `TextFieldLayoutStateCache` (45), content receiver (40) |
+| animation and Navigation 3 ([animation-navigation](animation-navigation.md)) | 910 | 8, 97 | 0 | 58 | 154 | Animated image vectors (22), Navigation 3 with movable entries (19) and shared elements, lookahead visual debugging (16); 6 animation tests unblocked once `AnimatedContent` uses lookahead |
+| Material 3 ([material3](material3.md), not audited) | 765 | 47, 1,243 | 189 | 539 | 34 | Carousel (99), floating toolbar (82), search bar (66), wide navigation rail (46), wavy progress (44) — planned last |
+| lifecycle ([lifecycle](lifecycle.md)) | see ledger | | | | | `flowWithLifecycle` and `collectAsStateWithLifecycle` (21; the flows exist), saved state (`SavedStateHandle`) |
+
+**The core modules aren't complete.** None of runtime, ui or foundation has every portable test ported. The quickest ways to raise coverage are the `port` rows (nothing blocks them: about 670 tests across ui and foundation) and the rest of the `partial` files. Each ledger's rows say what is left in each file.
+
+**Keeping these numbers right:** `python3 -I tools/parity/ledger_count.py docs/parity/<ledger>.md` recounts a ledger's statuses from its rows (not every ledger's format parses: foundation-layout-lazy and animation-navigation were recounted by hand). `python3 -I tools/parity/citations.py docs/parity/<ledger>.md <androidx-main>` shows, for each row not yet ported, how many of its Compose tests are cited by a port (`// Compose: <path>, <test names>`): a row with all cited is likely `ported`, a `port` or `feature:` row with citations likely `partial`. Ports without that citation comment can't be counted this way, so cite each port.
+
 ## How a piece of work goes
 
 1. **Build** on a branch from `origin/main`, test first (TDD). Compose's tests are rewritten by hand in Rust, never translated by script. The Compose source to compare against is androidx-main's `frameworks/support/compose` (read-only: never build it).
