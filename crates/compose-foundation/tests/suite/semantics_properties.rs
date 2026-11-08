@@ -12,9 +12,10 @@ use compose_foundation::*;
 use compose_runtime::*;
 use compose_test::*;
 use compose_ui::{
-    AccessibilityAction, ActionFn, CustomAccessibilityAction, SemanticsActions,
-    SemanticsConfiguration, SemanticsProperties, SemanticsPropertyKey, SemanticsValue,
-    SharedString, StringList, UnitExt,
+    AccessibilityAction, ActionFn, CustomAccessibilityAction, Delegates, Layout, MeasurePolicy,
+    ModifierNode, ModifierNodeElement, SemanticsActions, SemanticsConfiguration,
+    SemanticsModifierNode, SemanticsProperties, SemanticsPropertyKey, SemanticsValue, SharedString,
+    StringList, UnitExt, measure_policy,
 };
 
 fn texts(config: &SemanticsConfiguration) -> Vec<String> {
@@ -1226,4 +1227,134 @@ fn changed_semantics_do_not_compose_the_content_below_again() {
 #[composable]
 fn SimpleTestLayout(content: Callback) {
     Box!(move |_| content());
+}
+
+// ---- SemanticsTests: when semantics are computed ----------------------------------------------
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, unchangedSemanticsDoesNotCauseRelayout
+/// Composed again with the same semantics, a layout isn't measured again.
+#[test]
+fn unchanged_semantics_do_not_measure_again() {
+    let forcer = mutable_state_of(0);
+    let handle = forcer.handle();
+    let measures = Rc::new(Cell::new(0));
+    let counted = measures.clone();
+    let mut ui = compose_test(move || {
+        handle.get();
+        let counted = counted.clone();
+        // Compose's `CountingLayout`: a remembered policy counting its measurements.
+        let policy = remember(move || {
+            let counted = counted.clone();
+            measure_policy(move |scope, _, constraints| {
+                counted.set(counted.get() + 1);
+                scope.layout(constraints.min_width, constraints.min_height)
+            }) as Rc<dyn MeasurePolicy>
+        });
+        Layout(
+            Modifier.semantics(|config| config.set_content_description("label")),
+            policy,
+            callback(|| {}),
+        );
+    });
+    ui.run_on_idle(|_| assert_eq!(measures.get(), 1));
+    ui.run_on_idle(|_| forcer.set(forcer.get() + 1));
+    ui.run_on_idle(|_| assert_eq!(measures.get(), 1));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, testSemanticsCalculatedOncePerComposition
+/// Each semantics block runs once per composition (compose-rs runs it as its modifier is made,
+/// Compose's eagerly with autofill on).
+#[test]
+fn semantics_are_computed_once_per_composition() {
+    let count = Rc::new(Cell::new(0));
+    let scope: Rc<Cell<Option<RecomposeScope>>> = Rc::default();
+    let (counted, s) = (count.clone(), scope.clone());
+    let mut ui = compose_test(move || {
+        s.set(Some(current_recompose_scope()));
+        let counting = |modifier: Modifier| {
+            let counted = counted.clone();
+            modifier.semantics(move |_| counted.set(counted.get() + 1))
+        };
+        Box!(modifier = counting(counting(counting(Modifier))));
+    });
+    ui.run_on_idle(|_| {
+        assert_eq!(count.get(), 3);
+        count.set(0);
+        scope.get().expect("composed").invalidate();
+    });
+    ui.run_on_idle(|_| assert_eq!(count.get(), 3));
+}
+
+/// Compose's `SemanticsMod`: a node setting what its block sets.
+struct SemanticsMod(Box<dyn Fn(&mut SemanticsConfiguration)>);
+
+impl ModifierNode for SemanticsMod {
+    fn as_semantics(&mut self) -> Option<&mut dyn SemanticsModifierNode> {
+        Some(self)
+    }
+}
+
+impl SemanticsModifierNode for SemanticsMod {
+    fn apply_semantics(&self, config: &mut SemanticsConfiguration) {
+        (self.0)(config);
+    }
+}
+
+/// Compose's `elementFor(object : DelegatingNode() { … })`: a node delegating to what `delegate`
+/// makes.
+#[derive(Clone)]
+struct DelegatingElement(fn(&mut Delegates));
+
+struct DelegatingNode(Delegates);
+
+impl ModifierNodeElement for DelegatingElement {
+    type Node = DelegatingNode;
+    fn create(&self) -> DelegatingNode {
+        let mut delegates = Delegates::new();
+        (self.0)(&mut delegates);
+        DelegatingNode(delegates)
+    }
+    fn update(&self, _: &mut DelegatingNode) {}
+    fn same(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl ModifierNode for DelegatingNode {
+    fn delegates(&mut self) -> Option<&mut Delegates> {
+        Some(&mut self.0)
+    }
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, delegatedSemanticsPropertiesGetRead
+#[test]
+fn a_delegated_nodes_semantics_are_read() {
+    let mut ui = compose_test(|| {
+        let element = DelegatingElement(|delegates| {
+            delegates.delegate(SemanticsMod(Box::new(|config| {
+                config.set_content_description("hello world")
+            })));
+        });
+        Box!(modifier = Modifier.test_tag("tag").then_custom(element));
+    });
+    ui.on_node_with_tag("tag").assert_content_description_equals(&["hello world"]);
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, multipleDelegatesGetCombined
+#[test]
+fn several_delegates_semantics_are_combined() {
+    let mut ui = compose_test(|| {
+        let element = DelegatingElement(|delegates| {
+            delegates.delegate(SemanticsMod(Box::new(|config| {
+                config.set_content_description("hello world")
+            })));
+            delegates.delegate(SemanticsMod(Box::new(|config| {
+                config.set(&TEST_PROPERTY, "bar".into())
+            })));
+        });
+        Box!(modifier = Modifier.test_tag("tag").then_custom(element));
+    });
+    ui.on_node_with_tag("tag")
+        .assert_content_description_equals(&["hello world"])
+        .assert(test_property_equals("bar"));
 }
