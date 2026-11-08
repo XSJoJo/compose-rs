@@ -1468,3 +1468,77 @@ fn movable_content_moved_is_under_its_new_parent() {
     ui.on_node(child_of("slot_1_parent")).assert_exists();
     ui.on_node(child_of("slot_0_parent")).assert_does_not_exist();
 }
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, testGetTextSizeFromTextLayoutResult
+/// A text's layout result, through its semantics, has the density and the font size it was laid
+/// out with (Material's `Text` is `BasicText` here).
+#[test]
+fn a_texts_layout_result_has_its_density_and_font_size() {
+    let density = Rc::new(Cell::new(None));
+    let seen = density.clone();
+    let mut ui = compose_test(move || {
+        seen.set(Some(compose_ui::LOCAL_DENSITY.current()));
+        let style = compose_ui::TextStyle { font_size: 14.sp(), ..compose_ui::TextStyle::DEFAULT };
+        BasicText!("hello", modifier = Modifier.test_tag("tag"), style = style);
+    });
+    let mut results = Vec::new();
+    ui.on_node_with_tag_unmerged("tag")
+        .perform_semantics_action_with(&SemanticsActions::GET_TEXT_LAYOUT_RESULT, |get| {
+            assert!(get(&mut results))
+        });
+    let input = &results[0].layout_input;
+    assert_eq!(Some(input.density), density.get());
+    assert_eq!(input.style.font_size.value(), 14.0);
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, testSetTextSubstitution_annotatedString, testSetTextSubstitution_simpleString
+/// A text's substitution set, then shown: its text stays, the substitution and whether it's
+/// shown are on its node.
+#[test]
+#[ignore = "BasicText offers no text substitution actions (Compose's TextAnnotatedStringNode sets \
+            SetTextSubstitution, ShowTextSubstitution, ClearTextSubstitution)"]
+fn a_texts_substitution_is_set_then_shown() {
+    for annotated in [true, false] {
+        let mut ui = compose_test(move || {
+            if annotated {
+                BasicAnnotatedText!(
+                    AnnotatedString::new("hello"),
+                    modifier = Modifier.test_tag("tag")
+                );
+            } else {
+                BasicText!("hello", modifier = Modifier.test_tag("tag"));
+            }
+        });
+        fn ui_config(ui: &mut ComposeTestRule) -> SemanticsConfiguration {
+            ui.on_node_with_tag_unmerged("tag").fetch_semantics_snapshot().config
+        }
+        let config = ui_config(&mut ui);
+        assert_eq!(config.get(&SemanticsProperties::IS_SHOWING_TEXT_SUBSTITUTION), None);
+        ui.on_node_with_tag_unmerged("tag").perform_semantics_action_with(
+            &SemanticsActions::SET_TEXT_SUBSTITUTION,
+            |set| {
+                set(AnnotatedString::new("bonjour"));
+            },
+        );
+        let check = |ui: &mut ComposeTestRule, showing: bool| {
+            let config = ui_config(ui);
+            assert_eq!(texts(&config), ["hello"], "the substitution doesn't change the text");
+            assert_eq!(
+                config.get(&SemanticsProperties::TEXT_SUBSTITUTION).map(|it| it.to_string()),
+                Some("bonjour".to_string())
+            );
+            assert_eq!(
+                config.get(&SemanticsProperties::IS_SHOWING_TEXT_SUBSTITUTION),
+                Some(&showing)
+            );
+        };
+        check(&mut ui, false);
+        ui.on_node_with_tag_unmerged("tag").perform_semantics_action_with(
+            &SemanticsActions::SHOW_TEXT_SUBSTITUTION,
+            |show| {
+                show(true);
+            },
+        );
+        check(&mut ui, true);
+    }
+}
