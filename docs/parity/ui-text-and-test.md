@@ -19,9 +19,9 @@ What compose-rs has of two Jetpack Compose libraries, test file by test file and
 
 | Status | Files | Tests | ui-text (files / tests) | ui-test (files / tests) | ui-test-junit4 (files / tests) |
 |---|---|---|---|---|---|
-| `ported` | 153 | 1,716 | 62 / 1,206 | 90 / 504 | 1 / 6 |
+| `ported` | 154 | 1,725 | 63 / 1,215 | 90 / 504 | 1 / 6 |
 | `covered` | 4 | 5 | 1 / 2 | 3 / 3 | 0 / 0 |
-| `port` | 2 | 17 | 1 / 9 | 1 / 8 | 0 / 0 |
+| `port` | 1 | 8 | 0 / 0 | 1 / 8 | 0 / 0 |
 | `partial` | 44 | 1,156 | 13 / 726 | 31 / 430 | 0 / 0 |
 | `feature:…` | 44 | 413 | 30 / 312 | 13 / 98 | 1 / 3 |
 | `n/a` | 81 | 535 | 32 / 384 | 46 / 145 | 3 / 6 |
@@ -108,7 +108,7 @@ The 530 `n/a` tests: 314 test Android text internals or internal helpers (`Spann
 | `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/StringCharSequenceTest.kt` | 10 | Internal `String` wrapper for `StaticLayout` | n/a: internal Android helper |
 | `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextAndroidCanvasTest.kt` | 1 | `TextAndroidCanvas.getClipBounds` uses the override | feature:android-text-device-tests — compose-rs has its own `TextAndroidCanvas.kt` |
 | `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutFillBoundingBoxesTest.kt` | 20 | `TextLayout.fillBoundingBoxes`: argument checks, RTL, bidi, center alignment, ZWJ emoji, styling | ported: `crates/compose-ui/tests/suite/fill_bounding_boxes.rs` (all 20 through the paragraph's `fill_bounding_boxes`, 15 by ParagraphFillBoundingBoxesTest's ports; the ZWJ emoji, one glyph in Android's emoji font, as a letter with combining marks, which the fixed measurer's font has no glyph for) |
-| `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutIntrinsicWidthTest.kt` | 9 | A text laid out at its max intrinsic width is one line, with letter spacing (sp, em, paint) and line height, LTR and RTL | port: `max_intrinsic_width` and the final-width layout (D104, D550) exist on Skia and Android; the em cases wait for text-unit-em |
+| `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutIntrinsicWidthTest.kt` | 9 | A text laid out at its max intrinsic width is one line, with letter spacing (sp, em, paint) and line height, LTR and RTL | ported: `crates/compose-skia/tests/suite/text_layout_intrinsic_width.rs` (all 9, on SkParagraph in the sample font at the repro's density; the `Spannable`'s spans are span styles and the text style, the per-character line heights the paragraph's one, compose-rs's line height being a paragraph's; laid out at the max intrinsic width rounded up, constraints being whole pixels) |
 | `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutIsLineEllipsizedTest.kt` | 6 | `isLineEllipsized` for end and start ellipsis, LTR and RTL | ported: `crates/compose-ui/tests/suite/paragraph.rs` (all 6 cited, through `is_line_ellipsized`; the start ellipsis ones since D1126) |
 | `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutLineVisibleEndTest.kt` | 11 | `getLineEnd(visibleEnd = true)` excludes ellipsized text, line breaks and trailing whitespace | partial: `crates/compose-ui/tests/suite/paragraph.rs` (9 of 11, through `get_line_end(line, true)`; the two left are `singleLine_withEllipsisStart` and `singleLine_withEllipsisMiddle`, portable since the ellipsis work, D1126) |
 | `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/android/TextLayoutSpanTest.kt` | 6 | Baseline-shift/skew/scale spans nest their paint updates | n/a: Android `Spannable`/`TextPaint` internals; the behaviour is reached through `TextStyle` rendering tests |
