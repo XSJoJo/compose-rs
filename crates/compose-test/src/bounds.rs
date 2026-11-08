@@ -69,7 +69,7 @@ impl SemanticsNodeInteraction<'_> {
     #[track_caller]
     pub fn get_unclipped_bounds_in_root(&mut self) -> DpRect {
         let (unclipped, _) = self.bounds_in_root_px();
-        to_dp(unclipped, self.rule.density())
+        to_dp(unclipped, self.node_density())
     }
 
     /// The node's bounds in the root clipped by the clips around it (a scroll's viewport,
@@ -77,7 +77,7 @@ impl SemanticsNodeInteraction<'_> {
     #[track_caller]
     pub fn get_bounds_in_root(&mut self) -> DpRect {
         let (_, clipped) = self.bounds_in_root_px();
-        to_dp(clipped, self.rule.density())
+        to_dp(clipped, self.node_density())
     }
 
     /// `line`'s position in the node, as `getAlignmentLinePosition`, `Dp::UNSPECIFIED` where
@@ -93,7 +93,7 @@ impl SemanticsNodeInteraction<'_> {
             self.rule.host.with_tree(|tree| tree.semantics_alignment_line(node.id, line));
         match position {
             compose_ui::AlignmentLine::UNSPECIFIED => Dp::UNSPECIFIED,
-            position => self.rule.density().to_dp(position as f32),
+            position => self.node_density().to_dp(position as f32),
         }
     }
 
@@ -109,11 +109,21 @@ impl SemanticsNodeInteraction<'_> {
         self.get_alignment_line_position(compose_ui::LAST_BASELINE)
     }
 
-    /// The node's touch bounds in the root: its bounds, as compose-rs's pointer input has no
-    /// minimum touch target yet (Compose widens a small clickable's to 48 dp).
+    /// The node's touch bounds in the root, as `touchBoundsInRoot`: with a click action, at
+    /// least the minimum touch target around it, in its own density.
     #[track_caller]
     fn touch_bounds_in_root(&mut self) -> DpRect {
-        self.get_unclipped_bounds_in_root()
+        let density = self.node_density();
+        let bounds = self.fetch_semantics_node().touch_bounds_in_root();
+        to_dp(bounds, density)
+    }
+
+    /// The density of the node's layout, as `withDensity(node)`: `LOCAL_DENSITY` where it's
+    /// composed.
+    #[track_caller]
+    fn node_density(&mut self) -> Density {
+        let node = self.fetch_semantics_snapshot();
+        self.rule.host.with_tree(|tree| tree.density_of(node.id))
     }
 
     #[track_caller]
@@ -181,11 +191,22 @@ impl SemanticsNodeInteraction<'_> {
         self
     }
 
-    /// As `assertTouchWidthIsEqualTo`: the width of the node's touch bounds (its bounds in
-    /// compose-rs, which has no minimum touch target yet).
+    /// As `assertTouchWidthIsEqualTo`: the width of the node's touch bounds, with a click action
+    /// at least the minimum touch target.
     #[track_caller]
     pub fn assert_touch_width_is_equal_to(&mut self, expected: Dp) -> &mut Self {
         let tolerance = self.tolerance(None);
+        self.touch_bounds_in_root().width().assert_is_equal_to(expected, "width", tolerance);
+        self
+    }
+
+    /// As `assertTouchWidthIsEqualTo(expected, tolerance)`.
+    #[track_caller]
+    pub fn assert_touch_width_is_equal_to_with_tolerance(
+        &mut self,
+        expected: Dp,
+        tolerance: Dp,
+    ) -> &mut Self {
         self.touch_bounds_in_root().width().assert_is_equal_to(expected, "width", tolerance);
         self
     }
@@ -194,6 +215,17 @@ impl SemanticsNodeInteraction<'_> {
     #[track_caller]
     pub fn assert_touch_height_is_equal_to(&mut self, expected: Dp) -> &mut Self {
         let tolerance = self.tolerance(None);
+        self.touch_bounds_in_root().height().assert_is_equal_to(expected, "height", tolerance);
+        self
+    }
+
+    /// As `assertTouchHeightIsEqualTo(expected, tolerance)`.
+    #[track_caller]
+    pub fn assert_touch_height_is_equal_to_with_tolerance(
+        &mut self,
+        expected: Dp,
+        tolerance: Dp,
+    ) -> &mut Self {
         self.touch_bounds_in_root().height().assert_is_equal_to(expected, "height", tolerance);
         self
     }

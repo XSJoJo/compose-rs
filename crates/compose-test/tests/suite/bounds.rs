@@ -6,7 +6,11 @@ use compose_foundation::layout::*;
 use compose_runtime::*;
 use compose_test::*;
 use compose_ui::platform::FixedTextMeasurer;
-use compose_ui::{Alignment, Color, Density, Dp, IntSize, Modifier, PaddingValues, UnitExt};
+use compose_ui::{
+    Alignment, Color, Density, Dp, DpSize, HorizontalAlignmentLine, IntSize, LOCAL_DENSITY,
+    LOCAL_VIEW_CONFIGURATION, Layout, Modifier, PaddingValues, UnitExt, ViewConfiguration,
+    measure_policy,
+};
 
 const TAG: &str = "box";
 
@@ -322,4 +326,315 @@ fn dp_values_compare_within_a_tolerance() {
         "{message}"
     );
     expect_error(|| 10.dp().assert_is_equal_to(Dp::UNSPECIFIED, "width", 0.5.dp()));
+}
+
+/// A black box of `size` tagged `tag` after `modifier`, as Compose's `SmallBox`.
+#[composable]
+fn SmallBox(modifier: Modifier, tag: &'static str, size: Dp) {
+    Box!(modifier = modifier.test_tag(tag).required_size(size).background(Color::BLACK));
+}
+
+/// `content` where the minimum touch target is `size`, as Compose's
+/// `WithMinimumTouchTargetSize`.
+fn with_minimum_touch_target_size(size: DpSize, content: impl Fn() + 'static) {
+    let configuration =
+        ViewConfiguration { minimum_touch_target_size: size, ..LOCAL_VIEW_CONFIGURATION.current() };
+    CompositionLocalProvider(LOCAL_VIEW_CONFIGURATION.provides(configuration), content);
+}
+
+/// A clickable box of 10 dp tagged `tag`, its minimum touch target 20 dp, as Compose's
+/// `TouchTargetTestContent`.
+fn touch_target_test_content(tag: &'static str) {
+    with_minimum_touch_target_size(DpSize::new(20.dp(), 20.dp()), move || {
+        SmallBox(Modifier.clickable(|| {}), tag, 10.dp())
+    });
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/assertions/BoundsAssertionsTest.kt, assertTouchSizeEquals
+#[test]
+fn assert_touch_size_equals() {
+    let mut ui = compose_test(|| touch_target_test_content(TAG));
+    ui.on_node_with_tag(TAG)
+        .assert_touch_width_is_equal_to(20.dp())
+        .assert_touch_height_is_equal_to(20.dp());
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/assertions/BoundsAssertionsTest.kt, assertTouchSizeEquals_fail
+#[test]
+fn assert_touch_size_equals_fail() {
+    let mut ui = compose_test(|| touch_target_test_content(TAG));
+    expect_error(|| {
+        ui.on_node_with_tag(TAG).assert_touch_width_is_equal_to(19.dp());
+    });
+    expect_error(|| {
+        ui.on_node_with_tag(TAG).assert_touch_height_is_equal_to(21.dp());
+    });
+}
+
+/// A clickable box of 10 px whose minimum touch target is 20 px, at density 2.
+fn touch_target_in_pixels() -> ComposeTestRule {
+    compose_test_with(
+        IntSize::new(400, 800),
+        Density::new(2.0),
+        Box::new(FixedTextMeasurer::new()),
+        || {
+            with_minimum_touch_target_size(DpSize::new(Dp(10.0), Dp(10.0)), || {
+                SmallBox(Modifier.clickable(|| {}), TAG, Dp(5.0))
+            })
+        },
+    )
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/assertions/BoundsAssertionsTest.kt, assertTouchWidthIsEqualTo_withCustomTolerance
+#[test]
+fn assert_touch_width_is_equal_to_with_custom_tolerance() {
+    let mut ui = touch_target_in_pixels();
+    let (expected, success, failure) = (px(&ui, 21.0), px(&ui, 1.1), px(&ui, 0.9));
+    ui.on_node_with_tag(TAG).assert_touch_width_is_equal_to_with_tolerance(expected, success);
+    expect_error(|| {
+        ui.on_node_with_tag(TAG).assert_touch_width_is_equal_to_with_tolerance(expected, failure);
+    });
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/assertions/BoundsAssertionsTest.kt, assertTouchHeightIsEqualTo_withCustomTolerance
+#[test]
+fn assert_touch_height_is_equal_to_with_custom_tolerance() {
+    let mut ui = touch_target_in_pixels();
+    let (expected, success, failure) = (px(&ui, 21.0), px(&ui, 1.1), px(&ui, 0.9));
+    ui.on_node_with_tag(TAG).assert_touch_height_is_equal_to_with_tolerance(expected, success);
+    expect_error(|| {
+        ui.on_node_with_tag(TAG).assert_touch_height_is_equal_to_with_tolerance(expected, failure);
+    });
+}
+
+/// `content` three times: at the rule's density, at density 1 and at density 4, tagged
+/// "default-density", "low-density" and "high-density".
+fn at_three_densities(content: fn(&'static str)) -> ComposeTestRule {
+    compose_test(move || {
+        content("default-density");
+        CompositionLocalProvider(LOCAL_DENSITY.provides(Density::new(1.0)), move || {
+            content("low-density")
+        });
+        CompositionLocalProvider(LOCAL_DENSITY.provides(Density::new(4.0)), move || {
+            content("high-density")
+        });
+    })
+}
+
+const DENSITY_TAGS: [&str; 3] = ["default-density", "low-density", "high-density"];
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/assertions/BoundsAssertionsTest.kt, assertSizeUsesLocalDensity
+#[test]
+fn assert_size_uses_local_density() {
+    let mut ui = at_three_densities(|tag| SmallBox(Modifier, tag, 10.dp()));
+    for tag in DENSITY_TAGS {
+        ui.on_node_with_tag(tag)
+            .assert_width_is_equal_to(10.dp())
+            .assert_height_is_equal_to(10.dp());
+    }
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/assertions/BoundsAssertionsTest.kt, assertTouchSizeUsesLocalDensity
+#[test]
+fn assert_touch_size_uses_local_density() {
+    let mut ui = at_three_densities(touch_target_test_content);
+    for tag in DENSITY_TAGS {
+        ui.on_node_with_tag(tag)
+            .assert_touch_width_is_equal_to(20.dp())
+            .assert_touch_height_is_equal_to(20.dp());
+    }
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/assertions/BoundsAssertionsTest.kt, assertBoundsInRootUsesLocalDensity
+#[test]
+fn assert_bounds_in_root_uses_local_density() {
+    let mut ui = at_three_densities(|tag| SmallBox(Modifier.padding(20.dp()), tag, 10.dp()));
+    for tag in DENSITY_TAGS {
+        let bounds = ui.on_node_with_tag(tag).get_bounds_in_root();
+        bounds.left.assert_is_equal_to(20.dp(), "left", DEFAULT_BOUNDS_TOLERANCE);
+        bounds.top.assert_is_equal_to(20.dp(), "top", DEFAULT_BOUNDS_TOLERANCE);
+    }
+}
+
+const TEST_LINE_POSITION: Dp = Dp(10.0);
+
+/// One line for every test, as Compose's `TestLine` (each `new` is another line).
+fn test_line() -> HorizontalAlignmentLine {
+    static LINE: std::sync::LazyLock<HorizontalAlignmentLine> =
+        std::sync::LazyLock::new(|| HorizontalAlignmentLine::new(i32::max));
+    *LINE
+}
+
+/// A layout filling its constraints that gives [`test_line`] at 10 dp, as Compose's
+/// `BoxWithAlignmentLine`.
+fn box_with_alignment_line(modifier: Modifier) {
+    let position = LOCAL_DENSITY.current().round_to_px(TEST_LINE_POSITION);
+    let policy = measure_policy(move |scope, _, constraints| {
+        scope.provide_alignment_lines([(test_line(), position)]);
+        scope.layout(constraints.max_width, constraints.max_height)
+    });
+    Layout(modifier, policy, callback(|| {}));
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/assertions/BoundsAssertionsTest.kt, assertAlignmentLinesUseLocalDensity
+#[test]
+fn assert_alignment_lines_use_local_density() {
+    let mut ui = at_three_densities(|tag| box_with_alignment_line(Modifier.test_tag(tag)));
+    for tag in DENSITY_TAGS {
+        ui.on_node_with_tag(tag).get_alignment_line_position(test_line()).assert_is_equal_to(
+            TEST_LINE_POSITION,
+            "alignment line",
+            DEFAULT_BOUNDS_TOLERANCE,
+        );
+    }
+}
+
+/// `content` not measured nor placed, filling the constraints, as Compose's `DoNotMeasure`.
+fn do_not_measure(content: impl Fn() + 'static) {
+    let policy = measure_policy(|scope, _, constraints| {
+        scope.layout(constraints.max_width, constraints.max_height)
+    });
+    Layout(Modifier, policy, callback(content));
+}
+
+/// `content` measured and not placed, as Compose's `DoNotPlace`.
+fn do_not_place(content: impl Fn() + 'static) {
+    let policy = measure_policy(|scope, measurables, constraints| {
+        let placeables: Vec<_> =
+            measurables.iter().map(|measurable| scope.measure(*measurable, constraints)).collect();
+        let width = placeables.iter().map(|placeable| placeable.width).max().unwrap_or(0);
+        let height = placeables.iter().map(|placeable| placeable.height).max().unwrap_or(0);
+        scope.layout(width, height)
+    });
+    Layout(Modifier, policy, callback(content));
+}
+
+fn ten_dp_box() {
+    Box!(modifier = Modifier.test_tag(TAG).required_size(10.dp()));
+}
+
+/// A node not placed has no position: unspecified, as Compose's `getPositionTest`.
+#[track_caller]
+fn get_position_test(mut ui: ComposeTestRule) {
+    let mut node = ui.on_node_with_tag(TAG);
+    node.assert_position_in_root_is_equal_to(Dp::UNSPECIFIED, Dp::UNSPECIFIED);
+    node.assert_top_position_in_root_is_equal_to(Dp::UNSPECIFIED);
+    node.assert_left_position_in_root_is_equal_to(Dp::UNSPECIFIED);
+    let bounds = node.get_unclipped_bounds_in_root();
+    let specified = [bounds.left, bounds.top, bounds.right, bounds.bottom].map(Dp::is_specified);
+    assert_eq!(specified, [false; 4], "{bounds:?}");
+    let not_equal =
+        |subject: &str| format!("Actual {subject} is Dp.Unspecified, expected 1.0.dp (");
+    let message = expect_error(|| {
+        node.assert_position_in_root_is_equal_to(1.dp(), 1.dp());
+    });
+    assert!(message.contains(&not_equal("left")), "{message}");
+    let message = expect_error(|| {
+        node.assert_top_position_in_root_is_equal_to(1.dp());
+    });
+    assert!(message.contains(&not_equal("top")), "{message}");
+    let message = expect_error(|| {
+        node.assert_left_position_in_root_is_equal_to(1.dp());
+    });
+    assert!(message.contains(&not_equal("left")), "{message}");
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/assertions/BoundsAssertionsTest.kt, getPosition_measuredNotPlaced
+#[test]
+#[ignore = "unplaced content: a node its parent doesn't place isn't in compose-rs's semantics tree; Compose's is, with unspecified bounds"]
+fn get_position_measured_not_placed() {
+    get_position_test(compose_test(|| do_not_place(ten_dp_box)));
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/assertions/BoundsAssertionsTest.kt, getPosition_notMeasuredNotPlaced
+#[test]
+#[ignore = "unplaced content: a node its parent doesn't place isn't in compose-rs's semantics tree; Compose's is, with unspecified bounds"]
+fn get_position_not_measured_not_placed() {
+    get_position_test(compose_test(|| do_not_measure(ten_dp_box)));
+}
+
+/// A node not placed has no size: unspecified, as Compose's `getSizeTest`.
+#[track_caller]
+fn get_size_test(mut ui: ComposeTestRule) {
+    let mut node = ui.on_node_with_tag(TAG);
+    node.assert_width_is_equal_to(Dp::UNSPECIFIED);
+    node.assert_height_is_equal_to(Dp::UNSPECIFIED);
+    node.assert_width_is_at_least(Dp::UNSPECIFIED);
+    node.assert_height_is_at_least(Dp::UNSPECIFIED);
+    let not_equal =
+        |subject: &str| format!("Actual {subject} is Dp.Unspecified, expected 10.0.dp (");
+    let not_at_least =
+        |subject: &str| format!("Actual {subject} is Dp.Unspecified, expected at least 10.0.dp (");
+    let message = expect_error(|| {
+        node.assert_width_is_equal_to(10.dp());
+    });
+    assert!(message.contains(&not_equal("width")), "{message}");
+    let message = expect_error(|| {
+        node.assert_height_is_equal_to(10.dp());
+    });
+    assert!(message.contains(&not_equal("height")), "{message}");
+    let message = expect_error(|| {
+        node.assert_width_is_at_least(10.dp());
+    });
+    assert!(message.contains(&not_at_least("width")), "{message}");
+    let message = expect_error(|| {
+        node.assert_height_is_at_least(10.dp());
+    });
+    assert!(message.contains(&not_at_least("height")), "{message}");
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/assertions/BoundsAssertionsTest.kt, getSize_measuredNotPlaced
+#[test]
+#[ignore = "unplaced content: a node its parent doesn't place isn't in compose-rs's semantics tree; Compose's is, with unspecified bounds"]
+fn get_size_measured_not_placed() {
+    get_size_test(compose_test(|| do_not_place(ten_dp_box)));
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/assertions/BoundsAssertionsTest.kt, getSize_notMeasuredNotPlaced
+#[test]
+#[ignore = "unplaced content: a node its parent doesn't place isn't in compose-rs's semantics tree; Compose's is, with unspecified bounds"]
+fn get_size_not_measured_not_placed() {
+    get_size_test(compose_test(|| do_not_measure(ten_dp_box)));
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/assertions/BoundsAssertionsTest.kt, getAlignmentLine_measuredNotPlaced
+#[test]
+#[ignore = "unplaced content: a node its parent doesn't place isn't in compose-rs's semantics tree; Compose's is, with unspecified bounds"]
+fn get_alignment_line_measured_not_placed() {
+    let mut ui = compose_test(|| do_not_place(|| box_with_alignment_line(Modifier.test_tag(TAG))));
+    ui.on_node_with_tag(TAG).get_alignment_line_position(test_line()).assert_is_equal_to(
+        TEST_LINE_POSITION,
+        "alignment line",
+        DEFAULT_BOUNDS_TOLERANCE,
+    );
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/assertions/BoundsAssertionsTest.kt, getAlignmentLine_notMeasuredNotPlaced
+#[test]
+#[ignore = "unplaced content: a node its parent doesn't place isn't in compose-rs's semantics tree; Compose's is, with unspecified bounds"]
+fn get_alignment_line_not_measured_not_placed() {
+    let mut ui =
+        compose_test(|| do_not_measure(|| box_with_alignment_line(Modifier.test_tag(TAG))));
+    ui.on_node_with_tag(TAG).get_alignment_line_position(test_line()).assert_is_equal_to(
+        Dp::UNSPECIFIED,
+        "alignment line",
+        DEFAULT_BOUNDS_TOLERANCE,
+    );
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/assertions/BoundsAssertionsTest.kt, assertBounds_withConfiguredTolerance
+#[test]
+fn assert_bounds_with_configured_tolerance() {
+    let mut ui = compose_test(|| {
+        Box!(modifier = Modifier.test_tag(TAG).size(100.dp()));
+    });
+    ui.set_bounds_assertion_tolerance(2.dp());
+    // 100 dp, expecting 101.5 dp: 1.5 dp off.
+    ui.on_node_with_tag(TAG).assert_width_is_equal_to(101.5.dp());
+    ui.on_node_with_tag(TAG).assert_height_is_equal_to(101.5.dp());
+    ui.on_node_with_tag(TAG).assert_position_in_root_is_equal_to(1.5.dp(), 1.5.dp());
+    // 3 dp off, past the tolerance.
+    expect_error(|| {
+        ui.on_node_with_tag(TAG).assert_width_is_equal_to(103.dp());
+    });
 }
