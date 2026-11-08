@@ -889,7 +889,7 @@ fn what_cannot_be_sent_says_why() {
 
 // Compose: compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/inputdispatcher/TrackpadEventsTest.kt, enqueueTrackpadPress_interruptsTouch, enqueueTrackpadMove_interruptsTouch
 /// The trackpad's press or move cancels a touch gesture in progress: the touch's next move
-/// says its finger isn't down.
+/// says no gesture is in progress.
 #[test]
 fn the_trackpad_interrupts_touch() {
     for press in [true, false] {
@@ -905,7 +905,7 @@ fn the_trackpad_interrupts_touch() {
         let message = expect_error(|| {
             ui.on_node_with_tag("box").perform_touch_input(|touch| touch.move_to(MOVE2));
         });
-        assert!(message.contains("it is not active in the current gesture"), "{message}");
+        assert!(message.contains("Cannot move pointers, no gesture is in progress"), "{message}");
         let kinds: Vec<PointerEventType> = events.borrow().iter().map(|event| event.kind).collect();
         let expected = if press { [Press, Enter, Press] } else { [Press, Enter, Enter] };
         assert_eq!(kinds, expected[..kinds.len()], "press: {press}");

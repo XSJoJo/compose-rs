@@ -99,7 +99,7 @@ fn kinds(events: &Events) -> Vec<PointerEventType> {
 }
 
 #[track_caller]
-fn expect_error(action: impl FnOnce()) -> String {
+pub(crate) fn expect_error(action: impl FnOnce()) -> String {
     let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(action));
     let panic = failed.expect_err("an error");
     panic
@@ -219,7 +219,7 @@ fn fingers_move_and_lift() {
     let message = expect_error(|| {
         ui.on_node_with_tag("box").perform_touch_input(|touch| touch.up());
     });
-    assert!(message.contains("Cannot send UP event for pointer 0"), "{message}");
+    assert!(message.contains("Cannot send UP event, no gesture is in progress"), "{message}");
 }
 
 // Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/CancelTest.kt
@@ -881,9 +881,9 @@ fn a_mouse_wheel_scrolls_64_dp_a_unit() {
 // ---- Keys --------------------------------------------------------------------------------
 
 /// A focused box recording its key events.
-type Keys = Rc<RefCell<Vec<(KeyEvent, u64)>>>;
+pub(crate) type Keys = Rc<RefCell<Vec<(KeyEvent, u64)>>>;
 
-fn recording_keys() -> (ComposeTestRule, Keys) {
+pub(crate) fn recording_keys() -> (ComposeTestRule, Keys) {
     let keys: Keys = Rc::default();
     let recorder = keys.clone();
     let mut ui = compose_test(move || {

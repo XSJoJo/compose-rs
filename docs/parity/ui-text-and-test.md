@@ -19,9 +19,9 @@ What compose-rs has of two Jetpack Compose libraries, test file by test file and
 
 | Status | Files | Tests | ui-text (files / tests) | ui-test (files / tests) | ui-test-junit4 (files / tests) |
 |---|---|---|---|---|---|
-| `ported` | 123 | 1,473 | 59 / 1,173 | 64 / 300 | 0 / 0 |
+| `ported` | 125 | 1,553 | 59 / 1,173 | 66 / 380 | 0 / 0 |
 | `covered` | 4 | 5 | 1 / 2 | 3 / 3 | 0 / 0 |
-| `port` | 37 | 284 | 4 / 42 | 32 / 236 | 1 / 6 |
+| `port` | 35 | 204 | 4 / 42 | 30 / 156 | 1 / 6 |
 | `partial` | 42 | 1,138 | 13 / 726 | 29 / 412 | 0 / 0 |
 | `feature:…` | 42 | 409 | 30 / 312 | 11 / 94 | 1 / 3 |
 | `n/a` | 80 | 533 | 32 / 384 | 45 / 143 | 3 / 6 |
@@ -403,9 +403,9 @@ The 530 `n/a` tests: 314 test Android text internals or internal helpers (`Spann
 | `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/inputdispatcher/IsGestureInProgressTest.kt` | 2 | Whether a touch gesture is in progress | port: through `current_position` (the dispatcher is internal) |
 | `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/inputdispatcher/IsIndirectPointerGestureInProgressTest.kt` | 2 | Whether an indirect gesture is in progress | ported: `crates/compose-test/tests/suite/indirect.rs` (`a_cancel_ends_the_gesture`: no pointer down after the release or the cancel) |
 | `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/inputdispatcher/KeyAndMouseEventsTest.kt` | 17 | Mouse events carry the meta state of keys held (meta, lock keys) | port: through the scopes (Compose's tests drive its internal `InputDispatcher`); `a_pointer_event_tells_the_keys_injected` |
-| `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/inputdispatcher/KeyEventsTest.kt` | 41 | Key events produced: down/up state, lock toggles, meta state per modifier key | port: through `KeyInjectionScope` (Compose's tests drive its internal `InputDispatcher`) |
+| `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/inputdispatcher/KeyEventsTest.kt` | 41 | Key events produced: down/up state, lock toggles, meta state per modifier key | ported: `crates/compose-test/tests/suite/key_events.rs` (all 41, through `KeyInjectionScope` to a focused box; compose-rs's `KeyEvent` is Compose's common one, so Android's meta masks are checked through the four modifiers and the scope's lock states, the repeat counts through the downs and their times; Fn has no modifier, its key is `Key::Other(119)`) |
 | `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/inputdispatcher/MouseEventsTest.kt` | 22 | Mouse events produced: buttons, hover outside the root, enter/exit, scroll, interrupting touch, errors | port: through `MouseInjectionScope` |
-| `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/inputdispatcher/TouchEventsTest.kt` | 39 | Touch events produced: pointers down/move/up/cancel, ids reuse, flushing moves, errors | port: through `TouchInjectionScope`; one change per event (D75) |
+| `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/inputdispatcher/TouchEventsTest.kt` | 39 | Touch events produced: pointers down/move/up/cancel, ids reuse, flushing moves, errors | ported: `crates/compose-test/tests/suite/touch_events.rs` (all 39, through `TouchInjectionScope`, what a node filling the root hears: each event's fingers, kind and time; a cancel has no positions; a mouse's press with no hover first brings an `Enter`, as `trackpad.rs` records). Fixed: an up carries the moves updated since in its event, and the errors with no gesture say Compose's words (D2075) |
 | `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/inputdispatcher/TrackpadEventsTest.kt` | 21 | Trackpad events produced: buttons, hover, pan, pinch, errors | partial: through `TrackpadInjectionScope` in `crates/compose-test/tests/suite/trackpad.rs`: the eight errors (`what_cannot_be_sent_says_why`), `*_interruptsTouch`, `hoverOutOfRootBounds`, and `pan`'s and `pinch`'s out of the window; left: the buttons' and cancels' `MotionEvent`s (the scope's click and cancel tests hear what they make) |
 | `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/util/IsMonotonicBetweenTest.kt` | 1 | A helper of the test library's own tests | n/a: test-utility self-test |
 | `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/util/SplitsDurationEquallyIntoTest.kt` | 1 | A helper of the test library's own tests | n/a: test-utility self-test |

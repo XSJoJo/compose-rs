@@ -408,6 +408,10 @@ impl TouchInjectionScope<'_> {
     #[track_caller]
     pub fn update_pointer_to(&mut self, id: u64, position: Offset) {
         let root = self.0.to_root(position);
+        assert!(
+            !self.input().touches.is_empty(),
+            "compose-test: Cannot move pointers, no gesture is in progress"
+        );
         let touch = self.input().touches.get_mut(&id);
         let Some(touch) = touch else {
             panic!(
@@ -494,16 +498,31 @@ impl TouchInjectionScope<'_> {
     /// Lifts finger `id`, as `up(pointerId)`.
     #[track_caller]
     pub fn up_pointer(&mut self, id: u64) {
+        assert!(
+            !self.input().touches.is_empty(),
+            "compose-test: Cannot send UP event, no gesture is in progress"
+        );
         let Some(position) = self.input().touches.get(&id).copied() else {
             panic!(
                 "compose-test: Cannot send UP event for pointer {id}, it is not active in the \
                  current gesture"
             )
         };
-        if self.input().touch_updated {
-            self.send_move();
+        // The fingers updated since the last event move in the release's own event, not a move
+        // first, as Compose's `enqueueTouchUp` (D2075).
+        let mut changes: Vec<PointerEvent> = Vec::new();
+        if std::mem::take(&mut self.input().touch_updated) {
+            changes.extend(self.input().touches.iter().filter(|(other, _)| **other != id).map(
+                |(other, at)| {
+                    PointerEvent::moved(*at, true)
+                        .with_pointer(touch_pointer(*other), PointerType::Touch)
+                },
+            ));
         }
-        self.touch_event(PointerEvent::release(position), id);
+        changes.push(
+            PointerEvent::release(position).with_pointer(touch_pointer(id), PointerType::Touch),
+        );
+        self.0.send_together(&changes);
         self.input().touches.remove(&id);
     }
 

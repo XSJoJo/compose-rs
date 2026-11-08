@@ -585,7 +585,7 @@ The log is split by area into the files below, one table each, rows in number or
 | D900 | [api-and-tooling](decisions/api-and-tooling.md#d900) | current |
 | D901 | [api-and-tooling](decisions/api-and-tooling.md#d901) | current |
 | D902 | [ui-and-layout](decisions/ui-and-layout.md#d902) | current |
-| D903 | [api-and-tooling](decisions/api-and-tooling.md#d903) | revised by [D907](decisions/api-and-tooling.md#d907), [D1658](decisions/ui-and-layout.md#d1658) |
+| D903 | [api-and-tooling](decisions/api-and-tooling.md#d903) | revised by [D907](decisions/api-and-tooling.md#d907), [D1658](decisions/ui-and-layout.md#d1658), [D2075](decisions/api-and-tooling.md#d2075) |
 | D904 | [api-and-tooling](decisions/api-and-tooling.md#d904) | current |
 | D905 | [api-and-tooling](decisions/api-and-tooling.md#d905) | current |
 | D906 | [api-and-tooling](decisions/api-and-tooling.md#d906) | current |
@@ -1123,3 +1123,4 @@ The log is split by area into the files below, one table each, rows in number or
 | D2072 | [text](decisions/text.md#d2072) | current |
 | D2073 | [text](decisions/text.md#d2073) | current |
 | D2074 | [text](decisions/text.md#d2074) | current |
+| D2075 | [api-and-tooling](decisions/api-and-tooling.md#d2075) | current |
