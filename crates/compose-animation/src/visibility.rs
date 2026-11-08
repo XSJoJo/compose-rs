@@ -17,9 +17,11 @@ use compose_runtime::{
 };
 use compose_ui::{
     Alignment, Color, ColumnScope, Constraints, DrawModifierNode, DrawScope, HorizontalAlignment,
-    IntOffset, IntSize, LayoutDirection, LayoutModifierNode, Measurable, MeasurePolicy,
-    MeasureResult, MeasureScope, Modifier, ModifierNode, ModifierNodeElement, Paint,
-    RECTANGLE_SHAPE, ReleaseContext, RowScope, TransformOrigin, VerticalAlignment,
+    IntOffset, IntSize, LayoutAwareModifierNode, LayoutCoordinates, LayoutDirection,
+    LayoutModifierNode, Measurable, MeasurePolicy, MeasureResult, MeasureScope, Modifier,
+    ModifierLocal, ModifierLocalMap, ModifierLocalModifierNode, ModifierNode, ModifierNodeElement,
+    NodeContext, Paint, RECTANGLE_SHAPE, ReleaseContext, RowScope, TransformOrigin,
+    VerticalAlignment,
 };
 
 use crate::deferred::{MutableTransform, SharedMutableTransformState};
@@ -670,7 +672,7 @@ impl AnimatedVisibilityScope {
         let exit = exit.into().unwrap_or_else(fade_out);
         let (active_enter, active_exit, _) =
             update_enter_exit_modifier_state(&self.transition, enter, exit, None);
-        create_enter_exit_modifier(&self.transition, active_enter, active_exit, None, label)
+        create_enter_exit_modifier(&self.transition, active_enter, active_exit, None, false, label)
     }
 }
 
@@ -955,6 +957,7 @@ pub(crate) fn AnimatedEnterExit<T: Clone + PartialEq + 'static>(
                 active_enter,
                 active_exit,
                 transform_state,
+                transition.is_deferred_root(),
                 "Built-in",
             );
             let policy = remember(move || {
@@ -1152,15 +1155,27 @@ fn neutralized(exit: &ExitTransition) -> ExitTransition {
 
 /// The modifier animating the content's alpha, scale, size and slide, as Compose's
 /// `createEnterExitModifier`: a clip while a size animates (unless asked not to), the
-/// size and slide in a layout node, the alpha and scale in a graphics layer.
+/// size and slide in a layout node, the alpha and scale in a graphics layer. With
+/// `provide_transform_state`, the layout node gives the shared elements in it the deferred
+/// state and its coordinates, as `provideTransformState` (D1340).
 pub(crate) fn create_enter_exit_modifier(
     transition: &Transition<EnterExitState>,
     enter: EnterTransition,
     exit: ExitTransition,
     transform_state: Option<Rc<SharedMutableTransformState>>,
+    provide_transform_state: bool,
     label: &'static str,
 ) -> Modifier {
-    create_enter_exit_modifier_enabled(transition, enter, exit, transform_state, None, label)
+    let provided = transform_state.clone().filter(|_| provide_transform_state);
+    create_enter_exit_modifier_providing(
+        transition,
+        enter,
+        exit,
+        transform_state,
+        provided,
+        None,
+        label,
+    )
 }
 
 /// What answers whether an enter and exit animate, as Compose's `isEnabled`: shared bounds' only
@@ -1174,6 +1189,26 @@ pub(crate) fn create_enter_exit_modifier_enabled(
     enter: EnterTransition,
     exit: ExitTransition,
     transform_state: Option<Rc<SharedMutableTransformState>>,
+    is_enabled: EnterExitEnabled,
+    label: &'static str,
+) -> Modifier {
+    create_enter_exit_modifier_providing(
+        transition,
+        enter,
+        exit,
+        transform_state,
+        None,
+        is_enabled,
+        label,
+    )
+}
+
+fn create_enter_exit_modifier_providing(
+    transition: &Transition<EnterExitState>,
+    enter: EnterTransition,
+    exit: ExitTransition,
+    transform_state: Option<Rc<SharedMutableTransformState>>,
+    provided: Option<Rc<SharedMutableTransformState>>,
     is_enabled: EnterExitEnabled,
     label: &'static str,
 ) -> Modifier {
@@ -1241,6 +1276,7 @@ pub(crate) fn create_enter_exit_modifier_enabled(
             parts,
             animations,
             transform_state,
+            provided,
             is_enabled,
         })
         .then(layer)
@@ -1545,14 +1581,25 @@ struct EnterExitElement {
     parts: EnterExit,
     animations: Animations,
     transform_state: Option<Rc<SharedMutableTransformState>>,
+    /// The state the node gives the shared elements in it, as `mutableTransformState` given
+    /// `provideTransformState`.
+    provided: Option<Rc<SharedMutableTransformState>>,
     is_enabled: EnterExitEnabled,
 }
+
+/// The deferred state of the content around a node, as Compose's
+/// `ModifierLocalSharedMutableTransformState`.
+pub(crate) static LOCAL_TRANSFORM_STATE: ModifierLocal<Option<Rc<SharedMutableTransformState>>> =
+    compose_ui::modifier_local_of("SharedMutableTransformState", || None);
 
 struct EnterExitNode {
     transition: Transition<EnterExitState>,
     parts: EnterExit,
     animations: Animations,
     transform_state: Option<Rc<SharedMutableTransformState>>,
+    provided: Option<Rc<SharedMutableTransformState>>,
+    /// Holds `provided` once there's one, as `transformStateMap`.
+    locals: ModifierLocalMap,
     is_enabled: EnterExitEnabled,
     /// The side that stays, latched at the start of a change, as `currentAlignment`.
     current_alignment: Option<Alignment>,
@@ -1569,6 +1616,9 @@ impl ModifierNodeElement for EnterExitElement {
             parts: self.parts.clone(),
             animations: self.animations.clone(),
             transform_state: self.transform_state.clone(),
+            provided: self.provided.clone(),
+            locals: compose_ui::modifier_local_map_of()
+                .with(&LOCAL_TRANSFORM_STATE, self.provided.clone()),
             is_enabled: self.is_enabled.clone(),
             current_alignment: None,
             lookahead_size: None,
@@ -1580,6 +1630,12 @@ impl ModifierNodeElement for EnterExitElement {
         node.parts = self.parts.clone();
         node.animations = self.animations.clone();
         node.transform_state = self.transform_state.clone();
+        if !same_state(&node.provided, &self.provided) {
+            node.provided = self.provided.clone();
+            if self.provided.is_some() {
+                node.locals.provide(&LOCAL_TRANSFORM_STATE, self.provided.clone());
+            }
+        }
         node.is_enabled = self.is_enabled.clone();
     }
 
@@ -1588,6 +1644,7 @@ impl ModifierNodeElement for EnterExitElement {
             && *other.parts.enter == *self.parts.enter
             && *other.parts.exit == *self.parts.exit
             && same_state(&other.transform_state, &self.transform_state)
+            && same_state(&other.provided, &self.provided)
             && match (&other.is_enabled, &self.is_enabled) {
                 (Some(a), Some(b)) => Rc::ptr_eq(a, b),
                 (None, None) => true,
@@ -1605,11 +1662,37 @@ impl ModifierNode for EnterExitNode {
         Some(self)
     }
 
+    // Only a deferred transition's own content gives its state (fixed for the node's transition):
+    // the others' nodes are of the kinds they were.
+    fn as_modifier_local(&mut self) -> Option<&mut dyn ModifierLocalModifierNode> {
+        if self.provided.is_some() { Some(self) } else { None }
+    }
+
+    fn as_layout_aware(&mut self) -> Option<&mut dyn LayoutAwareModifierNode> {
+        if self.provided.is_some() { Some(self) } else { None }
+    }
+
     fn on_attach(&mut self, _context: &mut compose_ui::NodeContext<'_>) {
         self.lookahead_size = None;
     }
 
     fn on_release(&mut self, _context: &mut ReleaseContext<'_>) {}
+}
+
+impl ModifierLocalModifierNode for EnterExitNode {
+    /// What it gives, once it has a state to give, as `providedValues`.
+    fn provided_values(&mut self) -> Option<&mut ModifierLocalMap> {
+        self.provided.is_some().then_some(&mut self.locals)
+    }
+}
+
+impl LayoutAwareModifierNode for EnterExitNode {
+    /// As `onPlaced`: where the content is, for the shared elements in it.
+    fn on_placed(&mut self, coordinates: LayoutCoordinates, _context: &mut NodeContext<'_>) {
+        if let Some(state) = &self.provided {
+            state.set_parent_layout_coordinates(coordinates);
+        }
+    }
 }
 
 impl EnterExitNode {

@@ -10,7 +10,7 @@ use std::rc::Rc;
 use std::task::Poll;
 
 use compose_runtime::{ComposeArg, OwnedState, mutable_state_of};
-use compose_ui::{Color, IntOffset, IntSize, Offset, TransformOrigin};
+use compose_ui::{Color, IntOffset, IntSize, LayoutCoordinates, Offset, TransformOrigin};
 
 use crate::animatable::Animatable;
 use crate::vector::AnimationVector;
@@ -303,20 +303,27 @@ impl ManualVelocity {
     }
 }
 
-/// A deferred enter or exit's manual state, as Compose's `SharedMutableTransformState` (shared with
-/// shared elements once they exist). Its `combined_*` are what's shown: the manual values over the
-/// transition's. A deferred transition's content has one; other transitions, none.
+/// A deferred enter or exit's manual state, as Compose's `SharedMutableTransformState`, shared
+/// with the shared elements in the content (D1340). Its `combined_*` are what's shown: the manual
+/// values over the transition's. A deferred transition's content has one; other transitions, none.
 pub(crate) struct SharedMutableTransformState {
     pub(crate) mutation_phase: OwnedState<MutationPhase>,
     last_mutable_data: RefCell<Option<MutableTransform>>,
     mutable_data: RefCell<Option<MutableTransform>>,
     pub(crate) transform_scope: TransformScope,
+    /// The content's coordinates, outside its layer, where it was last placed, as
+    /// `parentLayoutCoordinates`: what a shared element's pivot is in.
+    parent_layout_coordinates: Cell<Option<LayoutCoordinates>>,
 
     last_veil: Cell<Color>,
     last_alpha: Cell<f32>,
     last_scale: Cell<f32>,
     last_transform_origin: Cell<TransformOrigin>,
     last_slide: Rc<Cell<IntOffset>>,
+    /// The manual scale and offset last shown (none set: 1 and zero), as `lastManualScale` and
+    /// `lastManualSlide`: what a shared element's hand-off starts from.
+    last_manual_scale: Cell<f32>,
+    last_manual_slide: Cell<IntOffset>,
     /// `slideHandoffOffset`: one function, so the slides made of it compare equal.
     slide_handoff_offset: Rc<dyn Fn(IntSize) -> IntOffset>,
 
@@ -365,11 +372,14 @@ impl SharedMutableTransformState {
             last_mutable_data: RefCell::new(None),
             mutable_data: RefCell::new(None),
             transform_scope: TransformScope::new(),
+            parent_layout_coordinates: Cell::new(None),
             last_veil: Cell::new(Color::TRANSPARENT),
             last_alpha: Cell::new(1.0),
             last_scale: Cell::new(1.0),
             last_transform_origin: Cell::new(TransformOrigin::CENTER),
             last_slide,
+            last_manual_scale: Cell::new(1.0),
+            last_manual_slide: Cell::new(IntOffset::ZERO),
             slide_handoff_offset: Rc::new(move |_| read.get()),
             active_transition_alpha: Cell::new(1.0),
             active_transition_scale: Cell::new(1.0),
@@ -396,8 +406,50 @@ impl SharedMutableTransformState {
         )
     }
 
-    fn is_handoff_active(&self) -> bool {
+    pub(crate) fn is_handoff_active(&self) -> bool {
         self.mutation_phase.get() == MutationPhase::Handoff
+    }
+
+    /// The scale set by hand, or 1, as `activeScale` (a state read).
+    pub(crate) fn active_scale(&self) -> f32 {
+        let scope = &self.transform_scope;
+        if scope.is_scale_mutated.get() { scope.scale() } else { 1.0 }
+    }
+
+    /// The offset set by hand, or zero, as `activeOffset`.
+    pub(crate) fn active_offset(&self) -> IntOffset {
+        let scope = &self.transform_scope;
+        if scope.is_offset_mutated.get() { scope.offset() } else { IntOffset::ZERO }
+    }
+
+    /// The scale's pivot set by hand, or the centre, as `activeTransformOrigin` (a state read).
+    pub(crate) fn active_transform_origin(&self) -> TransformOrigin {
+        let scope = &self.transform_scope;
+        if scope.is_transform_origin_mutated.get() {
+            scope.transform_origin()
+        } else {
+            TransformOrigin::CENTER
+        }
+    }
+
+    pub(crate) fn parent_layout_coordinates(&self) -> Option<LayoutCoordinates> {
+        self.parent_layout_coordinates.get()
+    }
+
+    pub(crate) fn set_parent_layout_coordinates(&self, coordinates: LayoutCoordinates) {
+        self.parent_layout_coordinates.set(Some(coordinates));
+    }
+
+    pub(crate) fn last_manual_scale(&self) -> f32 {
+        self.last_manual_scale.get()
+    }
+
+    pub(crate) fn last_manual_slide(&self) -> IntOffset {
+        self.last_manual_slide.get()
+    }
+
+    pub(crate) fn last_transform_origin(&self) -> TransformOrigin {
+        self.last_transform_origin.get()
     }
 
     /// The new phase for what the transition says, as `updateMutationState`.
@@ -653,6 +705,8 @@ impl SharedMutableTransformState {
         };
         if is_mutating {
             self.last_scale.set(combined);
+            let manual = if is_mutated { self.transform_scope.scale() } else { 1.0 };
+            self.last_manual_scale.set(manual);
             if is_mutated {
                 self.scale_velocity_tracker.borrow_mut().add(Offset::new(combined, 0.0));
             }
@@ -712,6 +766,8 @@ impl SharedMutableTransformState {
         };
         if is_mutating {
             self.last_slide.set(combined);
+            let manual = if is_mutated { self.transform_scope.offset() } else { IntOffset::ZERO };
+            self.last_manual_slide.set(manual);
             if is_mutated {
                 let position = Offset::new(combined.x as f32, combined.y as f32);
                 self.offset_velocity_tracker.borrow_mut().add(position);
@@ -751,6 +807,8 @@ impl SharedMutableTransformState {
         self.scale_velocity_tracker.borrow_mut().reset();
         self.last_transform_origin.set(TransformOrigin::CENTER);
         self.last_slide.set(IntOffset::ZERO);
+        self.last_manual_scale.set(1.0);
+        self.last_manual_slide.set(IntOffset::ZERO);
         self.offset_velocity_tracker.borrow_mut().reset();
         self.scale_handoff_velocity.set(None);
         self.slide_handoff_velocity.set(None);
