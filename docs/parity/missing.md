@@ -6,18 +6,17 @@ Out of scope, by decision: Material 2, Wear, TV, Glance, remote, Navigation Comp
 
 ## By size
 
-The largest `feature:` gaps in the ledgers on 2026-11-07 (`python3 tools/parity/ledger_count.py docs/parity/<ledger>.md`), in Compose tests waiting:
+The largest `feature:` gaps in the ledgers after their audit on 2026-11-08 ([handoff.md](handoff.md#coverage-by-area) has the totals by area) (`python3 tools/parity/ledger_count.py docs/parity/<ledger>.md`), in Compose tests waiting:
 
 | Gap | Tests | Ledger | Notes |
 |---|---|---|---|
 | Android view interop (`AndroidView`, hosting) | ~279 | ui-input | |
-| Android IME bridge details | ~170, and ~68 platform text input | foundation-text-misc, ui-input | |
-| `TextFieldState` remainder | ~118, and ~67 text field styles | foundation-text-misc | Styles in the state, an output transformation's styles |
-| AndroidParagraphTest (paragraph API) | ~115 | ui-text-and-test | The rest of the paragraph API is in (D2047–D2052), and `BasicText` lays a text with paragraph styles out as a `MultiParagraph` (D2053) |
+| Android IME bridge details | ~194, and ~43 platform text input | foundation-text-misc, ui-input | |
+| `TextFieldState` remainder | ~45 (`TextFieldLayoutStateCacheTest`), and ~67 text field styles | foundation-text-misc | Styles in the state, an output transformation's styles |
+| AndroidParagraphTest (paragraph API) | ~100 left of 115 | ui-text-and-test | The paragraph API and `BasicText`'s paragraph styles are in (D2047–D2054, D2060–D2061); the rest is mostly `Spannable`/`TextPaint` internals (n/a) and some behaviour to port |
 | Carousel (Material 3) | ~99 | material3 | Big Material components come last |
 | Handwriting | ~84 | foundation-text-misc | |
 | Floating toolbar (Material 3) | ~82 | material3 | |
-| Border parity | ~79 | foundation-text-misc | Mostly in (D1050–D1054); the tag lags, its semantics are left |
 | Magnifier leftovers | ~10 | foundation-text-misc | In (D2072–D2074); left: `TextFieldMagnifierTest`'s drag-and-drop tests (with drag and drop), a device run of `PlatformMagnifierTest`, the selection gesture tests' magnifier checks |
 | Android text device tests | ~68 | ui-text-and-test | |
 | Search bar (Material 3) | ~66 | material3 | |
