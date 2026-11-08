@@ -446,3 +446,195 @@ fn drag_and_drop() {
     assert!((moved.x - 48.0).abs() <= 0.5, "{moved:?}");
     assert!((moved.y - 96.0).abs() <= 0.5, "{moved:?}");
 }
+
+// ---- Move --------------------------------------------------------------------------------------
+
+/// The moves of `moveTo` and `moveBy`: in at once, around, around after two periods, out, in.
+const MOVES: [(Offset, u64); 5] = [(IN, 0), (MOVE1, T), (MOVE2, 2 * T), (OUT, T), (IN, T)];
+
+/// What the box hears of [`MOVES`]: the move that brings the cursor in is its `Enter`, out of
+/// it its `Exit`.
+const MOVED: [Summary; 5] = [
+    (0, Enter, false, IN, NONE),
+    (T, Move, false, MOVE1, NONE),
+    (3 * T, Move, false, MOVE2, NONE),
+    (4 * T, Exit, false, OUT, NONE),
+    (5 * T, Enter, false, IN, NONE),
+];
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/MoveTest.kt, moveTo
+#[test]
+fn move_to() {
+    let heard = run(|mouse| {
+        for (position, delay) in MOVES {
+            mouse.move_to_after(position, delay);
+            assert_eq!(mouse.current_position(), position);
+        }
+    });
+    assert_eq!(summaries(&heard), MOVED);
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/MoveTest.kt, moveBy
+#[test]
+fn move_by() {
+    let heard = run(|mouse| {
+        let mut at = Offset::ZERO;
+        for (position, delay) in MOVES {
+            mouse.move_by_after(position - at, delay);
+            assert_eq!(mouse.current_position(), position);
+            at = position;
+        }
+    });
+    assert_eq!(summaries(&heard), MOVED);
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/MoveTest.kt, updatePointerTo
+/// Moving the cursor without events sends nothing: the press is where it ended. The cursor
+/// wasn't over the box, so it comes over it with the press, its `Enter` telling the press's
+/// buttons (Compose's tells none).
+#[test]
+fn update_pointer_to() {
+    let heard = run(|mouse| {
+        for position in [IN, MOVE1, MOVE2] {
+            mouse.update_pointer_to(position);
+            assert_eq!(mouse.current_position(), position);
+        }
+        mouse.press(MouseButton::Primary);
+    });
+    assert_eq!(
+        summaries(&heard),
+        [(0, Enter, false, MOVE2, PRIMARY), (0, Press, true, MOVE2, PRIMARY)]
+    );
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/MoveTest.kt, updatePointerBy
+#[test]
+fn update_pointer_by() {
+    let heard = run(|mouse| {
+        let mut at = Offset::ZERO;
+        for position in [IN, MOVE1, MOVE2] {
+            mouse.update_pointer_by(position - at);
+            assert_eq!(mouse.current_position(), position);
+            at = position;
+        }
+        mouse.press(MouseButton::Primary);
+    });
+    assert_eq!(
+        summaries(&heard),
+        [(0, Enter, false, MOVE2, PRIMARY), (0, Press, true, MOVE2, PRIMARY)]
+    );
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/MoveTest.kt, enter_exit
+#[test]
+fn enter_exit() {
+    let heard = run(|mouse| {
+        mouse.enter(IN);
+        mouse.move_to(MOVE1);
+        mouse.exit(OUT);
+    });
+    let summaries = summaries(&heard);
+    assert_eq!(summaries[..2], [(T, Enter, false, IN, NONE), (2 * T, Move, false, MOVE1, NONE)]);
+    // The window's exit carries no position (the host's `send_pointer_left`): where the cursor
+    // leaves isn't the one Compose's box hears (`OUT`).
+    assert_eq!((summaries[2].0, summaries[2].1, summaries.len()), (3 * T, Exit, 3));
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/MoveTest.kt, enter_alreadyEntered
+#[test]
+fn enter_already_entered() {
+    let heard = run(|mouse| {
+        mouse.enter(IN);
+        let message = expect_error(|| mouse.enter(MOVE1));
+        assert!(
+            message.contains("Cannot send mouse hover enter event, mouse is already hovering"),
+            "{message}"
+        );
+    });
+    assert_eq!(summaries(&heard), [(T, Enter, false, IN, NONE)]);
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/MoveTest.kt, exit_notEntered
+#[test]
+fn exit_not_entered() {
+    let heard = run(|mouse| {
+        let message = expect_error(|| mouse.exit(OUT));
+        assert!(
+            message.contains("Cannot send mouse hover exit event, mouse is not hovering"),
+            "{message}"
+        );
+    });
+    assert!(heard.is_empty(), "{heard:?}");
+}
+
+const STEP: Offset = Offset::new(5.0, 5.0);
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/MoveTest.kt, animatePointerTo
+#[test]
+fn animate_pointer_to() {
+    let heard = run(|mouse| mouse.animate_move_to(STEP * 4.0, 4 * T));
+    assert_eq!(
+        summaries(&heard),
+        [
+            (T, Enter, false, STEP, NONE),
+            (2 * T, Move, false, STEP * 2.0, NONE),
+            (3 * T, Move, false, STEP * 3.0, NONE),
+            (4 * T, Move, false, STEP * 4.0, NONE),
+        ]
+    );
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/MoveTest.kt, animatePointerBy
+#[test]
+fn animate_pointer_by() {
+    let start = Offset::new(1.0, 1.0);
+    let heard = run(|mouse| {
+        mouse.move_to(start);
+        mouse.animate_move_by(STEP * 4.0, 4 * T);
+    });
+    assert_eq!(
+        summaries(&heard),
+        [
+            (T, Enter, false, start, NONE),
+            (2 * T, Move, false, start + STEP, NONE),
+            (3 * T, Move, false, start + STEP * 2.0, NONE),
+            (4 * T, Move, false, start + STEP * 3.0, NONE),
+            (5 * T, Move, false, start + STEP * 4.0, NONE),
+        ]
+    );
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/MoveTest.kt, animateAlong_fromCurrentPosition
+/// A curve starting where the cursor is sends no first move.
+#[test]
+fn animate_along_from_current_position() {
+    let curve = |t: u64| Offset::new(t as f32, t as f32);
+    let heard = run(|mouse| mouse.animate_move_along(&curve, 4 * T));
+    assert_eq!(
+        summaries(&heard),
+        [
+            (T, Enter, false, curve(T), NONE),
+            (2 * T, Move, false, curve(2 * T), NONE),
+            (3 * T, Move, false, curve(3 * T), NONE),
+            (4 * T, Move, false, curve(4 * T), NONE),
+        ]
+    );
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/MoveTest.kt, animateAlong_fromOtherPosition
+/// A curve starting elsewhere moves there first, at once.
+#[test]
+fn animate_along_from_other_position() {
+    let curve = |t: u64| Offset::new(1.0 + t as f32, 1.0 + t as f32);
+    let heard = run(|mouse| mouse.animate_move_along(&curve, 4 * T));
+    assert_eq!(
+        summaries(&heard),
+        [
+            (0, Enter, false, curve(0), NONE),
+            (T, Move, false, curve(T), NONE),
+            (2 * T, Move, false, curve(2 * T), NONE),
+            (3 * T, Move, false, curve(3 * T), NONE),
+            (4 * T, Move, false, curve(4 * T), NONE),
+        ]
+    );
+}

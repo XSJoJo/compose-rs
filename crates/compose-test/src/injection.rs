@@ -1195,8 +1195,13 @@ impl MouseInjectionScope<'_> {
 
     /// Moves the cursor by `delta`, an event period on, as `moveBy(delta)`.
     pub fn move_by(&mut self, delta: Offset) {
+        self.move_by_after(delta, EVENT_PERIOD_MILLIS);
+    }
+
+    /// The same, `delay_millis` on, as `moveBy(delta, delayMillis)`.
+    pub fn move_by_after(&mut self, delta: Offset, delay_millis: u64) {
         let position = self.current_position() + delta;
-        self.move_to(position);
+        self.move_to_after(position, delay_millis);
     }
 
     /// Moves the cursor without sending an event, as `updatePointerTo`.
