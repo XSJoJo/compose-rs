@@ -180,6 +180,23 @@ impl Modifier {
         self.size_in(SizeSpec::bounds(Dp::UNSPECIFIED, min, Dp::UNSPECIFIED, max))
     }
 
+    /// Bounds on the size overriding the incoming constraints, as `Modifier.requiredSizeIn`
+    /// (`spec`'s own `enforce_incoming` ignored).
+    pub fn required_size_in(self, spec: SizeSpec) -> Modifier {
+        self.size_in(SizeSpec { enforce_incoming: false, ..spec })
+    }
+
+    /// Bounds on the width overriding the incoming constraints, as `Modifier.requiredWidthIn`.
+    pub fn required_width_in(self, min: Dp, max: Dp) -> Modifier {
+        self.required_size_in(SizeSpec::bounds(min, Dp::UNSPECIFIED, max, Dp::UNSPECIFIED))
+    }
+
+    /// Bounds on the height overriding the incoming constraints, as
+    /// `Modifier.requiredHeightIn`.
+    pub fn required_height_in(self, min: Dp, max: Dp) -> Modifier {
+        self.required_size_in(SizeSpec::bounds(Dp::UNSPECIFIED, min, Dp::UNSPECIFIED, max))
+    }
+
     pub fn fill_max_width(self) -> Modifier {
         self.fill_max_width_with(1.0)
     }
@@ -228,6 +245,14 @@ impl Modifier {
     /// `VerticalAlignment`, a `ColumnScope` a `HorizontalAlignment`.
     pub fn align<S: AlignScope>(self, _scope: S, alignment: S::Alignment) -> Modifier {
         self.then_element(Element::Align(S::parent_alignment(alignment)))
+    }
+
+    /// Sizes it as its `Box` once the box's other children have sized it, as
+    /// `BoxScope.matchParentSize`: it plays no part in the box's size (`fill_max_size` would
+    /// make the box as large as it can). A form of `align` (it centers it), the outermost of
+    /// them winning.
+    pub fn match_parent_size(self, _scope: BoxScope) -> Modifier {
+        self.then_element(Element::Align(ParentAlignment::MatchParentSize))
     }
 
     /// Aligns it across its row or column by `line`, as `alignBy(alignmentLine)`: its line and those
@@ -776,6 +801,9 @@ pub enum ParentAlignment {
     Line(crate::alignment_line::AlignmentLine),
     /// `align_by_block`, by which closure: compared, so a new one is told to the parent.
     Block(u32),
+    /// `match_parent_size`: measured at the `Box`'s size once its other children are, and
+    /// centered, as Compose's `BoxChildData(Alignment.Center, matchParentSize = true)` (D1929).
+    MatchParentSize,
 }
 
 /// The data a child gives its parent's measure policy, as Compose's parent data modifiers.

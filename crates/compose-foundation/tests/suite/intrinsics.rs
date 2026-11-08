@@ -1186,6 +1186,62 @@ fn a_boxs_intrinsics_are_its_largest_childs() {
     });
 }
 
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/BoxTest.kt, testBox_hasCorrectIntrinsicMeasurements
+// (whole: with its `matchParentSize` child, D1929)
+#[test]
+fn a_match_parent_size_child_plays_no_part_in_a_boxs_intrinsics() {
+    let scene = layout(|| {
+        Box!(|scope| {
+            Empty(Modifier.align(scope, Alignment::TOP_START).aspect_ratio(2.0));
+            ConstrainedBox(
+                Constraints::fixed(90, 80),
+                Modifier.align(scope, Alignment::BOTTOM_CENTER),
+            );
+            ConstrainedBox(
+                Constraints::fixed(200, 200),
+                Modifier.match_parent_size(scope).padding(Dp(10.0)),
+            );
+        });
+    });
+    test_intrinsics(vec![scene], |asked| {
+        assert_eq!(asked.min_width(0), 90);
+        assert_eq!(asked.min_width(200), 400);
+        assert_eq!(asked.min_width(INF), 90);
+        assert_eq!(asked.min_height(0), 80);
+        assert_eq!(asked.min_height(200), 100);
+        assert_eq!(asked.min_height(INF), 80);
+        assert_eq!(asked.max_width(0), 90);
+        assert_eq!(asked.max_width(200), 400);
+        assert_eq!(asked.max_width(INF), 90);
+        assert_eq!(asked.max_height(0), 80);
+        assert_eq!(asked.max_height(200), 100);
+        assert_eq!(asked.max_height(INF), 80);
+    });
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/BoxTest.kt, testBox_hasCorrectIntrinsicMeasurements_withNoAlignedChildren
+#[test]
+fn a_box_of_only_a_match_parent_size_child_has_no_intrinsic_size() {
+    let scene = layout(|| {
+        Box!(|scope| {
+            ConstrainedBox(
+                Constraints::fixed(200, 200),
+                Modifier.match_parent_size(scope).padding(Dp(10.0)),
+            );
+        });
+    });
+    test_intrinsics(vec![scene], |asked| {
+        assert_eq!(asked.min_width(50), 0);
+        assert_eq!(asked.min_width(INF), 0);
+        assert_eq!(asked.min_height(50), 0);
+        assert_eq!(asked.min_height(INF), 0);
+        assert_eq!(asked.max_width(50), 0);
+        assert_eq!(asked.max_width(INF), 0);
+        assert_eq!(asked.max_height(50), 0);
+        assert_eq!(asked.max_height(INF), 0);
+    });
+}
+
 /// Measures its only child with its constraints, as `PaddingTest`'s `TestBox`.
 struct TestBox;
 

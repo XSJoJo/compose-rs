@@ -713,18 +713,46 @@ impl MeasurePolicy for BoxMeasurePolicy {
         let mut placeables: Buffer<Option<Placeable>> = Buffer::new(count);
         let placeables = placeables.as_mut();
         let (mut width, mut height) = (constraints.min_width, constraints.min_height);
+        // Each child's alignment, read once: its own, or the box's.
+        let mut alignments: Buffer<Option<Alignment>> = Buffer::new(count);
+        let alignments = alignments.as_mut();
+        // As Compose's: the children matching the box's size measured after the others have
+        // sized it (a lone one at the minimums), and centered.
+        let mut any_matches_parent = false;
         for (index, &measurable) in measurables.iter().enumerate() {
+            let (alignment, matches_parent) = match scope.parent_data(measurable).alignment {
+                Some(ParentAlignment::Box(alignment)) => (alignment, false),
+                Some(ParentAlignment::MatchParentSize) => (Alignment::CENTER, true),
+                _ => (self.alignment, false),
+            };
+            alignments[index] = Some(alignment);
+            if matches_parent {
+                any_matches_parent = true;
+                continue;
+            }
             let placeable = scope.measure(measurable, child_constraints);
             width = width.max(placeable.width);
             height = height.max(placeable.height);
             placeables[index] = Some(placeable);
         }
+        if any_matches_parent {
+            let matching = if count == 1 {
+                Constraints::fixed(width, height)
+            } else {
+                // The infinity check is for intrinsics measured by measuring.
+                let min = |size: i32| if size == Constraints::INFINITY { 0 } else { size };
+                Constraints::new(min(width), width, min(height), height)
+            };
+            for (index, &measurable) in measurables.iter().enumerate() {
+                if placeables[index].is_none() {
+                    placeables[index] = Some(scope.measure(measurable, matching));
+                }
+            }
+        }
         let space = compose_ui::IntSize::new(width, height);
-        for (index, &measurable) in measurables.iter().enumerate() {
-            let Some(placeable) = placeables[index] else { continue };
-            let alignment = match scope.parent_data(measurable).alignment {
-                Some(ParentAlignment::Box(alignment)) => alignment,
-                _ => self.alignment,
+        for index in 0..count {
+            let (Some(placeable), Some(alignment)) = (placeables[index], alignments[index]) else {
+                continue;
             };
             let position = alignment.align(placeable.size(), space, scope.layout_direction());
             scope.place_at(&placeable, position);

@@ -30,9 +30,9 @@ By area: `foundation-layout` 29 files (850 tests); lazy lists, grids and `LazyLa
 | Status | Files | `@Test` methods |
 |---|---|---|
 | `covered` | 13 | 132 |
-| `ported` | 95 | 1,410 |
+| `ported` | 96 | 1,424 |
 | `port` | 0 | 0 |
-| `partial` | 51 | 1,353 |
+| `partial` | 50 | 1,339 |
 | `feature:<name>` | 14 | 101 |
 | `n/a` | 12 | 133 |
 | **Total** | **185** | **3,129** |
@@ -61,7 +61,7 @@ The table's suite references (`lazy_api.rs`, `fling.rs`, …) are files in `crat
 | compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/AlignmentLineTest.kt | 14 | `paddingFrom` / `paddingFromBaseline` around alignment lines: offsets, too little space, min constraints | ported (`crates/compose-foundation/tests/suite/alignment_line.rs`, D1220; `testInspectableParameter` n/a: no inspector info) |
 | compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/ArrangementTest.kt | 1 | Parameterized table of `Arrangement.arrange` outputs (Start/End/Center/Space*/spacedBy, LTR/RTL) | ported (`port_rows.rs`: its 4 cases) |
 | compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/AspectRatioTest.kt | 6 | `aspectRatio` sizing (width/height first), zero/negative ratio throwing, intrinsics | partial (`aspect_ratio`, `aspect_ratio_with` exist; `modifiers_api.rs::aspect_ratio_sizes_from_the_width_or_the_height_first`; `testAspectRatioModifier_intrinsicDimensions` ported in `intrinsics.rs`. Missing: check invalid-ratio panics; inspector test n/a) |
-| compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/BoxTest.kt | 14 | Box alignment, stretch children, RTL, `propagateMinConstraints` (and its changes), child sizes the box, intrinsics, `matchParentSize` | partial (Box, `content_alignment`, `propagate_min_constraints` exist; `foundation.rs::a_box_aligns_its_children`. `testBox_hasCorrectIntrinsicMeasurements` ported in `intrinsics.rs`, without its `matchParentSize` child. Missing: `matchParentSize` (feature:layout-modifiers), with `…withNoAlignedChildren`) |
+| compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/BoxTest.kt | 14 | Box alignment, stretch children, RTL, `propagateMinConstraints` (and its changes), child sizes the box, intrinsics, `matchParentSize` | ported (12 of 14: `box_layout.rs` (10, through `layout_test.rs`), the 2 intrinsics tests in `intrinsics.rs` (`testBox_hasCorrectIntrinsicMeasurements` again whole, with its `matchParentSize` child); `match_parent_size` added for them (D1929). n/a: the 2 inspector tests) |
 | compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/BoxWithConstraintsTest.kt | 17 | Content composed with the measured constraints, relayout/recomposition interplay, model writes during measure, disposal, Dp accessors, infinity | partial (`allTheStepsCalledExactlyOnce`, `withConstraintCallbackIsNotExecutedWithInnerRecompositions`, `updateConstraintsRecomposingWithConstraints` ported in crates/compose-foundation/tests/suite/subcompose_layout.rs; `grid.rs::box_with_constraints_composes_for_its_constraints`, `review_round6.rs` box tests; on `SubcomposeLayout` since D1309) |
 | compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/ContextualFlowRowColumnTest.kt | 77 | `ContextualFlowRow` / `ContextualFlowColumn` | n/a: the API is `@Deprecated` |
 | compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/FitInsideTest.kt | 2 | `Modifier.fitInside(RectRulers)` | feature:ruler-fit |
@@ -331,10 +331,10 @@ The benchmarks (docs/12, docs/15, docs/16): rounds from D892 on compare compose-
 From `compose/foundation/foundation-layout/api/current.txt` and `compose/foundation/foundation/api/current.txt`, non-deprecated, experimental included (marked *exp*). `restricted_current.txt` adds nothing public. Grouped by the feature that would add them; compose-rs names follow Compose's in snake_case.
 
 - **layout-modifiers:**
-  - `requiredSize(w, h)`, `requiredSizeIn`, `requiredWidthIn`, `requiredHeightIn` (`required_width`/`required_height` came with intrinsics, D1203);
+  - ~~`requiredSize(w, h)`, `requiredSizeIn`, `requiredWidthIn`, `requiredHeightIn`~~ done (`required_size`, `required_size_in`, `required_width_in`, `required_height_in`, D1929; `required_width`/`required_height` came with intrinsics, D1203);
   - `absolutePadding`;
   - `PaddingValues.Absolute`, `PaddingValues.plus`/`minus`, `calculateStartPadding`/`calculateEndPadding` (check compose-rs's `PaddingValues` for the `calculate*` methods);
-  - `BoxScope.matchParentSize`, `Arrangement.Absolute` (Left, Right, Center, SpaceBetween/Around/Evenly, `spacedBy`, `aligned`), `Modifier.visible`.
+  - ~~`BoxScope.matchParentSize`~~ done (`match_parent_size`, D1929), `Arrangement.Absolute` (Left, Right, Center, SpaceBetween/Around/Evenly, `spacedBy`, `aligned`), `Modifier.visible`.
 - **intrinsics:** done (D1200–D1205): `IntrinsicSize`, `Modifier.width/height(IntrinsicSize)`, `requiredWidth/requiredHeight(IntrinsicSize)`, and Compose's intrinsics on every layout here. Flow layouts, `FlexBox` and `Grid` bring theirs.
 - **alignment-lines:** done (D1220): `paddingFrom` (Dp and TextUnit), `paddingFromBaseline`, `RowScope.alignBy` (line or lambda), `alignByBaseline`, `ColumnScope.alignBy`. `RichTooltip` and M3's `ListItem`, `Tab` and `TopAppBar` read them (D1567); `FlowRowScope` and `FlowColumnScope` take `alignBy` (D1569); `FlexBox` aligns by lines and blocks (D1367).
 - **flow-layout:** done (D1350–D1353; `flow_layout.rs`): `FlowRow`, `FlowColumn` (`maxItemsInEachRow`, `maxLines`, `itemVerticalAlignment`), `FlowRowScope.fillMaxRowHeight` (*exp*), `FlowColumnScope.fillMaxColumnWidth` (*exp*). The `overflow` overloads and `ContextualFlow*` are deprecated, and `FlowRowOverflowScope`/`FlowColumnOverflowScope` go with them: not here.

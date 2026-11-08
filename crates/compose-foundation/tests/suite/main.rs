@@ -13,6 +13,7 @@ mod autofill_tracking;
 mod autofill_view_structure;
 mod basic_text_paragraphs;
 mod basic_text_small_ports;
+mod box_layout;
 mod bring_into_view;
 mod clickable_parity;
 mod clip_pointer_input;
