@@ -23,6 +23,7 @@ mod input_transformation;
 mod key_mapping;
 pub mod layout;
 pub mod lazy;
+mod magnifier;
 mod mutator;
 mod output_transformation;
 mod overscroll;
@@ -32,6 +33,7 @@ mod scroll_indicator;
 pub mod scrollbar;
 mod secure_text_field;
 mod selection_handles;
+mod selection_magnifier;
 pub mod shape;
 pub mod style;
 mod text;
@@ -97,6 +99,10 @@ pub use lazy::{
     lazy_layout_cache_window_fraction, lazy_layout_cache_window_fraction_with,
     lazy_layout_cache_window_with, remember_lazy_grid_state, remember_lazy_list_state,
     remember_lazy_staggered_grid_state,
+};
+pub use magnifier::{
+    DensityOffset, MAGNIFIER_POSITION_IN_ROOT, MagnifierArgs, MagnifierModifiers,
+    MagnifierPositionInRoot,
 };
 pub use mutator::{MutatePriority, MutationInterrupted, MutatorMutex};
 pub use output_transformation::{OutputTransform, OutputTransformation};

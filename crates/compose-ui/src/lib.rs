@@ -66,6 +66,7 @@ mod lifecycle;
 mod locale_direction;
 mod logging;
 mod lookahead;
+mod magnifier;
 mod math;
 mod matrix;
 mod measure;
@@ -320,6 +321,10 @@ pub use layout_rect_modifiers::{
 pub use lookahead::{
     ApproachLayoutModifierNode, ApproachMeasureScope, LookaheadCoordinates, LookaheadScope,
     PlacementInProgress, measure_approach,
+};
+pub use magnifier::{
+    PlatformMagnifier, PlatformMagnifierConfig, PlatformMagnifierFactory,
+    is_platform_magnifier_supported,
 };
 pub use math::{Lerp, lerp};
 pub use matrix::Matrix;

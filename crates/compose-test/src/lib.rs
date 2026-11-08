@@ -24,6 +24,7 @@ mod edge_effects;
 mod indirect;
 mod injection;
 mod interaction;
+mod magnifier;
 mod matcher;
 mod print;
 mod restoration;
@@ -51,6 +52,7 @@ pub use injection::{
     TouchInjectionScope, TrackpadButton, TrackpadInjectionScope,
 };
 pub use interaction::{SemanticsNodeInteraction, SemanticsNodeInteractionCollection};
+pub use magnifier::{MagnifierShown, TestMagnifier, TestMagnifierFactory};
 pub use matcher::{
     Matcher, NodeRef, expect_value, has_any_ancestor, has_any_child, has_any_descendant,
     has_any_sibling, has_click_action, has_content_description, has_content_description_exactly,

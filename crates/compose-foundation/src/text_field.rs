@@ -129,6 +129,16 @@ pub fn BasicTextField(
 /// The inner field: the field's node, and its handles' popups inside, as Compose composes them in
 /// the inner field (a decoration that never calls it shows none, D2008).
 fn inner_field(element: Rc<dyn AnyModifierNodeElement>, handles: Rc<TouchHandles>) -> Callback {
+    // Its magnifier, on the inner field's coordinates as Compose's is on its core node's: where
+    // the platform has one, shown while a drag says (D2073).
+    let magnifier = compose_runtime::remember(|| {
+        if compose_ui::is_platform_magnifier_supported() != Some(true) {
+            return None;
+        }
+        handles.enable_magnifier();
+        let source: Rc<dyn crate::selection_magnifier::SelectionMagnifierSource> = handles.clone();
+        Some(crate::selection_magnifier::selection_magnifier(source))
+    });
     // The same content while the field is composed: a decoration composed again (a label's
     // animation) doesn't compose the handles again.
     let content = compose_runtime::remember(move || {
@@ -137,11 +147,12 @@ fn inner_field(element: Rc<dyn AnyModifierNodeElement>, handles: Rc<TouchHandles
         })
     });
     Callback::new(move || {
-        Layout(
-            compose_ui::platform::shared_custom_modifier(element.clone()),
-            handles_host_policy(),
-            content.clone(),
-        );
+        let modifier = compose_ui::platform::shared_custom_modifier(element.clone());
+        let modifier = match &magnifier {
+            Some(magnifier) => modifier.then(magnifier.clone()),
+            None => modifier,
+        };
+        Layout(modifier, handles_host_policy(), content.clone());
     })
 }
 
@@ -2752,6 +2763,7 @@ impl LayoutModifierNode for TextFieldNode {
             self.reveal_cursor(scope, metrics.size, short);
         }
         self.tell_handles(&*scope.text_measurer(), paragraph);
+        self.tell_magnifier(&*scope.text_measurer(), paragraph);
         self.tell_toolbar(scope, paragraph);
         self.tell_text_layout(scope, paragraph);
         let placeable = scope.measure(content, Constraints::fixed(size.width, size.height));

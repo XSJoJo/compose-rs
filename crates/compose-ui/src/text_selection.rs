@@ -95,6 +95,20 @@ pub trait Selectable {
     fn line_height(&self, _offset: usize, _measurer: &SharedTextMeasurer) -> f32 {
         0.0
     }
+    /// The left of the line at `offset`, as `getLineLeft`: `None` (Compose's `-1f`) past the
+    /// lines laid out or before it's laid out. What the magnifier is kept within.
+    fn line_left(&self, _offset: usize, _measurer: &SharedTextMeasurer) -> Option<f32> {
+        None
+    }
+    /// The right of the line at `offset`, as `getLineRight`.
+    fn line_right(&self, _offset: usize, _measurer: &SharedTextMeasurer) -> Option<f32> {
+        None
+    }
+    /// The middle of the line at `offset`, between its top and bottom, as
+    /// `getCenterYForOffset`: where the magnifier is.
+    fn center_y_for_offset(&self, _offset: usize, _measurer: &SharedTextMeasurer) -> Option<f32> {
+        None
+    }
 }
 
 /// What a press selects, and a drag after it extends.
@@ -199,6 +213,24 @@ pub struct ContainerHandles {
     toolbar_requests: std::cell::RefCell<Option<ToolbarRequests>>,
     /// What the toolbar and the menu read, made when first asked (D2041).
     toolbar: std::cell::OnceCell<ContainerToolbar>,
+    /// What its magnifier follows, made where the platform has one (D2073).
+    magnifier: std::cell::OnceCell<ContainerMagnifier>,
+}
+
+/// What a container's magnifier follows, as Compose's `SelectionManager` state the selection's
+/// magnifier reads (D2073).
+struct ContainerMagnifier {
+    /// The end a gesture moves (the start's?) and where the gesture is, in the container's
+    /// coordinates, as Compose's `draggingHandle` and `currentDragPosition`: from a handle's
+    /// press or a selection gesture's start to its end.
+    drag: Cell<Option<(bool, Offset)>>,
+    /// Where it's centered, in the container's coordinates, as Compose's
+    /// `calculateSelectionMagnifierCenterAndroid`: unspecified while it's hidden (no gesture in
+    /// touch mode over a selection not trivially collapsed, Compose's `shouldShowMagnifier`).
+    center: OwnedState<Offset>,
+    /// The magnifier's size, once made (zero before): a drag farther than half of it from the
+    /// line hides it.
+    size: Cell<IntSize>,
 }
 
 /// What shows (`true`) or hides a container's toolbar.
@@ -247,6 +279,44 @@ impl ContainerHandles {
             toolbar_requested: Cell::new(false),
             toolbar_requests: std::cell::RefCell::new(None),
             toolbar: std::cell::OnceCell::new(),
+            magnifier: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The platform has a magnifier: its selection drags show it (D2073). Asked before the
+    /// first drag; a container on a platform without one keeps nothing for it.
+    pub fn enable_magnifier(&self) {
+        self.magnifier.get_or_init(|| ContainerMagnifier {
+            drag: Cell::new(None),
+            center: compose_runtime::mutable_state_of(Offset::UNSPECIFIED),
+            size: Cell::new(IntSize::ZERO),
+        });
+    }
+
+    /// Whether it has a magnifier (`enable_magnifier`).
+    pub fn has_magnifier(&self) -> bool {
+        self.magnifier.get().is_some()
+    }
+
+    /// Where its magnifier is centered, in the container's coordinates (a read of its state):
+    /// unspecified while hidden.
+    pub fn magnifier_center(&self) -> Offset {
+        self.magnifier.get().map_or(Offset::UNSPECIFIED, |magnifier| magnifier.center.get())
+    }
+
+    /// The magnifier's size, once made: where it hides follows (a refresh from a task).
+    pub fn set_magnifier_size(&self, size: IntSize) {
+        let Some(magnifier) = self.magnifier.get() else { return };
+        if magnifier.size.replace(size) != size {
+            self.refresh_later();
+        }
+    }
+
+    /// The end a gesture moves and where the gesture is (in the container's coordinates), or
+    /// none once it ended.
+    fn set_magnifier_drag(&self, drag: Option<(bool, Offset)>) {
+        if let Some(magnifier) = self.magnifier.get() {
+            magnifier.drag.set(drag);
         }
     }
 
@@ -345,6 +415,8 @@ impl ContainerHandles {
     /// A handle's drag ended or it was tapped: the toolbar shows again, as Compose's
     /// `handleDragObserver`'s `done`.
     fn handle_released(&self) {
+        // The gesture's over: no magnifier, as Compose's `done()` clears `draggingHandle`.
+        self.set_magnifier_drag(None);
         self.set_show_toolbar_later(true);
     }
 
@@ -352,6 +424,11 @@ impl ContainerHandles {
     /// here).
     fn set_show_toolbar_later(&self, show: bool) {
         self.show_toolbar.set(show);
+        self.refresh_later();
+    }
+
+    /// The tree refreshes the handles, toolbar and magnifier from a task.
+    fn refresh_later(&self) {
         let (Some(key), Some(container)) = (self.tree.get(), self.container.get()) else { return };
         compose_runtime::platform::launch(async move {
             crate::node_context::with_free_tree(key, &mut |tree| tree.refresh_handles(container));
@@ -361,10 +438,12 @@ impl ContainerHandles {
     /// The start handle (`start`) or the end's was pressed: the toolbar hides while it's held,
     /// as Compose's handle observer's `onDown`; nothing for a hidden handle, as its.
     pub fn handle_pressed(&self, start: bool) {
-        let shown = compose_runtime::snapshots::Snapshot::without_read_observation(|| {
-            self.position(start).is_some()
-        });
-        if shown {
+        let pointed =
+            compose_runtime::snapshots::Snapshot::without_read_observation(|| self.position(start));
+        if let Some(pointed) = pointed {
+            // The magnifier shows from the press, where the drag would begin (a pixel up), as
+            // Compose's `onDown` sets `currentDragPosition`.
+            self.set_magnifier_drag(Some((start, Offset::new(pointed.x, pointed.y - 1.0))));
             self.set_show_toolbar_later(false);
         }
     }
@@ -415,6 +494,9 @@ impl ContainerHandles {
         self.drag_point.set(None);
         if dragged {
             self.handle_released();
+        } else if self.magnifier.get().is_some_and(|magnifier| magnifier.drag.get().is_some()) {
+            self.set_magnifier_drag(None);
+            self.refresh_later();
         }
     }
 
@@ -760,9 +842,22 @@ impl UiTree {
         }
     }
 
+    /// The end a gesture moves is `start`'s (or the end's), the gesture at `position` in the
+    /// root: what `container`'s magnifier follows, as Compose's `updateSelection` sets
+    /// `draggingHandle` and `currentDragPosition` (D2073). Nothing where it has no magnifier.
+    fn set_magnifier_drag(&mut self, container: NodeId, start: bool, position: Offset) {
+        let Some(found) = self.container_handles(container) else { return };
+        if found.handles.magnifier.get().is_none() {
+            return;
+        }
+        let origin = self.layer_origin(container, found.layer);
+        found.handles.set_magnifier_drag(Some((start, position - origin)));
+    }
+
     fn apply_selection_request(&mut self, request: SelectionRequest) {
         match request {
             SelectionRequest::Start { container, position, unit } => {
+                self.set_magnifier_drag(container, false, position);
                 // A gesture starting hides the toolbar (`onSelectionUpdateStartCallback`).
                 self.set_show_toolbar(container, false);
                 let entries = self.selectables(container);
@@ -789,6 +884,7 @@ impl UiTree {
                 self.show_selection(&entries);
             }
             SelectionRequest::Extend { container, position } => {
+                self.set_magnifier_drag(container, false, position);
                 let Some(mut selection) =
                     self.text_selection.filter(|selection| selection.container == container)
                 else {
@@ -886,6 +982,10 @@ impl UiTree {
             }
             SelectionRequest::GestureEnded { container } => {
                 self.set_show_toolbar(container, true);
+                // As Compose's `onSelectionUpdateEndCallback`: no gesture, no magnifier.
+                if let Some(found) = self.container_handles(container) {
+                    found.handles.set_magnifier_drag(None);
+                }
             }
         }
     }
@@ -925,6 +1025,8 @@ impl UiTree {
         let origin = self.layer_origin(container, found.layer);
         let entries = self.selectables(container);
         let target = origin + begin + moved;
+        // Compose's `currentDragPosition`, whatever the selection does.
+        handles.set_magnifier_drag(Some((start, begin + moved)));
         let other = if start { selection.focus } else { selection.anchor };
         let anchor = Self::order_of(&entries, &other).map(|(order, _)| order);
         let Some(Placed { point, .. }) = self.point_at(container, &entries, target, anchor) else {
@@ -1245,6 +1347,82 @@ impl UiTree {
             self.invalidate_placement_of(container);
         }
         self.refresh_toolbar(container, &found);
+        self.refresh_magnifier(container, &found);
+    }
+
+    /// Tells `container`'s magnifier whether it shows and where, as Compose's
+    /// `shouldShowMagnifier` and `calculateSelectionMagnifierCenterAndroid`: nothing where the
+    /// platform has none, nor while no gesture moves an end and none showed (D2073).
+    fn refresh_magnifier(&mut self, container: NodeId, found: &FoundHandles) {
+        let Some(magnifier) = found.handles.magnifier.get() else { return };
+        let drag = magnifier.drag.get();
+        let was_center = compose_runtime::snapshots::Snapshot::without_read_observation(|| {
+            magnifier.center.get()
+        });
+        if drag.is_none() && was_center.is_unspecified() {
+            return;
+        }
+        let selection = self.text_selection.filter(|selection| selection.container == container);
+        let collapsed = selection.is_none_or(|selection| selection.anchor == selection.focus);
+        let shown = drag.is_some() && found.touch && !collapsed;
+        let center = match (drag, selection) {
+            (Some((start, at)), Some(selection)) if shown => self
+                .container_magnifier_center(container, found, &selection, start, at)
+                .unwrap_or(Offset::UNSPECIFIED),
+            _ => Offset::UNSPECIFIED,
+        };
+        let same = (was_center.is_unspecified() && center.is_unspecified()) || was_center == center;
+        if !same {
+            magnifier.center.set(center);
+        }
+    }
+
+    /// Where `container`'s magnifier is centered while the end `start` (or the end's) is moved
+    /// by a gesture at `drag` (in the container's coordinates), as Compose's `getMagnifierCenter`:
+    /// on its text's line, following the gesture across it but kept within the line, half way
+    /// down it; none past what the text shows, or with the gesture more than half the magnifier's
+    /// width off the line.
+    fn container_magnifier_center(
+        &mut self,
+        container: NodeId,
+        found: &FoundHandles,
+        selection: &TextSelection,
+        start: bool,
+        drag: Offset,
+    ) -> Option<Offset> {
+        let point = if start { selection.anchor } else { selection.focus };
+        let entries = self.selectables(container);
+        let entry = *entries.iter().find(|entry| entry.holds(&point))?;
+        let origin = self.layer_origin(container, found.layer);
+        let size = found.handles.magnifier.get().map_or(IntSize::ZERO, |it| it.size.get());
+        let (value, (measurer, _)) = self.node_and_measurer(entry.node)?;
+        let text = value.chain[entry.index].selectable()?;
+        let offset = point.offset;
+        if offset > text.last_visible_offset(measurer) {
+            return None;
+        }
+        // The gesture's place across the line follows it, not the selection's offsets.
+        let drag_x = drag.x + origin.x - entry.origin.x;
+        let line = text.range_of_line_containing(offset, measurer);
+        let x = if line.is_empty() {
+            // An empty line: its left and right are one.
+            text.line_left(offset, measurer)?
+        } else {
+            let string = text.text();
+            let mut last = line.end - 1;
+            while !string.as_str().is_char_boundary(last) {
+                last -= 1;
+            }
+            let left = text.line_left(line.start, measurer)?;
+            let right = text.line_right(last, measurer)?;
+            // Left to right or right to left, either may be the larger.
+            drag_x.clamp(left.min(right), left.max(right))
+        };
+        if size != IntSize::ZERO && (drag_x - x).abs() > (size.width / 2) as f32 {
+            return None;
+        }
+        let y = text.center_y_for_offset(offset, measurer)?;
+        Some(entry.origin - origin + Offset::new(x, y))
     }
 
     /// Shows or hides `container`'s toolbar, as Compose's `updateSelectionToolbar`: shown while

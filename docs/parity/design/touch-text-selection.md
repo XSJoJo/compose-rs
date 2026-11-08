@@ -1,6 +1,6 @@
 # Touch text selection
 
-Design note, written before the code, from Compose's `TextFieldSelectionState`, `BasicTextField`'s `TextFieldCursorHandle` and `TextFieldSelectionHandles`, `AndroidSelectionHandles.android.kt`, `AndroidCursorHandle.android.kt`, `SelectionManager` and their tests. It covers [`touch-text-selection`](../foundation-text-misc.md#touch-text-selection): the cursor and selection handles, a finger's long press and drags, in fields of either kind and in `SelectionContainer`. The text toolbar (`text-context-menu`) and the magnifier (`magnifier`) are other features: this one leaves them a place (below) and builds neither.
+Design note, written before the code, from Compose's `TextFieldSelectionState`, `BasicTextField`'s `TextFieldCursorHandle` and `TextFieldSelectionHandles`, `AndroidSelectionHandles.android.kt`, `AndroidCursorHandle.android.kt`, `SelectionManager` and their tests. It covers [`touch-text-selection`](../foundation-text-misc.md#touch-text-selection): the cursor and selection handles, a finger's long press and drags, in fields of either kind and in `SelectionContainer`. The text toolbar (`text-context-menu`) and the magnifier (`magnifier`) are other features: this one left them a place (below); both are built now.
 
 ## Where it starts
 
@@ -60,7 +60,7 @@ As Compose's `TextFieldSelectionState`: `LongPress` when a long press or a later
 ## Hooks left for the toolbar and the magnifier
 
 - **Toolbar.** The node keeps Compose's `TextToolbarState` (`None`, `Cursor`, `Selection`) as it goes: a tap on the cursor handle toggles `Cursor`, a long press sets `Selection`, an edit or a tap sets `None`. Nothing reads it until `text-context-menu`.
-- **Magnifier.** `TouchHandles` keeps the dragged handle and its position in the text (Compose's `draggingHandle` and `handleDragPosition`), which the magnifier will follow.
+- **Magnifier.** Built (D2073): the field's node keeps the dragged handle and its position in the text (Compose's `draggingHandle` and `handleDragPosition`) and writes the magnifier's center into `TouchHandles` at the end of its measurement; a container's tree keeps the same in its `ContainerHandles`, refreshed with the handles; a node of foundation's on the inner field and on the container shows the platform's magnifier there (D2072, Android's D2074).
 
 ## Costs
 
