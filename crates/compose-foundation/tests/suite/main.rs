@@ -253,6 +253,7 @@ mod text_field_toolbar;
 mod text_field_toolbar_regressions;
 mod text_field_touch_support;
 mod text_field_transformation;
+mod text_field_triple_tap;
 mod text_field_undo;
 mod text_hover_icon;
 mod text_input;
