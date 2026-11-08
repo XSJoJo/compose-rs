@@ -107,6 +107,7 @@ mod nested_scroll_tree_links;
 mod overscroll;
 mod pager;
 mod pager_prefetch;
+mod paragraph_layout_cache;
 mod platform;
 mod platform_services;
 mod pointer_icon;
