@@ -22,7 +22,7 @@ fn throw_expected_exception() -> ! {
 #[track_caller]
 fn expect_expected_exception(test: impl FnOnce()) {
     let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test));
-    let panic = failed.err().expect("Expected test to fail with an exception, but none was thrown");
+    let panic = failed.expect_err("Expected test to fail with an exception, but none was thrown");
     let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
     assert!(
         panic.is::<ExpectedException>(),
@@ -78,7 +78,7 @@ fn throw_during_draw_case(ui: &mut ComposeTestRule) {
 
 /// Under `run_compose_ui_test`.
 fn run(case: fn(&mut ComposeTestRule)) {
-    expect_expected_exception(|| run_compose_ui_test(|ui| case(ui)));
+    expect_expected_exception(|| run_compose_ui_test(case));
 }
 
 /// Under the rule, as `createAndroidComposeRule`.
