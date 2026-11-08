@@ -112,6 +112,7 @@ mod nested_fling;
 mod nested_scroll_dispatcher;
 mod nested_scroll_tree_links;
 mod overscroll;
+mod padding;
 mod pager;
 mod pager_prefetch;
 mod paragraph_layout_cache;
