@@ -6,6 +6,7 @@ mod blur;
 mod border_shapes;
 mod brush;
 mod capture;
+mod clip_draw;
 mod color_filters;
 mod context_menu_colors;
 mod deferred_shared_elements;
