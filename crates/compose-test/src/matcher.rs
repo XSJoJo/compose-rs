@@ -294,18 +294,28 @@ pub fn has_text_with(text: &str, substring: bool, ignore_case: bool) -> Matcher 
 /// `hasTextExactly(…, includeEditableText)`: its editable text counts with
 /// `include_editable_text`.
 pub fn has_text_exactly(texts: &[&str], include_editable_text: bool) -> Matcher {
+    has_text_exactly_including(texts, include_editable_text, false)
+}
+
+/// As [`has_text_exactly`], its input text (a field's text before its visual transformation)
+/// counting too with `include_input_text`, as `hasTextExactly(…, includeEditableText,
+/// includeInputText)`.
+pub fn has_text_exactly_including(
+    texts: &[&str],
+    include_editable_text: bool,
+    include_input_text: bool,
+) -> Matcher {
     let expected: Vec<String> = texts.iter().map(|text| text.to_string()).collect();
     Matcher::new(format!("with texts exactly {expected:?}"), move |config| {
-        let actual: Vec<&str> = if include_editable_text {
-            config.all_text().collect()
-        } else {
-            config
-                .get(&SemanticsProperties::TEXT)
-                .into_iter()
-                .flatten()
-                .map(|text| text.as_str())
-                .collect()
-        };
+        let editable =
+            config.get(&SemanticsProperties::EDITABLE_TEXT).filter(|_| include_editable_text);
+        let input = config.get(&SemanticsProperties::INPUT_TEXT).filter(|_| include_input_text);
+        let actual: Vec<&str> = editable
+            .into_iter()
+            .chain(input)
+            .chain(config.get(&SemanticsProperties::TEXT).into_iter().flatten())
+            .map(|text| text.as_str())
+            .collect();
         same_set(&actual, &expected)
     })
 }

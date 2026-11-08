@@ -538,6 +538,23 @@ impl<'a> SemanticsNodeInteraction<'a> {
         self.assert(crate::has_text_exactly(texts, include_editable_text))
     }
 
+    /// The same, the input text (a field's text before its visual transformation) counting
+    /// too with `include_input_text`, as `assertTextEquals(…, includeEditableText,
+    /// includeInputText)`.
+    #[track_caller]
+    pub fn assert_text_equals_including(
+        &mut self,
+        texts: &[&str],
+        include_editable_text: bool,
+        include_input_text: bool,
+    ) -> &mut Self {
+        self.assert(crate::has_text_exactly_including(
+            texts,
+            include_editable_text,
+            include_input_text,
+        ))
+    }
+
     /// One of the node's texts (or its editable text) is `value`, or contains it with
     /// `substring`, as `assertTextContains(value, substring, ignoreCase)`.
     #[track_caller]

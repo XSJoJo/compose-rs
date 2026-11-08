@@ -40,6 +40,7 @@ mod style_equivalence;
 mod text_brush;
 mod text_field_cursor;
 mod text_field_height;
+mod text_layout_intrinsic_width;
 mod text_painter;
 mod text_reuse;
 mod vectors;

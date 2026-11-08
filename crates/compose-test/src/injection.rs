@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use compose_ui::{
     Density, Dp, IntSize, Key, KeyEvent, KeyEventType, KeyModifiers, Offset, PointerButtons,
-    PointerEvent, PointerEventType, PointerId, PointerType, Rect, ViewConfiguration,
-    platform::NodeId,
+    PointerEvent, PointerEventType, PointerId, PointerKeyboardModifiers, PointerType, Rect,
+    ViewConfiguration, platform::NodeId,
 };
 
 use crate::interaction::SemanticsNodeInteraction;
@@ -37,6 +37,15 @@ const HORIZON_MILLIS: u64 = 100;
 /// The double tap's default delay, halfway between its least and most time, as Compose's.
 pub(crate) fn default_double_tap_delay_millis(configuration: &ViewConfiguration) -> u64 {
     (configuration.double_tap_min_time_millis + configuration.double_tap_timeout_millis) / 2
+}
+
+/// One finger's swipe of `multi_touch_swipe_with_velocity`, as Compose's `SwipeInfo`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct SwipeInfo {
+    pub start: Offset,
+    pub end: Offset,
+    /// Its velocity at the end, in px/s, 0 or more.
+    pub end_velocity: f32,
 }
 
 /// A mouse button, as Compose's `MouseButton`.
@@ -295,13 +304,26 @@ impl<'r> InjectionScope<'r> {
 
     /// The changes of one event, at its time, with the keys held.
     fn send_together(&mut self, events: &[PointerEvent]) {
-        let (time, modifiers) = (self.now_nanos(), self.modifiers().into());
+        let (time, modifiers) = (self.now_nanos(), self.pointer_modifiers());
         let events: Vec<PointerEvent> = events
             .iter()
             .map(|event| event.at_time(time).with_keyboard_modifiers(modifiers))
             .collect();
         self.rule.host.send_pointers(&events);
         self.rule.run_current();
+    }
+
+    /// The keys a pointer event tells: the modifiers held and the locks on, as Compose's
+    /// dispatcher's meta state (D2076).
+    fn pointer_modifiers(&self) -> PointerKeyboardModifiers {
+        // Android's `META_CAPS_LOCK_ON`, `META_NUM_LOCK_ON` and `META_SCROLL_LOCK_ON`, the bits
+        // `PointerKeyboardModifiers` holds.
+        let input = &self.rule.input;
+        let lock = |state: u8, bit: i32| if state > 0 { bit } else { 0 };
+        let locks = lock(input.caps_lock, 0x10_0000)
+            | lock(input.num_lock, 0x20_0000)
+            | lock(input.scroll_lock, 0x40_0000);
+        PointerKeyboardModifiers(PointerKeyboardModifiers::from(self.modifiers()).0 | locks)
     }
 
     fn modifiers(&self) -> KeyModifiers {
@@ -408,6 +430,10 @@ impl TouchInjectionScope<'_> {
     #[track_caller]
     pub fn update_pointer_to(&mut self, id: u64, position: Offset) {
         let root = self.0.to_root(position);
+        assert!(
+            !self.input().touches.is_empty(),
+            "compose-test: Cannot move pointers, no gesture is in progress"
+        );
         let touch = self.input().touches.get_mut(&id);
         let Some(touch) = touch else {
             panic!(
@@ -494,16 +520,31 @@ impl TouchInjectionScope<'_> {
     /// Lifts finger `id`, as `up(pointerId)`.
     #[track_caller]
     pub fn up_pointer(&mut self, id: u64) {
+        assert!(
+            !self.input().touches.is_empty(),
+            "compose-test: Cannot send UP event, no gesture is in progress"
+        );
         let Some(position) = self.input().touches.get(&id).copied() else {
             panic!(
                 "compose-test: Cannot send UP event for pointer {id}, it is not active in the \
                  current gesture"
             )
         };
-        if self.input().touch_updated {
-            self.send_move();
+        // The fingers updated since the last event move in the release's own event, not a move
+        // first, as Compose's `enqueueTouchUp` (D2075).
+        let mut changes: Vec<PointerEvent> = Vec::new();
+        if std::mem::take(&mut self.input().touch_updated) {
+            changes.extend(self.input().touches.iter().filter(|(other, _)| **other != id).map(
+                |(other, at)| {
+                    PointerEvent::moved(*at, true)
+                        .with_pointer(touch_pointer(*other), PointerType::Touch)
+                },
+            ));
         }
-        self.touch_event(PointerEvent::release(position), id);
+        changes.push(
+            PointerEvent::release(position).with_pointer(touch_pointer(id), PointerType::Touch),
+        );
+        self.0.send_together(&changes);
         self.input().touches.remove(&id);
     }
 
@@ -700,6 +741,49 @@ impl TouchInjectionScope<'_> {
         );
         let path = VelocityPath::new(start, end, end_velocity, duration);
         self.swipe_along(&|time| path.offset_at(time), duration, &[]);
+    }
+
+    /// Swipes of a finger each (pointers 0, 1, …), together, each ending at its velocity, as
+    /// `multiTouchSwipeWithVelocity`: each along `swipe_with_velocity`'s path, over
+    /// `duration_millis` (`None`: the longest of their default durations), through `key_times`.
+    #[track_caller]
+    pub fn multi_touch_swipe_with_velocity(
+        &mut self,
+        swipes: &[SwipeInfo],
+        duration_millis: Option<u64>,
+        key_times: &[u64],
+    ) {
+        assert!(!swipes.is_empty(), "compose-test: Swipes list cannot be empty");
+        for swipe in swipes {
+            assert!(
+                swipe.end_velocity >= 0.0,
+                "compose-test: Velocity cannot be {}, it must be positive",
+                swipe.end_velocity
+            );
+        }
+        let duration = duration_millis.unwrap_or_else(|| {
+            swipes
+                .iter()
+                .map(|swipe| default_velocity_duration(swipe.start, swipe.end, swipe.end_velocity))
+                .max()
+                .unwrap_or(DEFAULT_SWIPE_MILLIS)
+        });
+        let minimum = (2.5 * EVENT_PERIOD_MILLIS as f32).ceil() as u64;
+        assert!(
+            duration >= minimum,
+            "compose-test: Duration must be at least {minimum}ms because velocity requires at \
+             least 3 input events"
+        );
+        let paths: Vec<VelocityPath> = swipes
+            .iter()
+            .map(|swipe| VelocityPath::new(swipe.start, swipe.end, swipe.end_velocity, duration))
+            .collect();
+        let curves: Vec<Box<dyn Fn(u64) -> Offset + '_>> = paths
+            .iter()
+            .map(|path| Box::new(move |time| path.offset_at(time)) as Box<dyn Fn(u64) -> Offset>)
+            .collect();
+        let curves: Vec<&dyn Fn(u64) -> Offset> = curves.iter().map(|curve| &**curve).collect();
+        self.multi_touch_swipe(&curves, duration, key_times);
     }
 
     /// A swipe up the node's middle, bottom to top, as `swipeUp()`.
