@@ -400,3 +400,339 @@ fn default_min_size_with_coercing_max_constraints() {
     );
     assert_eq!(constraints, c(30, 30, 40, 40));
 }
+
+// ---- Fill ---------------------------------------------------------------------------------
+
+/// The size of a box of `modifier` in a box of `parent`, as `SizeTest.calculateSizeFor`.
+fn size_for(parent: Modifier, modifier: Modifier) -> IntSize {
+    let probe = Probe::new(1);
+    let p = probe.clone();
+    let _ui = show(move || {
+        let modifier = modifier.clone().then(p.at(0));
+        Box!(modifier = parent.clone(), |_| Box!(modifier = modifier.clone()));
+    });
+    probe.size(0)
+}
+
+/// `testFillModifier_correctSize`'s checks, the sizes given as `size`'s two forms.
+fn fill_sizes(parent: Modifier, child: Modifier) {
+    let (parent_width, parent_height, child_width, child_height) = (100, 80, 40, 30);
+    let fill = |fill: Modifier| size_for(parent.clone(), fill.then(child.clone()));
+    assert_eq!(fill(Modifier), size(child_width, child_height));
+    assert_eq!(fill(Modifier.fill_max_width()), size(parent_width, child_height));
+    assert_eq!(fill(Modifier.fill_max_height()), size(child_width, parent_height));
+    assert_eq!(fill(Modifier.fill_max_size()), size(parent_width, parent_height));
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/SizeTest.kt, testFillModifier_correctSize
+#[test]
+fn fill_modifier_correct_size() {
+    fill_sizes(Modifier.required_size((dp(100.0), dp(80.0))), Modifier.size((dp(40.0), dp(30.0))));
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/SizeTest.kt, testFillModifier_correctDpSize
+#[test]
+fn fill_modifier_correct_dp_size() {
+    fill_sizes(
+        Modifier.required_size(compose_ui::DpSize::new(dp(100.0), dp(80.0))),
+        Modifier.size(compose_ui::DpSize::new(dp(40.0), dp(30.0))),
+    );
+}
+
+/// A child of `child_width` by `child_height` filling half of a 100 by 80 px parent.
+fn half_fills(child_width: i32, child_height: i32) {
+    let parent = Modifier.required_size((dp(100.0), dp(80.0)));
+    let child = Modifier.size((dp(child_width as f32), dp(child_height as f32)));
+    let fill = |fill: Modifier| size_for(parent.clone(), fill.then(child.clone()));
+    assert_eq!(fill(Modifier), size(child_width, child_height));
+    assert_eq!(fill(Modifier.fill_max_width_with(0.5)), size(50, child_height));
+    assert_eq!(fill(Modifier.fill_max_height_with(0.5)), size(child_width, 40));
+    assert_eq!(fill(Modifier.fill_max_size_with(0.5)), size(50, 40));
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/SizeTest.kt, testFractionalFillModifier_correctSize_whenSmallerChild
+#[test]
+fn fractional_fill_modifier_correct_size_when_smaller_child() {
+    half_fills(40, 30);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/SizeTest.kt, testFractionalFillModifier_correctSize_whenLargerChild
+#[test]
+fn fractional_fill_modifier_correct_size_when_larger_child() {
+    half_fills(70, 50);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/SizeTest.kt, testFractionalFillModifier_coerced
+#[test]
+fn fractional_fill_modifier_coerced() {
+    let child = Modifier.required_size_in(size_in(dp(40.0), dp(30.0), dp(60.0), dp(50.0)));
+    let fill = |fraction: f32| size_for(Modifier, child.clone().fill_max_size_with(fraction));
+    assert_eq!(fill(-0.1), size(40, 30));
+    assert_eq!(fill(0.1), size(40, 30));
+    assert_eq!(fill(1.2), size(60, 50));
+}
+
+// ---- Wrapping the content -----------------------------------------------------------------
+
+/// In a container, a container of `modifier`: the outer one's size and position, the inner's.
+fn wrapped(modifier: Modifier) -> Probe {
+    let probe = Probe::new(2);
+    let p = probe.clone();
+    let _ui = show(move || {
+        let (p, modifier) = (p.clone(), modifier.clone());
+        container(p.at(0), Spec::default(), move || {
+            empty(modifier.clone().then(p.at(1)), Spec::default());
+        });
+    });
+    probe
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/SizeTest.kt, test2DWrapContentSize
+#[test]
+fn wrap_content_size_2d() {
+    let size_dp = Dp(50.0);
+    let size = round(size_dp);
+    let probe = wrapped(
+        Modifier.fill_max_size().wrap_content_size_with(Alignment::BOTTOM_END, false).size(size_dp),
+    );
+    assert_eq!(probe.size(0), ROOT);
+    assert_eq!(probe.position(0), offset(0, 0));
+    assert_eq!(probe.size(1), self::size(size, size));
+    assert_eq!(probe.position(1), offset(ROOT.width - size, ROOT.height - size));
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/SizeTest.kt, test1DWrapContentSize
+#[test]
+fn wrap_content_size_1d() {
+    let size_dp = Dp(50.0);
+    let size = round(size_dp);
+    let probe = wrapped(
+        Modifier.fill_max_size().wrap_content_width_with(Alignment::END, false).width(size_dp),
+    );
+    assert_eq!(probe.size(0), ROOT);
+    assert_eq!(probe.position(0), offset(0, 0));
+    assert_eq!(probe.size(1), self::size(size, ROOT.height));
+    assert_eq!(probe.position(1), offset(ROOT.width - size, 0));
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/SizeTest.kt, testWrapContentSize_rtl
+#[test]
+fn wrap_content_size_rtl() {
+    let size_dp = px(200.0);
+    let size = round(size_dp);
+    let probe = Probe::new(3);
+    let p = probe.clone();
+    let _ui = show(move || {
+        let p = p.clone();
+        let rtl = compose_ui::LOCAL_LAYOUT_DIRECTION.provides(compose_ui::LayoutDirection::Rtl);
+        CompositionLocalProvider(rtl, move || {
+            let p = p.clone();
+            Box!(modifier = Modifier.fill_max_size(), |_| {
+                let wraps = [
+                    Modifier.wrap_content_size_with(Alignment::TOP_START, false),
+                    Modifier.wrap_content_height_with(Alignment::CENTER_VERTICALLY, false),
+                    Modifier.wrap_content_size_with(Alignment::BOTTOM_END, false),
+                ];
+                for (index, wrap) in wraps.into_iter().enumerate() {
+                    let p = p.clone();
+                    Box!(modifier = Modifier.fill_max_size().then(wrap), |_| {
+                        Box!(modifier = Modifier.size(size_dp).then(p.at(index)));
+                    });
+                }
+            });
+        });
+    });
+    let (width, height) = (ROOT.width, ROOT.height);
+    assert_eq!(probe.position(0), offset(width - size, 0));
+    assert_eq!(probe.position(1), offset(width - size, (height - size) / 2));
+    assert_eq!(probe.position(2), offset(0, height - size));
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/SizeTest.kt, testModifier_wrapsContent
+#[test]
+fn modifier_wraps_content() {
+    let content = Dp(50.0);
+    let probe = Probe::new(1);
+    let p = probe.clone();
+    let _ui = show(move || {
+        let p = p.clone();
+        container(Modifier, Spec::default(), move || {
+            container(p.at(0), Spec::default(), move || {
+                empty(
+                    Modifier.wrap_content_size_with(Alignment::TOP_START, false).size(content),
+                    Spec::default(),
+                );
+            });
+        });
+    });
+    assert_eq!(probe.size(0), size(round(content), round(content)));
+}
+
+/// `content` measured with no constraints, in a layout as large as its own maximums.
+fn unconstrained(content: impl Fn() + 'static) {
+    let policy = measure_policy(|scope, measurables, constraints| {
+        let placeable = scope.measure(measurables[0], Constraints::unbounded());
+        scope.place_relative(&placeable, 0, 0);
+        scope.layout(constraints.max_width, constraints.max_height)
+    });
+    Layout(Modifier, policy, callback(content));
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/SizeTest.kt, testWrapContentSize_wrapsContent_whenMeasuredWithInfiniteConstraints
+#[test]
+fn wrap_content_size_wraps_content_when_measured_with_infinite_constraints() {
+    let size_dp = Dp(50.0);
+    let size = round(size_dp);
+    let probe = Probe::new(2);
+    let p = probe.clone();
+    let _ui = show(move || {
+        let p = p.clone();
+        unconstrained(move || {
+            let p = p.clone();
+            container(p.at(0), Spec::default(), move || {
+                empty(
+                    Modifier
+                        .wrap_content_size_with(Alignment::BOTTOM_END, false)
+                        .size(size_dp)
+                        .then(p.at(1)),
+                    Spec::default(),
+                );
+            });
+        });
+    });
+    assert_eq!(probe.size(0), self::size(size, size));
+    assert_eq!(probe.position(0), offset(0, 0));
+    assert_eq!(probe.size(1), self::size(size, size));
+    assert_eq!(probe.position(1), offset(0, 0));
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/SizeTest.kt, testWrapContentSize_respectsMinConstraints
+#[test]
+fn wrap_content_size_respects_min_constraints() {
+    let size_dp = Dp(50.0);
+    let (size, double) = (round(size_dp), round(size_dp * 2.0));
+    let (probe, wrap) = (Probe::new(1), Rc::new(Cell::new(IntSize::new(-1, -1))));
+    let (p, w) = (probe.clone(), wrap.clone());
+    let _ui = show(move || {
+        let (p, w) = (p.clone(), w.clone());
+        let wrapper = Modifier.wrap_content_size_with(Alignment::TOP_START, false);
+        container(wrapper, Spec::default(), move || {
+            let (p, w) = (p.clone(), w.clone());
+            let policy = measure_policy(move |scope, measurables, incoming| {
+                let constraints = incoming.constrain_by(Constraints::new(double, INF, double, INF));
+                let placeable = scope.measure(measurables[0], constraints);
+                scope.place_relative(&placeable, 0, 0);
+                scope.layout(placeable.width, placeable.height)
+            });
+            let seen = Modifier.on_globally_positioned(move |c: LayoutCoordinates| w.set(c.size()));
+            Layout(
+                seen,
+                policy,
+                callback(move || {
+                    empty(
+                        Modifier
+                            .wrap_content_size_with(Alignment::CENTER, false)
+                            .size(size_dp)
+                            .then(p.at(0)),
+                        Spec::default(),
+                    );
+                }),
+            );
+        });
+    });
+    let half = ((double - size) as f32 / 2.0).round() as i32;
+    assert_eq!(wrap.get(), self::size(double, double));
+    assert_eq!(probe.size(0), self::size(size, size));
+    assert_eq!(probe.position(0), offset(half, half));
+}
+
+const INF: i32 = Constraints::INFINITY;
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/SizeTest.kt, testWrapContentSize_unbounded
+#[test]
+fn wrap_content_size_unbounded() {
+    let (outer, inner) = (10.0, 20.0);
+    let probe = Probe::new(4);
+    let p = probe.clone();
+    let _ui = show(move || {
+        let p = p.clone();
+        Box!(modifier = Modifier.required_size(px(outer)).then(p.at(3)), |_| {
+            let wraps = [
+                Modifier.wrap_content_size_with(Alignment::BOTTOM_END, true),
+                Modifier.wrap_content_width_with(Alignment::END, true),
+                Modifier.wrap_content_height_with(Alignment::BOTTOM, true),
+            ];
+            for (index, wrap) in wraps.into_iter().enumerate() {
+                Box!(modifier = wrap.required_size(px(inner)).then(p.at(index)));
+            }
+        });
+    });
+    assert_eq!(probe.size(3).width, outer as i32);
+    let parent = probe.position(3);
+    let at = |index: usize| probe.position(index) - parent;
+    let end = outer - inner;
+    assert_eq!(at(0), compose_ui::Offset::new(end, end));
+    assert_eq!(at(1).x, end);
+    assert_eq!(at(2).y, end);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/SizeTest.kt, testAlignedModifier_alignsCorrectly_whenOddDimensions_endAligned
+#[test]
+fn aligned_modifier_aligns_correctly_when_odd_dimensions_end_aligned() {
+    let (parent, child) = (px(100.0), px(1.0));
+    let child_size = round(child);
+    let probe = Probe::new(2);
+    let p = probe.clone();
+    let _ui = show(move || {
+        let p = p.clone();
+        unconstrained(move || {
+            let p = p.clone();
+            container(Modifier.size(parent).then(p.at(0)), Spec::default(), move || {
+                empty(
+                    Modifier
+                        .fill_max_size()
+                        .wrap_content_size_with(Alignment::BOTTOM_END, false)
+                        .size(child)
+                        .then(p.at(1)),
+                    Spec::default(),
+                );
+            });
+        });
+    });
+    let outer = probe.size(0);
+    assert_eq!(probe.size(1), size(child_size, child_size));
+    assert_eq!(probe.position(1), offset(outer.width - child_size, outer.height - child_size));
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/SizeTest.kt, testModifiers_equals
+#[test]
+fn modifiers_equals() {
+    let same = |a: Modifier, b: Modifier| a.same(&b);
+    let (ten, twenty) = (Dp(10.0), Dp(20.0));
+    assert!(same(Modifier.size((ten, twenty)), Modifier.size((ten, twenty))));
+    assert!(same(Modifier.required_size((ten, twenty)), Modifier.required_size((ten, twenty))));
+    let bottom_end = || Modifier.wrap_content_size_with(Alignment::BOTTOM_END, false);
+    assert!(same(bottom_end(), bottom_end()));
+    assert!(same(Modifier.fill_max_size_with(0.8), Modifier.fill_max_size_with(0.8)));
+    assert!(same(Modifier.default_min_size(ten, twenty), Modifier.default_min_size(ten, twenty)));
+    assert!(!same(Modifier.size((ten, twenty)), Modifier.size((twenty, ten))));
+    assert!(!same(Modifier.required_size((ten, twenty)), Modifier.required_size((twenty, ten))));
+    assert!(!same(bottom_end(), Modifier.wrap_content_size_with(Alignment::BOTTOM_CENTER, false)));
+    assert!(!same(Modifier.fill_max_size_with(0.8), Modifier.fill_max_size()));
+    assert!(!same(Modifier.default_min_size(ten, twenty), Modifier.default_min_size(twenty, ten)));
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/SizeTest.kt, sizeModifiers_doNotCauseCrashesWhenCreatingConstraints
+#[test]
+fn size_modifiers_do_not_cause_crashes_when_creating_constraints() {
+    let mut ui = show(|| {
+        Box!(modifier = Modifier.size_in(size_in(Dp(-1.0), NONE, NONE, NONE)));
+        Box!(modifier = Modifier.size_in(size_in(Dp(10.0), NONE, Dp(5.0), NONE)));
+        Box!(modifier = Modifier.size_in(size_in(NONE, Dp(-1.0), NONE, NONE)));
+        Box!(modifier = Modifier.size_in(size_in(NONE, Dp(10.0), NONE, Dp(5.0))));
+        let infinite = Dp::INFINITY;
+        Box!(modifier = Modifier.size_in(size_in(infinite, infinite, infinite, infinite)));
+        Box!(modifier = Modifier.default_min_size(Dp(-1.0), Dp(-1.0)));
+    });
+    ui.wait_for_idle();
+}
