@@ -19,10 +19,10 @@ What compose-rs has of two Jetpack Compose libraries, test file by test file and
 
 | Status | Files | Tests | ui-text (files / tests) | ui-test (files / tests) | ui-test-junit4 (files / tests) |
 |---|---|---|---|---|---|
-| `ported` | 132 | 1,650 | 60 / 1,195 | 72 / 455 | 0 / 0 |
+| `ported` | 134 | 1,662 | 60 / 1,195 | 74 / 467 | 0 / 0 |
 | `covered` | 4 | 5 | 1 / 2 | 3 / 3 | 0 / 0 |
-| `port` | 28 | 107 | 3 / 20 | 24 / 81 | 1 / 6 |
-| `partial` | 42 | 1,138 | 13 / 726 | 29 / 412 | 0 / 0 |
+| `port` | 25 | 86 | 3 / 20 | 21 / 60 | 1 / 6 |
+| `partial` | 43 | 1,147 | 13 / 726 | 30 / 421 | 0 / 0 |
 | `feature:…` | 42 | 409 | 30 / 312 | 11 / 94 | 1 / 3 |
 | `n/a` | 80 | 533 | 32 / 384 | 45 / 143 | 3 / 6 |
 
@@ -341,7 +341,7 @@ The 530 `n/a` tests: 314 test Android text internals or internal helpers (`Spann
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/CustomActivityTest.kt` | 2 | A rule over a custom activity | n/a: Android activities |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/EspressoLinkTest.kt` | 1 | Espresso idling resource registration | n/a: Espresso |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/FirstDrawTest.kt` | 2 | Waiting for the first draw of a ComposeView | n/a: Android view drawing |
-| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/IdlingResourceRegistryTest.kt` | 9 | `IdlingResource` registry: idleness with 0/1/2 resources, polling | port: the registry is there (`register_idling_resource`, D908) |
+| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/IdlingResourceRegistryTest.kt` | 9 | `IdlingResource` registry: idleness with 0/1/2 resources, polling | partial: `crates/compose-test/tests/suite/idling_resources.rs` (7 of 9, adapted: compose-rs has no registry object, so its aggregate idleness and its polling are checked through what waiting for idle does, an idle resource asked once, a busy one until it idles); `isIdleNow_false_doesNotStartPolling` and `isIdleOrStartPolling_customPollDispatcher` are n/a: the registry's own query and its poll dispatcher are internal |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/JUnitFailurePipelineTest.kt` | 3 | Artifacts captured before the activity closes | n/a: no activity to close (the pipeline runs while the rule is alive, D908) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/LateActivityLaunchTest.kt` | 1 | An activity launched later | n/a: Android activities |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/LateSetContentTest.kt` | 1 | `setContent` from `onCreate` | n/a: Android activities |
@@ -355,7 +355,7 @@ The 530 `n/a` tests: 314 test Android text internals or internal helpers (`Spann
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/TimeOutTest.kt` | 6 | Infinite recomposition and busy idling resources time out; test isolation after a timeout | partial: `wait_for_idle` panics after a minute of test time or 100,000 frames, or a minute of real time with an idling resource busy (`crates/compose-test/tests/suite/run.rs`, `waiting_for_idle_waits_for_idling_resources`); the isolation after a timeout is n/a (each test its thread) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/UncaughtExceptionsInCoroutinesTest.kt` | 2 | An exception in a `LaunchedEffect` fails the test | port: a panicking task unwinds through `wait_for_idle` |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/ViewVisibilityTest.kt` | 2 | A hidden host view doesn't time out | n/a: Android view visibility |
-| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/WaitUntilNodeCountTest.kt` | 9 | `waitUntil…` node helpers and no roots | port: the `wait_until_…` node helpers exist |
+| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/WaitUntilNodeCountTest.kt` | 9 | `waitUntil…` node helpers and no roots | ported: `crates/compose-test/tests/suite/wait_until_node_count.rs` (all 9, under `run_compose_ui_test`) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/WaitingForOnCommitCallbackTest.kt` | 4 | `setContent` and `waitForIdle` wait for cascading side effects | port: `wait_for_idle` loops until no work is pending |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/WaitingForPopupTest.kt` | 3 | Popups shown in the first or later compositions, toggled repeatedly, are found | port: popups are semantics roots |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/partialgesturescope/SendCancelTest.kt` | 5 | GestureScope cancel | n/a: deprecated `GestureScope`/`performGesture` API; the same behaviour is in `injectionscope/touch/*` |
@@ -394,7 +394,7 @@ The 530 `n/a` tests: 314 test Android text internals or internal helpers (`Spann
 | `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/PrefetchNotHangingMainThreadTest.kt` | 1 | Lazy-list prefetch doesn't keep the test from idling | port: compose-rs's prefetch runs only through `UiHost::prefetch`; worth a guard test |
 | `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/RobolectricBitmapCapturingTest.kt` | 14 | `captureToImage` under Robolectric (same cases as the device test) | partial: the same cases as `BitmapCapturingTest`, ported once there (`crates/compose-skia/tests/suite/capture.rs`); `captureToImage` is done (D904), so nothing here waits on a feature (audit: was `feature:capture-to-image`; none of the 14 is cited under this file's name) |
 | `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/RobolectricComposeTest.kt` | 13 | End-to-end: state change, input injection, animation, timeout, controlled scrolling with `performTouchInput`, text field, popup, double taps, clipped items | ported: `crates/compose-test/tests/suite/robolectric.rs` (all 13; the main looper is the UI-thread executor, `dispatchTouchEvent` the host's `send_pointer`, `performTextInputSelection` the `SET_SELECTION` action; a layout that never settles fails with the rule's "never settled" after its count of passes, where Compose's isn't idle within its idling policy's 2 s) |
-| `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/RobolectricIdlingResourceTest.kt` | 3 | Idling resources queried, from background threads | port: idling resources are there (D908); the background-thread case is n/a (a resource is the test thread's) |
+| `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/RobolectricIdlingResourceTest.kt` | 3 | Idling resources queried, from background threads | ported: `crates/compose-test/tests/suite/idling_resources.rs` (2 of 3: read until idle, the UI thread's tasks run before the resources are asked); the background-thread case is n/a (a resource is the test thread's) |
 | `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/ViewVisibilityRobolectricTest.kt` | 2 | Hidden host views don't time out | n/a: Android view visibility |
 | `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/failure/FailurePipelineRunnerTest.kt` | 15 | The failure pipeline: runs once, suppresses exporter errors, capture modes, hierarchy dump format | partial: `crates/compose-test/tests/suite/run.rs` (`disabled_captures_and_panicking_handlers`, `a_failure_takes_a_screenshot_with_the_installed_renderer`); running once and the dump format not ported yet |
 | `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/inputdispatcher/AdvanceEventTimeTest.kt` | 1 | `advanceEventTime` moves event times | port: `advance_event_time` exists |
