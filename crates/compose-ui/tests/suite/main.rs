@@ -79,6 +79,7 @@ mod rulers;
 mod shadow_values;
 mod single_drawing_extent;
 mod span_style;
+mod spannable_extensions;
 #[path = "../support/mod.rs"]
 mod support;
 mod text_measurer;

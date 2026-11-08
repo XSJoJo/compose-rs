@@ -19,9 +19,9 @@ What compose-rs has of two Jetpack Compose libraries, test file by test file and
 
 | Status | Files | Tests | ui-text (files / tests) | ui-test (files / tests) | ui-test-junit4 (files / tests) |
 |---|---|---|---|---|---|
-| `ported` | 127 | 1,592 | 59 / 1,173 | 68 / 419 | 0 / 0 |
+| `ported` | 128 | 1,614 | 60 / 1,195 | 68 / 419 | 0 / 0 |
 | `covered` | 4 | 5 | 1 / 2 | 3 / 3 | 0 / 0 |
-| `port` | 33 | 165 | 4 / 42 | 28 / 117 | 1 / 6 |
+| `port` | 32 | 143 | 3 / 20 | 28 / 117 | 1 / 6 |
 | `partial` | 42 | 1,138 | 13 / 726 | 29 / 412 | 0 / 0 |
 | `feature:…` | 42 | 409 | 30 / 312 | 11 / 94 | 1 / 3 |
 | `n/a` | 80 | 533 | 32 / 384 | 45 / 143 | 3 / 6 |
@@ -155,7 +155,7 @@ The 530 `n/a` tests: 314 test Android text internals or internal helpers (`Spann
 | `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/platform/AndroidTypefaceTest.kt` | 31 | The deprecated `Typeface(context, fontFamily)` API | n/a: deprecated API; FontFamilyResolverImplTest covers the behaviour |
 | `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/platform/EmojiCompatStatusTest.kt` | 9 | EmojiCompat load state | n/a: AndroidX EmojiCompat integration internals |
 | `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/platform/GenericFontFamilyCacheTest.kt` | 2 | Generic family cache identity | n/a: internal cache |
-| `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/platform/SpannableExtensionsTest.kt` | 22 | Flattening overlapping span styles into runs, in order (contained, shared ends, overlapping, nested) | port: compose-rs's `AnnotatedString::runs` (`crates/compose-ui/src/annotated.rs`) is this flattening; one test there today |
+| `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/platform/SpannableExtensionsTest.kt` | 22 | Flattening overlapping span styles into runs, in order (contained, shared ends, overlapping, nested) | ported: `crates/compose-ui/tests/suite/spannable_extensions.rs` (the 17 `flattenStylesAndApply` ones, through `AnnotatedString::runs`, whose runs cover the whole text, the pieces no span covers in the base style); the 5 brush ones are n/a: they check the `ShaderBrushSpan` and `ForegroundColorSpan` an Android `Spannable` gets |
 | `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/platform/TextPaintExtensionsTest.kt` | 26 | `applySpanStyle` to `TextPaint`: sp/em sizes, letter spacing, geometric transform, font features, background, baseline shift | n/a: Android `Spannable`/`TextPaint` internals; the behaviour is reached through `TextStyle` rendering tests |
 | `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/style/HyphensTest.kt` | 2 | `Hyphens.Auto` hyphenates, `None` doesn't | feature:line-break-hyphens |
 | `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/style/LineBreakTest.kt` | 15 | `LineBreak` presets' flags, equality, and their effect on breaking | feature:line-break-hyphens |
