@@ -1695,7 +1695,7 @@ fn an_item_filling_the_parent_is_not_measured_again_when_scrolled_back() {
         });
         ui.wait_for_idle();
         measures.set(0);
-        let _ = run(&mut ui, async move {
+        run(&mut ui, async move {
             let _ = handle.scroll_to_item(1, 0).await;
             let _ = handle.scroll_to_item(0, 0).await;
         });
