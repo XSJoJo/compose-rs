@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use compose_ui::{
     Density, Dp, IntSize, Key, KeyEvent, KeyEventType, KeyModifiers, Offset, PointerButtons,
-    PointerEvent, PointerEventType, PointerId, PointerType, Rect, ViewConfiguration,
-    platform::NodeId,
+    PointerEvent, PointerEventType, PointerId, PointerKeyboardModifiers, PointerType, Rect,
+    ViewConfiguration, platform::NodeId,
 };
 
 use crate::interaction::SemanticsNodeInteraction;
@@ -295,13 +295,26 @@ impl<'r> InjectionScope<'r> {
 
     /// The changes of one event, at its time, with the keys held.
     fn send_together(&mut self, events: &[PointerEvent]) {
-        let (time, modifiers) = (self.now_nanos(), self.modifiers().into());
+        let (time, modifiers) = (self.now_nanos(), self.pointer_modifiers());
         let events: Vec<PointerEvent> = events
             .iter()
             .map(|event| event.at_time(time).with_keyboard_modifiers(modifiers))
             .collect();
         self.rule.host.send_pointers(&events);
         self.rule.run_current();
+    }
+
+    /// The keys a pointer event tells: the modifiers held and the locks on, as Compose's
+    /// dispatcher's meta state (D2076).
+    fn pointer_modifiers(&self) -> PointerKeyboardModifiers {
+        // Android's `META_CAPS_LOCK_ON`, `META_NUM_LOCK_ON` and `META_SCROLL_LOCK_ON`, the bits
+        // `PointerKeyboardModifiers` holds.
+        let input = &self.rule.input;
+        let lock = |state: u8, bit: i32| if state > 0 { bit } else { 0 };
+        let locks = lock(input.caps_lock, 0x10_0000)
+            | lock(input.num_lock, 0x20_0000)
+            | lock(input.scroll_lock, 0x40_0000);
+        PointerKeyboardModifiers(PointerKeyboardModifiers::from(self.modifiers()).0 | locks)
     }
 
     fn modifiers(&self) -> KeyModifiers {

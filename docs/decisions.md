@@ -1124,3 +1124,4 @@ The log is split by area into the files below, one table each, rows in number or
 | D2073 | [text](decisions/text.md#d2073) | current |
 | D2074 | [text](decisions/text.md#d2074) | current |
 | D2075 | [api-and-tooling](decisions/api-and-tooling.md#d2075) | current |
+| D2076 | [api-and-tooling](decisions/api-and-tooling.md#d2076) | current |

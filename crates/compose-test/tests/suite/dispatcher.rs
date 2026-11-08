@@ -2,7 +2,7 @@
 //! (`touch_events.rs`, `mouse_events.rs`, `key_and_mouse_events.rs`): Compose's tests record the
 //! `MotionEvent`s its internal `InputDispatcher` makes, on a 1000×1000 root; these record what a
 //! node filling a 1000×1000 root hears of them, each platform event's changes together (as a
-//! `pointerInput` block hears them) and the gesture's cancels.
+//! `pointerInput` block hears them) and the gesture's cancels, and (focused) its key events.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -10,16 +10,17 @@ use std::rc::Rc;
 use compose_foundation::layout::*;
 use compose_test::*;
 use compose_ui::{
-    EventContext, IntSize, Modifier, ModifierNode, ModifierNodeElement, Offset, PointerButtons,
-    PointerEventPass, PointerEventType, PointerEvents, PointerId, PointerInputModifierNode,
-    PointerType, UnitExt,
+    EventContext, IntSize, Key, KeyEvent, KeyEventType, KeyModifiers, Modifier, ModifierNode,
+    ModifierNodeElement, Offset, PointerButtons, PointerEventPass, PointerEventType, PointerEvents,
+    PointerId, PointerInputModifierNode, PointerKeyboardModifiers, PointerType, UnitExt,
 };
 
 /// One change of an event: which pointer, where, whether down.
 pub(crate) type Change = (PointerId, Offset, bool);
 
 /// What the node heard: an event (its kind, time in ms of the test clock, pointer type, buttons,
-/// its changes in pointer order, its scroll), or the gesture cancelled (and when).
+/// its changes in pointer order, its scroll, the keys it tells), the gesture cancelled (and
+/// when), or a key event.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) enum Heard {
     Event {
@@ -29,8 +30,15 @@ pub(crate) enum Heard {
         buttons: PointerButtons,
         changes: Vec<Change>,
         scroll: Offset,
+        modifiers: PointerKeyboardModifiers,
     },
     Cancel {
+        millis: u64,
+    },
+    Key {
+        key: Key,
+        kind: KeyEventType,
+        modifiers: KeyModifiers,
         millis: u64,
     },
 }
@@ -38,7 +46,17 @@ pub(crate) enum Heard {
 impl Heard {
     pub(crate) fn millis(&self) -> u64 {
         match self {
-            Heard::Event { millis, .. } | Heard::Cancel { millis } => *millis,
+            Heard::Event { millis, .. } | Heard::Cancel { millis } | Heard::Key { millis, .. } => {
+                *millis
+            }
+        }
+    }
+
+    fn millis_mut(&mut self) -> &mut u64 {
+        match self {
+            Heard::Event { millis, .. } | Heard::Cancel { millis } | Heard::Key { millis, .. } => {
+                millis
+            }
         }
     }
 
@@ -46,7 +64,15 @@ impl Heard {
     pub(crate) fn kind(&self) -> Option<PointerEventType> {
         match self {
             Heard::Event { kind, .. } => Some(*kind),
-            Heard::Cancel { .. } => None,
+            Heard::Cancel { .. } | Heard::Key { .. } => None,
+        }
+    }
+
+    /// The keys a pointer event tells.
+    pub(crate) fn modifiers(&self) -> Option<PointerKeyboardModifiers> {
+        match self {
+            Heard::Event { modifiers, .. } => Some(*modifiers),
+            _ => None,
         }
     }
 }
@@ -111,6 +137,7 @@ impl PointerInputModifierNode for RecorderNode {
             buttons: event.buttons,
             changes,
             scroll,
+            modifiers: event.keyboard_modifiers,
         });
     }
 
@@ -136,17 +163,43 @@ pub(crate) fn recording_root() -> (ComposeTestRule, Log) {
     (ui, log)
 }
 
+/// As [`recording_root`], the root also focused and recording its key events.
+pub(crate) fn recording_root_with_keys() -> (ComposeTestRule, Log) {
+    let log: Log = Rc::default();
+    let recorder = log.clone();
+    let mut ui = ComposeTestRule::sized(IntSize::new(1000, 1000), move || {
+        let keys = recorder.clone();
+        Box!(
+            modifier = Modifier
+                .size(1000.dp())
+                .then_custom(RecorderElement(recorder.clone()))
+                .on_key_event(move |event: KeyEvent| {
+                    keys.borrow_mut().push(Heard::Key {
+                        key: event.key,
+                        kind: event.kind,
+                        modifiers: event.modifiers,
+                        millis: now_millis(),
+                    });
+                    false
+                })
+                .focusable()
+                .test_tag(ROOT)
+        );
+    });
+    ui.on_node_with_tag(ROOT).request_focus();
+    (ui, log)
+}
+
 /// What was heard, times from the first event's.
 pub(crate) fn heard(log: &Log) -> Vec<Heard> {
     let recorded = log.borrow();
     let t0 = recorded.first().map_or(0, Heard::millis);
     recorded
         .iter()
-        .map(|heard| match heard.clone() {
-            Heard::Event { kind, millis, pointer_type, buttons, changes, scroll } => {
-                Heard::Event { kind, millis: millis - t0, pointer_type, buttons, changes, scroll }
-            }
-            Heard::Cancel { millis } => Heard::Cancel { millis: millis - t0 },
+        .map(|heard| {
+            let mut heard = heard.clone();
+            *heard.millis_mut() -= t0;
+            heard
         })
         .collect()
 }
@@ -167,6 +220,7 @@ pub(crate) fn touch(kind: PointerEventType, millis: u64, changes: &[Change]) -> 
         buttons: PointerButtons::NONE,
         changes: changes.to_vec(),
         scroll: Offset::ZERO,
+        modifiers: PointerKeyboardModifiers::default(),
     }
 }
 
@@ -196,6 +250,7 @@ pub(crate) fn mouse_scroll(
         buttons,
         changes: vec![(MOUSE, position, pressed)],
         scroll,
+        modifiers: PointerKeyboardModifiers::default(),
     }
 }
 
