@@ -21,8 +21,8 @@ What compose-rs has of two Jetpack Compose libraries, test file by test file and
 |---|---|---|---|---|---|
 | `ported` | 141 | 1,688 | 62 / 1,206 | 79 / 482 | 0 / 0 |
 | `covered` | 4 | 5 | 1 / 2 | 3 / 3 | 0 / 0 |
-| `port` | 17 | 58 | 1 / 9 | 15 / 43 | 1 / 6 |
-| `partial` | 43 | 1,147 | 13 / 726 | 30 / 421 | 0 / 0 |
+| `port` | 16 | 49 | 1 / 9 | 14 / 34 | 1 / 6 |
+| `partial` | 44 | 1,156 | 13 / 726 | 31 / 430 | 0 / 0 |
 | `feature:…` | 43 | 411 | 30 / 312 | 12 / 96 | 1 / 3 |
 | `n/a` | 80 | 533 | 32 / 384 | 45 / 143 | 3 / 6 |
 
@@ -238,7 +238,7 @@ The 530 `n/a` tests: 314 test Android text internals or internal helpers (`Spann
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/IndirectPointerValidationRoundingTest.kt` | 8 | Indirect pointer positions tolerate float rounding at the device bounds | ported: `crates/compose-test/tests/suite/indirect.rs` (`positions_must_be_on_the_device`) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/InfiniteAnimationTest.kt` | 4 | Infinite animations don't block idleness, and don't run while the clock auto-advances | ported: `crates/compose-test/tests/suite/clock.rs` (`an_infinite_transition_lets_the_ui_idle`, `an_infinite_animatable_lets_the_ui_idle`, `an_infinite_animation_doesnt_run_while_the_clock_advances_by_itself`, `an_infinite_animation_runs_with_the_clock_advanced_by_hand`) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/IsDisplayedTest.kt` | 22 | `assertIsDisplayed`/`isDisplayed`: scrolled out, unplaced, clipped, partially visible, several matches, view visibility | ported: `crates/compose-test/tests/suite/displayed.rs` (the view-visibility cases are n/a: Android views) |
-| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/LayoutCoordinatesHelperTest.kt` | 9 | `onPlaced` and `positionInParent`: alignment changes, modifier chain changes, reuse, no remeasure | port: `Modifier.onPlaced`, live `LayoutCoordinates` (`position_in_parent`) and the layout-rect callbacks are in (D1186, D1211, D1212); eight of the nine are portable, `defaultTransformFromThrows` needs `localBoundingBoxOf`, which `LayoutCoordinates` lacks (audit: was `feature:layout-coordinates`) |
+| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/LayoutCoordinatesHelperTest.kt` | 9 | `onPlaced` and `positionInParent`: alignment changes, modifier chain changes, reuse, no remeasure | partial: `crates/compose-test/tests/suite/layout_coordinates_helper.rs` (5 of 9 passing: the positions in a parent, `on_placed` following an alignment, again on reuse, on an empty box; 2 written and ignored for D1186's differences: `on_placed` is told after the layout pass, so a placement block of its node doesn't see it yet, and an `on_placed` added measures its layout node again; `onPlacedUpToDateWhenModifierChainChanges` is ignored in Compose (b/242125166) and `defaultTransformFromThrows` is n/a: compose-rs's `LayoutCoordinates` is a struct, no interface whose default `transformFrom` throws) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/OnRootWithViewInteractionTest.kt` | 19 | Scoping finders to an Espresso `ViewInteraction` | n/a: Espresso/View interop |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/PrintToStringTest.kt` | 9 | `printToString` of nothing, one, many nodes, depth, merged/unmerged texts and descriptions | partial: `crates/compose-test/tests/suite/actions.rs` (nothing found, one, many, the hierarchy, the depth); the merged texts and descriptions cases are to port |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/RootExistenceAssertTest.kt` | 4 | Assertions with no content set (exists fails, count is zero) | partial: `crates/compose-test/tests/suite/run.rs` (`without_content_nothing_exists`); compose-rs always has a root, so "no compose hierarchies found" never fails |

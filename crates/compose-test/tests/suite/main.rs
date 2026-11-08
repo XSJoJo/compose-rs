@@ -20,6 +20,7 @@ mod injection_scopes;
 mod input;
 mod key_and_mouse_events;
 mod key_events;
+mod layout_coordinates_helper;
 mod mouse_events;
 mod restoration;
 mod review_d;
