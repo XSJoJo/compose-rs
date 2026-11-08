@@ -27,6 +27,7 @@ mod review_d;
 mod robolectric;
 mod rule;
 mod run;
+mod run_without_implicit_wait;
 mod sample_font;
 mod selectors;
 mod swipes;

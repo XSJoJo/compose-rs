@@ -21,8 +21,8 @@ What compose-rs has of two Jetpack Compose libraries, test file by test file and
 |---|---|---|---|---|---|
 | `ported` | 154 | 1,725 | 63 / 1,215 | 90 / 504 | 1 / 6 |
 | `covered` | 4 | 5 | 1 / 2 | 3 / 3 | 0 / 0 |
-| `port` | 1 | 8 | 0 / 0 | 1 / 8 | 0 / 0 |
-| `partial` | 44 | 1,156 | 13 / 726 | 31 / 430 | 0 / 0 |
+| `port` | 0 | 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| `partial` | 45 | 1,164 | 13 / 726 | 32 / 438 | 0 / 0 |
 | `feature:…` | 44 | 413 | 30 / 312 | 13 / 98 | 1 / 3 |
 | `n/a` | 81 | 535 | 32 / 384 | 46 / 145 | 3 / 6 |
 
@@ -243,7 +243,7 @@ The 530 `n/a` tests: 314 test Android text internals or internal helpers (`Spann
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/PrintToStringTest.kt` | 9 | `printToString` of nothing, one, many nodes, depth, merged/unmerged texts and descriptions | partial: `crates/compose-test/tests/suite/actions.rs` (nothing found, one, many, the hierarchy, the depth); the merged texts and descriptions cases are to port |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/RootExistenceAssertTest.kt` | 4 | Assertions with no content set (exists fails, count is zero) | partial: `crates/compose-test/tests/suite/run.rs` (`without_content_nothing_exists`); compose-rs always has a root, so "no compose hierarchies found" never fails |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/RunOnUiThreadTest.kt` | 1 | Updating an `AndroidView` on the UI thread | n/a: Android View threading |
-| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/RunWithoutImplicitWaitTest.kt` | 8 | `runWithoutImplicitWait`: no wait for idle, cached semantics per block | port: `run_without_implicit_wait` exists (no per-block semantics cache) |
+| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/RunWithoutImplicitWaitTest.kt` | 8 | `runWithoutImplicitWait`: no wait for idle, cached semantics per block | partial: `crates/compose-test/tests/suite/run_without_implicit_wait.rs` (5 of 8: the content size animation's frame-by-frame sizes, exactly Compose's; no wait inside the block; changes between blocks seen; the merged and unmerged trees; active and deactivated nodes); `reusesSemanticsNodesWithinBlock` is n/a (compose-rs collects the nodes for each query, no per-block cache whose identities to check); `capturesLastSeenSemanticsOfNewInteraction` and `refreshesLastSeenSemanticsCapturedBefore` wait on an interaction kept across calls that says the last semantics it saw when its node is gone (compose-rs's interactions borrow the rule for one chain of calls) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/SemanticsActionTest.kt` | 1 | A semantics action runs on the main thread | n/a: threads (compose-rs runs everything on the test thread) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/StandardTestDispatcherPhaseOrderingTest.kt` | 2 | Within one frame: composition, measure, place, then effects; resumes inside a frame wait until it ends; a frame callback relays out | feature:frame-resumption-order — both written in `crates/compose-test/tests/suite/waiting.rs`, ignored: a coroutine awaiting `with_frame_nanos` resumes as its frame callback returns, before what the callback launched and before the frame's layout; Compose's resumption is dispatched after the frame |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/StateRestorationTesterTest.kt` | 3 | Same as the junit4 one, on `ComposeUiTest` | n/a: Android `Bundle`/`Parcelable` limits |
