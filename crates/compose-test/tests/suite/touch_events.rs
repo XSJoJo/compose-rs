@@ -674,7 +674,7 @@ fn enqueue_touch_down_exits_mouse() {
 
 // Compose: compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/inputdispatcher/TouchEventsTest.kt, enqueueTouchDown_cancelsMouse
 /// A mouse's press is cancelled before the finger comes down. The press comes over the root
-/// with an `Enter` first, where Compose's root hears the press alone (as `trackpad.rs` records).
+/// with an `Enter` first, as Compose's `injectionscope/mouse/CancelTest` hears it.
 #[test]
 fn enqueue_touch_down_cancels_mouse() {
     let heard = cursor_then_touch(|ui| {

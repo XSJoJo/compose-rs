@@ -4,9 +4,9 @@
 //! D1658): Android's hover enter and move into the window are the node's `Enter`; its hover exit,
 //! down and button press its `Press`; a last button's release, up, hover enter and move its
 //! `Release` and a hover `Move` (as `input.rs`'s `a_release_inside_the_window_hovers_again`);
-//! a press with no hover first comes with an `Enter` (as `trackpad.rs` records); a button
-//! pressed or released with another held is a `Press` or `Release` of its own, without Android's
-//! move first.
+//! a press with no hover first comes with an `Enter` (as Compose's `mouse/CancelTest` hears
+//! it); a button pressed or released with another held is a `Press` or `Release` of its own,
+//! without Android's move first.
 
 use compose_test::*;
 use compose_ui::{Offset, PointerButtons, PointerEventType};

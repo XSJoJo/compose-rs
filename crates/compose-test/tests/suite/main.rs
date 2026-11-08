@@ -16,6 +16,7 @@ mod dispatcher;
 mod displayed;
 mod idling_resources;
 mod indirect;
+mod injection_scopes;
 mod input;
 mod key_and_mouse_events;
 mod key_events;
