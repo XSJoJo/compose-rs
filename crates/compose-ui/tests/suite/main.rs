@@ -34,6 +34,7 @@ mod layout_get_horizontal;
 mod layout_node_layout_direction;
 mod locale;
 mod lookahead;
+mod measure_and_layout_delegate;
 mod modifier_locals;
 mod modifier_nodes;
 mod multi_paragraph;
