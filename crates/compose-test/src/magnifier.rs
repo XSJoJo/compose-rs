@@ -10,10 +10,12 @@ use compose_ui::{
     IntSize, Offset, PlatformMagnifier, PlatformMagnifierConfig, PlatformMagnifierFactory,
 };
 
-/// Makes [`TestMagnifier`]s, each `size` big, and keeps them in the order made.
+/// Makes [`TestMagnifier`]s, as big as Android's (its text magnifier's and its builder's default,
+/// 100 by 48 dp; the size asked for otherwise) unless told a size, and keeps them in the order
+/// made.
 pub struct TestMagnifierFactory {
     can_update_zoom: Cell<bool>,
-    size: Cell<IntSize>,
+    size: Cell<Option<IntSize>>,
     made: RefCell<Vec<Rc<TestMagnifier>>>,
 }
 
@@ -24,12 +26,11 @@ impl Default for TestMagnifierFactory {
 }
 
 impl TestMagnifierFactory {
-    /// A factory updating the zoom in place (Android 29's and up), of magnifiers 0 by 0, as
-    /// Compose's tests' `defaultMagnifierSize`.
+    /// A factory updating the zoom in place (Android 29's and up).
     pub fn new() -> TestMagnifierFactory {
         TestMagnifierFactory {
             can_update_zoom: Cell::new(true),
-            size: Cell::new(IntSize::ZERO),
+            size: Cell::new(None),
             made: RefCell::new(Vec::new()),
         }
     }
@@ -39,8 +40,8 @@ impl TestMagnifierFactory {
         self.can_update_zoom.set(can);
     }
 
-    /// The size of the magnifiers it makes from now on.
-    pub fn set_size(&self, size: IntSize) {
+    /// The size of the magnifiers it makes from now on (`None`: Android's).
+    pub fn set_size(&self, size: Option<IntSize>) {
         self.size.set(size);
     }
 
@@ -71,7 +72,17 @@ impl PlatformMagnifierFactory for TestMagnifierFactory {
     }
 
     fn create(&self, config: &PlatformMagnifierConfig) -> Rc<dyn PlatformMagnifier> {
-        let magnifier = Rc::new(TestMagnifier::new(*config, self.size.get()));
+        let size = self.size.get().unwrap_or_else(|| {
+            let density = config.density;
+            let asked = config.size.is_specified() && !config.use_text_default;
+            let (width, height) = if asked {
+                (config.size.width, config.size.height)
+            } else {
+                (compose_ui::Dp(100.0), compose_ui::Dp(48.0))
+            };
+            IntSize::new(density.round_to_px(width), density.round_to_px(height))
+        });
+        let magnifier = Rc::new(TestMagnifier::new(*config, size));
         self.made.borrow_mut().push(magnifier.clone());
         magnifier
     }

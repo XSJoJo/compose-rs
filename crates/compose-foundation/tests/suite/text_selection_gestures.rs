@@ -9,8 +9,9 @@
 //! As Compose's tests: the test font at 15 sp, density 1, a touch slop of 0.1, the container
 //! inset by 32 dp and wrapping its text, which fills its width. Each check is the asserter's:
 //! the selection, the handles shown, and at least as many `TextHandleMove` haptics as expected
-//! since the last check, and the text toolbar shown or not on the test rule's toolbar (D2043); no
-//! magnifier shows (Compose's checks are skipped where the platform has none).
+//! since the last check, and the text toolbar shown or not on the test rule's toolbar (D2043); the
+//! magnifier (the test rule's, D2073) checked where a test says (`magnifier_shown`), the other
+//! tests' checks of it still skipped.
 
 #![allow(non_snake_case)]
 
@@ -132,6 +133,8 @@ pub(crate) struct Gestures {
     pub haptics: u32,
     /// The text toolbar expected shown, as the asserter's `textToolbarShown` (D2041).
     pub toolbar_shown: bool,
+    /// The magnifier expected shown, as the asserter's `magnifierShown`: checked when set.
+    pub magnifier_shown: Option<bool>,
     /// The direction at the selection's start and end, as the asserter's `startLayoutDirection`
     /// and `endLayoutDirection` (`Selection.AnchorInfo.direction`): checked when set, as the bidi
     /// tests' asserter does.
@@ -241,6 +244,7 @@ pub(crate) fn gestures_over(text: String, rtl: bool, multi: bool) -> Gestures {
         end_shown: None,
         haptics: 0,
         toolbar_shown: false,
+        magnifier_shown: None,
         directions: None,
     }
 }
@@ -507,6 +511,20 @@ impl Gestures {
         // The test rule's toolbar, as the spy's `assertShown` (D2041).
         let toolbar = self.ui.text_toolbar().is_shown();
         assert_eq!(toolbar, self.toolbar_shown, "the text toolbar shown");
+        // As Compose's `assertMagnifierExists` and `assertNoMagnifierExists`: some magnifier's
+        // semantics say where it is, or none does.
+        if let Some(expected) = self.magnifier_shown {
+            let nodes = self
+                .ui
+                .on_all_nodes(key_is_defined(&MAGNIFIER_POSITION_IN_ROOT))
+                .fetch_semantics_nodes();
+            let positions: Vec<MagnifierPositionInRoot> = nodes
+                .iter()
+                .filter_map(|node| node.config().get(&MAGNIFIER_POSITION_IN_ROOT).cloned())
+                .collect();
+            let shown = positions.iter().any(|position| position.get().is_specified());
+            assert_eq!(shown, expected, "the magnifier shown");
+        }
         let performed = HAPTICS.with(|count| count.replace(0));
         assert!(performed >= self.haptics, "{performed} haptics, expected {}", self.haptics);
         self.haptics = 0;
@@ -1373,6 +1391,34 @@ fn whenTouchHandle_verifyOneCharStaysSelected_withinLine() {
     release_handle(&mut it, handle);
     it.toolbar_shown = true;
     it.check();
+}
+
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionHandlesGesturesTest.kt, whenTouchHandle_magnifierReplacesToolbar
+#[test]
+fn whenTouchHandle_magnifierReplacesToolbar() {
+    let mut it = gestures(false);
+    let at = it.character_box(13).center_left();
+    it.long_click(at);
+    it.magnifier_shown = Some(false);
+    it.expect(|it| {
+        it.selection = Some((12, 17));
+        it.handles_shown = true;
+        it.toolbar_shown = true;
+        it.haptics += 1;
+    });
+    for handle in [Handle::SelectionEnd, Handle::SelectionStart] {
+        // As Compose's `withHandlePressed`: held, the magnifier shows in the toolbar's place.
+        press_handle(&mut it, handle);
+        it.expect(|it| {
+            it.magnifier_shown = Some(true);
+            it.toolbar_shown = false;
+        });
+        release_handle(&mut it, handle);
+        it.expect(|it| {
+            it.magnifier_shown = Some(false);
+            it.toolbar_shown = true;
+        });
+    }
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/text/selection/gestures/TextSelectionHandlesGesturesTest.kt, whenTouchHandle_thenDragLeftOutOfBounds_keepsFirstCharSelected

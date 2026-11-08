@@ -9,7 +9,9 @@
 use std::rc::Rc;
 
 use compose_ui::platform::{ParagraphHandle, TextMeasurer};
-use compose_ui::{EventContext, Offset, PointerEvent, PointerType, Rect, ResolvedTextDirection};
+use compose_ui::{
+    EventContext, IntSize, Offset, PointerEvent, PointerType, Rect, ResolvedTextDirection,
+};
 
 use super::TextFieldNode;
 use crate::selection_handles::{
@@ -59,6 +61,13 @@ pub(crate) struct Touch {
     pub(super) autofill_available: bool,
     /// A right click's press opened the menu: its release is the menu's too (D2040).
     pub(super) right_click: bool,
+    /// The handle a gesture moves (a real one, or a long press's acting one), where the gesture
+    /// is in the text's coordinates and the field's scroll then, as Compose's `draggingHandle`
+    /// and `handleDragPosition`: the text scrolled since moves it (`handleDragPosition` adds
+    /// the text layout's movement), what the magnifier follows (D2073).
+    magnifier: Option<(Handle, Offset, Offset)>,
+    /// Whether the magnifier was told it shows.
+    magnifier_shown: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -98,6 +107,8 @@ impl Touch {
             clipboard: None,
             autofill_available: false,
             right_click: false,
+            magnifier: None,
+            magnifier_shown: false,
         }
     }
 
@@ -136,6 +147,8 @@ impl Touch {
         if let Some(handles) = &self.handles {
             handles.forget(field);
         }
+        self.magnifier = None;
+        self.magnifier_shown = false;
         self.shown = ShownHandles::default();
         self.active = false;
         self.direct = true;
@@ -289,6 +302,14 @@ impl TextFieldNode {
     pub(super) fn long_press_lifted(&mut self) {
         self.touch.long = None;
         self.touch.pending = None;
+        // Its magnifier goes now, as Compose's `onDragStop` (`clearHandleDragging`): a cancel
+        // measures nothing.
+        if self.touch.drag.is_none() && self.touch.magnifier.take().is_some() {
+            self.touch.magnifier_shown = false;
+            if let Some(handles) = &self.touch.handles {
+                handles.hide_magnifier();
+            }
+        }
     }
 
     /// Resolves a long press or its drag, at a measurement, as Compose's
@@ -303,6 +324,42 @@ impl TextFieldNode {
         paragraph: ParagraphHandle,
     ) {
         let Some(pending) = self.touch.pending.take() else { return };
+        // The magnifier follows the finger, as Compose's `updateHandleDragging` with the drag
+        // observer's acting handle (the end at first).
+        let acting = match (pending, self.touch.magnifier) {
+            (Pending::DragTo(_), Some((acting, _, _))) => acting,
+            _ => Handle::SelectionEnd,
+        };
+        let before = ordered(self.anchor, self.cursor);
+        self.follow_long_press_to(pending, measurer, paragraph);
+        let at = match pending {
+            Pending::LongPress(at, _) | Pending::DragTo(at) => at,
+        };
+        if self.touch.long.is_some() {
+            // The acting handle is the end that moved, as Compose's: both moved, the way the
+            // middle went.
+            let after = ordered(self.anchor, self.cursor);
+            let acting = if after == before || matches!(pending, Pending::LongPress(..)) {
+                acting
+            } else if after.0 != before.0 && after.1 == before.1 {
+                Handle::SelectionStart
+            } else if (after.0 == before.0 && after.1 != before.1)
+                || after.0 + after.1 > before.0 + before.1
+            {
+                Handle::SelectionEnd
+            } else {
+                Handle::SelectionStart
+            };
+            self.touch.magnifier = Some((acting, at, self.scroll));
+        }
+    }
+
+    fn follow_long_press_to(
+        &mut self,
+        pending: Pending,
+        measurer: &mut dyn TextMeasurer,
+        paragraph: ParagraphHandle,
+    ) {
         let layout = measurer.paragraph(paragraph);
         let on_text = |at: Offset| {
             let line = layout.get_line_for_vertical_position(at.y);
@@ -429,6 +486,18 @@ impl TextFieldNode {
         paragraph: ParagraphHandle,
     ) {
         let Some(handles) = &self.touch.handles else { return };
+        // A selection handle's press shows the magnifier where the drag would begin; its press
+        // ending before the slop hides it (D2073).
+        if let Some(handle) = handles.pressed.take()
+            && self.touch.drag.is_none()
+        {
+            let pointed = self.touch.positions.text[handle.index()];
+            let at = Offset::new(pointed.x, pointed.y - 1.0);
+            self.touch.magnifier = Some((handle, at, self.scroll));
+        }
+        if handles.press_released.replace(false) && self.touch.drag.is_none() {
+            self.touch.magnifier = None;
+        }
         if handles.moved.borrow().is_empty() && !handles.ended.get() {
             return;
         }
@@ -440,6 +509,7 @@ impl TextFieldNode {
                 (handle, Offset::new(pointed.x, pointed.y - 1.0), self.scroll)
             });
             let target = start + delta + (self.scroll - scroll);
+            self.touch.magnifier = Some((handle, start + delta, scroll));
             let offset = self.tap_offset_in(measurer, paragraph, target).0;
             match handle {
                 Handle::Cursor => {
@@ -471,7 +541,82 @@ impl TextFieldNode {
         if handles.ended.replace(false) {
             self.touch.drag = None;
             self.touch.raw = None;
+            self.touch.magnifier = None;
         }
+    }
+
+    /// Tells the magnifier whether it shows and where, at the end of a measurement, as Compose's
+    /// `TextFieldMagnifierNodeImpl28` follows `calculateSelectionMagnifierCenterAndroid` while
+    /// the field is focused or a long press drags: nothing where the platform has no magnifier,
+    /// nor while no drag shows it and none showed (D2073).
+    pub(super) fn tell_magnifier(
+        &mut self,
+        measurer: &dyn TextMeasurer,
+        paragraph: ParagraphHandle,
+    ) {
+        let Some(handles) = &self.touch.handles else { return };
+        let Some(magnifier) = handles.magnifier.get() else { return };
+        let shown = self.touch.magnifier.is_some() && (self.focused || self.touch.long.is_some());
+        if !shown && !self.touch.magnifier_shown {
+            return;
+        }
+        let center = if shown {
+            self.magnifier_center(handles, measurer, paragraph).unwrap_or(Offset::UNSPECIFIED)
+        } else {
+            Offset::UNSPECIFIED
+        };
+        self.touch.magnifier_shown = shown;
+        let was = compose_runtime::snapshots::Snapshot::without_read_observation(|| {
+            magnifier.center.get()
+        });
+        if !((was.is_unspecified() && center.is_unspecified()) || was == center) {
+            magnifier.center.set(center);
+        }
+    }
+
+    /// Where the magnifier is centered, in the inner field's coordinates, as Compose's
+    /// `calculateSelectionMagnifierCenterAndroid`: on the dragged end's line, following the drag
+    /// across it but kept within it, half way down it, kept within the field's visible bounds;
+    /// none in an empty field, or with the drag more than half the magnifier's width off the line.
+    fn magnifier_center(
+        &self,
+        handles: &TouchHandles,
+        measurer: &dyn TextMeasurer,
+        paragraph: ParagraphHandle,
+    ) -> Option<Offset> {
+        let (handle, drag, scroll) = self.touch.magnifier?;
+        let drag = drag + (self.scroll - scroll);
+        if drag.is_unspecified() || self.shown_str().is_empty() {
+            return None;
+        }
+        let offset = match handle {
+            Handle::Cursor | Handle::SelectionStart => self.shown(self.anchor),
+            Handle::SelectionEnd => self.shown(self.cursor),
+        };
+        let layout = measurer.paragraph(paragraph);
+        let line = layout.get_line_for_offset(offset);
+        let (left, right) = (layout.get_line_left(line), layout.get_line_right(line));
+        let x = drag.x.clamp(left.min(right), left.max(right));
+        let size = handles.magnifier.get().map_or(IntSize::ZERO, |it| it.size.get());
+        if size != IntSize::ZERO && (drag.x - x).abs() > (size.width / 2) as f32 {
+            return None;
+        }
+        let (top, bottom) = (layout.get_line_top(line), layout.get_line_bottom(line));
+        let center = Offset::new(x, (bottom - top) / 2.0 + top);
+        // Kept within the field's bounds clipped by its ancestors (its own bounds until they're
+        // known), in the text's coordinates, then in the inner field's.
+        let visible = handles.visible.get().unwrap_or(Rect::new(
+            0.0,
+            0.0,
+            self.size.width as f32,
+            self.size.height as f32,
+        ));
+        let visible = visible.translate(self.scroll);
+        let kept = Offset::new(
+            center.x.clamp(visible.left, visible.right.max(visible.left)),
+            center.y.clamp(visible.top, visible.bottom.max(visible.top)),
+        );
+        Some(kept - self.scroll)
     }
 
     /// The selection a selection handle's drag to `raw` makes, as Compose's

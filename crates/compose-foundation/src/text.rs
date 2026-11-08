@@ -70,8 +70,14 @@ pub fn SelectionContainer(
     content: impl Fn() + 'static,
 ) {
     // What the tree holding its selection tells its handles, composed after its content.
-    let handles =
-        compose_runtime::remember(|| std::rc::Rc::new(compose_ui::ContainerHandles::new()));
+    let handles = compose_runtime::remember(|| {
+        let handles = std::rc::Rc::new(compose_ui::ContainerHandles::new());
+        // Its drags show the platform's magnifier, where it has one (D2073).
+        if compose_ui::is_platform_magnifier_supported() == Some(true) {
+            handles.enable_magnifier();
+        }
+        handles
+    });
     handles.set_haptic_feedback(compose_ui::LOCAL_HAPTIC_FEEDBACK.current());
     // Its toolbar and right-click menu (D2041).
     let menu = compose_runtime::remember(|| {
@@ -82,13 +88,25 @@ pub fn SelectionContainer(
         let content = content.clone();
         let shown = handles.clone();
         let menu = menu.clone();
+        // Its magnifier, on the container's coordinates, as Compose's `SelectionManager.modifier`
+        // (`selectionMagnifier`): where the platform has one, shown while a drag says (D2073).
+        let magnifier = if handles.has_magnifier() {
+            let source: std::rc::Rc<dyn crate::selection_magnifier::SelectionMagnifierSource> =
+                handles.clone();
+            crate::selection_magnifier::selection_magnifier(source)
+        } else {
+            Modifier
+        };
         crate::layout::Box(
             modifier
                 .clone()
                 .selection_container_with_handles(handles.clone())
+                .then(magnifier)
                 .then(menu.modifier()),
             crate::Alignment::TOP_START,
-            false,
+            // Its content measured with its constraints, the least included, as Compose's
+            // `SimpleLayout` (D2073).
+            true,
             compose_runtime::callback(move |_| {
                 content();
                 crate::selection_handles::SelectionContainerHandles(shown.clone());
@@ -1321,6 +1339,21 @@ impl TextNode {
         let layout = measurer.paragraph(paragraph);
         Some(ask(&*layout, compose_ui::Size::new(size.width as f32, size.height as f32)))
     }
+
+    /// `ask` of the line at `offset`, as Compose's delegate's line queries: none past the lines
+    /// laid out (an offset past a cut text's laid-out paragraphs is kept to them, D2054).
+    fn line_query(
+        &self,
+        offset: usize,
+        measurer: &compose_ui::platform::SharedTextMeasurer,
+        ask: impl FnOnce(&dyn compose_ui::Paragraph, usize) -> f32,
+    ) -> Option<f32> {
+        let offset = self.laid_out_offset(offset);
+        self.laid_out(measurer, |layout, _| {
+            let line = layout.get_line_for_offset(offset);
+            (line < layout.line_count()).then(|| ask(layout, line))
+        })?
+    }
 }
 
 /// The end of what a text laid out as `layout` within `size` shows, as Compose's
@@ -1528,6 +1561,35 @@ impl compose_ui::Selectable for TextNode {
             layout.get_line_height(line)
         })
         .unwrap_or(0.0)
+    }
+
+    /// As Compose's `MultiWidgetSelectionDelegate.getLineLeft`: none past the lines laid out.
+    fn line_left(
+        &self,
+        offset: usize,
+        measurer: &compose_ui::platform::SharedTextMeasurer,
+    ) -> Option<f32> {
+        self.line_query(offset, measurer, |layout, line| layout.get_line_left(line))
+    }
+
+    fn line_right(
+        &self,
+        offset: usize,
+        measurer: &compose_ui::platform::SharedTextMeasurer,
+    ) -> Option<f32> {
+        self.line_query(offset, measurer, |layout, line| layout.get_line_right(line))
+    }
+
+    /// As Compose's `getCenterYForOffset`: half way down the line.
+    fn center_y_for_offset(
+        &self,
+        offset: usize,
+        measurer: &compose_ui::platform::SharedTextMeasurer,
+    ) -> Option<f32> {
+        self.line_query(offset, measurer, |layout, line| {
+            let (top, bottom) = (layout.get_line_top(line), layout.get_line_bottom(line));
+            (bottom - top) / 2.0 + top
+        })
     }
 
     fn direction_at(

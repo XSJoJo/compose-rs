@@ -170,6 +170,24 @@ pub(crate) struct TouchHandles {
     pub mouse: Cell<bool>,
     /// The field's default dropdown, made at its first right click (D2040).
     pub dropdown: OwnedState<Option<crate::text_context_menu::dropdown::DropdownSlot>>,
+    /// What the field's magnifier follows, made where the platform has one (D2073).
+    pub magnifier: std::cell::OnceCell<FieldMagnifier>,
+    /// A selection handle pressed, its press not yet followed by the field: the magnifier shows
+    /// from the press, as Compose's handles' `onDown` (`updateHandleDragging`).
+    pub pressed: Cell<Option<Handle>>,
+    /// A selection handle's press ended before the touch slop (tapped or cancelled): the
+    /// magnifier goes, as Compose's `onUp` (`clearHandleDragging`).
+    pub press_released: Cell<bool>,
+}
+
+/// What a field's magnifier follows (D2073).
+pub(crate) struct FieldMagnifier {
+    /// Where it's centered, in the inner field's coordinates, as Compose's
+    /// `calculateSelectionMagnifierCenterAndroid`: unspecified while hidden (no handle's or long
+    /// press's drag under way).
+    pub center: OwnedState<Offset>,
+    /// Its size once made (zero before).
+    pub size: Cell<IntSize>,
 }
 
 impl TouchHandles {
@@ -187,6 +205,26 @@ impl TouchHandles {
             visible: Cell::new(None),
             mouse: Cell::new(false),
             dropdown: compose_runtime::mutable_state_of(None),
+            magnifier: std::cell::OnceCell::new(),
+            pressed: Cell::new(None),
+            press_released: Cell::new(false),
+        }
+    }
+
+    /// The platform has a magnifier: the field's drags show it (D2073).
+    pub(crate) fn enable_magnifier(&self) {
+        self.magnifier.get_or_init(|| FieldMagnifier {
+            center: compose_runtime::mutable_state_of(Offset::UNSPECIFIED),
+            size: Cell::new(IntSize::ZERO),
+        });
+    }
+
+    /// Hides the magnifier now, outside a measurement (a gesture cancelled, the field gone).
+    pub(crate) fn hide_magnifier(&self) {
+        let Some(magnifier) = self.magnifier.get() else { return };
+        let center = RuntimeSnapshot::without_read_observation(|| magnifier.center.get());
+        if center.is_specified() {
+            magnifier.center.set(Offset::UNSPECIFIED);
         }
     }
 
@@ -202,6 +240,7 @@ impl TouchHandles {
         if self.active.with(|active| *active) {
             self.active.set(false);
         }
+        self.hide_magnifier();
     }
 
     fn measure_field(&self) {
@@ -272,6 +311,19 @@ pub(crate) trait HandleSource {
     fn mouse_event(&self) {}
 }
 
+impl crate::selection_magnifier::SelectionMagnifierSource for TouchHandles {
+    fn magnifier_center(&self) -> Offset {
+        self.magnifier.get().map_or(Offset::UNSPECIFIED, |magnifier| magnifier.center.get())
+    }
+    fn set_magnifier_size(&self, size: IntSize) {
+        if let Some(magnifier) = self.magnifier.get()
+            && magnifier.size.replace(size) != size
+        {
+            self.measure_field();
+        }
+    }
+}
+
 impl HandleSource for TouchHandles {
     fn anchor_point(&self, handle: Handle) -> Option<Offset> {
         Some(self.positions.with(|positions| positions.anchor[handle.index()]))
@@ -288,6 +340,22 @@ impl HandleSource for TouchHandles {
     fn tapped(&self, handle: Handle) {
         if handle == Handle::Cursor {
             self.cursor_taps.set(self.cursor_taps.get() + 1);
+            self.measure_field();
+        } else {
+            self.press_cancelled(handle);
+        }
+    }
+    /// A selection handle's press shows the magnifier (D2073).
+    fn pressed(&self, handle: Handle) {
+        if handle != Handle::Cursor && self.magnifier.get().is_some() {
+            self.pressed.set(Some(handle));
+            self.measure_field();
+        }
+    }
+    fn press_cancelled(&self, handle: Handle) {
+        if handle != Handle::Cursor && self.magnifier.get().is_some() {
+            self.pressed.set(None);
+            self.press_released.set(true);
             self.measure_field();
         }
     }

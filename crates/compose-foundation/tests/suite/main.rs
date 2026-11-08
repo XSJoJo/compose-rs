@@ -194,6 +194,7 @@ mod selection_container_touch;
 mod selection_focus_hover_parity;
 mod selection_gestures_multi_text;
 mod selection_handle_popup_position;
+mod selection_magnifier;
 mod semantics_actions;
 mod semantics_in_measure;
 mod semantics_invalidation;

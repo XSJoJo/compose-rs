@@ -247,6 +247,8 @@ pub(crate) struct MagnifierNode {
     previous_size: Option<IntSize>,
     /// A copy of its content waits for the next frame (Compose's draw signal received).
     content_update_pending: Rc<Cell<bool>>,
+    /// It shows (shown, not dismissed since): only then is its content copied again (D2073).
+    showing: bool,
     scope: Option<CoroutineScope>,
     /// An update asked for by the element: done with a context.
     update_pending: Option<UpdateAsked>,
@@ -261,7 +263,7 @@ struct UpdateAsked {
 }
 
 impl MagnifierNode {
-    fn new(args: MagnifierArgs) -> MagnifierNode {
+    pub(crate) fn new(args: MagnifierArgs) -> MagnifierNode {
         MagnifierNode {
             args,
             factory: None,
@@ -271,6 +273,7 @@ impl MagnifierNode {
             source_center_in_root: Rc::new(Cell::new(Offset::UNSPECIFIED)),
             previous_size: None,
             content_update_pending: Rc::new(Cell::new(false)),
+            showing: false,
             scope: None,
             update_pending: None,
             delegates: Delegates::new(),
@@ -314,6 +317,7 @@ impl MagnifierNode {
         if let Some(magnifier) = self.magnifier.borrow_mut().take() {
             magnifier.dismiss();
         }
+        self.showing = false;
         let factory = self.resolve_factory(context);
         let density = context.require_density();
         self.density = Some(density);
@@ -361,6 +365,7 @@ impl MagnifierNode {
             let magnifier = self.magnifier.borrow().clone();
             if let Some(magnifier) = magnifier {
                 magnifier.update(source_in_root, magnifier_center, self.args.zoom);
+                self.showing = true;
             }
             self.update_size_if_necessary();
             return;
@@ -371,6 +376,9 @@ impl MagnifierNode {
         if let Some(magnifier) = magnifier {
             magnifier.dismiss();
         }
+        self.showing = false;
+        // A copy waiting for a frame isn't needed any more.
+        self.content_update_pending.set(false);
     }
 
     /// As `updateSizeIfNecessary`: `on_size_changed` told a new size.
@@ -428,6 +436,7 @@ impl ModifierNode for MagnifierNode {
         if let Some(magnifier) = self.magnifier.borrow_mut().take() {
             magnifier.dismiss();
         }
+        self.showing = false;
         self.scope = None;
         self.content_update_pending.set(false);
         self.update_pending = None;
@@ -464,9 +473,11 @@ impl GlobalPositionAwareModifierNode for MagnifierNode {
 
 impl DrawModifierNode for MagnifierNode {
     /// Its content copied again at the next frame, once what's drawn now is on the screen, as
-    /// Compose's draw signal: several drawings before it copy once.
+    /// Compose's draw signal: several drawings before it copy once. Only while it shows, where
+    /// Compose copies into a dismissed one too (a no-op): a hidden magnifier waits for no frame
+    /// (D2073).
     fn draw(&mut self, _scope: &mut DrawScope<'_>) {
-        if self.magnifier.borrow().is_none() || self.content_update_pending.get() {
+        if !self.showing || self.content_update_pending.get() {
             return;
         }
         let Some(scope) = self.scope else { return };
