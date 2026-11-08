@@ -1065,6 +1065,132 @@ fn moves_consumed_on_two_independent_paths_stay_on_their_own() {
     );
 }
 
+/// Each node's pass and the event's kind, as heard.
+fn kinds(record: &Record) -> Vec<String> {
+    record
+        .borrow()
+        .iter()
+        .map(|it| format!("{} {:?} {:?}", it.node, it.pass, it.event.kind))
+        .collect()
+}
+
+fn hover(x: f32, y: f32) -> PointerEvent {
+    PointerEvent::moved(Offset::new(x, y), false)
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/pointer/HitPathTrackerTest.kt, addHitPath_hoverMove_noChange
+/// A mouse coming over three nodes of a path: each enters, down, up and down the path; hovering
+/// at the same place again is a move to each (`isTriggerMoveEventsWhenLocationHasNotChangedEnabled`,
+/// Compose's default).
+#[test]
+fn a_hover_enters_a_path_and_the_same_place_again_moves() {
+    let (mut host, record) = recorded(|record| {
+        Leaf(
+            Modifier
+                .size(50.dp())
+                .then_custom(Recorder("pif1", record.clone()))
+                .then_custom(Recorder("pif2", record.clone()))
+                .then_custom(Recorder("pif3", record.clone())),
+        );
+    });
+    host.send_pointer(hover(10.0, 10.0));
+    let all = |kind: &str| -> Vec<String> {
+        [
+            "pif1 Initial",
+            "pif2 Initial",
+            "pif3 Initial",
+            "pif3 Main",
+            "pif2 Main",
+            "pif1 Main",
+            "pif1 Final",
+            "pif2 Final",
+            "pif3 Final",
+        ]
+        .iter()
+        .map(|it| format!("{it} {kind}"))
+        .collect()
+    };
+    assert_eq!(kinds(&record), all("Enter"));
+    record.borrow_mut().clear();
+    host.send_pointer(hover(10.0, 10.0));
+    assert_eq!(kinds(&record), all("Move"));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/pointer/HitPathTrackerTest.kt, addHitPath_hoverMove_enterExit
+/// A mouse moving from one child of a parent to the other: the parent hears a move, the child
+/// left an exit, the child come to an enter, each branch's initial and main passes in turn.
+#[test]
+#[ignore = "hover changes are their own dispatches (the exits, the enters, then the move to the \
+            nodes hovered still), where Compose's hit path tree carries them in the move's"]
+fn a_hover_from_one_child_to_another_exits_one_and_enters_the_other() {
+    let (mut host, record) = recorded(|record| {
+        Row!(modifier = Modifier.then_custom(Recorder("pif1", record.clone())), {
+            Leaf(Modifier.size(50.dp()).then_custom(Recorder("pif2", record.clone())));
+            Leaf(Modifier.size(50.dp()).then_custom(Recorder("pif3", record.clone())));
+        });
+    });
+    host.send_pointer(hover(10.0, 10.0));
+    assert_eq!(
+        kinds(&record),
+        [
+            "pif1 Initial Enter",
+            "pif2 Initial Enter",
+            "pif2 Main Enter",
+            "pif1 Main Enter",
+            "pif1 Final Enter",
+            "pif2 Final Enter",
+        ]
+    );
+    record.borrow_mut().clear();
+    host.send_pointer(hover(60.0, 10.0));
+    assert_eq!(
+        kinds(&record),
+        [
+            "pif1 Initial Move",
+            "pif2 Initial Exit",
+            "pif2 Main Exit",
+            "pif3 Initial Enter",
+            "pif3 Main Enter",
+            "pif1 Main Move",
+            "pif1 Final Move",
+            "pif2 Final Exit",
+            "pif3 Final Enter",
+        ]
+    );
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/pointer/HitPathTrackerTest.kt, addHitPath_hoverExit
+/// A mouse leaving the window: each node of the path it was over exits.
+#[test]
+fn a_hover_leaving_exits_each_node_of_its_path() {
+    let (mut host, record) = recorded(|record| {
+        Leaf(
+            Modifier
+                .size(50.dp())
+                .then_custom(Recorder("pif1", record.clone()))
+                .then_custom(Recorder("pif2", record.clone()))
+                .then_custom(Recorder("pif3", record.clone())),
+        );
+    });
+    host.send_pointer(hover(10.0, 10.0));
+    record.borrow_mut().clear();
+    host.send_pointer_left();
+    assert_eq!(
+        kinds(&record),
+        [
+            "pif1 Initial Exit",
+            "pif2 Initial Exit",
+            "pif3 Initial Exit",
+            "pif3 Main Exit",
+            "pif2 Main Exit",
+            "pif1 Main Exit",
+            "pif1 Final Exit",
+            "pif2 Final Exit",
+            "pif3 Final Exit",
+        ]
+    );
+}
+
 /// Writes down "<name> cancel" when cancelled, and for each event in the main pass "<name> down"
 /// if a pointer of it comes down, else "<name> moved".
 struct CancelLog(&'static str, Rc<RefCell<Vec<String>>>);
