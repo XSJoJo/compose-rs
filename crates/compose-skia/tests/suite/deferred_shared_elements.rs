@@ -441,6 +441,36 @@ fn the_hand_off_takes_the_gesture_s_velocity() {
 /// doesn't jump at the hand-off.
 #[test]
 fn a_deferred_phase_interrupting_a_transition_hands_off_without_a_jump() {
+    let (deferred, committed) = interrupted_gesture(true);
+    assert_ne!(deferred, IntRect::ZERO, "shown");
+    assert_eq!(deferred, committed, "no jump after the commit");
+}
+
+/// Not Compose's: drawn in place, the same shared element shows where the overlay draws it,
+/// moved with its content while its bounds animate (its placement goes through the content's
+/// transform, which the content's layer maps back).
+#[test]
+fn a_shared_element_drawn_in_place_follows_the_transform_while_its_bounds_animate() {
+    let (in_overlay, _) = interrupted_gesture(true);
+    let (in_place, _) = interrupted_gesture(false);
+    assert_ne!(in_place, IntRect::ZERO, "shown");
+    assert!(near(in_place, in_overlay), "in place {in_place:?}, in the overlay {in_overlay:?}");
+}
+
+/// Within a pixel each side: one drawn at a fraction, the other at its rounded position.
+fn near(a: IntRect, b: IntRect) -> bool {
+    let close = |a: i32, b: i32| (a - b).abs() <= 1;
+    close(a.left, b.left)
+        && close(a.top, b.top)
+        && close(a.right, b.right)
+        && close(a.bottom, b.bottom)
+}
+
+/// Compose's `testInterruptionHandoff_noJump`: in a 400 × 400 layout, a 100 × 100 shared element
+/// at (0, 0) in "A" and (200, 200) in "B", the contents sliding over 2 s. "A" goes to "B", then
+/// half a second in, a gesture back to "A" moves "B" by (100, 100); a frame later it's committed.
+/// The red pixels' bounds a frame into the gesture and a frame after the commit.
+fn interrupted_gesture(in_overlay: bool) -> (IntRect, IntRect) {
     let state = DeferredTransitionState::new("A");
     let offset = mutable_state_of(IntOffset::ZERO);
     let (held, o) = (state.clone(), offset.handle());
@@ -457,9 +487,9 @@ fn a_deferred_phase_interrupting_a_transition_hands_off_without_a_jump() {
                 .together_with(slide_out_horizontally_with(tween(2000), |width| width / 2))
         },
         move |_| Some(transform.clone()),
-        |scope, content, target| {
+        move |scope, content, target| {
             let offset = if target == "A" { None } else { Some(200) };
-            shared_box(scope, content, Shared { offset, ..Shared::red(100) });
+            shared_box(scope, content, Shared { offset, in_overlay, ..Shared::red(100) });
         },
     );
     ui.wait_for_idle();
@@ -480,10 +510,10 @@ fn a_deferred_phase_interrupting_a_transition_hands_off_without_a_jump() {
     ui.advance_time_by_frame();
     ui.wait_for_idle();
     let committed = red(&mut ui);
-    assert_eq!(deferred, committed, "no jump after the commit");
 
     ui.set_auto_advance(true);
     ui.wait_for_idle();
+    (deferred, committed)
 }
 
 // Compose: compose/animation/animation/src/androidDeviceTest/kotlin/androidx/compose/animation/DeferredSharedElementTest.kt, testDeferredTransition_withRenderInOverlayFalse_scalesWithParent
@@ -590,4 +620,37 @@ fn a_cancelled_gesture_does_not_jump() {
     ui.wait_for_idle();
     let after = red_bounds(&mut ui);
     assert_eq!(after.left, 0, "{after:?}");
+}
+
+/// The bounds of what isn't white `millis` into a change from "A" to "B" with no enter or exit,
+/// a 100 × 100 shared element at (0, 0) in "A" and (200, 200) in "B".
+fn moving_element(in_overlay: bool, millis: u64) -> IntRect {
+    let state = DeferredTransitionState::new("A");
+    let mut ui = deferred_rule(
+        400,
+        &state,
+        |_| EnterTransition::NONE.together_with(ExitTransition::NONE),
+        |_| None,
+        move |scope, content, target| {
+            let offset = if target == "A" { None } else { Some(200) };
+            shared_box(scope, content, Shared { offset, in_overlay, ..Shared::red(100) });
+        },
+    );
+    ui.wait_for_idle();
+    ui.set_auto_advance(false);
+    state.animate_to("B");
+    ui.advance_time_by(std::time::Duration::from_millis(millis));
+    ui.wait_for_idle();
+    bounds_of(&mut ui, |color| color.green() < 0.9)
+}
+
+/// Not Compose's: a shared element moving between its contents is drawn in the overlay where it
+/// is placed (and drawn in place), not moved again by where its node puts its content (D1341).
+#[test]
+fn a_moving_shared_element_is_drawn_in_the_overlay_where_it_is_placed() {
+    for millis in [50, 150, 300] {
+        let (in_overlay, in_place) = (moving_element(true, millis), moving_element(false, millis));
+        assert_ne!(in_place, IntRect::ZERO, "shown at {millis} ms");
+        assert!(near(in_overlay, in_place), "at {millis} ms: {in_overlay:?}, {in_place:?}");
+    }
 }

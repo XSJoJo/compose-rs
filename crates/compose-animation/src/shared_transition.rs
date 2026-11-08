@@ -2038,7 +2038,14 @@ impl Entry {
         let Some(layer) = self.layer.borrow().clone() else { return };
         let Some(bounds) = self.element().state().current_bounds() else { return };
         if render {
-            let (x, y) = (bounds.left, bounds.top);
+            // The layer holds the node's drawing in its own coordinates, the content at where it
+            // was placed in the node: at the bounds, the content, as Compose's (D1341).
+            let placed = self
+                .bounds_provider
+                .borrow()
+                .as_ref()
+                .map_or(IntOffset::ZERO, |it| it.content_offset.get());
+            let (x, y) = (bounds.left - placed.x as f32, bounds.top - placed.y as f32);
             // Moved with its content by hand: the content's scale around its pivot in the layout,
             // and its offset.
             let mut scale = 1.0;
@@ -2115,6 +2122,10 @@ struct NodeShared {
     /// `forcedHandoffBounds` and `forcedHandoffVelocity`.
     forced_handoff_bounds: Cell<Option<Rect>>,
     forced_handoff_velocity: Cell<Option<AnimationVector>>,
+    /// Where it last placed its content in itself: what its layer's recording is moved by, since
+    /// compose-ui draws a node in its own coordinates where Compose draws a layout node's drawing
+    /// in its content's (D1341).
+    content_offset: Cell<IntOffset>,
 }
 
 impl NodeShared {
@@ -2225,6 +2236,7 @@ impl ModifierNodeElement for SharedBoundsElement {
             transform_state: RefCell::new(None),
             forced_handoff_bounds: Cell::new(None),
             forced_handoff_velocity: Cell::new(None),
+            content_offset: Cell::new(IntOffset::ZERO),
         });
         SharedBoundsNode {
             shared,
@@ -2379,6 +2391,9 @@ impl ApproachLayoutModifierNode for SharedBoundsNode {
         let shared = self.shared.clone();
         scope.layout_with(placeable.width, placeable.height, move |placement| {
             placement.place(&placeable, 0, 0);
+            if !placement.is_looking_ahead() {
+                shared.content_offset.set(IntOffset::ZERO);
+            }
             let entry = shared.entry();
             entry.element().on_lookahead_placed(placement, &entry);
         })
@@ -2428,6 +2443,7 @@ impl ApproachLayoutModifierNode for SharedBoundsNode {
         scope.layout_with(size.width, size.height, move |placement| {
             shared.is_placed.set(true);
             shared.bounds_before_detached.set(None);
+            shared.content_offset.set(IntOffset::ZERO);
             let entry = shared.entry();
             let element = entry.element();
             let state = element.state();
@@ -2472,6 +2488,7 @@ fn place_match_beyond_transition(
             })
             .unwrap_or(IntOffset::ZERO);
         placement.place_at(placeable, at);
+        shared.content_offset.set(at);
     } else {
         placement.place(placeable, 0, 0);
     }
@@ -2543,7 +2560,9 @@ fn place_match_in_transition(
         }
     }
     let local = coordinates.local_position_of(&root, final_top_left);
-    placement.place(placeable, local.x.round() as i32, local.y.round() as i32);
+    let at = IntOffset::new(local.x.round() as i32, local.y.round() as i32);
+    placement.place_at(placeable, at);
+    shared.content_offset.set(at);
 }
 
 impl DrawModifierNode for SharedBoundsNode {

@@ -44,6 +44,14 @@ Placement with a layer (D1909) is what `skipToLookaheadSize`'s scale uses (`plac
 - A reversal shows the frame's step toward the old target, then turns back, as Compose's: a frame's animations run before the recomposition reversing the target, and the deferred match update applies in that frame's lookahead placement (D1332).
 - A node measured ahead is measured now after (D1319): a change ahead (the other content showing) reaches the approach in the same frame. An animation frame is a state change read in the approach measurement and placement only, so it measures and places the approach alone (D1221's per-pass observation).
 
+### Deferred transitions' manual transforms (D1340)
+
+Compose's deferred transitions (D828) move a content by hand while a target is pending (a predictive back gesture): a scale and its origin in the content's layer, an offset in its placement. Its shared elements follow, as Compose's `SharedElementEntry.activeMutableTransformState` and `SharedBoundsNode`:
+
+- **The state:** the content's `EnterExitNode` (a deferred transition's own content only, Compose's `provideTransformState`: `Transition::is_deferred_root`) provides its `SharedMutableTransformState` as a modifier local, and notes its coordinates, outside the layer, when placed (`parentLayoutCoordinates`). A shared node reads the local when attached. An entry's active state is its content's, if its config permits it (`SharedContentConfig(permitTransformDuringDeferredTransition)`, the scope's `shared_content_config_with`) and its transition is a deferred one's; while mutating, the incoming entry takes the outgoing one's (the transition is held at its old state then, so the targets are inverted), and keeps it through the hand-off.
+- **While mutating:** the entry renders in the overlay even if no transition is active (permitted or not: not permitted, it stays put, unscaled), and a permitted one makes the scope's transition active. The overlay draws its layer scaled around the content's pivot (the origin in the content's bounds in the layout) and moved by the offset; the approach placement puts its content at the transformed position, which the content's layer maps back (so, drawn in place, it shows where the overlay would draw it, and its coordinates say so).
+- **The hand-off:** once the phase ends, the first approach measurement takes the bounds where the deferred phase left them (the last manual scale and offset applied to the current bounds; the scale left out when drawn in place in its own content, whose layer still scales it) and their velocity from the gesture's, and the bounds animation starts from them (`forcedInitialValue`, `forcedInitialVelocity` of the deferred animation, D828).
+
 ### Cost
 
 Nothing is added to compose-ui's frame path: the trait is a node kind's measurement, and the overlay is a draw node of `SharedTransitionLayout`'s. An app without shared transitions runs none of it; the display lists stay the same.
@@ -51,4 +59,3 @@ Nothing is added to compose-ui's frame path: the trait is a node kind's measurem
 ## Not done here
 
 - Visual debugging (`LookaheadAnimationVisualDebugging`, `feature:lookahead-visual-debug`).
-- What depends on the experimental `SharedMutableTransformState` hand-off beyond what deferred transitions have (D828).

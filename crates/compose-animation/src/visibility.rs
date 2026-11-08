@@ -1662,12 +1662,14 @@ impl ModifierNode for EnterExitNode {
         Some(self)
     }
 
+    // Only a deferred transition's own content gives its state (fixed for the node's transition):
+    // the others' nodes are of the kinds they were.
     fn as_modifier_local(&mut self) -> Option<&mut dyn ModifierLocalModifierNode> {
-        Some(self)
+        if self.provided.is_some() { Some(self) } else { None }
     }
 
     fn as_layout_aware(&mut self) -> Option<&mut dyn LayoutAwareModifierNode> {
-        Some(self)
+        if self.provided.is_some() { Some(self) } else { None }
     }
 
     fn on_attach(&mut self, _context: &mut compose_ui::NodeContext<'_>) {
