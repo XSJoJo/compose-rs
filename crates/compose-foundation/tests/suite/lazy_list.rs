@@ -1566,3 +1566,100 @@ fn a_reused_inner_list_flings_its_own_state() {
         }
     }
 }
+
+/// Twenty 20 px items in a 100 px list of `state`, the list's measurements counted by a layout
+/// around it (Compose reads the state's `numMeasurePasses`).
+fn counted_list(lazy: Lazy, state: LazyListState, measures: Rc<Cell<u32>>) -> ComposeTestRule {
+    rule(move || {
+        let counted = measures.clone();
+        let counting = Modifier.layout(move |scope, measurable, constraints| {
+            counted.set(counted.get() + 1);
+            let placeable = scope.measure(measurable, constraints);
+            scope.layout_with(placeable.width, placeable.height, move |placement| {
+                placement.place(&placeable, 0, 0);
+            })
+        });
+        LazyColumnOrRow(
+            lazy,
+            counting.required_size(100.dp()).test_tag(LIST),
+            state,
+            no_padding(),
+            |scope: LazyListScope| {
+                scope.items(20, |index| {
+                    Spacer(Modifier.required_size(20.dp()).test_tag((index + 1).to_string()));
+                });
+            },
+        );
+    })
+}
+
+// Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/list/LazyListTest.kt, onlyOneInitialMeasurePass
+/// A list's first layout measures it once: its measurement composes the items it reaches (C8,
+/// D1312), with no round after.
+#[test]
+fn the_first_layout_measures_a_list_once() {
+    for lazy in orientations() {
+        let measures = Rc::new(Cell::new(0));
+        let mut ui = counted_list(lazy, *LazyListState::new(0, 0), measures.clone());
+        ui.wait_for_idle();
+        assert_eq!(measures.get(), 1, "{lazy:?}");
+    }
+}
+
+// Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/list/LazyListTest.kt, onlyOneMeasurePassForScrollEvent
+/// A scroll measures the list once more: the items it brings in are composed by that
+/// measurement.
+#[test]
+fn a_scroll_measures_a_list_once() {
+    for lazy in orientations() {
+        let state = LazyListState::new(0, 0);
+        let measures = Rc::new(Cell::new(0));
+        let mut ui = counted_list(lazy, *state, measures.clone());
+        ui.wait_for_idle();
+        let initial = measures.get();
+        // Compose's `state.onScroll(-110.dp)`: the content moves 110 px back.
+        ui.run_on_idle(|_| {
+            state.dispatch_raw_delta(110.0);
+        });
+        ui.wait_for_idle();
+        assert_eq!(measures.get(), initial + 1, "{lazy:?}");
+        assert_eq!(state.first_visible_item_index(), 5, "{lazy:?}");
+    }
+}
+
+// Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/list/LazyListTest.kt, stateIsRestored
+#[test]
+fn the_list_position_is_restored() {
+    for lazy in orientations() {
+        let state: Rc<Cell<Option<LazyListState>>> = Rc::new(Cell::new(None));
+        let kept = state.clone();
+        let mut tester = StateRestorationTester::new();
+        let mut ui = rule(|| {});
+        tester.set_content(&mut ui, move || {
+            let list = remember_lazy_list_state(0, 0);
+            kept.set(Some(list));
+            LazyColumnOrRow(
+                lazy,
+                Modifier.required_size(100.dp()).test_tag(LIST),
+                list,
+                no_padding(),
+                |scope: LazyListScope| {
+                    scope.items(20, |index| {
+                        Spacer(Modifier.required_size(20.dp()).test_tag(index.to_string()));
+                    });
+                },
+            );
+        });
+        lazy.scroll_main_axis_by(&mut ui, LIST, 30.0);
+        let before = state.get().unwrap();
+        let position =
+            (before.first_visible_item_index(), before.first_visible_item_scroll_offset());
+        assert_eq!(position, (1, 10), "{lazy:?}");
+        state.set(None);
+        tester.emulate_save_and_restore(&mut ui);
+        let after = state.get().expect("composed again");
+        assert_ne!(after, before, "{lazy:?}: a new state");
+        let restored = (after.first_visible_item_index(), after.first_visible_item_scroll_offset());
+        assert_eq!(restored, position, "{lazy:?}");
+    }
+}
