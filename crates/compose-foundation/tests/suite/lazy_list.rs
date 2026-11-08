@@ -1663,3 +1663,42 @@ fn the_list_position_is_restored() {
         assert_eq!(restored, position, "{lazy:?}");
     }
 }
+
+// Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/list/LazyListTest.kt, itemFillingParentSizeParentRecomposed_noRemeasureOnReuse
+/// An item filling the list, scrolled out and back, isn't measured again.
+#[test]
+fn an_item_filling_the_parent_is_not_measured_again_when_scrolled_back() {
+    for lazy in orientations() {
+        let state = LazyListState::new(0, 0);
+        let handle = *state;
+        let measures = Rc::new(Cell::new(0));
+        let counted = measures.clone();
+        let mut ui = rule(move || {
+            let counted = counted.clone();
+            LazyColumnOrRow(lazy, Modifier, handle, no_padding(), move |scope: LazyListScope| {
+                let counted = counted.clone();
+                scope.items_list(vec![0, 1], move |item_scope, &item: &i32| {
+                    let mut modifier = Modifier.fill_parent_max_size(&item_scope);
+                    if item == 0 {
+                        let counted = counted.clone();
+                        modifier = modifier.layout(move |scope, measurable, constraints| {
+                            counted.set(counted.get() + 1);
+                            let placeable = scope.measure(measurable, constraints);
+                            scope.layout_with(placeable.width, placeable.height, move |placement| {
+                                placement.place(&placeable, 0, 0);
+                            })
+                        });
+                    }
+                    Spacer(modifier);
+                });
+            });
+        });
+        ui.wait_for_idle();
+        measures.set(0);
+        let _ = run(&mut ui, async move {
+            let _ = handle.scroll_to_item(1, 0).await;
+            let _ = handle.scroll_to_item(0, 0).await;
+        });
+        assert_eq!(measures.get(), 0, "{lazy:?}");
+    }
+}
