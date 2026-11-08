@@ -2306,32 +2306,11 @@ impl ItemsMeasurePolicy for LazyGridLayout {
             prefetch.limits.set(limits);
             state.wanted_now.set(Some(wanted_items));
         }
-        // The whole lines composed out of view are placed too (clipped away), so focus can move
-        // to them; those composed beyond the wanted ones (prefetched) aren't. A focused item's
-        // line among those is placed, next to the others.
-        let composed_lines = if composed_start < composed_end {
-            let first = m.lines.line_of(composed_start);
-            let first = if m.lines.start(first) == composed_start { first } else { first + 1 };
-            let end = if composed_end >= count {
-                m.lines.line_of(count - 1) + 1
-            } else {
-                m.lines.line_of(composed_end)
-            };
-            (first, end.max(first))
-        } else {
-            (index, index)
-        };
-        let (mut placed_start, mut placed_end) = (wanted_start, wanted_end);
-        for key in state.pinned.get() {
-            if let Some(pinned) = info.items.index_of(key, state.pinned_near.get()) {
-                let line = m.lines.line_of(pinned);
-                if (placed_end..composed_lines.1).contains(&line) {
-                    placed_end = line + 1;
-                } else if (composed_lines.0..placed_start).contains(&line) {
-                    placed_start = line;
-                }
-            }
-        }
+        // The lines wanted are placed: those in view and those of a focus search beyond. Those
+        // composed beyond the wanted ones (prefetched) aren't; a pinned item out of them is
+        // placed alone beside them, as Compose's `extraItemsBefore` and `extraItemsAfter`, so
+        // the lines between it and those in view leave (D1481).
+        let (placed_start, mut placed_end) = (wanted_start, wanted_end);
         // The last item shown, and ahead the lines up to the last the pass that's now showed past
         // it, placed after those in view, as Compose's `linesRetainedForLookahead` (D1318).
         let last_shown = placed.last().map(|&(line, _)| m.lines.start(line + 1).saturating_sub(1));
@@ -2365,6 +2344,8 @@ impl ItemsMeasurePolicy for LazyGridLayout {
             }
         }
         let extent_end = main - spacing + after;
+        // Where the pinned items after those laid out begin, as Compose's `extraItemsAfter`.
+        let after_laid_out = main;
         // Those before, placed first, in the items' order.
         let mut ahead_lines: Vec<(usize, i32)> = Vec::new();
         let mut main = placed.first().map_or(before, |(_, main)| *main);
@@ -2429,12 +2410,17 @@ impl ItemsMeasurePolicy for LazyGridLayout {
                 state.sticky.set(header);
             }
         }
-        // A focused item (pinned) and those moving out of view with `animate_item`, placed out of
-        // view.
-        let (apart, _) = state.items_apart(&info.items);
+        // The pinned items (a focused one) out of the lines laid out, each alone in its cell, side
+        // by side before the first line and after the last, in their order, as Compose's
+        // `extraItemsBefore` and `extraItemsAfter` (D1481); those moving out of view with
+        // `animate_item` out of the way.
+        let (apart, pinned_count) = state.items_apart(&info.items);
+        let mut pinned_before: Vec<(Placeable, i32, i32)> = Vec::new();
+        let mut pinned_after: Vec<(Placeable, i32, i32)> = Vec::new();
         let mut pinned: Vec<(Placeable, i32, i32)> = Vec::new();
-        for &item in &apart {
-            if (item < composed_start || item >= composed_end)
+        for (position, &item) in apart.iter().enumerate() {
+            let is_pinned = position < pinned_count;
+            if (is_pinned || item < composed_start || item >= composed_end)
                 && Some(item) != header
                 && let Some((placeable, cross)) = m.item(item)
                 // Not one the window's room already placed: a child is placed once (D1210).
@@ -2444,10 +2430,31 @@ impl ItemsMeasurePolicy for LazyGridLayout {
                     })
                 })
             {
+                if is_pinned {
+                    let side = if m.lines.line_of(item) < lead {
+                        &mut pinned_before
+                    } else {
+                        &mut pinned_after
+                    };
+                    side.push((placeable, 0, cross));
+                    continue;
+                }
                 let size = if vertical { placeable.height } else { placeable.width };
                 let at = if item < first_item { -size - main_max } else { main_max * 2 };
                 pinned.push((placeable, at, cross));
             }
+        }
+        let main_of =
+            |placeable: &Placeable| if vertical { placeable.height } else { placeable.width };
+        let mut at = ahead_lines.first().or(placed.first()).map_or(before, |&(_, main)| main);
+        for (placeable, main, _) in pinned_before.iter_mut().rev() {
+            at -= (main_of(placeable) + spacing).max(0);
+            *main = at;
+        }
+        let mut at = after_laid_out;
+        for (placeable, main, _) in &mut pinned_after {
+            *main = at;
+            at += (main_of(placeable) + spacing).max(0);
         }
         // Sizes far from view are forgotten, so the estimates follow the data.
         if m.line_sizes.len() > 4 * MOST_MISSING {
@@ -2616,6 +2623,9 @@ impl ItemsMeasurePolicy for LazyGridLayout {
         for (placeable, main, cross) in moved_to_start.iter().rev() {
             place(m.scope, placeable, *main, *cross);
         }
+        for (placeable, main, cross) in &pinned_before {
+            place(m.scope, placeable, *main, *cross);
+        }
         for &(line, main) in ahead_lines.iter().chain(&placed).chain(&beyond_lines) {
             let (start, end, _) = m.measured_line(line).expect("a line measured");
             for &(placeable, cross) in &m.cells[start..end] {
@@ -2630,7 +2640,7 @@ impl ItemsMeasurePolicy for LazyGridLayout {
         for (placeable, main, cross) in &moved_to_end {
             place(m.scope, placeable, *main, *cross);
         }
-        for (placeable, main, cross) in &pinned {
+        for (placeable, main, cross) in pinned_after.iter().chain(&pinned) {
             place(m.scope, placeable, *main, *cross);
         }
         if tells {
