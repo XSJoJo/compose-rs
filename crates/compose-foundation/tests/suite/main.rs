@@ -215,6 +215,7 @@ mod semantics_properties;
 mod semantics_tree;
 mod shadow;
 mod shape_parity;
+mod sizes;
 mod snapping;
 mod stretch_overscroll;
 mod style_animation;
