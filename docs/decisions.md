@@ -25,7 +25,7 @@ The log is split by area into the files below, one table each, rows in number or
 | [android-host-and-performance](decisions/android-host-and-performance.md) | The view and activity glue, the frame loop, the hint session, jank, startup, memory, and the optimization flags. | 31 |
 | [desktop](decisions/desktop.md) | The desktop host: window, Skia rendering, input and events. | 6 |
 | [benchmarks](decisions/benchmarks.md) | The benchmark apps, protocols and rounds, and how results are read. | 35 |
-| [api-and-tooling](decisions/api-and-tooling.md) | Names, crates and modules, semver, the edit-build loop, testing and documentation, the toolchain's and dependencies' versions. | 74 |
+| [api-and-tooling](decisions/api-and-tooling.md) | Names, crates and modules, semver, the edit-build loop, testing and documentation, the toolchain's and dependencies' versions. | 75 |
 
 ## Index by number
 
@@ -1134,3 +1134,4 @@ The log is split by area into the files below, one table each, rows in number or
 | D2076 | [api-and-tooling](decisions/api-and-tooling.md#d2076) | current |
 | D2077 | [text](decisions/text.md#d2077) | current |
 | D2078 | [api-and-tooling](decisions/api-and-tooling.md#d2078) | current |
+| D2079 | [api-and-tooling](decisions/api-and-tooling.md#d2079) | current |

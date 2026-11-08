@@ -1937,14 +1937,18 @@ impl KeyInjectionScope<'_> {
         self.with_keys_down(&[key], block);
     }
 
-    /// Runs `block` with `keys` held, as `withKeysDown`.
+    /// Runs `block` with `keys` held, as `withKeysDown`: they go up after it, a panic in it
+    /// too (Compose's `try … finally`, D2079).
     pub fn with_keys_down(&mut self, keys: &[Key], block: impl FnOnce(&mut Self)) {
         for key in keys {
             self.key_down(*key);
         }
-        block(self);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| block(self)));
         for key in keys {
             self.key_up(*key);
+        }
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
         }
     }
 
@@ -1953,11 +1957,14 @@ impl KeyInjectionScope<'_> {
         self.with_keys_toggled(&[key], block);
     }
 
-    /// As `withKeysToggled`.
+    /// As `withKeysToggled`: toggled back after `block`, a panic in it too (D2079).
     pub fn with_keys_toggled(&mut self, keys: &[Key], block: impl FnOnce(&mut Self)) {
         self.press_keys(keys);
-        block(self);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| block(self)));
         self.press_keys(keys);
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
     }
 
     fn press_keys(&mut self, keys: &[Key]) {
