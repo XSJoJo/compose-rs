@@ -110,6 +110,7 @@ mod platform;
 mod platform_services;
 mod pointer_icon;
 mod pointer_input;
+mod popup_alignment;
 mod port_rows;
 mod prefetch;
 mod prefetch_parity;
