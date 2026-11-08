@@ -227,6 +227,7 @@ mod text_context_menu_support;
 mod text_context_menu_toolbar_handler;
 mod text_context_menu_traversal;
 mod text_field_basic;
+mod text_field_click_to_move_cursor;
 mod text_field_common_key_event;
 mod text_field_context_menu;
 mod text_field_cursor_handle;
