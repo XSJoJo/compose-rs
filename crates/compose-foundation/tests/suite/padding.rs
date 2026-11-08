@@ -1,6 +1,6 @@
 //! Compose's `PaddingTest`: `padding`'s overloads applied to a child, with too little room and
 //! right to left, through the `LayoutTest` helpers of [`layout_test`](crate::layout_test). Its
-//! intrinsics test is in `intrinsics.rs`. Not ported: `absolutePadding` and
+//! intrinsics test is in `intrinsics.rs`; `PaddingValuesTest` at the end. Not ported: `absolutePadding` and
 //! `PaddingValues.Absolute`, and the negative padding checks (the layout-modifiers feature); its
 //! inspector tests are n/a.
 
@@ -154,4 +154,62 @@ fn padding_values_rtl() {
         });
     });
     assert_eq!(probe.size(0).width, (box_size - start - end) as i32);
+}
+
+// ---- PaddingValuesTest --------------------------------------------------------------------
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/PaddingValuesTest.kt, zeroPaddingValues
+#[test]
+fn zero_padding_values() {
+    let probe = Probe::new(1);
+    let p = probe.clone();
+    let _ui = show(move || {
+        let p = p.clone();
+        Box!(modifier = Modifier.fill_max_size(), |_| {
+            let modifier = Modifier.size(px(100.0)).padding(PaddingValues::ZERO).then(p.at(0));
+            Box!(modifier = modifier);
+        });
+    });
+    assert_eq!(probe.size(0), size(100, 100));
+}
+
+/// Each side of `padding`, left to right: left, top, right, bottom.
+fn sides(padding: PaddingValues) -> [Dp; 4] {
+    [
+        padding.calculate_left_padding(LayoutDirection::Ltr),
+        padding.calculate_top_padding(),
+        padding.calculate_right_padding(LayoutDirection::Ltr),
+        padding.calculate_bottom_padding(),
+    ]
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/PaddingValuesTest.kt, plusPaddingValues
+#[test]
+fn plus_padding_values() {
+    let (inner, content) = (PaddingValues::all(Dp(24.0)), PaddingValues::all(Dp(8.0)));
+    assert_eq!(sides(inner + content), [Dp(32.0); 4]);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/PaddingValuesTest.kt, minusPaddingValues
+#[test]
+fn minus_padding_values() {
+    let (inner, content) = (PaddingValues::all(Dp(24.0)), PaddingValues::all(Dp(8.0)));
+    assert_eq!(sides(inner - content), [Dp(16.0); 4]);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/PaddingValuesTest.kt, minusPaddingValues_mustBeNonNegative
+#[test]
+fn minus_padding_values_must_be_non_negative() {
+    let (inner, content) = (PaddingValues::all(Dp(24.0)), PaddingValues::all(Dp(8.0)));
+    assert_eq!(sides(content - inner), [Dp(0.0); 4]);
+}
+
+/// D1930: the sides follow the layout direction, as Compose's `calculate*Padding`.
+#[test]
+fn padding_values_sides_follow_the_layout_direction() {
+    let padding = PaddingValues::new(Dp(1.0), Dp(2.0), Dp(3.0), Dp(4.0));
+    assert_eq!(padding.calculate_left_padding(LayoutDirection::Rtl), Dp(3.0));
+    assert_eq!(padding.calculate_right_padding(LayoutDirection::Rtl), Dp(1.0));
+    let sum = padding + PaddingValues::new(Dp(10.0), Dp(20.0), Dp(30.0), Dp(40.0));
+    assert_eq!(sides(sum), [Dp(11.0), Dp(22.0), Dp(33.0), Dp(44.0)]);
 }

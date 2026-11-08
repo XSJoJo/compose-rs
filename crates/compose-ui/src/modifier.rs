@@ -757,6 +757,63 @@ impl ComposeArg for PaddingValues {
     }
 }
 
+impl PaddingValues {
+    /// The padding on the left in `direction`, as `calculateLeftPadding`.
+    pub fn calculate_left_padding(&self, direction: crate::alignment::LayoutDirection) -> Dp {
+        match direction {
+            crate::alignment::LayoutDirection::Ltr => self.start,
+            crate::alignment::LayoutDirection::Rtl => self.end,
+        }
+    }
+
+    /// The padding on the right in `direction`, as `calculateRightPadding`.
+    pub fn calculate_right_padding(&self, direction: crate::alignment::LayoutDirection) -> Dp {
+        match direction {
+            crate::alignment::LayoutDirection::Ltr => self.end,
+            crate::alignment::LayoutDirection::Rtl => self.start,
+        }
+    }
+
+    /// As `calculateTopPadding`.
+    pub fn calculate_top_padding(&self) -> Dp {
+        self.top
+    }
+
+    /// As `calculateBottomPadding`.
+    pub fn calculate_bottom_padding(&self) -> Dp {
+        self.bottom
+    }
+}
+
+impl std::ops::Add for PaddingValues {
+    type Output = PaddingValues;
+
+    /// Each side's sum, as `PaddingValues.plus` (D1930).
+    fn add(self, other: PaddingValues) -> PaddingValues {
+        PaddingValues::new(
+            self.start + other.start,
+            self.top + other.top,
+            self.end + other.end,
+            self.bottom + other.bottom,
+        )
+    }
+}
+
+impl std::ops::Sub for PaddingValues {
+    type Output = PaddingValues;
+
+    /// Each side's difference, at least zero, as `PaddingValues.minus` (D1930).
+    fn sub(self, other: PaddingValues) -> PaddingValues {
+        let side = |a: Dp, b: Dp| (a - b).max(Dp(0.0));
+        PaddingValues::new(
+            side(self.start, other.start),
+            side(self.top, other.top),
+            side(self.end, other.end),
+            side(self.bottom, other.bottom),
+        )
+    }
+}
+
 /// Size bounds in `Dp`, `Dp::UNSPECIFIED` meaning no bound, as `Modifier.sizeIn`. `enforce`
 /// keeps them even outside the incoming constraints, as the `required…` modifiers.
 #[derive(Clone, Copy, PartialEq, Debug)]

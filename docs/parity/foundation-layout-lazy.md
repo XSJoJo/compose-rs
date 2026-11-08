@@ -30,9 +30,9 @@ By area: `foundation-layout` 29 files (850 tests); lazy lists, grids and `LazyLa
 | Status | Files | `@Test` methods |
 |---|---|---|
 | `covered` | 13 | 132 |
-| `ported` | 97 | 1,474 |
+| `ported` | 98 | 1,478 |
 | `port` | 0 | 0 |
-| `partial` | 49 | 1,289 |
+| `partial` | 48 | 1,285 |
 | `feature:<name>` | 14 | 101 |
 | `n/a` | 12 | 133 |
 | **Total** | **185** | **3,129** |
@@ -74,7 +74,7 @@ The table's suite references (`lazy_api.rs`, `fling.rs`, …) are files in `crat
 | compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/LayoutReuseTest.kt | 9 | Box/Row/Column/Spacer/Flow layouts inside `ReusableContent` re-measure correctly | ported (`layout_reuse.rs`, all 9; 8 failed before D1354: a policy remembered anew measured again) |
 | compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/OffsetTest.kt | 14 | `offset`, `absoluteOffset`, lambda offsets, RTL, no remeasure on offset change | ported (crates/compose-ui/tests/suite/offset.rs, D1216; `updateOffsetPx_doesNotRemeasureAndDoesNotRedraw` but for its draws, feature:place-with-layer; 4 inspector tests n/a) |
 | compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/PaddingTest.kt | 19 | padding overloads, negative padding throws, absolutePadding, RTL, intrinsics | partial (8 of 19: `padding.rs` (7: overloads applied to a child, too little room, right to left, equality), `intrinsicMeasurements` in `intrinsics.rs`. Left (feature:layout-modifiers): `absolutePadding` and `PaddingValues.Absolute` (`absolutePaddingAppliedToChild`, `paddingAbsolutePaddingValuesAppliedToChild`, `testAbsolutePadding_rtl`), the 4 negative-padding panics; n/a: the 4 inspector tests) |
-| compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/PaddingValuesTest.kt | 4 | `PaddingValues` zero, `plus`, `minus` (non-negative) | partial (`PaddingValues` exists; `+`/`-` missing: feature:layout-modifiers) |
+| compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/PaddingValuesTest.kt | 4 | `PaddingValues` zero, `plus`, `minus` (non-negative) | ported (4 of 4, `padding.rs`; `+`/`-` and `calculate_*_padding` added, D1930) |
 | compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnModifierTest.kt | 8 | Row/Column relayout when a child's align / alignBy / weight modifier changes | partial (align and weight exist; `alignBy` block changes in `alignment_line.rs`, D1220) |
 | compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt | 133 | Row/Column: weights (31), arrangements (49), alignments, rounding, RTL (19), alignBy (8), intrinsics (7), wrap/size interplay | partial (110 of 133: `row_column.rs` (94: sizes, weights, roundings, cross-axis alignments, sizes in constraints, infinite constraints, arrangements, spacing, right-to-left), through `layout_test.rs`'s `LayoutTest` helpers at density 2.625 in a 1000×1600 root; found D1927 (an alignment of the other axis aligns across) and D1928 (`spaced_by` right to left packs from the right end); the 14 intrinsics tests in `intrinsics.rs` (3 cited after an "and": `testColumn_withArrangementSpacing`, `…_width`, `testColumn_withHIWOChild…`); 5 alignBy in `alignment_line.rs` (D1220). Not portable yet: the 4 custom `Alignment` objects (`testRow_withCustomVertical_alignment`, `testColumn_withCustomHorizontal_alignment`, `…CustomHorizontalAlignModifier`, `…CustomVerticalAlignModifier`; the ui ledger's alignment-api), the 13 `Arrangement.Absolute` tests (feature:layout-modifiers). n/a: the 6 inspector values) |
 | compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/SizeTest.kt | 50 | size/width/height/sizeIn/required*/fillMax*/wrapContent*/defaultMinSize; constraints satisfiable or not; intrinsics (20) | ported (49 of 50: `sizes.rs` (29: the `*_in` and `required*` modifiers, satisfiable or not, `default_min_size`, fills, wrapping, equality), through `layout_test.rs`; the 20 intrinsics tests and `testModifiers_doNotCauseUnnecessaryRemeasure` in `intrinsics.rs` (with `required_width`/`required_height`, D1203; `test1DAlignedModifier…` cited after an "and"); `required_size_in`/`width_in`/`height_in` added (D1929). n/a: `testInspectableParameter`) |
@@ -333,7 +333,7 @@ From `compose/foundation/foundation-layout/api/current.txt` and `compose/foundat
 - **layout-modifiers:**
   - ~~`requiredSize(w, h)`, `requiredSizeIn`, `requiredWidthIn`, `requiredHeightIn`~~ done (`required_size`, `required_size_in`, `required_width_in`, `required_height_in`, D1929; `required_width`/`required_height` came with intrinsics, D1203);
   - `absolutePadding`;
-  - `PaddingValues.Absolute`, `PaddingValues.plus`/`minus`, `calculateStartPadding`/`calculateEndPadding` (check compose-rs's `PaddingValues` for the `calculate*` methods);
+  - `PaddingValues.Absolute`; ~~`PaddingValues.plus`/`minus`~~ done (`+`/`-`, with `calculate_left_padding`/`right`/`top`/`bottom`, D1930);
   - ~~`BoxScope.matchParentSize`~~ done (`match_parent_size`, D1929), `Arrangement.Absolute` (Left, Right, Center, SpaceBetween/Around/Evenly, `spacedBy`, `aligned`), `Modifier.visible`.
 - **intrinsics:** done (D1200–D1205): `IntrinsicSize`, `Modifier.width/height(IntrinsicSize)`, `requiredWidth/requiredHeight(IntrinsicSize)`, and Compose's intrinsics on every layout here. Flow layouts, `FlexBox` and `Grid` bring theirs.
 - **alignment-lines:** done (D1220): `paddingFrom` (Dp and TextUnit), `paddingFromBaseline`, `RowScope.alignBy` (line or lambda), `alignByBaseline`, `ColumnScope.alignBy`. `RichTooltip` and M3's `ListItem`, `Tab` and `TopAppBar` read them (D1567); `FlowRowScope` and `FlowColumnScope` take `alignBy` (D1569); `FlexBox` aligns by lines and blocks (D1367).
