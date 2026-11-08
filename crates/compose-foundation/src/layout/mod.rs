@@ -141,11 +141,17 @@ impl RowColumnMeasurePolicy {
         }
     }
 
-    fn cross_bias_of(&self, scope: &MeasureScope<'_>, measurable: Measurable) -> f32 {
-        match (self.orientation, scope.parent_data(measurable).alignment) {
-            (Orientation::Horizontal, Some(ParentAlignment::Vertical(alignment))) => alignment.bias,
-            (Orientation::Vertical, Some(ParentAlignment::Horizontal(alignment))) => alignment.bias,
-            _ => self.cross_bias,
+    /// The child's bias across the axis, and whether a right-to-left layout mirrors it: a
+    /// horizontal alignment does in a column, nothing does in a row (Compose's `Row` aligns
+    /// across in `Ltr`). An alignment of the other axis aligns across all the same, as
+    /// Compose's `CrossAxisAlignment` (a `ColumnScope.align(End)` child of a row goes to its
+    /// bottom, D1927).
+    fn cross_bias_of(&self, scope: &MeasureScope<'_>, measurable: Measurable) -> (f32, bool) {
+        let column = self.orientation == Orientation::Vertical;
+        match scope.parent_data(measurable).alignment {
+            Some(ParentAlignment::Vertical(alignment)) => (alignment.bias, false),
+            Some(ParentAlignment::Horizontal(alignment)) => (alignment.bias, column),
+            _ => (self.cross_bias, column),
         }
     }
 }
@@ -295,9 +301,9 @@ impl MeasurePolicy for RowColumnMeasurePolicy {
                     before_line - position
                 }
             } else {
-                let mut bias = self.cross_bias_of(scope, measurable);
+                let (mut bias, mirrored) = self.cross_bias_of(scope, measurable);
                 // A column's start is on the right in a right-to-left layout.
-                if rtl_column {
+                if rtl_column && mirrored {
                     bias = -bias;
                 }
                 VerticalAlignment { bias }.align(self.cross(&placeable), cross_size)

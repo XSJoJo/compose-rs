@@ -13,8 +13,9 @@ use compose_foundation::Modifier;
 use compose_test::*;
 use compose_ui::platform::FixedTextMeasurer;
 use compose_ui::{
-    Alignment, AlignmentLine, Constraints, Density, Dp, IntSize, Layout, LayoutCoordinates,
-    LayoutDirection, Offset, PaddingValues, measure_policy,
+    Alignment, AlignmentLine, Constraints, Density, Dp, IntSize, IntrinsicMeasurable,
+    IntrinsicMeasureScope, Layout, LayoutCoordinates, LayoutDirection, Measurable, MeasurePolicy,
+    MeasureResult, MeasureScope, Offset, PaddingValues, measure_policy,
 };
 
 /// The test device's density, as a phone's (Compose's tests run at the device's).
@@ -237,6 +238,111 @@ pub fn with_infinite_constraints(content: impl Fn() + 'static) {
             scope.place_relative(&placeable, 0, 0);
         }
         scope.layout(0, 0)
+    });
+    Layout(Modifier, policy, compose_runtime::callback(content));
+}
+
+/// As `LayoutTest.ConstrainedBox`'s policy: its child within `constraints` (and the incoming
+/// ones), its intrinsics its child's within `constraints`.
+struct ConstrainedPolicy(DpConstraints);
+
+impl MeasurePolicy for ConstrainedPolicy {
+    fn measure(
+        &self,
+        scope: &mut MeasureScope<'_>,
+        measurables: &[Measurable],
+        incoming: Constraints,
+    ) -> MeasureResult {
+        let child = incoming.constrain_by(self.0.to_px(scope.density()));
+        let placeable = measurables.first().map(|&measurable| scope.measure(measurable, child));
+        if let Some(placeable) = &placeable {
+            scope.place_relative(placeable, 0, 0);
+        }
+        let width = placeable.map_or(child.min_width, |placeable| placeable.width);
+        let height = placeable.map_or(child.min_height, |placeable| placeable.height);
+        scope.layout(width, height)
+    }
+
+    fn min_intrinsic_width(
+        &self,
+        scope: &mut IntrinsicMeasureScope<'_>,
+        measurables: &[IntrinsicMeasurable],
+        height: i32,
+    ) -> i32 {
+        let width =
+            measurables.first().map_or(0, |&child| scope.min_intrinsic_width(child, height));
+        self.0.to_px(scope.density()).constrain_width(width)
+    }
+
+    fn min_intrinsic_height(
+        &self,
+        scope: &mut IntrinsicMeasureScope<'_>,
+        measurables: &[IntrinsicMeasurable],
+        width: i32,
+    ) -> i32 {
+        let height =
+            measurables.first().map_or(0, |&child| scope.min_intrinsic_height(child, width));
+        self.0.to_px(scope.density()).constrain_height(height)
+    }
+
+    fn max_intrinsic_width(
+        &self,
+        scope: &mut IntrinsicMeasureScope<'_>,
+        measurables: &[IntrinsicMeasurable],
+        height: i32,
+    ) -> i32 {
+        let width =
+            measurables.first().map_or(0, |&child| scope.max_intrinsic_width(child, height));
+        self.0.to_px(scope.density()).constrain_width(width)
+    }
+
+    fn max_intrinsic_height(
+        &self,
+        scope: &mut IntrinsicMeasureScope<'_>,
+        measurables: &[IntrinsicMeasurable],
+        width: i32,
+    ) -> i32 {
+        let height =
+            measurables.first().map_or(0, |&child| scope.max_intrinsic_height(child, width));
+        self.0.to_px(scope.density()).constrain_height(height)
+    }
+}
+
+/// As `LayoutTest.ConstrainedBox`.
+pub fn constrained_box(
+    constraints: DpConstraints,
+    modifier: Modifier,
+    content: impl Fn() + 'static,
+) {
+    Layout(modifier, Rc::new(ConstrainedPolicy(constraints)), compose_runtime::callback(content));
+}
+
+/// As `RowColumnTest`'s `Center`: its child within its maximums only, centered in a layout as
+/// large as its bounded constraints (else as its child).
+pub fn center(content: impl Fn() + 'static) {
+    let policy = measure_policy(|scope, measurables, constraints| {
+        let placeable = measurables
+            .first()
+            .map(|&measurable| scope.measure(measurable, constraints.copy_max_dimensions()));
+        let width = if constraints.has_bounded_width() {
+            constraints.max_width
+        } else {
+            placeable.map_or(constraints.min_width, |placeable| placeable.width)
+        };
+        let height = if constraints.has_bounded_height() {
+            constraints.max_height
+        } else {
+            placeable.map_or(constraints.min_height, |placeable| placeable.height)
+        };
+        if let Some(placeable) = &placeable {
+            let position = Alignment::CENTER.align(
+                placeable.size(),
+                IntSize::new(width, height),
+                scope.layout_direction(),
+            );
+            scope.place_relative(placeable, position.x, position.y);
+        }
+        scope.layout(width, height)
     });
     Layout(Modifier, policy, compose_runtime::callback(content));
 }
