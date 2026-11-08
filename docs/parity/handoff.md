@@ -61,7 +61,7 @@ Never merge the `ime-logging` branch (it records everything typed) or `parked/na
 
 ## In flight
 
-As of 2026-11-08, `origin/main` is at e359f521 (13,363 tests). The branches below marked merged are on main. Two were merged without the usual review because the weekly quota ran short; review them first.
+As of 2026-11-08, `origin/main` is at e359f521 (13,380 tests). The branches below marked merged are on main. Two were merged without the usual review because the weekly quota ran short; review them first.
 
 | Branch | What | State |
 |---|---|---|
