@@ -840,6 +840,231 @@ fn a_change_was_where_its_pointer_was_in_the_node_as_it_is_now() {
     assert_eq!(moved.position_change(), Offset::new(1.0, 0.0));
 }
 
+// ---- HitPathTracker's dispatch, through the host ------------------------------------------------
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/pointer/HitPathTrackerTest.kt, dispatchChanges_noNodes_doesNotCrash, dispatchChanges_noNodes_nothingChanges
+/// A press on no pointer input node is told to none.
+#[test]
+fn a_press_on_no_node_is_told_to_none() {
+    let (mut host, record) = recorded(|record| {
+        Leaf(Modifier.size(50.dp()).then_custom(Recorder("node", record.clone())));
+    });
+    host.send_pointer(finger_down(0, 80.0, 80.0));
+    assert!(record.borrow().is_empty());
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/pointer/HitPathTrackerTest.kt, dispatchChanges_hitResultHasSingleMatch_pointerInputHandlerCalled
+/// One node on the path hears the press in each pass, in order.
+#[test]
+fn one_node_hears_a_press_in_each_pass() {
+    let (mut host, record) = recorded(|record| {
+        Leaf(Modifier.size(50.dp()).then_custom(Recorder("node", record.clone())));
+    });
+    host.send_pointer(finger_down(13, 10.0, 10.0));
+    let heard = record.borrow();
+    let passes = [PointerEventPass::Initial, PointerEventPass::Main, PointerEventPass::Final];
+    assert_eq!(heard.len(), 3);
+    for (heard, pass) in heard.iter().zip(passes) {
+        assert_eq!(heard.pass, pass);
+        assert_eq!(heard.event.kind, PointerEventType::Press);
+        assert_eq!(ids(&heard.event), [13]);
+        assert_eq!(heard.event.changes[0].position, Offset::new(10.0, 10.0));
+        assert!(heard.event.changes[0].changed_to_down());
+    }
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/pointer/HitPathTrackerTest.kt, dispatchChanges_hitResultHasMultipleMatches_pointerInputHandlersCalledInCorrectOrder, dispatchChanges_hasDownAndUpPath_pointerInputHandlersCalledInCorrectOrder
+/// Three nodes on one path: down the path in the initial pass, up it in the main one, down it
+/// again in the final one, each with the press.
+#[test]
+fn three_nodes_on_a_path_hear_down_then_up_then_down() {
+    let (mut host, record) = recorded(|record| {
+        Leaf(
+            Modifier
+                .size(50.dp())
+                .then_custom(Recorder("pif1", record.clone()))
+                .then_custom(Recorder("pif2", record.clone()))
+                .then_custom(Recorder("pif3", record.clone())),
+        );
+    });
+    host.send_pointer(finger_down(13, 10.0, 10.0));
+    assert_eq!(
+        order(&record),
+        [
+            "pif1 Initial",
+            "pif2 Initial",
+            "pif3 Initial",
+            "pif3 Main",
+            "pif2 Main",
+            "pif1 Main",
+            "pif1 Final",
+            "pif2 Final",
+            "pif3 Final",
+        ]
+    );
+    for heard in record.borrow().iter() {
+        assert_eq!(heard.event.kind, PointerEventType::Press);
+        assert_eq!(ids(&heard.event), [13]);
+    }
+}
+
+/// Compose's `PointerInputNodeMock` with a `pointerEventHandler`: takes whole events, writes down
+/// each change as it comes (its node, pass, pointer, and whether it's consumed), then consumes
+/// those `consumes` picks.
+struct Consuming(&'static str, Rc<RefCell<Vec<String>>>, fn(&PointerInputChange) -> bool);
+
+struct ConsumingNode(&'static str, Rc<RefCell<Vec<String>>>, fn(&PointerInputChange) -> bool);
+
+impl ModifierNodeElement for Consuming {
+    type Node = ConsumingNode;
+    fn create(&self) -> ConsumingNode {
+        ConsumingNode(self.0, self.1.clone(), self.2)
+    }
+    fn update(&self, _: &mut ConsumingNode) {}
+    fn same(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl ModifierNode for ConsumingNode {
+    fn as_pointer_input(&mut self) -> Option<&mut dyn PointerInputModifierNode> {
+        Some(self)
+    }
+}
+
+impl PointerInputModifierNode for ConsumingNode {
+    fn takes_whole_events(&self) -> bool {
+        true
+    }
+
+    fn on_pointer_events(
+        &mut self,
+        event: &PointerEvents,
+        pass: PointerEventPass,
+        _: IntSize,
+        _: &mut EventContext<'_>,
+    ) {
+        for change in &event.changes {
+            let consumed = if change.is_consumed() { "consumed" } else { "not consumed" };
+            self.1.borrow_mut().push(format!("{} {pass:?} {} {consumed}", self.0, change.id.0));
+            if (self.2)(change) {
+                change.consume();
+            }
+        }
+    }
+}
+
+fn consuming(name: &'static str, log: &Rc<RefCell<Vec<String>>>) -> Consuming {
+    Consuming(name, log.clone(), |_| true)
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/pointer/HitPathTrackerTest.kt, dispatchChanges_hitResultHasSingleMatch_changesAreUpdatedCorrectly
+/// What a node consumes of a press stays consumed: the node hears it consumed in the final pass.
+#[test]
+fn a_press_consumed_by_its_node_stays_consumed() {
+    let log: Rc<RefCell<Vec<String>>> = Rc::default();
+    let seen = log.clone();
+    let mut host = host(move || {
+        let consumes_presses =
+            Consuming("pif1", seen.clone(), |it| it.pressed != it.previous_pressed);
+        Leaf(Modifier.size(50.dp()).then_custom(consumes_presses));
+    });
+    host.send_pointer(finger_down(13, 10.0, 10.0));
+    assert_eq!(
+        *log.borrow(),
+        ["pif1 Initial 13 not consumed", "pif1 Main 13 consumed", "pif1 Final 13 consumed"]
+    );
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/pointer/HitPathTrackerTest.kt, dispatchChanges_hitResultHasMultipleMatchesAndDownAndUpPaths_changesAreUpdatedCorrectly
+/// Three nodes consuming all: the first hears the move unconsumed, every one after it consumed.
+#[test]
+fn a_move_consumed_on_a_path_is_consumed_for_the_rest() {
+    let log: Rc<RefCell<Vec<String>>> = Rc::default();
+    let seen = log.clone();
+    let mut host = host(move || {
+        Leaf(
+            Modifier
+                .size(50.dp())
+                .then_custom(consuming("pif1", &seen))
+                .then_custom(consuming("pif2", &seen))
+                .then_custom(consuming("pif3", &seen)),
+        );
+    });
+    host.send_pointer(finger_down(13, 10.0, 10.0));
+    log.borrow_mut().clear();
+    // Compose's `down(13).moveTo(10, 0f, 0f)`: a move in time, not in place.
+    host.send_pointer(finger(13, 10.0, 10.0));
+    assert_eq!(
+        *log.borrow(),
+        [
+            "pif1 Initial 13 not consumed",
+            "pif2 Initial 13 consumed",
+            "pif3 Initial 13 consumed",
+            "pif3 Main 13 consumed",
+            "pif2 Main 13 consumed",
+            "pif1 Main 13 consumed",
+            "pif1 Final 13 consumed",
+            "pif2 Final 13 consumed",
+            "pif3 Final 13 consumed",
+        ]
+    );
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/pointer/HitPathTrackerTest.kt, dispatchChanges_2IndependentBranchesFromRoot_changesAreUpdatedCorrectly
+/// Two paths of two nodes, each pointer moved: what each path's first node consumes, its second
+/// hears consumed; the other path's pointer isn't touched.
+#[test]
+fn moves_consumed_on_two_independent_paths_stay_on_their_own() {
+    let log: Rc<RefCell<Vec<String>>> = Rc::default();
+    let seen = log.clone();
+    let mut host = host(move || {
+        let moved = |name| {
+            Consuming(name, seen.clone(), |it: &PointerInputChange| {
+                it.position_change() != Offset::ZERO
+            })
+        };
+        let first = Modifier.size(50.dp()).then_custom(moved("pif1")).then_custom(moved("pif2"));
+        let second = Modifier
+            .size(50.dp())
+            .then_custom(consuming("pif3", &seen))
+            .then_custom(consuming("pif4", &seen));
+        Row!({
+            Leaf(first.clone());
+            Leaf(second.clone());
+        });
+    });
+    host.send_pointers(&[finger_down(3, 10.0, 0.0), finger_down(5, 60.0, 0.0)]);
+    log.borrow_mut().clear();
+    host.send_pointers(&[finger(3, 10.0, 30.0), finger(5, 60.0, 30.0)]);
+    let of = |names: [&str; 2]| -> Vec<String> {
+        log.borrow()
+            .iter()
+            .filter(|line| names.iter().any(|name| line.starts_with(name)))
+            .filter(|line| !line.contains("Final"))
+            .cloned()
+            .collect()
+    };
+    assert_eq!(
+        of(["pif1", "pif2"]),
+        [
+            "pif1 Initial 3 not consumed",
+            "pif2 Initial 3 consumed",
+            "pif2 Main 3 consumed",
+            "pif1 Main 3 consumed",
+        ]
+    );
+    assert_eq!(
+        of(["pif3", "pif4"]),
+        [
+            "pif3 Initial 5 not consumed",
+            "pif4 Initial 5 consumed",
+            "pif4 Main 5 consumed",
+            "pif3 Main 5 consumed",
+        ]
+    );
+}
+
 // ---- A mouse's buttons ---------------------------------------------------------------------------
 
 // Compose: compose/ui/ui/src/commonMain/kotlin/androidx/compose/ui/input/pointer/PointerEvent.kt, PointerButtons
