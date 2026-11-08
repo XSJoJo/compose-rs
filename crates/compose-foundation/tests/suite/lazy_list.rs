@@ -12,8 +12,9 @@ use compose_foundation::layout::*;
 use compose_foundation::*;
 use compose_runtime::*;
 use compose_test::*;
+use compose_ui::Dp;
 use compose_ui::platform::Optimizations;
-use compose_ui::{Dp, IntSize, UnitExt};
+use compose_ui::{IntSize, UnitExt};
 
 use crate::lazy_support::{Lazy, LazyColumnOrRow, no_padding};
 use crate::scroll_support::{Touch, run};
