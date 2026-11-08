@@ -10,7 +10,7 @@ use compose_foundation::layout::*;
 use compose_foundation::*;
 use compose_runtime::callback;
 use compose_ui::{
-    Alignment, Constraints, Dp, DpSize, IntSize, IntrinsicSize, Layout, LayoutCoordinates,
+    Alignment, Constraints, Dp, DpSize, IntSize, IntrinsicSize, Layout, LayoutCoordinates, Offset,
     measure_policy,
 };
 
@@ -532,6 +532,38 @@ fn column_with_gravity_modifier() {
 #[test]
 fn column_with_gravity_modifier_and_gravity_parameter() {
     column_gravities(true);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testColumn_withAlignByModifier_andWeight
+#[test]
+fn column_with_align_by_modifier_and_weight() {
+    let (baseline_dp, size_dp) = (px(30.0), px(40.0));
+    let (baseline, size) = (round(baseline_dp), round(size_dp));
+    let probe = Probe::new(2);
+    let p = probe.clone();
+    let _ui = show(move || {
+        let p = p.clone();
+        Column!(modifier = Modifier.fill_max_width(), |column| {
+            // As `BaselineTestLayout`: its test line at `baseline`.
+            let line = compose_ui::VerticalAlignmentLine::new(i32::min);
+            let policy = measure_policy(move |scope, _, constraints| {
+                scope.provide_alignment_lines([(line, baseline)]);
+                scope.layout(size.max(constraints.min_width), size.max(constraints.min_height))
+            });
+            Layout(Modifier.align_by(column, line).then(p.at(0)), policy, callback(|| {}));
+            empty(
+                Modifier
+                    .align_by_block(column, |measured| measured.measured_width() / 2)
+                    .weight(column, 1.0)
+                    .then(p.at(1)),
+                Spec { width: Some(size_dp), ..Spec::default() },
+            );
+        });
+    });
+    assert_eq!(probe.size(0), self::size(size, size));
+    assert_eq!(probe.position(0), offset(0, 0));
+    assert_eq!(probe.size(1).width, size);
+    assert_eq!(probe.position(1), offset(baseline - size / 2, size));
 }
 
 // ---- Sizes --------------------------------------------------------------------------------
@@ -1074,4 +1106,649 @@ fn row_includes_spacing_with_weight_children() {
 #[test]
 fn column_includes_spacing_with_weight_children() {
     spaced_weights(true);
+}
+
+// ---- Main-axis arrangements ---------------------------------------------------------------
+
+/// `content` right to left, as `DeviceConfigurationOverride.LayoutDirection(Rtl)`.
+fn rtl(content: impl Fn() + 'static) {
+    let rtl = compose_ui::LOCAL_LAYOUT_DIRECTION.provides(compose_ui::LayoutDirection::Rtl);
+    compose_runtime::CompositionLocalProvider(rtl, content);
+}
+
+/// Where `count` containers of `size` pixels go in their parent, a row filling the root's width
+/// with `arrangement` (right to left with `rtl`; centered in the root with `center`).
+fn row_arranged(
+    arrangement: HorizontalArrangement,
+    count: usize,
+    size: f32,
+    is_rtl: bool,
+) -> Vec<Offset> {
+    let probe = Probe::new(count + 1);
+    let p = probe.clone();
+    let _ui = show(move || {
+        let p = p.clone();
+        let arrangement = arrangement.clone();
+        let row = move || {
+            let p = p.clone();
+            let arrangement = arrangement.clone();
+            let modifier = Modifier.fill_max_width().then(p.at(count));
+            Row!(modifier = modifier, horizontal_arrangement = arrangement.clone(), |_| {
+                for index in 0..count {
+                    empty(p.at(index), Spec::sized(px(size), px(size)));
+                }
+            });
+        };
+        if is_rtl { rtl(row) } else { center(row) }
+    });
+    let parent = probe.position(count);
+    (0..count).map(|index| probe.position(index) - parent).collect()
+}
+
+/// As [`row_arranged`], in a column filling the root's height.
+fn column_arranged(arrangement: VerticalArrangement, count: usize, size: f32) -> Vec<Offset> {
+    let probe = Probe::new(count + 1);
+    let p = probe.clone();
+    let _ui = show(move || {
+        let p = p.clone();
+        let arrangement = arrangement.clone();
+        center(move || {
+            let p = p.clone();
+            let modifier = Modifier.fill_max_height().then(p.at(count));
+            Column!(modifier = modifier, vertical_arrangement = arrangement.clone(), |_| {
+                for index in 0..count {
+                    empty(p.at(index), Spec::sized(px(size), px(size)));
+                }
+            });
+        });
+    });
+    let parent = probe.position(count);
+    (0..count).map(|index| probe.position(index) - parent).collect()
+}
+
+fn x(at: f32) -> Offset {
+    Offset::new(at.round(), 0.0)
+}
+
+fn y(at: f32) -> Offset {
+    Offset::new(0.0, at.round())
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_withStartArrangement
+#[test]
+fn row_with_start_arrangement() {
+    let size = round(px(50.0)) as f32;
+    assert_eq!(row_arranged(Arrangement::START, 3, 50.0, false), [x(0.0), x(size), x(size * 2.0)]);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_withEndArrangement
+#[test]
+fn row_with_end_arrangement() {
+    let (root, size) = (ROOT.width as f32, round(px(50.0)) as f32);
+    assert_eq!(
+        row_arranged(Arrangement::END, 3, 50.0, false),
+        [x(root - size * 3.0), x(root - size * 2.0), x(root - size)]
+    );
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_withCenterArrangement
+#[test]
+fn row_with_center_arrangement() {
+    let size = round(px(50.0)) as f32;
+    let extra = ROOT.width as f32 - size * 3.0;
+    assert_eq!(
+        row_arranged(Arrangement::CENTER.into(), 3, 50.0, false),
+        [x(extra / 2.0), x(extra / 2.0 + size), x(extra / 2.0 + size * 2.0)]
+    );
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_withSpaceEvenlyArrangement
+#[test]
+fn row_with_space_evenly_arrangement() {
+    let size = round(px(50.0)) as f32;
+    let gap = (ROOT.width as f32 - size * 3.0) / 4.0;
+    assert_eq!(
+        row_arranged(Arrangement::SPACE_EVENLY.into(), 3, 50.0, false),
+        [x(gap), x(size + gap * 2.0), x(size * 2.0 + gap * 3.0)]
+    );
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_withSpaceBetweenArrangement_singleItem
+#[test]
+fn row_with_space_between_arrangement_single_item() {
+    assert_eq!(row_arranged(Arrangement::SPACE_BETWEEN.into(), 1, 50.0, false), [x(0.0)]);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_withSpaceBetweenArrangement_multipleItems
+#[test]
+fn row_with_space_between_arrangement_multiple_items() {
+    let size = round(px(50.0)) as f32;
+    let gap = (ROOT.width as f32 - size * 3.0) / 2.0;
+    assert_eq!(
+        row_arranged(Arrangement::SPACE_BETWEEN.into(), 3, 50.0, false),
+        [x(0.0), x(gap + size), x(gap * 2.0 + size * 2.0)]
+    );
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_withSpaceAroundArrangement
+#[test]
+fn row_with_space_around_arrangement() {
+    let size = round(px(50.0)) as f32;
+    let gap = (ROOT.width as f32 - size * 3.0) / 3.0;
+    assert_eq!(
+        row_arranged(Arrangement::SPACE_AROUND.into(), 3, 50.0, false),
+        [x(gap / 2.0), x(gap * 3.0 / 2.0 + size), x(gap * 5.0 / 2.0 + size * 2.0)]
+    );
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testColumn_withTopArrangement
+#[test]
+fn column_with_top_arrangement() {
+    let size = round(px(50.0)) as f32;
+    assert_eq!(column_arranged(Arrangement::TOP, 3, 50.0), [y(0.0), y(size), y(size * 2.0)]);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testColumn_withBottomArrangement
+#[test]
+fn column_with_bottom_arrangement() {
+    let (root, size) = (ROOT.height as f32, round(px(50.0)) as f32);
+    assert_eq!(
+        column_arranged(Arrangement::BOTTOM, 3, 50.0),
+        [y(root - size * 3.0), y(root - size * 2.0), y(root - size)]
+    );
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testColumn_withCenterArrangement
+#[test]
+fn column_with_center_arrangement() {
+    let size = round(px(50.0)) as f32;
+    let extra = ROOT.height as f32 - size * 3.0;
+    assert_eq!(
+        column_arranged(Arrangement::CENTER.into(), 3, 50.0),
+        [y(extra / 2.0), y(extra / 2.0 + size), y(extra / 2.0 + size * 2.0)]
+    );
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testColumn_withSpaceEvenlyArrangement
+#[test]
+fn column_with_space_evenly_arrangement() {
+    let size = round(px(50.0)) as f32;
+    let gap = (ROOT.height as f32 - size * 3.0) / 4.0;
+    assert_eq!(
+        column_arranged(Arrangement::SPACE_EVENLY.into(), 3, 50.0),
+        [y(gap), y(size + gap * 2.0), y(size * 2.0 + gap * 3.0)]
+    );
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testColumn_withSpaceBetweenArrangement
+#[test]
+fn column_with_space_between_arrangement() {
+    let size = round(px(50.0)) as f32;
+    let gap = (ROOT.height as f32 - size * 3.0) / 2.0;
+    assert_eq!(
+        column_arranged(Arrangement::SPACE_BETWEEN.into(), 3, 50.0),
+        [y(0.0), y(gap + size), y(gap * 2.0 + size * 2.0)]
+    );
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testColumn_withSpaceAroundArrangement
+#[test]
+fn column_with_space_around_arrangement() {
+    let size = round(px(50.0)) as f32;
+    let gap = (ROOT.height as f32 - size * 3.0) / 3.0;
+    assert_eq!(
+        column_arranged(Arrangement::SPACE_AROUND.into(), 3, 50.0),
+        [y(gap / 2.0), y(gap * 3.0 / 2.0 + size), y(gap * 5.0 / 2.0 + size * 2.0)]
+    );
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_Rtl_arrangementCenter
+#[test]
+fn row_rtl_arrangement_center() {
+    let size = 100.0;
+    let extra = ROOT.width as f32 - size * 3.0;
+    assert_eq!(
+        row_arranged(Arrangement::CENTER.into(), 3, 100.0, true),
+        [x(extra / 2.0 + size * 2.0), x(extra / 2.0 + size), x(extra / 2.0)]
+    );
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_Rtl_arrangementSpaceEvenly
+#[test]
+fn row_rtl_arrangement_space_evenly() {
+    let size = 100.0;
+    let gap = (ROOT.width as f32 - size * 3.0) / 4.0;
+    assert_eq!(
+        row_arranged(Arrangement::SPACE_EVENLY.into(), 3, 100.0, true),
+        [x(size * 2.0 + gap * 3.0), x(size + gap * 2.0), x(gap)]
+    );
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_Rtl_arrangementSpaceBetween_singleItem
+#[test]
+fn row_rtl_arrangement_space_between_single_item() {
+    let gap = ROOT.width as f32 - 100.0;
+    assert_eq!(row_arranged(Arrangement::SPACE_BETWEEN.into(), 1, 100.0, true), [x(gap)]);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_Rtl_arrangementSpaceBetween_multipleItems
+#[test]
+fn row_rtl_arrangement_space_between_multiple_items() {
+    let size = 100.0;
+    let gap = (ROOT.width as f32 - size * 3.0) / 2.0;
+    assert_eq!(
+        row_arranged(Arrangement::SPACE_BETWEEN.into(), 3, 100.0, true),
+        [x(gap * 2.0 + size * 2.0), x(gap + size), x(0.0)]
+    );
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_Rtl_arrangementSpaceAround
+#[test]
+fn row_rtl_arrangement_space_around() {
+    let size = 100.0;
+    let gap = (ROOT.width as f32 - size * 3.0) / 3.0;
+    assert_eq!(
+        row_arranged(Arrangement::SPACE_AROUND.into(), 3, 100.0, true),
+        [x(gap * 5.0 / 2.0 + size * 2.0), x(gap * 3.0 / 2.0 + size), x(gap / 2.0)]
+    );
+}
+
+/// In a right-to-left root, a row (column) filling the root's width with `arrangement` (with
+/// `aligned`, each child aligned so), of a 35 px and a 70 px container: their positions in the
+/// root.
+fn rtl_pair(vertical: bool, arrangement: HorizontalArrangement, aligned: bool) -> [Offset; 2] {
+    let probe = Probe::new(2);
+    let p = probe.clone();
+    let _ui = show(move || {
+        let p = p.clone();
+        let arrangement = arrangement.clone();
+        rtl(move || {
+            let p = p.clone();
+            let size = px(35.0);
+            if vertical {
+                Column!(modifier = Modifier.fill_max_width(), |column| {
+                    let end = |modifier: Modifier| {
+                        if aligned { modifier.align(column, Alignment::END) } else { modifier }
+                    };
+                    container(end(Modifier.size(size)).then(p.at(0)), Spec::default(), || {});
+                    container(end(Modifier.size(size * 2.0)).then(p.at(1)), Spec::default(), || {});
+                });
+            } else {
+                let arrangement = arrangement.clone();
+                Row!(
+                    modifier = Modifier.fill_max_width(),
+                    horizontal_arrangement = arrangement,
+                    |_| {
+                        container(Modifier.size(size).then(p.at(0)), Spec::default(), || {});
+                        container(Modifier.size(size * 2.0).then(p.at(1)), Spec::default(), || {});
+                    }
+                );
+            }
+        });
+    });
+    [probe.position(0), probe.position(1)]
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_Rtl_arrangementStart
+#[test]
+fn row_rtl_arrangement_start() {
+    let (root, size_dp) = (ROOT.width as f32, px(35.0));
+    let size = round(size_dp) as f32;
+    assert_eq!(
+        rtl_pair(false, Arrangement::START, false),
+        [x(root - size), x(root - (to_px(size_dp) * 3.0).round())]
+    );
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_Rtl_arrangementEnd
+#[test]
+fn row_rtl_arrangement_end() {
+    let size_dp = px(35.0);
+    assert_eq!(rtl_pair(false, Arrangement::END, false), [x(to_px(size_dp) * 2.0), x(0.0)]);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testColumn_Rtl_gravityStart
+#[test]
+fn column_rtl_gravity_start() {
+    let (root, size_dp) = (ROOT.width as f32, px(35.0));
+    let size = round(size_dp) as f32;
+    assert_eq!(
+        rtl_pair(true, Arrangement::START, false),
+        [x(root - size), Offset::new((root - to_px(size_dp * 2.0)).round(), size)]
+    );
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testColumn_Rtl_gravityEnd
+#[test]
+fn column_rtl_gravity_end() {
+    // Compose's test uses 50 px children; the positions don't depend on it.
+    let size = round(px(35.0)) as f32;
+    assert_eq!(rtl_pair(true, Arrangement::START, true), [x(0.0), y(size)]);
+}
+
+/// Children of `child` pixels (`required` sizes, else `size`) in a row (column) of `length`
+/// pixels (`required`, or none: its children's) arranged by `arrangement`, in a column (row),
+/// right to left with `is_rtl`: the parent's length, and each child's position in it and length.
+struct Spaced {
+    vertical: bool,
+    is_rtl: bool,
+    length: Option<f32>,
+    child: f32,
+    required: bool,
+    count: usize,
+}
+
+impl Spaced {
+    fn row(length: Option<f32>, child: f32, required: bool, count: usize) -> Spaced {
+        Spaced { vertical: false, is_rtl: false, length, child, required, count }
+    }
+
+    fn column(length: Option<f32>, child: f32, required: bool, count: usize) -> Spaced {
+        Spaced { vertical: true, ..Spaced::row(length, child, required, count) }
+    }
+
+    fn rtl(self) -> Spaced {
+        Spaced { is_rtl: true, ..self }
+    }
+
+    fn run_row(self, arrangement: HorizontalArrangement) -> (i32, Vec<(f32, i32)>) {
+        self.run(Some(arrangement), None)
+    }
+
+    fn run_column(self, arrangement: VerticalArrangement) -> (i32, Vec<(f32, i32)>) {
+        self.run(None, Some(arrangement))
+    }
+
+    fn run(
+        self,
+        horizontal: Option<HorizontalArrangement>,
+        vertical: Option<VerticalArrangement>,
+    ) -> (i32, Vec<(f32, i32)>) {
+        let Spaced { vertical: is_column, is_rtl, length, child, required, count } = self;
+        let parent = Rc::new(Cell::new(IntSize::new(-1, -1)));
+        let children: Vec<_> = (0..count).map(|_| Rc::new(Cell::new((0.0, 0)))).collect();
+        let (pa, ch) = (parent.clone(), children.clone());
+        let _ui = show(move || {
+            let (pa, ch) = (pa.clone(), ch.clone());
+            let horizontal = horizontal.clone();
+            let vertical = vertical.clone();
+            let content = move || {
+                let pa = pa.clone();
+                let mut modifier =
+                    Modifier.on_globally_positioned(move |c: LayoutCoordinates| pa.set(c.size()));
+                if let Some(length) = length {
+                    modifier = Modifier.required_size(px(length)).then(modifier);
+                } else if is_column && is_rtl {
+                    // As `testColumn_withSpacedByArrangement_rtl`'s column.
+                    modifier = Modifier.fill_max_height().then(modifier);
+                }
+                let ch = ch.clone();
+                let children = Rc::new(move || {
+                    for seen in ch.iter() {
+                        let seen = seen.clone();
+                        let size = if required {
+                            Modifier.required_size(px(child))
+                        } else {
+                            Modifier.size(px(child))
+                        };
+                        let modifier = size.on_globally_positioned(move |c: LayoutCoordinates| {
+                            let (size, at) = (c.size(), c.position_in_parent());
+                            seen.set(if is_column {
+                                (at.y, size.height)
+                            } else {
+                                (at.x, size.width)
+                            });
+                        });
+                        Box!(modifier = modifier);
+                    }
+                });
+                if is_column {
+                    let arrangement = vertical.clone().unwrap();
+                    Row!(|_| {
+                        let children = children.clone();
+                        Column!(
+                            modifier = modifier.clone(),
+                            vertical_arrangement = arrangement.clone(),
+                            |_| { children() }
+                        );
+                    });
+                } else {
+                    let arrangement = horizontal.clone().unwrap();
+                    Column!(|_| {
+                        let children = children.clone();
+                        Row!(
+                            modifier = modifier.clone(),
+                            horizontal_arrangement = arrangement.clone(),
+                            |_| { children() }
+                        );
+                    });
+                }
+            };
+            if is_rtl { rtl(content) } else { content() }
+        });
+        let parent = parent.get();
+        let length = if is_column { parent.height } else { parent.width };
+        (length, children.iter().map(|child| child.get()).collect())
+    }
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_withSpacedByArrangement
+#[test]
+fn row_with_spaced_by_arrangement() {
+    let (length, children) =
+        Spaced::row(None, 20.0, true, 2).run_row(Arrangement::spaced_by(px(10.0)).into());
+    assert_eq!(length, 50);
+    assert_eq!(children[0].0, 0.0);
+    assert_eq!(children[1].0, 30.0);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testColumn_withSpacedByArrangement
+#[test]
+fn column_with_spaced_by_arrangement() {
+    let (length, children) =
+        Spaced::column(None, 20.0, true, 2).run_column(Arrangement::spaced_by(px(10.0)).into());
+    assert_eq!(length, 50);
+    assert_eq!(children[0].0, 0.0);
+    assert_eq!(children[1].0, 30.0);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_withSpacedByAlignedArrangement
+#[test]
+fn row_with_spaced_by_aligned_arrangement() {
+    let (length, children) = Spaced::row(Some(50.0), 20.0, true, 2)
+        .run_row(Arrangement::spaced_by((px(10.0), Alignment::END)));
+    assert_eq!(length, 50);
+    assert_eq!(children[0].0, 50.0 - 10.0 - 20.0 * 2.0);
+    assert_eq!(children[1].0, 50.0 - 20.0);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testColumn_withSpacedByAlignedArrangement
+#[test]
+fn column_with_spaced_by_aligned_arrangement() {
+    let (length, children) = Spaced::column(Some(50.0), 20.0, true, 2)
+        .run_column(Arrangement::spaced_by((px(10.0), Alignment::BOTTOM)));
+    assert_eq!(length, 50);
+    assert_eq!(children[0].0, 50.0 - 10.0 - 20.0 * 2.0);
+    assert_eq!(children[1].0, 50.0 - 20.0);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_withSpacedByArrangement_insufficientSpace
+#[test]
+fn row_with_spaced_by_arrangement_insufficient_space() {
+    let (length, children) =
+        Spaced::row(Some(50.0), 20.0, false, 3).run_row(Arrangement::spaced_by(px(15.0)).into());
+    assert_eq!(length, 50);
+    assert_eq!(children, [(0.0, 20), (35.0, 15), (50.0, 0)]);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testColumn_withSpacedByArrangement_insufficientSpace
+#[test]
+fn column_with_spaced_by_arrangement_insufficient_space() {
+    let (length, children) = Spaced::column(Some(50.0), 20.0, false, 3)
+        .run_column(Arrangement::spaced_by(px(15.0)).into());
+    assert_eq!(length, 50);
+    assert_eq!(children, [(0.0, 20), (35.0, 15), (50.0, 0)]);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_withAlignedArrangement
+#[test]
+fn row_with_aligned_arrangement() {
+    let (length, children) =
+        Spaced::row(Some(50.0), 20.0, false, 2).run_row(Arrangement::aligned(Alignment::END));
+    assert_eq!(length, 50);
+    assert_eq!(children, [(10.0, 20), (30.0, 20)]);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testColumn_withAlignedArrangement
+#[test]
+fn column_with_aligned_arrangement() {
+    let (length, children) = Spaced::column(Some(50.0), 20.0, true, 2)
+        .run_column(Arrangement::aligned(Alignment::BOTTOM));
+    assert_eq!(length, 50);
+    assert_eq!(children[0].0, 10.0);
+    assert_eq!(children[1].0, 30.0);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_withSpacedByArrangement_insufficientSpace_rtl
+#[test]
+fn row_with_spaced_by_arrangement_insufficient_space_rtl() {
+    let (length, children) = Spaced::row(Some(50.0), 20.0, false, 3)
+        .rtl()
+        .run_row(Arrangement::spaced_by(px(15.0)).into());
+    assert_eq!(length, 50);
+    assert_eq!(children, [(30.0, 20), (0.0, 15), (0.0, 0)]);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_Rtl_withSpacedByAlignedArrangement
+#[test]
+fn row_rtl_with_spaced_by_aligned_arrangement() {
+    let (length, children) = Spaced::row(Some(50.0), 20.0, true, 2)
+        .rtl()
+        .run_row(Arrangement::spaced_by((px(10.0), Alignment::END)));
+    assert_eq!(length, 50);
+    assert_eq!(children[0].0, 30.0);
+    assert_eq!(children[1].0, 0.0);
+}
+
+/// D1928: a spaced group centered in a right-to-left row is centered, its last space not
+/// counted as free space.
+#[test]
+fn a_spaced_group_centered_right_to_left_is_centered() {
+    let (length, children) = Spaced::row(Some(100.0), 20.0, true, 2)
+        .rtl()
+        .run_row(Arrangement::spaced_by((px(10.0), Alignment::CENTER_HORIZONTALLY)));
+    assert_eq!(length, 100);
+    assert_eq!(children[0].0, 55.0);
+    assert_eq!(children[1].0, 25.0);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testColumn_withSpacedByArrangement_rtl
+#[test]
+fn column_with_spaced_by_arrangement_rtl() {
+    let (_, children) = Spaced::column(None, 20.0, true, 2)
+        .rtl()
+        .run_column(Arrangement::spaced_by(px(10.0)).into());
+    assert_eq!(children[0].0, 0.0);
+    assert_eq!(children[1].0, 30.0);
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_withSpacedByArrangement_rtl
+#[test]
+fn row_with_spaced_by_arrangement_rtl() {
+    // A row of exactly two children, the space and a buffer of 15 px.
+    let probe = Probe::new(3);
+    let p = probe.clone();
+    let _ui = show(move || {
+        let p = p.clone();
+        rtl(move || {
+            let p = p.clone();
+            Column!(|_| {
+                let (size, space) = (px(20.0), px(10.0));
+                let p = p.clone();
+                Row!(
+                    modifier = Modifier.required_width(size * 2.0 + space + px(15.0)).then(p.at(2)),
+                    horizontal_arrangement = Arrangement::spaced_by(space),
+                    |_| {
+                        Box!(modifier = Modifier.required_size(size).then(p.at(0)));
+                        Box!(modifier = Modifier.required_size(size).then(p.at(1)));
+                    }
+                );
+            });
+        });
+    });
+    let row = probe.position(2).x;
+    assert_eq!(probe.position(0).x - row, 20.0 + 10.0 + 15.0);
+    assert_eq!(probe.position(1).x - row, 15.0);
+}
+
+/// A row (column) in a `ConstrainedBox` of exactly 50 px, centered in the root, of a 30 px
+/// spacer: the spacer's size.
+fn min_constraints(vertical: bool) -> IntSize {
+    measured(move |seen| {
+        center(move || {
+            let seen = seen.clone();
+            constrained_box(DpConstraints::fixed(px(50.0), px(50.0)), Modifier, move || {
+                let spacer = Modifier.size(px(30.0)).then(seen.clone());
+                if vertical {
+                    Column!(|_| Spacer(spacer.clone()));
+                } else {
+                    Row!(|_| Spacer(spacer.clone()));
+                }
+            });
+        });
+    })
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRow_doesNotUseMinConstraintsOnChildren
+#[test]
+fn row_does_not_use_min_constraints_on_children() {
+    let child = round(px(30.0));
+    assert_eq!(min_constraints(false), size(child, child));
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testColumn_doesNotUseMinConstraintsOnChildren
+#[test]
+fn column_does_not_use_min_constraints_on_children() {
+    let child = round(px(30.0));
+    assert_eq!(min_constraints(true), size(child, child));
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, scenarioShouldNotCrash
+#[test]
+fn scenario_should_not_crash() {
+    let sized = Rc::new(Cell::new(false));
+    let s = sized.clone();
+    let _ui = show(move || {
+        let s = s.clone();
+        Column!(modifier = Modifier.width(IntrinsicSize::Max), |_| {
+            let s = s.clone();
+            Row!(modifier = Modifier.width(Dp(200.0)), |row| {
+                Box!(modifier = Modifier.weight(row, 0.8));
+                let s = s.clone();
+                Box!(modifier = Modifier.weight(row, 0.2).on_size_changed(move |_| s.set(true)));
+            });
+        });
+    });
+    assert!(sized.get());
+}
+
+// Compose: compose/foundation/foundation-layout/src/androidDeviceTest/kotlin/androidx/compose/foundation/layout/RowColumnTest.kt, testRowColumnModifiersChain_leftMostWins
+#[test]
+fn row_column_modifiers_chain_left_most_wins() {
+    let height = Rc::new(Cell::new(-1));
+    let h = height.clone();
+    let _ui = show(move || {
+        let h = h.clone();
+        Box!(|_| {
+            let h = h.clone();
+            Column!(modifier = Modifier.height(px(24.0)), |column| {
+                let h = h.clone();
+                let seen = Modifier
+                    .on_globally_positioned(move |c: LayoutCoordinates| h.set(c.size().height));
+                empty(Modifier.weight(column, 2.0).weight(column, 1.0).then(seen), Spec::default());
+                empty(Modifier.weight(column, 1.0), Spec::default());
+            });
+        });
+    });
+    assert_eq!(height.get(), 24 * 2 / 3);
 }

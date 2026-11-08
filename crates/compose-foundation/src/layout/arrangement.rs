@@ -181,26 +181,42 @@ impl MainAxisArrangement {
                 place_from(positions, gap / 2.0, gap)
             }
             MainAxisArrangement::SpacedBy(space, bias) => {
-                // As Compose's `spacedBy`: each child at the end of the last, kept inside the
-                // total, and the group aligned when it doesn't fill it.
+                // As Compose's `spacedBy`: each child after the last, kept inside the total, from
+                // the start (in right to left, each before the last from the right end, so what
+                // doesn't fit is at the left, D1928), and the group aligned when it doesn't fill
+                // the total.
                 let space = density.round_to_px(*space);
-                let mut occupied = 0;
                 let mut last_space = 0;
-                for step in 0..count {
-                    let index = if reverse { count - 1 - step } else { step };
-                    let size = sizes[index];
-                    let position = occupied.min(total - size);
-                    positions[index] = position;
-                    last_space = space.min(total - position - size);
-                    occupied = position + size + last_space;
+                let mut free;
+                if reverse {
+                    free = total;
+                    for index in 0..count {
+                        let position = (free - sizes[index]).max(0);
+                        positions[index] = position;
+                        last_space = space.min(position);
+                        free = position - last_space;
+                    }
+                    free += last_space;
+                } else {
+                    let mut occupied = 0;
+                    for index in 0..count {
+                        let size = sizes[index];
+                        let position = occupied.min(total - size);
+                        positions[index] = position;
+                        last_space = space.min(total - position - size);
+                        occupied = position + size + last_space;
+                    }
+                    free = total - (occupied - last_space);
                 }
-                occupied -= last_space;
-                if occupied < total {
-                    // Without an alignment, from the start: the right in right to left.
-                    let bias = bias.unwrap_or(-1.0);
+                if let Some(bias) = *bias
+                    && free > 0
+                {
+                    // `Alignment.align(0, free, direction)`, relative to where the children are
+                    // packed: the start, or the right end in right to left.
                     let bias = if reverse { -bias } else { bias };
-                    let shift = (total - occupied) as f32 / 2.0 * (1.0 + bias);
-                    let shift = compose_ui::platform::round_to_int(shift);
+                    let group =
+                        compose_ui::platform::round_to_int(free as f32 / 2.0 * (1.0 + bias));
+                    let shift = if reverse { group - free } else { group };
                     for position in positions.iter_mut().take(count) {
                         *position += shift;
                     }
