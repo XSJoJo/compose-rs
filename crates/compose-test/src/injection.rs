@@ -39,6 +39,15 @@ pub(crate) fn default_double_tap_delay_millis(configuration: &ViewConfiguration)
     (configuration.double_tap_min_time_millis + configuration.double_tap_timeout_millis) / 2
 }
 
+/// One finger's swipe of `multi_touch_swipe_with_velocity`, as Compose's `SwipeInfo`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct SwipeInfo {
+    pub start: Offset,
+    pub end: Offset,
+    /// Its velocity at the end, in px/s, 0 or more.
+    pub end_velocity: f32,
+}
+
 /// A mouse button, as Compose's `MouseButton`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum MouseButton {
@@ -732,6 +741,49 @@ impl TouchInjectionScope<'_> {
         );
         let path = VelocityPath::new(start, end, end_velocity, duration);
         self.swipe_along(&|time| path.offset_at(time), duration, &[]);
+    }
+
+    /// Swipes of a finger each (pointers 0, 1, …), together, each ending at its velocity, as
+    /// `multiTouchSwipeWithVelocity`: each along `swipe_with_velocity`'s path, over
+    /// `duration_millis` (`None`: the longest of their default durations), through `key_times`.
+    #[track_caller]
+    pub fn multi_touch_swipe_with_velocity(
+        &mut self,
+        swipes: &[SwipeInfo],
+        duration_millis: Option<u64>,
+        key_times: &[u64],
+    ) {
+        assert!(!swipes.is_empty(), "compose-test: Swipes list cannot be empty");
+        for swipe in swipes {
+            assert!(
+                swipe.end_velocity >= 0.0,
+                "compose-test: Velocity cannot be {}, it must be positive",
+                swipe.end_velocity
+            );
+        }
+        let duration = duration_millis.unwrap_or_else(|| {
+            swipes
+                .iter()
+                .map(|swipe| default_velocity_duration(swipe.start, swipe.end, swipe.end_velocity))
+                .max()
+                .unwrap_or(DEFAULT_SWIPE_MILLIS)
+        });
+        let minimum = (2.5 * EVENT_PERIOD_MILLIS as f32).ceil() as u64;
+        assert!(
+            duration >= minimum,
+            "compose-test: Duration must be at least {minimum}ms because velocity requires at \
+             least 3 input events"
+        );
+        let paths: Vec<VelocityPath> = swipes
+            .iter()
+            .map(|swipe| VelocityPath::new(swipe.start, swipe.end, swipe.end_velocity, duration))
+            .collect();
+        let curves: Vec<Box<dyn Fn(u64) -> Offset + '_>> = paths
+            .iter()
+            .map(|path| Box::new(move |time| path.offset_at(time)) as Box<dyn Fn(u64) -> Offset>)
+            .collect();
+        let curves: Vec<&dyn Fn(u64) -> Offset> = curves.iter().map(|curve| &**curve).collect();
+        self.multi_touch_swipe(&curves, duration, key_times);
     }
 
     /// A swipe up the node's middle, bottom to top, as `swipeUp()`.

@@ -29,6 +29,7 @@ mod rule;
 mod run;
 mod sample_font;
 mod selectors;
+mod swipes;
 mod touch_events;
 mod trackpad;
 mod wait_until_node_count;

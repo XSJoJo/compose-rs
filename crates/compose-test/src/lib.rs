@@ -48,7 +48,7 @@ pub use configuration_override::DeviceConfigurationOverride;
 pub use edge_effects::{FakeEdgeEffect, FakeEdgeEffects};
 pub use indirect::IndirectPointerInjectionScope;
 pub use injection::{
-    InjectionScope, KeyInjectionScope, MouseButton, MouseInjectionScope, ScrollWheel,
+    InjectionScope, KeyInjectionScope, MouseButton, MouseInjectionScope, ScrollWheel, SwipeInfo,
     TouchInjectionScope, TrackpadButton, TrackpadInjectionScope,
 };
 pub use interaction::{SemanticsNodeInteraction, SemanticsNodeInteractionCollection};
