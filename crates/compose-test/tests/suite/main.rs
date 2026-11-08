@@ -21,6 +21,7 @@ mod key_events;
 mod mouse_events;
 mod restoration;
 mod review_d;
+mod robolectric;
 mod rule;
 mod run;
 mod sample_font;

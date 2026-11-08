@@ -19,9 +19,9 @@ What compose-rs has of two Jetpack Compose libraries, test file by test file and
 
 | Status | Files | Tests | ui-text (files / tests) | ui-test (files / tests) | ui-test-junit4 (files / tests) |
 |---|---|---|---|---|---|
-| `ported` | 131 | 1,637 | 60 / 1,195 | 71 / 442 | 0 / 0 |
+| `ported` | 132 | 1,650 | 60 / 1,195 | 72 / 455 | 0 / 0 |
 | `covered` | 4 | 5 | 1 / 2 | 3 / 3 | 0 / 0 |
-| `port` | 29 | 120 | 3 / 20 | 25 / 94 | 1 / 6 |
+| `port` | 28 | 107 | 3 / 20 | 24 / 81 | 1 / 6 |
 | `partial` | 42 | 1,138 | 13 / 726 | 29 / 412 | 0 / 0 |
 | `feature:…` | 42 | 409 | 30 / 312 | 11 / 94 | 1 / 3 |
 | `n/a` | 80 | 533 | 32 / 384 | 45 / 143 | 3 / 6 |
@@ -393,7 +393,7 @@ The 530 `n/a` tests: 314 test Android text internals or internal helpers (`Spann
 | `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/InfiniteAnimationPolicyTest.kt` | 2 | The test's `InfiniteAnimationPolicy` applies to `withInfiniteAnimationFrameNanos/Millis` | ported: `crates/compose-test/tests/suite/clock.rs` (`the_policy_cancels_a_task_waiting_for_an_infinite_frame`) |
 | `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/PrefetchNotHangingMainThreadTest.kt` | 1 | Lazy-list prefetch doesn't keep the test from idling | port: compose-rs's prefetch runs only through `UiHost::prefetch`; worth a guard test |
 | `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/RobolectricBitmapCapturingTest.kt` | 14 | `captureToImage` under Robolectric (same cases as the device test) | partial: the same cases as `BitmapCapturingTest`, ported once there (`crates/compose-skia/tests/suite/capture.rs`); `captureToImage` is done (D904), so nothing here waits on a feature (audit: was `feature:capture-to-image`; none of the 14 is cited under this file's name) |
-| `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/RobolectricComposeTest.kt` | 13 | End-to-end: state change, input injection, animation, timeout, controlled scrolling with `performTouchInput`, text field, popup, double taps, clipped items | port: touch injection exists |
+| `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/RobolectricComposeTest.kt` | 13 | End-to-end: state change, input injection, animation, timeout, controlled scrolling with `performTouchInput`, text field, popup, double taps, clipped items | ported: `crates/compose-test/tests/suite/robolectric.rs` (all 13; the main looper is the UI-thread executor, `dispatchTouchEvent` the host's `send_pointer`, `performTextInputSelection` the `SET_SELECTION` action; a layout that never settles fails with the rule's "never settled" after its count of passes, where Compose's isn't idle within its idling policy's 2 s) |
 | `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/RobolectricIdlingResourceTest.kt` | 3 | Idling resources queried, from background threads | port: idling resources are there (D908); the background-thread case is n/a (a resource is the test thread's) |
 | `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/ViewVisibilityRobolectricTest.kt` | 2 | Hidden host views don't time out | n/a: Android view visibility |
 | `compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/failure/FailurePipelineRunnerTest.kt` | 15 | The failure pipeline: runs once, suppresses exporter errors, capture modes, hierarchy dump format | partial: `crates/compose-test/tests/suite/run.rs` (`disabled_captures_and_panicking_handlers`, `a_failure_takes_a_screenshot_with_the_installed_renderer`); running once and the dump format not ported yet |
