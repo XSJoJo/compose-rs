@@ -407,3 +407,67 @@ fn a_shadow_is_drawn_at_its_offset_under_the_text() {
     assert_eq!(drawn.pixel(2, 25), Color::RED);
     assert_eq!(drawn.pixel(2, 60), Color::GREEN);
 }
+
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationTest.kt, testDefaultSpanStyle_setColor
+#[test]
+fn a_color_changes_what_a_text_looks_like() {
+    let colored = TextStyle { color: Color::RED, ..sample(100.0) };
+    assert_ne!(picture("abc", sample(100.0), 300, 100), picture("abc", colored, 300, 100));
+}
+
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationTest.kt, maxLines_paintDifferently
+/// A text cut to one line paints less than all its lines, in the same picture.
+#[test]
+fn a_text_cut_by_its_maximum_lines_paints_differently() {
+    let drawn = |max_lines: u32| {
+        draw_with((100, 300), (100, 300), 1.0, 0, move |scope, measurer| {
+            let options = TextMeasureOptions {
+                style: sample(100.0),
+                constraints: Constraints::new(100, 100, 0, Constraints::INFINITY),
+                max_lines,
+                ..TextMeasureOptions::default()
+            };
+            let result = measurer.measure("a\na\na", options);
+            scope.draw_text_layout(&result, Color::UNSPECIFIED, DrawTextLayoutOptions::default());
+        })
+    };
+    let (cut, whole) = (drawn(1), drawn(u32::MAX));
+    assert!(!cut.is_blank());
+    assert_ne!(cut, whole);
+}
+
+/// "aaa" at 100 px, in `color`, painted with `blend_mode` over red: Compose's `Paragraph.paint`
+/// with a blend mode (a text's one-paragraph `MultiParagraph` here).
+fn painted_over_red(color: Color, blend_mode: compose::ui::BlendMode) -> Picture {
+    draw_with((300, 100), (300, 100), 1.0, 0, move |scope, measurer| {
+        let bounds = compose::ui::Rect::new(0.0, 0.0, 300.0, 100.0);
+        scope.draw_rect(bounds, compose::ui::Paint::fill(Color::RED));
+        let options = TextMeasureOptions {
+            style: TextStyle { color, ..sample(100.0) },
+            constraints: Constraints::new(300, 300, 0, Constraints::INFINITY),
+            ..TextMeasureOptions::default()
+        };
+        let paragraph = measurer.measure("aaa", options).multi_paragraph;
+        paragraph.paint(scope, Color::UNSPECIFIED, None, None, None, blend_mode);
+    })
+}
+
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationTest.kt, paint_withBlendMode_changesVisual
+#[test]
+fn a_blend_mode_changes_how_a_text_paints_over_what_is_under_it() {
+    use compose::ui::BlendMode;
+    assert_ne!(
+        painted_over_red(Color::GREEN, BlendMode::SrcOver),
+        painted_over_red(Color::GREEN, BlendMode::Plus)
+    );
+}
+
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationTest.kt, paint_withBlendMode_sameResult
+/// An opaque text paints the same in `Src` as in `SrcOver`.
+#[test]
+fn an_opaque_text_paints_the_same_in_src_as_in_src_over() {
+    use compose::ui::BlendMode;
+    let src_over = painted_over_red(Color::BLACK, BlendMode::SrcOver);
+    assert_ne!(src_over, painted_over_red(Color::BLACK, BlendMode::Plus), "the text is drawn");
+    assert_eq!(painted_over_red(Color::BLACK, BlendMode::Src), src_over);
+}
