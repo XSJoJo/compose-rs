@@ -49,7 +49,7 @@ pub(crate) struct TextFieldCharSequence {
 
 impl TextFieldCharSequence {
     /// The selection and composition kept in the text, at character boundaries, as Compose's
-    /// constructor coerces them; a collapsed composition is none.
+    /// constructor coerces them; a composition coerced to a collapsed range stays one (D2077).
     pub(crate) fn new(
         text: Rc<str>,
         selection: TextRange,
@@ -57,9 +57,8 @@ impl TextFieldCharSequence {
     ) -> TextFieldCharSequence {
         let length = text.len();
         let selection = range_at_boundaries(&text, selection.coerce_in(0, length));
-        let composition = composition
-            .map(|range| range_at_boundaries(&text, range.coerce_in(0, length)))
-            .filter(|range| !range.collapsed());
+        let composition =
+            composition.map(|range| range_at_boundaries(&text, range.coerce_in(0, length)));
         TextFieldCharSequence { text, selection, composition }
     }
 
@@ -1125,5 +1124,130 @@ mod tests {
         let buffer = buffer("");
         assert_eq!(buffer.selection(), TextRange::at(0));
         assert!(!buffer.has_selection());
+    }
+
+    // Compose's `TextFieldCharSequenceTest`. n/a: `throws_exception_for_negative_selection` and
+    // `throws_exception_for_negative_composition` (offsets are `usize`, D1128); its highlight
+    // (`TextHighlightType`, the handwriting previews) isn't in compose-rs, so the equality tests
+    // compare the text, selection and composition.
+
+    /// The test's `TextEditState`: `text` composing `composition`, the cursor at 0.
+    fn text_edit_state(text: &str, composition: TextRange) -> TextFieldCharSequence {
+        TextFieldCharSequence::new(Rc::from(text), TextRange::ZERO, Some(composition))
+    }
+
+    // Compose: compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/input/TextFieldCharSequenceTest.kt, aligns_selection_to_the_text_length
+    #[test]
+    fn aligns_selection_to_the_text_length() {
+        let text = "a";
+        let value = sequence(text, TextRange::at(text.len() + 1));
+        assert!(value.selection.collapsed());
+        assert_eq!(value.selection.max(), value.text.len());
+    }
+
+    // Compose: compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/input/TextFieldCharSequenceTest.kt, keep_selection_that_is_less_than_text_length
+    #[test]
+    fn keep_selection_that_is_less_than_text_length() {
+        let text = "a bc";
+        let selection = TextRange::new(0, "a".len());
+        let value = sequence(text, selection);
+        assert_eq!(&*value.text, text);
+        assert_eq!(value.selection, selection);
+    }
+
+    // Compose: compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/input/TextFieldCharSequenceTest.kt, aligns_composition_to_text_length
+    #[test]
+    fn aligns_composition_to_text_length() {
+        let text = "a";
+        let value = text_edit_state(text, TextRange::at(text.len() + 1));
+        let composition = value.composition.expect("a composition, collapsed");
+        assert!(composition.collapsed());
+        assert_eq!(composition.max(), value.text.len());
+    }
+
+    // Compose: compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/input/TextFieldCharSequenceTest.kt, keep_composition_that_is_less_than_text_length
+    #[test]
+    fn keep_composition_that_is_less_than_text_length() {
+        let text = "a bc";
+        let composition = TextRange::new(0, "a".len());
+        let value = text_edit_state(text, composition);
+        assert_eq!(&*value.text, text);
+        assert_eq!(value.composition, Some(composition));
+    }
+
+    fn with_composition() -> TextFieldCharSequence {
+        TextFieldCharSequence::new(Rc::from("a"), TextRange::at(1), Some(TextRange::at(2)))
+    }
+
+    // Compose: compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/input/TextFieldCharSequenceTest.kt, equals_returns_true_for_same_instance
+    #[test]
+    fn equals_returns_true_for_same_instance() {
+        let value = with_composition();
+        assert_eq!(value, value);
+    }
+
+    // Compose: compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/input/TextFieldCharSequenceTest.kt, equals_returns_true_for_equivalent_object
+    #[test]
+    fn equals_returns_true_for_equivalent_object() {
+        let value = with_composition();
+        let copy = TextFieldCharSequence::new(
+            Rc::from(value.text.to_string()),
+            value.selection,
+            value.composition,
+        );
+        assert_eq!(copy, value);
+    }
+
+    // Compose: compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/input/TextFieldCharSequenceTest.kt, text_and_selection_parameter_constructor_has_null_composition_and_highlight
+    #[test]
+    fn text_and_selection_parameter_constructor_has_null_composition_and_highlight() {
+        assert_eq!(sequence("a", TextRange::at(1)).composition, None);
+    }
+
+    // Compose: compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/input/TextFieldCharSequenceTest.kt, contentEquals_textFieldCharSequence_sameTextDifferentSelection_isTrue
+    #[test]
+    fn content_equals_text_field_char_sequence_same_text_different_selection_is_true() {
+        let a = sequence("hello", TextRange::at(0));
+        let b = sequence("hello", TextRange::new(2, 4));
+        assert!(a.content_equals(&b));
+        assert!(b.content_equals(&a));
+        assert_ne!(a, b);
+    }
+
+    // Compose: compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/input/TextFieldCharSequenceTest.kt, contentEquals_textFieldCharSequence_differentText_isFalse
+    #[test]
+    fn content_equals_text_field_char_sequence_different_text_is_false() {
+        let a = sequence("hello", TextRange::ZERO);
+        for other in ["hellO", "hell", "hello!"] {
+            assert!(!a.content_equals(&sequence(other, TextRange::ZERO)), "{other}");
+        }
+    }
+
+    /// Compose's `StringBuilder`-backed sequence: here a text in an allocation of its own.
+    // Compose: compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/input/TextFieldCharSequenceTest.kt, contentEquals_textFieldCharSequence_nonStringBackingText
+    #[test]
+    fn content_equals_text_field_char_sequence_non_string_backing_text() {
+        let string_backed = sequence("hello", TextRange::ZERO);
+        let built = |text: &str| {
+            let mut builder = String::new();
+            builder.push_str(text);
+            TextFieldCharSequence::new(Rc::from(builder), TextRange::ZERO, None)
+        };
+        let builder_backed = built("hello");
+        assert!(!Rc::ptr_eq(&string_backed.text, &builder_backed.text));
+        assert!(string_backed.content_equals(&builder_backed));
+        assert!(builder_backed.content_equals(&string_backed));
+        assert!(!string_backed.content_equals(&built("world")));
+    }
+
+    /// Compose compares with any `CharSequence`: here, with the text's `str`.
+    // Compose: compose/foundation/foundation/src/androidHostTest/kotlin/androidx/compose/foundation/text/input/TextFieldCharSequenceTest.kt, contentEquals_plainCharSequence
+    #[test]
+    fn content_equals_plain_char_sequence() {
+        let a = sequence("hello", TextRange::ZERO);
+        assert_eq!(&*a.text, "hello");
+        assert_eq!(&*a.text, String::from("hello").as_str());
+        assert_ne!(&*a.text, "world");
+        assert_ne!(&*a.text, "");
     }
 }
