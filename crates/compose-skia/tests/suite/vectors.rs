@@ -321,7 +321,16 @@ const MODES: [BlendMode; 29] = [
     BlendMode::Luminosity,
 ];
 
-// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/vector/VectorTest.kt, testAlphaMaskWithIntrinsicClearBlendMode and the other 28 intrinsic modes
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/vector/VectorTest.kt, testAlphaMaskWithIntrinsicClearBlendMode, testAlphaMaskWithIntrinsicSrcBlendMode, testAlphaMaskWithIntrinsicDstBlendMode,
+// testAlphaMaskWithIntrinsicSrcOverBlendMode, testAlphaMaskWithIntrinsicDstOverBlendMode, testAlphaMaskWithIntrinsicSrcInBlendMode,
+// testAlphaMaskWithIntrinsicDstInBlendMode, testAlphaMaskWithIntrinsicSrcOutBlendMode, testAlphaMaskWithIntrinsicDstOutBlendMode,
+// testAlphaMaskWithIntrinsicSrcAtopBlendMode, testAlphaMaskWithIntrinsicDstAtopBlendMode, testAlphaMaskWithIntrinsicXorBlendMode,
+// testAlphaMaskWithIntrinsicPlusBlendMode, testAlphaMaskWithIntrinsicModulateBlendMode, testAlphaMaskWithIntrinsicScreenBlendMode,
+// testAlphaMaskWithIntrinsicOverlayBlendMode, testAlphaMaskWithIntrinsicDarkenBlendMode, testAlphaMaskWithIntrinsicLightenBlendMode,
+// testAlphaMaskWithIntrinsicColorDodgeBlendMode, testAlphaMaskWithIntrinsicColorBurnBlendMode, testAlphaMaskWithIntrinsicHardlightBlendMode,
+// testAlphaMaskWithIntrinsicSoftLightBlendMode, testAlphaMaskWithIntrinsicDifferenceBlendMode, testAlphaMaskWithIntrinsicExclusionBlendMode,
+// testAlphaMaskWithIntrinsicMultiplyBlendMode, testAlphaMaskWithIntrinsicHueBlendMode, testAlphaMaskWithIntrinsicSaturationBlendMode,
+// testAlphaMaskWithIntrinsicColorBlendMode, testAlphaMaskWithIntrinsicLuminosityBlendMode
 #[test]
 fn a_vectors_own_tint_draws_alike_whatever_its_brush() {
     for mode in MODES {
@@ -329,7 +338,16 @@ fn a_vectors_own_tint_draws_alike_whatever_its_brush() {
     }
 }
 
-// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/vector/VectorTest.kt, testAlphaMaskWithDrawClearBlendMode and the other 28 drawn modes
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/graphics/vector/VectorTest.kt, testAlphaMaskWithDrawClearBlendMode, testAlphaMaskWithDrawSrcBlendMode, testAlphaMaskWithDrawDstBlendMode,
+// testAlphaMaskWithDrawSrcOverBlendMode, testAlphaMaskWithDrawDstOverBlendMode, testAlphaMaskWithDrawSrcInBlendMode,
+// testAlphaMaskWithDrawDstInBlendMode, testAlphaMaskWithDrawSrcOutBlendMode, testAlphaMaskWithDrawDstOutBlendMode,
+// testAlphaMaskWithDrawSrcAtopBlendMode, testAlphaMaskWithDrawDstAtopBlendMode, testAlphaMaskWithDrawXorBlendMode,
+// testAlphaMaskWithDrawPlusBlendMode, testAlphaMaskWithDrawModulateBlendMode, testAlphaMaskWithDrawScreenBlendMode,
+// testAlphaMaskWithDrawOverlayBlendMode, testAlphaMaskWithDrawDarkenBlendMode, testAlphaMaskWithDrawLightenBlendMode,
+// testAlphaMaskWithDrawColorDodgeBlendMode, testAlphaMaskWithDrawColorBurnBlendMode, testAlphaMaskWithDrawHardlightBlendMode,
+// testAlphaMaskWithDrawSoftLightBlendMode, testAlphaMaskWithDrawDifferenceBlendMode, testAlphaMaskWithDrawExclusionBlendMode,
+// testAlphaMaskWithDrawMultiplyBlendMode, testAlphaMaskWithDrawHueBlendMode, testAlphaMaskWithDrawSaturationBlendMode,
+// testAlphaMaskWithDrawColorBlendMode, testAlphaMaskWithDrawLuminosityBlendMode
 #[test]
 fn a_drawn_tint_draws_alike_whatever_the_brush() {
     for mode in MODES {
