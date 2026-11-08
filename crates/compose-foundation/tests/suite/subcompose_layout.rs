@@ -3706,3 +3706,301 @@ fn a_precomposed_slot_taken_by_the_measurement_has_nothing_left_in_its_handle() 
     ui.wait_for_idle();
     ui.on_node_with_tag("item").assert_exists();
 }
+
+/// A layout of `width` by `height` asked in its measurement panics, caught there as the test's
+/// `try`: whether it did.
+fn a_layout_of(width: i32, height: i32) -> bool {
+    let caught = Rc::new(Cell::new(false));
+    let c = caught.clone();
+    let mut ui = compose_test(move || {
+        let c = c.clone();
+        SubcomposeLayout!(
+            measure_policy = subcompose_policy(move |scope, _| {
+                let asked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    scope.layout(width, height)
+                }));
+                asked.unwrap_or_else(|_| {
+                    c.set(true);
+                    scope.layout(0, 0)
+                })
+            })
+        );
+    });
+    ui.wait_for_idle();
+    caught.get()
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, measureWidthTooLarge
+#[test]
+fn a_width_too_large_panics() {
+    assert!(a_layout_of(1 << 24, 100));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, measureHeightTooLarge
+#[test]
+fn a_height_too_large_panics() {
+    assert!(a_layout_of(100, 1 << 24));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, nestedDisposeIsCalledInOrder
+#[test]
+#[ignore = "nested subcompositions are disposed after the effects of the slot holding them: \
+            [outer, inner 1, inner 2], where Compose forgets in the reverse order of remembering, \
+            a nested layout's slots as it's forgotten: [inner 2, outer, inner 1]"]
+fn nested_box_with_constraints_are_disposed_last_first() {
+    let (order, active): (Rc<RefCell<Vec<&str>>>, _) = (Rc::default(), mutable_state_of(true));
+    let (o, a) = (order.clone(), active.handle());
+    let mut ui = compose_test(move || {
+        if a.get() {
+            let o = o.clone();
+            BoxWithConstraints!(move |_| {
+                let disposed = |name: &'static str| {
+                    let o = o.clone();
+                    move || o.borrow_mut().push(name)
+                };
+                let inner1 = disposed("inner 1");
+                BoxWithConstraints!(move |_| on_dispose(inner1.clone()));
+                on_dispose(disposed("outer"));
+                let inner2 = disposed("inner 2");
+                BoxWithConstraints!(move |_| on_dispose(inner2.clone()));
+            });
+        }
+    });
+    ui.wait_for_idle();
+    active.set(false);
+    ui.wait_for_idle();
+    assert_eq!(*order.borrow(), ["inner 2", "outer", "inner 1"]);
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, getAlignmentsOnSubcomposeLayoutContent
+#[test]
+fn a_slot_s_alignment_line_reaches_above_the_layout() {
+    let baseline = Rc::new(Cell::new(None));
+    let b = baseline.clone();
+    let mut ui = compose_test(move || {
+        let b = b.clone();
+        Layout!(
+            measure_policy = measure_policy(move |scope, measurables, constraints| {
+                let constraints = Constraints::new(
+                    constraints.min_width,
+                    constraints.max_width,
+                    0,
+                    constraints.max_height,
+                );
+                let title = scope.measure(measurables[0], constraints);
+                b.set(Some(scope.alignment_line(&title, compose_ui::FIRST_BASELINE)));
+                scope.place(&title, 0, 0);
+                scope.layout(title.width, title.height)
+            }),
+            || {
+                let content = Callback::new(|| {
+                    Layout!(
+                        measure_policy = measure_policy(|scope, _, _| {
+                            scope.provide_alignment_lines([(compose_ui::FIRST_BASELINE, 100)]);
+                            scope.layout(10, 10)
+                        }),
+                        || {}
+                    );
+                });
+                SubcomposeLayout!(
+                    measure_policy = subcompose_policy(move |scope, constraints| {
+                        let placeable = measure_slot(scope, "0", constraints, content.clone());
+                        scope.place(&placeable, 0, 0);
+                        scope.layout(placeable.width, placeable.height)
+                    })
+                );
+            }
+        );
+    });
+    ui.wait_for_idle();
+    assert_eq!(baseline.get(), Some(100));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, noNotMeasuredWrappersInTheHierarchy
+#[test]
+fn every_coordinates_above_a_slot_s_layout_is_attached_and_measured() {
+    let coordinates: Rc<Cell<Option<compose_ui::LayoutCoordinates>>> = Rc::default();
+    let size = Rc::new(Cell::new(None));
+    let (c, s) = (coordinates.clone(), size.clone());
+    let content = Callback::new(move || {
+        let (c, s) = (c.clone(), s.clone());
+        Box!(
+            modifier = Modifier
+                .fill_max_size()
+                .on_globally_positioned(move |it: compose_ui::LayoutCoordinates| c.set(Some(it)))
+                .on_size_changed(move |it: IntSize| s.set(Some(it)))
+        );
+    });
+    let mut ui = compose_test(move || {
+        let content = content.clone();
+        Box!(move |_| {
+            let content = content.clone();
+            SubcomposeLayout!(
+                measure_policy = subcompose_policy(move |scope, constraints| {
+                    let placeable = measure_slot(scope, "0", constraints, content.clone());
+                    scope.place(&placeable, 0, 0);
+                    scope.layout(placeable.width, placeable.height)
+                })
+            );
+        });
+    });
+    ui.wait_for_idle();
+    let mut current = coordinates.get();
+    let mut seen = 0;
+    while let Some(it) = current {
+        assert!(it.is_attached());
+        assert_eq!(Some(it.size()), size.get());
+        current = it.parent_coordinates();
+        seen += 1;
+    }
+    assert!(seen > 2, "{seen} coordinates up to the root");
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, subcomposeLayout_movedToDifferentGroup
+#[test]
+fn a_box_with_constraints_in_movable_content_moves_into_a_box() {
+    let wrapped = mutable_state_of(false);
+    let w = wrapped.handle();
+    let mut ui = compose_test(move || {
+        let content = remember(move || {
+            movable_content_of(move || {
+                BoxWithConstraints!(move |_| {
+                    Box!(modifier = Modifier.test_tag(w.get().to_string()));
+                });
+            })
+        });
+        if w.get() {
+            Box!(move |_| content());
+        } else {
+            content();
+        }
+    });
+    ui.wait_for_idle();
+    wrapped.set(true);
+    ui.wait_for_idle();
+    ui.on_node_with_tag("true").assert_exists();
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, forceMeasureOfInactiveElementFromLaunchedEffect
+#[test]
+fn a_forced_measurement_from_an_effect_brings_a_slot_back() {
+    let (active, force) = (mutable_state_of(true), mutable_state_of(false));
+    let remeasurer: Rc<Cell<Option<Remeasurement>>> = Rc::default();
+    let r = remeasurer.clone();
+    let modifier: Rc<dyn RemeasurementModifier> = Rc::new(move |it| r.set(Some(it)));
+    let (a, f) = (active.handle(), force.handle());
+    let content = Callback::new(|| {
+        Box!(modifier = Modifier);
+    });
+    let policy = subcompose_policy(move |scope, constraints| {
+        let placeables: Vec<Placeable> = if a.get() {
+            let measurables = scope.subcompose((), content.clone());
+            measurables.into_iter().map(|it| scope.measure(it, constraints)).collect()
+        } else {
+            f.set(true);
+            Vec::new()
+        };
+        for placeable in &placeables {
+            scope.place(placeable, 0, 0);
+        }
+        scope.layout(0, 0)
+    });
+    let (a, f, r) = (active.handle(), force.handle(), remeasurer.clone());
+    let mut ui = compose_test(move || {
+        let state =
+            remember(|| SubcomposeLayoutState::with_policy(subcompose_slot_reuse_policy(1)));
+        SubcomposeLayoutWithState!(
+            state,
+            modifier = Modifier.remeasurement_modifier(modifier.clone()),
+            measure_policy = policy.clone()
+        );
+        if f.get() {
+            let r = r.clone();
+            LaunchedEffect((), async move {
+                a.set(true);
+                r.get().expect("attached").force_remeasure();
+            });
+        }
+    });
+    ui.wait_for_idle();
+    active.set(false);
+    ui.wait_until(|_| active.get());
+    ui.wait_for_idle();
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, notSubcomposedAnymoreNodesAreNotRecomposed
+#[test]
+fn a_slot_no_longer_composed_isnt_recomposed_for_what_its_layout_wrote() {
+    let state = SubcomposeLayoutState::with_policy(subcompose_slot_reuse_policy(1));
+    let (flag, updated) = (mutable_state_of(true), mutable_state_of(true));
+    let u = updated.handle();
+    let content = Callback::new(move || {
+        if u.get() {
+            Box!(modifier = Modifier.test_tag("tag"));
+        }
+    });
+    let (f, u) = (flag.handle(), updated.handle());
+    let policy = subcompose_policy(move |scope, _| {
+        u.set(f.get());
+        compose_runtime::snapshots::Snapshot::send_apply_notifications();
+        if f.get() {
+            // Placed, for the semantics to hold it, where Compose's hold what's not placed too.
+            for measurable in scope.subcompose(0, content.clone()) {
+                let placeable = scope.measure(measurable, Constraints::default());
+                scope.place(&placeable, 0, 0);
+            }
+        }
+        scope.layout(100, 100)
+    });
+    let st = state.clone();
+    let mut ui = compose_test(move || {
+        SubcomposeLayoutWithState!(st.clone(), measure_policy = policy.clone())
+    });
+    ui.wait_for_idle();
+    ui.on_node_with_tag("tag").assert_exists();
+    flag.set(false);
+    ui.wait_for_idle();
+    // Deactivated before its content could recompose: kept, its box still there, not shown.
+    assert_eq!(state.reusable_count(), 1);
+    ui.on_node_with_tag("tag").assert_does_not_exist();
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/layout/SubcomposeLayoutTest.kt, remeasureRequestDuringSubcompositionIsNotSkippedForNotPlacedChild
+#[test]
+fn a_new_slot_content_measures_its_layout_again_though_it_isnt_placed() {
+    let size = mutable_state_of(100);
+    let s = size.handle();
+    let policy = subcompose_policy(move |scope, constraints| {
+        // The child doesn't read the state: a new content each time has the size.
+        let child = s.get();
+        let content = Callback::new(move || {
+            Box!(move |_| {
+                Box!(
+                    modifier = Modifier.layout(move |scope, measurable, _| {
+                        let placeable = scope.measure(measurable, Constraints::fixed(child, child));
+                        scope.place(&placeable, 0, 0);
+                        scope.layout(placeable.width, placeable.height)
+                    })
+                );
+            });
+        });
+        let fab = measure_slot(scope, (), constraints, content);
+        scope.layout(fab.width, fab.height)
+    });
+    let mut ui = compose_test(move || {
+        let policy = policy.clone();
+        CompositionLocalProvider(
+            compose_ui::LOCAL_DENSITY.provides(compose_ui::Density::new(1.0)),
+            move || {
+                SubcomposeLayout!(
+                    modifier = Modifier.test_tag("node"),
+                    measure_policy = policy.clone()
+                );
+            },
+        );
+    });
+    ui.wait_for_idle();
+    size.set(150);
+    ui.wait_for_idle();
+    ui.on_node_with_tag("node").assert_width_is_equal_to(150.dp());
+}
