@@ -15,6 +15,7 @@ mod basic_text_paragraphs;
 mod basic_text_small_ports;
 mod bring_into_view;
 mod clickable_parity;
+mod clip_pointer_input;
 mod clipboard_paste_state;
 mod combined_clickable_parity;
 mod context_menu_area;
