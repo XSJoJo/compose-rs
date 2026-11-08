@@ -42,6 +42,7 @@ mod shadows;
 mod shared_transition;
 mod skia;
 mod style_equivalence;
+mod subcompose_draw_order;
 mod text_brush;
 mod text_field_cursor;
 mod text_field_height;
