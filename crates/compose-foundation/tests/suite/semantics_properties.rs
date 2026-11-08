@@ -4,7 +4,7 @@
 
 #![allow(non_snake_case)]
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use compose_foundation::layout::*;
@@ -12,8 +12,8 @@ use compose_foundation::*;
 use compose_runtime::*;
 use compose_test::*;
 use compose_ui::{
-    AccessibilityAction, ActionFn, CustomAccessibilityAction, Delegates, Layout, MeasurePolicy,
-    ModifierNode, ModifierNodeElement, SemanticsActions, SemanticsConfiguration,
+    AccessibilityAction, ActionFn, CustomAccessibilityAction, Delegates, FillableData, Layout,
+    MeasurePolicy, ModifierNode, ModifierNodeElement, SemanticsActions, SemanticsConfiguration,
     SemanticsModifierNode, SemanticsProperties, SemanticsPropertyKey, SemanticsValue, SharedString,
     StringList, UnitExt, measure_policy,
 };
@@ -1357,4 +1357,114 @@ fn several_delegates_semantics_are_combined() {
     ui.on_node_with_tag("tag")
         .assert_content_description_equals(&["hello world"])
         .assert(test_property_equals("bar"));
+}
+
+// ---- SemanticsTests: autofill and moves -------------------------------------------------------
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, fillableDataProperty
+#[test]
+fn fillable_data_is_on_the_node_merged_or_not() {
+    let mut ui = compose_test(|| {
+        Box!(
+            modifier = Modifier.test_tag("tag").semantics(|config| {
+                if let Some(data) = FillableData::create_from_text("foo") {
+                    config.set_fillable_data(data);
+                }
+            })
+        );
+    });
+    let fillable = || {
+        Matcher::new("fillableData", |config| {
+            config
+                .get(&SemanticsProperties::FILLABLE_DATA)
+                .and_then(FillableData::text_value)
+                .is_some_and(|text| text.as_str() == "foo")
+        })
+    };
+    ui.on_node_with_tag_unmerged("tag").assert(fillable());
+    ui.on_node_with_tag("tag").assert(fillable());
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, onFillDataAction
+#[test]
+fn the_fill_data_action_receives_the_data() {
+    let received: Rc<RefCell<Option<FillableData>>> = Rc::default();
+    let receiving = received.clone();
+    let mut ui = compose_test(move || {
+        let receiving = receiving.clone();
+        Box!(
+            modifier = Modifier.test_tag("tag").semantics(move |config| {
+                config.on_fill_data(Some("fill".into()), move |data| {
+                    *receiving.borrow_mut() = Some(data);
+                    true
+                });
+            })
+        );
+    });
+    let data = FillableData::create_from_text("foo").expect("always made here");
+    let given = data.clone();
+    ui.on_node_with_tag("tag").perform_semantics_action_with(
+        &SemanticsActions::ON_FILL_DATA,
+        move |action| {
+            action(given);
+        },
+    );
+    let text = received.borrow().as_ref().and_then(|data| data.text_value().cloned());
+    assert_eq!(text.as_deref(), Some("foo"));
+    let fill = move || {
+        let data = data.clone();
+        Matcher::new("fill", move |config| {
+            config.get(&SemanticsActions::ON_FILL_DATA).is_some_and(|action| {
+                action.label.as_deref() == Some("fill")
+                    && action.action.as_ref().is_some_and(|action| action(data.clone()))
+            })
+        })
+    };
+    ui.on_node_with_tag_unmerged("tag").assert(fill());
+    ui.on_node_with_tag("tag").assert(fill());
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, testSemanticsUpdatedWhenMovedBetweenLayouts
+/// Movable content moved to another parent is that parent's child in the tree.
+#[test]
+fn movable_content_moved_is_under_its_new_parent() {
+    let moved = mutable_state_of(false);
+    let handle = moved.handle();
+    let mut ui = compose_test(move || {
+        let content = remember(|| {
+            movable_content_of(|| {
+                Box!(
+                    modifier = Modifier
+                        .size(50.dp())
+                        .semantics(|config| config.set_content_description("Movable Box"))
+                        .test_tag("semantics_child")
+                );
+            })
+        });
+        Box!({
+            let content = content.clone();
+            if handle.get() {
+                Box!(modifier = Modifier.test_tag("slot_1_parent"), {
+                    content();
+                });
+            } else {
+                Box!(modifier = Modifier.test_tag("slot_0_parent"), {
+                    content();
+                });
+            }
+        });
+    });
+    let child_of =
+        |parent: &str| has_test_tag("semantics_child").and(has_parent(has_test_tag(parent)));
+    ui.on_node_with_tag("slot_0_parent").assert_exists();
+    ui.on_node_with_tag("slot_1_parent").assert_does_not_exist();
+    ui.on_node(child_of("slot_0_parent")).assert_exists();
+    ui.on_node(child_of("slot_1_parent")).assert_does_not_exist();
+
+    ui.run_on_idle(|_| moved.set(true));
+
+    ui.on_node_with_tag("slot_1_parent").assert_exists();
+    ui.on_node_with_tag("slot_0_parent").assert_does_not_exist();
+    ui.on_node(child_of("slot_1_parent")).assert_exists();
+    ui.on_node(child_of("slot_0_parent")).assert_does_not_exist();
 }
