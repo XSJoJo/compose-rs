@@ -5,6 +5,7 @@ mod advanced_border;
 mod advanced_border_renderer;
 mod alpha;
 mod background;
+mod basic_text_brush;
 mod blur;
 mod border_shapes;
 mod brush;
