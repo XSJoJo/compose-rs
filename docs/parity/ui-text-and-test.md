@@ -19,10 +19,10 @@ What compose-rs has of two Jetpack Compose libraries, test file by test file and
 
 | Status | Files | Tests | ui-text (files / tests) | ui-test (files / tests) | ui-test-junit4 (files / tests) |
 |---|---|---|---|---|---|
-| `ported` | 157 | 1,778 | 63 / 1,215 | 93 / 557 | 1 / 6 |
+| `ported` | 158 | 1,787 | 63 / 1,215 | 94 / 566 | 1 / 6 |
 | `covered` | 4 | 5 | 1 / 2 | 3 / 3 | 0 / 0 |
 | `port` | 0 | 0 | 0 / 0 | 0 / 0 | 0 / 0 |
-| `partial` | 42 | 1,111 | 13 / 726 | 29 / 385 | 0 / 0 |
+| `partial` | 41 | 1,102 | 13 / 726 | 28 / 376 | 0 / 0 |
 | `feature:…` | 44 | 413 | 30 / 312 | 13 / 98 | 1 / 3 |
 | `n/a` | 81 | 535 | 32 / 384 | 46 / 145 | 3 / 6 |
 
@@ -301,7 +301,7 @@ The 530 `n/a` tests: 314 test Android text internals or internal helpers (`Spann
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/CancelTest.kt` | 2 | Mouse `cancel` | ported: `crates/compose-test/tests/suite/injection_scopes.rs` (both) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/ClickTest.kt` | 12 | Press/release in and out of the node, two buttons, click/right/double/triple/long click, drag and drop | ported: `crates/compose-test/tests/suite/mouse_injection.rs` (all 12; `click_press_in_move_out_in_release_in` and `click_press_in_release_out` ignored: a held mouse moved out of the box doesn't exit it, as `press_move_release`; a press over a box the cursor wasn't over comes with an `Enter` telling its buttons, and a second button's press and release are events of their own where Compose's are moves, as the trackpad's); also `input.rs` `a_mouse_click_presses_and_releases`, `a_mouse_presses_and_releases_several_buttons`, `pressing_a_held_button_again_says_so`: every button (D1658); `right_click` taps nothing as the detectors start at the primary (D1657); errors name the button's id (D2080) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/MoveTest.kt` | 11 | `moveTo/By`, `updatePointerTo/By`, enter/exit, animated moves | ported: `crates/compose-test/tests/suite/mouse_injection.rs` (all 11; added `MouseInjectionScope::move_by_after`, `moveBy(delta, delayMillis)`; a press over a box the cursor wasn't over comes with an `Enter` telling its buttons, and the window's exit carries no position, as the trackpad's); also `input.rs` (`a_mouse_moves_in_and_out`) |
-| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/ScrollTest.kt` | 9 | Vertical/horizontal wheel scroll, with a button down, `smoothScroll` on lists and columns | partial: `crates/compose-test/tests/suite/input.rs` (`a_mouse_wheel_scrolls_64_dp_a_unit`) |
+| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/ScrollTest.kt` | 9 | Vertical/horizontal wheel scroll, with a button down, `smoothScroll` on lists and columns | ported: `crates/compose-test/tests/suite/mouse_injection.rs` (all 9; the wheel delta in pixels, 64 dp a unit, as `mouse_events.rs`; a scroll comes after a move the box hears where Android's scroll ends the hover around it, `Exit`, scroll, `Enter`); also `input.rs` (`a_mouse_wheel_scrolls_64_dp_a_unit`) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/CancelTest.kt` | 5 | `cancel` with one/two pointers, and its errors (without down, after up/cancel) | ported: `crates/compose-test/tests/suite/input.rs` (`a_cancelled_gesture_ends_without_an_up`) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/ClickTest.kt` | 1 | `click` sends down, move, up at the node's center | ported: `crates/compose-test/tests/suite/input.rs` (`a_touch_click_is_a_down_a_move_and_an_up`, `perform_click_is_a_touch_click`) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/CurrentPositionTest.kt` | 7 | `currentPosition` per pointer through down, move, up, cancel | ported: `crates/compose-test/tests/suite/input.rs` (`fingers_move_and_lift`) |

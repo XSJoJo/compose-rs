@@ -9,6 +9,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use compose_foundation::layout::*;
+use compose_foundation::lazy::*;
 use compose_foundation::*;
 use compose_test::*;
 use compose_ui::{
@@ -17,7 +18,7 @@ use compose_ui::{
     UnitExt,
 };
 
-use PointerEventType::{Enter, Exit, Move, Press, Release};
+use PointerEventType::{Enter, Exit, Move, Press, Release, Scroll};
 
 const T: u64 = 16;
 const PRIMARY: PointerButtons = PointerButtons::PRIMARY;
@@ -637,4 +638,171 @@ fn animate_along_from_other_position() {
             (4 * T, Move, false, curve(4 * T), NONE),
         ]
     );
+}
+
+// ---- Scroll ------------------------------------------------------------------------------------
+//
+// Two differences from Compose's sequences, as `mouse_events.rs`' scroll tests: compose-rs's
+// wheel delta is in pixels, forward positive, 64 dp a unit (Compose's change carries the wheel's
+// units); and a scroll comes after a move to where the cursor is, which the box hears (its
+// `Enter` the first time, a `Move` after), where Android's scroll ends the hover around it (the
+// box hears `Exit`, the scroll, `Enter`).
+
+/// A wheel's unit, in pixels at density 1.
+const UNIT: f32 = 64.0;
+
+/// The events with their scroll deltas, as `verifyMouseEvent`'s overload taking one.
+fn scrolls(heard: &[Heard]) -> Vec<(u64, PointerEventType, bool, Offset, Offset, PointerButtons)> {
+    heard
+        .iter()
+        .map(|event| {
+            (event.millis, event.kind, event.pressed, event.position, event.scroll, event.buttons)
+        })
+        .collect()
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/ScrollTest.kt, scrollVertically
+#[test]
+fn scroll_vertically() {
+    let heard = run(|mouse| mouse.scroll(10.0, ScrollWheel::Vertical));
+    assert_eq!(
+        scrolls(&heard),
+        [
+            (0, Enter, false, Offset::ZERO, Offset::ZERO, NONE),
+            (0, Scroll, false, Offset::ZERO, Offset::new(0.0, 10.0 * UNIT), NONE),
+        ]
+    );
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/ScrollTest.kt, scrollHorizontally
+#[test]
+fn scroll_horizontally() {
+    let heard = run(|mouse| mouse.scroll(10.0, ScrollWheel::Horizontal));
+    assert_eq!(
+        scrolls(&heard),
+        [
+            (0, Enter, false, Offset::ZERO, Offset::ZERO, NONE),
+            (0, Scroll, false, Offset::ZERO, Offset::new(10.0 * UNIT, 0.0), NONE),
+        ]
+    );
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/ScrollTest.kt, scrollWithPrimaryDown
+/// A scroll with a button held: the scroll tells it (the `Enter` with the press tells it too, as
+/// the click tests'.)
+#[test]
+fn scroll_with_primary_down() {
+    let heard = run(|mouse| {
+        mouse.press(MouseButton::Primary);
+        mouse.scroll(10.0, ScrollWheel::Vertical);
+    });
+    assert_eq!(
+        scrolls(&heard),
+        [
+            (0, Enter, false, Offset::ZERO, Offset::ZERO, PRIMARY),
+            (0, Press, true, Offset::ZERO, Offset::ZERO, PRIMARY),
+            (0, Move, true, Offset::ZERO, Offset::ZERO, PRIMARY),
+            (0, Scroll, true, Offset::ZERO, Offset::new(0.0, 10.0 * UNIT), PRIMARY),
+        ]
+    );
+}
+
+/// What a smooth scroll of 40 in 4 steps an event period apart sends, each step 10 along
+/// `step`.
+fn smoothly_scrolled(
+    step: Offset,
+) -> Vec<(u64, PointerEventType, bool, Offset, Offset, PointerButtons)> {
+    let mut expected = Vec::new();
+    for i in 1..=4 {
+        let came = if i == 1 { Enter } else { Move };
+        expected.extend([
+            (i * T, came, false, Offset::ZERO, Offset::ZERO, NONE),
+            (i * T, Scroll, false, Offset::ZERO, step * UNIT, NONE),
+        ]);
+    }
+    expected
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/ScrollTest.kt, smoothScrollVertically
+#[test]
+fn smooth_scroll_vertically() {
+    let heard = run(|mouse| mouse.smooth_scroll(40.0, 4 * T, ScrollWheel::Vertical));
+    assert_eq!(scrolls(&heard), smoothly_scrolled(Offset::new(0.0, 10.0)));
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/ScrollTest.kt, smoothScrollHorizontally
+#[test]
+fn smooth_scroll_horizontally() {
+    let heard = run(|mouse| mouse.smooth_scroll(40.0, 4 * T, ScrollWheel::Horizontal));
+    assert_eq!(scrolls(&heard), smoothly_scrolled(Offset::new(10.0, 0.0)));
+}
+
+const ITEMS: usize = 200;
+
+/// Compose's `TestItem`: tagged `item-{i}`, at least 10 dp each way.
+fn test_item(i: usize, modifier: Modifier) {
+    Box!(modifier = modifier.test_tag(format!("item-{i}")).default_min_size(10.dp(), 10.dp()));
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/ScrollTest.kt, smoothScrollLazyColumn
+/// A lazy column scrolls by the wheel to its last item.
+#[test]
+fn smooth_scroll_lazy_column() {
+    let mut ui = compose_test(|| {
+        LazyColumn!(modifier = Modifier.test_tag("list").width(50.dp()), |scope: LazyListScope| {
+            scope.items_list((0..ITEMS).collect::<Vec<usize>>(), |item_scope, i: &usize| {
+                test_item(*i, Modifier.fill_parent_max_width(&item_scope));
+            });
+        });
+    });
+    ui.on_node_with_tag("list")
+        .perform_mouse_input(|mouse| mouse.smooth_scroll(100.0, 500, ScrollWheel::Vertical));
+    ui.on_node_with_tag(&format!("item-{}", ITEMS - 1)).assert_is_displayed();
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/ScrollTest.kt, smoothScrollColumn
+#[test]
+fn smooth_scroll_column() {
+    let mut ui = compose_test(|| {
+        let state = remember_scroll_state!();
+        Column!(modifier = Modifier.test_tag("list").width(50.dp()).vertical_scroll(state), {
+            for i in 0..ITEMS {
+                test_item(i, Modifier.fill_max_width());
+            }
+        });
+    });
+    ui.on_node_with_tag("list")
+        .perform_mouse_input(|mouse| mouse.smooth_scroll(100.0, 500, ScrollWheel::Vertical));
+    ui.on_node_with_tag(&format!("item-{}", ITEMS - 1)).assert_is_displayed();
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/ScrollTest.kt, smoothScrollLazyRow
+#[test]
+fn smooth_scroll_lazy_row() {
+    let mut ui = compose_test(|| {
+        LazyRow!(modifier = Modifier.test_tag("list").height(50.dp()), |scope: LazyListScope| {
+            scope.items_list((0..ITEMS).collect::<Vec<usize>>(), |item_scope, i: &usize| {
+                test_item(*i, Modifier.fill_parent_max_height(&item_scope));
+            });
+        });
+    });
+    ui.on_node_with_tag("list")
+        .perform_mouse_input(|mouse| mouse.smooth_scroll(100.0, 500, ScrollWheel::Horizontal));
+    ui.on_node_with_tag(&format!("item-{}", ITEMS - 1)).assert_is_displayed();
+}
+
+// Compose: compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/mouse/ScrollTest.kt, smoothScrollRow
+#[test]
+fn smooth_scroll_row() {
+    let mut ui = compose_test(|| {
+        let state = remember_scroll_state!();
+        Row!(modifier = Modifier.test_tag("list").height(50.dp()).horizontal_scroll(state), {
+            for i in 0..ITEMS {
+                test_item(i, Modifier.fill_max_height());
+            }
+        });
+    });
+    ui.on_node_with_tag("list")
+        .perform_mouse_input(|mouse| mouse.smooth_scroll(100.0, 500, ScrollWheel::Horizontal));
+    ui.on_node_with_tag(&format!("item-{}", ITEMS - 1)).assert_is_displayed();
 }
