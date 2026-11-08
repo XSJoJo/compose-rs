@@ -352,13 +352,9 @@ fn platformMagnifierModifier_dismissesMagnifier_whenCenterUnspecified() {
         assert_eq!(magnifier.property_update_count(), 1);
         assert_eq!(magnifier.dismiss_count(), initial + 1);
     });
-    // compose-rs's own check: its semantics say it shows nothing, as Compose's tests'
+    // compose-rs's own check: its semantics say no position any more (D2073), as Compose's tests'
     // `assertNoMagnifierExists` reads them.
-    let nodes =
-        ui.on_all_nodes(key_is_defined(&MAGNIFIER_POSITION_IN_ROOT)).fetch_semantics_nodes();
-    let position =
-        nodes[0].config().get(&MAGNIFIER_POSITION_IN_ROOT).cloned().expect("its position");
-    assert!(position.get().is_unspecified());
+    ui.on_node(key_is_defined(&MAGNIFIER_POSITION_IN_ROOT)).assert_does_not_exist();
 }
 
 // Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/MagnifierTest.kt, platformMagnifierModifier_dismissesMagnifier_whenMagnifierRecreated

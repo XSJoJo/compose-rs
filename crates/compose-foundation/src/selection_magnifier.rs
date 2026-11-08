@@ -13,8 +13,8 @@ use std::rc::Rc;
 
 use compose_animation::Animatable;
 use compose_ui::{
-    Delegates, Density, DpSize, IntSize, Modifier, ModifierNode, ModifierNodeElement, NodeContext,
-    Offset,
+    Delegate, Delegates, Density, DpSize, IntSize, Modifier, ModifierNode, ModifierNodeElement,
+    NodeContext, Offset,
 };
 
 use crate::magnifier::{MagnifierArgs, MagnifierNode};
@@ -78,12 +78,21 @@ impl ModifierNodeElement for SelectionMagnifierElement {
 }
 
 /// As Compose's `AnimatedSelectionMagnifierNode`: a task follows the source's center (its
-/// `snapshotFlow`), the magnifier delegated to reads the animated value.
+/// `snapshotFlow`, while a gesture shows the magnifier), and the magnifier delegated to reads the
+/// animated value. The magnifier is delegated to only while the center is specified (Compose's
+/// is always): between gestures the node observes one state, and draws nothing, says nothing and
+/// is told no position (D2073).
 struct SelectionMagnifierNode {
     source: Rc<dyn SelectionMagnifierSource>,
     animatable: Animatable<Offset>,
     /// Its layout node's density: what the magnifier's size is told in pixels at.
     density: Rc<Cell<Density>>,
+    magnifier: Option<Delegate<MagnifierNode>>,
+    /// The task following the center while a gesture shows the magnifier.
+    job: Option<compose_runtime::Job>,
+    /// The springs it started that may still run: a snap or the gesture's end ends them, so
+    /// they wait for no frame.
+    running: Rc<std::cell::RefCell<Vec<compose_runtime::Job>>>,
     delegates: Delegates,
 }
 
@@ -94,10 +103,26 @@ impl SelectionMagnifierNode {
         });
         let animatable =
             Animatable::new_with(initial, Some(Offset::new(THRESHOLD, THRESHOLD)), "magnifier");
-        let mut delegates = Delegates::new();
         let density = Rc::new(Cell::new(Density::new(1.0)));
-        let (center, told, at) = (animatable.clone(), source.clone(), density.clone());
-        delegates.delegate(MagnifierNode::new(MagnifierArgs {
+        SelectionMagnifierNode {
+            source,
+            animatable,
+            density,
+            magnifier: None,
+            job: None,
+            running: Rc::default(),
+            delegates: Delegates::new(),
+        }
+    }
+
+    /// A gesture shows the magnifier: delegated to, at the node's place in the root.
+    fn show(&mut self, context: &mut NodeContext<'_>) {
+        if self.magnifier.is_some() {
+            return;
+        }
+        let (center, told, at) =
+            (self.animatable.clone(), self.source.clone(), self.density.clone());
+        let args = MagnifierArgs {
             // Its pixels, as Compose's `roundToPx` of the size told.
             on_size_changed: Some(compose_runtime::IntoCallback::into_callback(
                 move |size: DpSize| {
@@ -110,29 +135,48 @@ impl SelectionMagnifierNode {
             )),
             use_text_default: true,
             ..MagnifierArgs::new(move |_: Density| center.value())
-        }));
-        SelectionMagnifierNode { source, animatable, density, delegates }
+        };
+        // Laid out already: the layout that placed it told its position to no magnifier.
+        let anchor = context.require_layout_coordinates().position_in_root();
+        let node = MagnifierNode::new_at(args, anchor);
+        self.magnifier = Some(self.delegates.delegate_attached(node, context));
+    }
+
+    /// The gesture's over: the magnifier goes (dismissed as it's detached).
+    fn hide(&mut self) {
+        if let Some(magnifier) = self.magnifier.take() {
+            self.delegates.undelegate(magnifier);
+        }
     }
 }
 
-impl ModifierNode for SelectionMagnifierNode {
-    fn delegates(&mut self) -> Option<&mut Delegates> {
-        Some(&mut self.delegates)
-    }
-    fn on_density_change(&mut self, context: &mut NodeContext<'_>) {
-        self.density.set(context.require_density());
-    }
-    fn on_attach(&mut self, context: &mut NodeContext<'_>) {
-        self.density.set(context.require_density());
+impl SelectionMagnifierNode {
+    /// Follows the source's center (observed): a gesture starting shows the magnifier and starts
+    /// the task following it, as Compose's `snapshotFlow` collector; one ending stops both.
+    fn follow(&mut self, context: &mut NodeContext<'_>) {
+        let source = self.source.clone();
+        let center = context.observe_reads(move || source.magnifier_center());
+        if center.is_unspecified() {
+            self.stop();
+            self.animatable.snap_to(Offset::UNSPECIFIED);
+            self.hide();
+            return;
+        }
+        if self.job.is_some() {
+            return;
+        }
+        // Compose's `snapTo` of the first specified target.
+        self.animatable.snap_to(center);
+        self.show(context);
         let scope = context.coroutine_scope();
         let (source, animated) = (self.source.clone(), self.animatable.clone());
-        scope.launch(async move {
+        let running = self.running.clone();
+        self.job = Some(scope.launch(async move {
             let mut targets =
                 compose_runtime::snapshot_flow(move || Center(source.magnifier_center()));
-            // The animations under way: a snap ends them, waiting for no frame.
-            let mut running: Vec<compose_runtime::Job> = Vec::new();
             while let Some(Center(target)) = compose_runtime::flow::next(&mut targets).await {
                 let value = animated.value();
+                let mut running = running.borrow_mut();
                 running.retain(compose_runtime::Job::is_active);
                 // Animated only between lines: across a line it stays with the finger.
                 if value.is_specified() && target.is_specified() && value.y != target.y {
@@ -150,6 +194,44 @@ impl ModifierNode for SelectionMagnifierNode {
                     }
                 }
             }
-        });
+        }));
+    }
+}
+
+impl SelectionMagnifierNode {
+    /// The task following the center and the springs it started end.
+    fn stop(&mut self) {
+        if let Some(job) = self.job.take() {
+            job.cancel();
+        }
+        for job in self.running.borrow_mut().drain(..) {
+            job.cancel();
+        }
+    }
+}
+
+impl ModifierNode for SelectionMagnifierNode {
+    fn delegates(&mut self) -> Option<&mut Delegates> {
+        Some(&mut self.delegates)
+    }
+    fn as_observer(&mut self) -> Option<&mut dyn compose_ui::ObserverModifierNode> {
+        Some(self)
+    }
+    fn on_density_change(&mut self, context: &mut NodeContext<'_>) {
+        self.density.set(context.require_density());
+    }
+    fn on_detach(&mut self, _context: &mut NodeContext<'_>) {
+        self.stop();
+        self.hide();
+    }
+    fn on_attach(&mut self, context: &mut NodeContext<'_>) {
+        self.density.set(context.require_density());
+        self.follow(context);
+    }
+}
+
+impl compose_ui::ObserverModifierNode for SelectionMagnifierNode {
+    fn on_observed_reads_changed(&mut self, context: &mut NodeContext<'_>) {
+        self.follow(context);
     }
 }

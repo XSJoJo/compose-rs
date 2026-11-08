@@ -240,6 +240,9 @@ pub(crate) struct MagnifierNode {
     /// The node's position in the root after its last layout, as Compose's
     /// `anchorPositionInRoot` (unspecified before).
     anchor_position_in_root: Offset,
+    /// Its position read from its coordinates at each update, not told after each layout: a
+    /// selection's magnifier delegated to during a gesture, which moves it at each move (D2073).
+    reads_position: bool,
     /// Where its source center is in the root, unspecified while it shows nothing: its
     /// semantics' (`MagnifierPositionInRoot`).
     source_center_in_root: Rc<Cell<Offset>>,
@@ -263,6 +266,16 @@ struct UpdateAsked {
 }
 
 impl MagnifierNode {
+    /// A node at `anchor` in the root, laid out already: delegated to while a selection's
+    /// gesture shows its magnifier (D2073).
+    pub(crate) fn new_at(args: MagnifierArgs, anchor: Offset) -> MagnifierNode {
+        MagnifierNode {
+            anchor_position_in_root: anchor,
+            reads_position: true,
+            ..MagnifierNode::new(args)
+        }
+    }
+
     pub(crate) fn new(args: MagnifierArgs) -> MagnifierNode {
         MagnifierNode {
             args,
@@ -270,6 +283,7 @@ impl MagnifierNode {
             density: None,
             magnifier: Rc::new(RefCell::new(None)),
             anchor_position_in_root: Offset::UNSPECIFIED,
+            reads_position: false,
             source_center_in_root: Rc::new(Cell::new(Offset::UNSPECIFIED)),
             previous_size: None,
             content_update_pending: Rc::new(Cell::new(false)),
@@ -340,6 +354,9 @@ impl MagnifierNode {
     /// its position is unspecified. What the centers read is observed.
     fn update_magnifier(&mut self, context: &mut NodeContext<'_>) {
         let density = *self.density.get_or_insert_with(|| context.require_density());
+        if self.reads_position {
+            self.anchor_position_in_root = context.require_layout_coordinates().position_in_root();
+        }
         let anchor = self.anchor_position_in_root;
         let (source_center, magnifier_center) = {
             let source_center = self.args.source_center.clone();
@@ -355,7 +372,7 @@ impl MagnifierNode {
         };
         if source_center.is_specified() && anchor.is_specified() {
             let source_in_root = anchor + source_center;
-            self.source_center_in_root.set(source_in_root);
+            self.set_source_center_in_root(source_in_root, context);
             let magnifier_center = magnifier_center
                 .filter(|center| center.is_specified())
                 .map_or(Offset::UNSPECIFIED, |center| anchor + center);
@@ -371,7 +388,7 @@ impl MagnifierNode {
             return;
         }
         // It can't be placed where asked: hidden, so it doesn't show somewhere wrong.
-        self.source_center_in_root.set(Offset::UNSPECIFIED);
+        self.set_source_center_in_root(Offset::UNSPECIFIED, context);
         let magnifier = self.magnifier.borrow().clone();
         if let Some(magnifier) = magnifier {
             magnifier.dismiss();
@@ -379,6 +396,16 @@ impl MagnifierNode {
         self.showing = false;
         // A copy waiting for a frame isn't needed any more.
         self.content_update_pending.set(false);
+    }
+
+    /// Where its source center is in the root: its semantics say it while it's specified, and
+    /// only then (Compose's say it always), so a node whose magnifier shows nothing adds nothing to
+    /// its semantics (D2073).
+    fn set_source_center_in_root(&mut self, center: Offset, context: &mut NodeContext<'_>) {
+        let was = self.source_center_in_root.replace(center);
+        if was.is_specified() != center.is_specified() {
+            context.invalidate_semantics();
+        }
     }
 
     /// As `updateSizeIfNecessary`: `on_size_changed` told a new size.
@@ -404,7 +431,7 @@ impl ModifierNode for MagnifierNode {
         Some(self)
     }
     fn as_global_position_aware(&mut self) -> Option<&mut dyn GlobalPositionAwareModifierNode> {
-        Some(self)
+        if self.reads_position { None } else { Some(self) }
     }
     fn as_observer(&mut self) -> Option<&mut dyn compose_ui::ObserverModifierNode> {
         Some(self)
@@ -499,6 +526,9 @@ impl DrawModifierNode for MagnifierNode {
 
 impl SemanticsModifierNode for MagnifierNode {
     fn apply_semantics(&self, config: &mut SemanticsConfiguration) {
+        if self.source_center_in_root.get().is_unspecified() {
+            return;
+        }
         config.set(
             &MAGNIFIER_POSITION_IN_ROOT,
             MagnifierPositionInRoot(self.source_center_in_root.clone()),

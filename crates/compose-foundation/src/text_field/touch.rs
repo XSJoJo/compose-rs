@@ -354,6 +354,7 @@ impl TextFieldNode {
         }
     }
 
+    #[inline(never)]
     fn follow_long_press_to(
         &mut self,
         pending: Pending,
@@ -554,6 +555,14 @@ impl TextFieldNode {
         measurer: &dyn TextMeasurer,
         paragraph: ParagraphHandle,
     ) {
+        // A branch at each measurement, nothing more, while no drag shows the magnifier.
+        if self.touch.magnifier.is_some() || self.touch.magnifier_shown {
+            self.tell_magnifier_now(measurer, paragraph);
+        }
+    }
+
+    #[inline(never)]
+    fn tell_magnifier_now(&mut self, measurer: &dyn TextMeasurer, paragraph: ParagraphHandle) {
         let Some(handles) = &self.touch.handles else { return };
         let Some(magnifier) = handles.magnifier.get() else { return };
         let shown = self.touch.magnifier.is_some() && (self.focused || self.touch.long.is_some());
