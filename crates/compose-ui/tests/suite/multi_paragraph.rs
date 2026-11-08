@@ -1511,6 +1511,16 @@ fn a_paragraph_with_a_minimum_width_panics() {
     compose_ui::paragraph(&intrinsics, constraints, u32::MAX, TextOverflow::Clip);
 }
 
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationTest.kt, maxLines_withMaxLineEqualsZero_throwsException
+/// A paragraph of no line panics (a negative count, Compose's `maxLines_withMaxLineNegative`,
+/// has no counterpart: `max_lines` is a `u32`).
+#[test]
+#[should_panic(expected = "maxLines should be greater than 0")]
+fn a_paragraph_of_no_line_panics() {
+    let intrinsics = intrinsics(AnnotatedString::new(""), &Setup::default());
+    compose_ui::paragraph(&intrinsics, Constraints::unbounded(), 0, TextOverflow::Clip);
+}
+
 /// Compose's `MultiParagraph(annotatedString, style, constraints, …)`: its intrinsics, then
 /// laid out as `MultiParagraph(intrinsics, …)`.
 #[test]

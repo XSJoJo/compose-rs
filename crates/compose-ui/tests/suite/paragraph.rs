@@ -354,6 +354,50 @@ fn the_bounding_box_of_an_ellipsized_character_is_empty_right_to_left() {
     assert_eq!(paragraph.get_bounding_box(at(text, 9)), Rect::new(0.0, 0.0, 0.0, 50.0));
 }
 
+/// Ellipsized at a height of one line, 150 wide, in 50 sp.
+fn one_line_high() -> Setup {
+    Setup {
+        style: sized(50.0),
+        width: Some(150.0),
+        overflow: TextOverflow::Ellipsis,
+        height: Some(50.0),
+        ..Setup::default()
+    }
+}
+
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationTest.kt, getBoundingBox_bidi_singleLineHeight_softWrap_ellipsized
+/// A height of one line ellipsizes the first line: a character of the wrapped word after it has
+/// an empty box at the line's end.
+#[test]
+fn the_bounding_box_of_a_wrapped_character_cut_by_the_height_is_empty_bidi() {
+    let text = "abc \u{05D0}\u{05D1}\u{05D2}";
+    let paragraph = lay_out(text, one_line_high());
+    assert_eq!(paragraph.get_bounding_box(at(text, 5)), Rect::new(150.0, 0.0, 150.0, 50.0));
+}
+
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationTest.kt, getBoundingBox_bidi_singleLineHeight_softWrap_ellipsized_beforeLineFeed
+#[test]
+fn the_bounding_box_of_a_wrapped_character_before_a_line_feed_cut_by_the_height_is_empty_bidi() {
+    let text = "abc \u{05D0}\n\u{05D1}\u{05D2}";
+    let paragraph = lay_out(text, one_line_high());
+    assert_eq!(paragraph.get_bounding_box(at(text, 4)), Rect::new(150.0, 0.0, 150.0, 50.0));
+}
+
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationTest.kt, getBoundingBox_ltr_multiLines_lineFeedEllipsized_maxHeight
+#[test]
+fn the_bounding_box_of_a_character_cut_by_the_height_is_empty_left_to_right() {
+    let paragraph = lay_out("abc def\ndef", one_line_high());
+    assert_eq!(paragraph.get_bounding_box(9), Rect::new(150.0, 0.0, 150.0, 50.0));
+}
+
+// Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationTest.kt, getBoundingBox_rtl_multiLines_lineFeedEllipsized_maxHeight
+#[test]
+fn the_bounding_box_of_a_character_cut_by_the_height_is_empty_right_to_left() {
+    let text = "\u{05D0}\u{05D1}\u{05D2} \u{05D3}\u{05D4}\u{05D5}\n\u{05D0}\u{05D1}\u{05D2}";
+    let paragraph = lay_out(text, one_line_high());
+    assert_eq!(paragraph.get_bounding_box(at(text, 9)), Rect::new(0.0, 0.0, 0.0, 50.0));
+}
+
 // Compose: compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/ParagraphIntegrationTest.kt, getBoundingBox_ltr_textPosition_larger_than_length_throw_exception
 #[test]
 #[should_panic(expected = "out of bounds")]
