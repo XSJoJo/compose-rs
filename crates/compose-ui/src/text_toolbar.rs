@@ -180,7 +180,8 @@ pub struct PlatformTextToolbar {
 struct PlatformTextToolbarState {
     mode: Option<Rc<dyn TextActionMode>>,
     rect: Rect,
-    items: Vec<(i32, &'static str, TextToolbarAction)>,
+    /// Each shown item's id, order, title and action.
+    items: Vec<(i32, i32, &'static str, TextToolbarAction)>,
 }
 
 struct PlatformTextToolbarCallback(Rc<RefCell<PlatformTextToolbarState>>);
@@ -189,8 +190,8 @@ impl PlatformTextToolbarCallback {
     fn fill(&self, menu: &mut TextActionMenu) {
         menu.clear();
         let state = self.0.borrow();
-        for (order, (id, title, action)) in state.items.iter().enumerate() {
-            menu.add(0, *id, order as i32 + 1, title, action.clone());
+        for (id, order, title, action) in &state.items {
+            menu.add(0, *id, *order, title, action.clone());
         }
     }
 }
@@ -234,19 +235,21 @@ impl TextToolbar for PlatformTextToolbar {
         use text_action_ids as id;
         use text_action_labels as label;
         let Some(modes) = &self.modes else { return };
+        // Each item's order is its own whichever others show, as Compose's `MenuItemOption`
+        // (D1926).
         let items = [
-            (id::COPY, label::COPY, on_copy),
-            (id::PASTE, label::PASTE, on_paste),
-            (id::CUT, label::CUT, on_cut),
-            (id::SELECT_ALL, label::SELECT_ALL, on_select_all),
-            (id::AUTOFILL, label::AUTOFILL, on_autofill),
+            (id::COPY, 0, label::COPY, on_copy),
+            (id::PASTE, 1, label::PASTE, on_paste),
+            (id::CUT, 2, label::CUT, on_cut),
+            (id::SELECT_ALL, 3, label::SELECT_ALL, on_select_all),
+            (id::AUTOFILL, 4, label::AUTOFILL, on_autofill),
         ];
         let mode = {
             let mut state = self.state.borrow_mut();
             state.rect = rect;
             state.items = items
                 .into_iter()
-                .filter_map(|(id, title, action)| Some((id, title, action?)))
+                .filter_map(|(id, order, title, action)| Some((id, order, title, action?)))
                 .collect();
             state.mode.clone()
         };

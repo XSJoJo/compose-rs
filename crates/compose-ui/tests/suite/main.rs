@@ -84,6 +84,7 @@ mod span_style;
 mod spannable_extensions;
 #[path = "../support/mod.rs"]
 mod support;
+mod text_action_mode_callback;
 mod text_measurer;
 mod text_range;
 mod text_savers;
