@@ -19,9 +19,9 @@ What compose-rs has of two Jetpack Compose libraries, test file by test file and
 
 | Status | Files | Tests | ui-text (files / tests) | ui-test (files / tests) | ui-test-junit4 (files / tests) |
 |---|---|---|---|---|---|
-| `ported` | 141 | 1,688 | 62 / 1,206 | 79 / 482 | 0 / 0 |
+| `ported` | 147 | 1,694 | 62 / 1,206 | 85 / 488 | 0 / 0 |
 | `covered` | 4 | 5 | 1 / 2 | 3 / 3 | 0 / 0 |
-| `port` | 16 | 49 | 1 / 9 | 14 / 34 | 1 / 6 |
+| `port` | 10 | 43 | 1 / 9 | 8 / 28 | 1 / 6 |
 | `partial` | 44 | 1,156 | 13 / 726 | 31 / 430 | 0 / 0 |
 | `feature:…` | 43 | 411 | 30 / 312 | 12 / 96 | 1 / 3 |
 | `n/a` | 80 | 533 | 32 / 384 | 45 / 143 | 3 / 6 |
@@ -313,15 +313,15 @@ The 530 `n/a` tests: 314 test Android text internals or internal helpers (`Spann
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/MoveTest.kt` | 3 | `move` errors without a pointer down | ported: `crates/compose-test/tests/suite/injection_scopes.rs` (all 3) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/MoveToTest.kt` | 11 | `moveTo`/`updatePointerTo` per pointer, errors | ported: `crates/compose-test/tests/suite/input.rs` (`fingers_move_and_lift`) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/MoveWithHistoryTest.kt` | 2 | `moveWithHistory` (experimental) gives historical points a fling uses | feature:touch-injection (historical points: ui's pointer events carry none) |
-| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/MultiTouchSwipeWithVelocityTest.kt` | 1 | `multiTouchSwipeWithVelocity` | port: `multi_touch_swipe` and `swipe_with_velocity` exist (no `multi_touch_swipe_with_velocity` yet) |
+| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/MultiTouchSwipeWithVelocityTest.kt` | 1 | `multiTouchSwipeWithVelocity` | ported: `crates/compose-test/tests/suite/swipes.rs`; `multi_touch_swipe_with_velocity` and `SwipeInfo` added for it, along `swipe_with_velocity`'s path |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/PinchTest.kt` | 1 | `pinch` moves two pointers between start and end | ported: `crates/compose-test/tests/suite/input.rs` (`a_pinch_moves_two_fingers`) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/PlatformVelocityPathFinderTest.kt` | 1 | The velocity path finder agrees with the platform's velocity tracker | n/a: Android's framework velocity tracker (compose-test follows the portable path, D903) |
-| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/SwipeCurveTest.kt` | 1 | `swipe(curve)` samples the curve over time | port: `swipe_along` exists |
-| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/SwipeCurveWithKeyTimesTest.kt` | 1 | `swipe(curve, keyTimes)` hits the key times exactly | port: `swipe_along` takes key times |
+| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/SwipeCurveTest.kt` | 1 | `swipe(curve)` samples the curve over time | ported: `crates/compose-test/tests/suite/swipes.rs` (its ten durations in one test) |
+| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/SwipeCurveWithKeyTimesTest.kt` | 1 | `swipe(curve, keyTimes)` hits the key times exactly | ported: `crates/compose-test/tests/suite/swipes.rs` (its ten key-time sets in one test) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/SwipeDirectionTest.kt` | 12 | `swipeUp/Down/Left/Right` defaults, parameters, invalid parameters | ported: `crates/compose-test/tests/suite/input.rs` (`swipes_cross_the_node_edge_to_edge`) |
-| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/SwipeMultiTouchTest.kt` | 1 | `multiTouchSwipe` of several curves | port: `multi_touch_swipe` exists |
-| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/SwipeStartEndTest.kt` | 1 | `swipe(start, end)` timing and positions | port: `swipe` exists |
-| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/SwipeWithTouchSlopTest.kt` | 1 | A swipe on a scrollable moves it by the distance minus the touch slop | port: the swipes exist; touch slop is 8 dp |
+| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/SwipeMultiTouchTest.kt` | 1 | `multiTouchSwipe` of several curves | ported: `crates/compose-test/tests/suite/swipes.rs` |
+| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/SwipeStartEndTest.kt` | 1 | `swipe(start, end)` timing and positions | ported: `crates/compose-test/tests/suite/swipes.rs` (its ten durations in one test) |
+| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/SwipeWithTouchSlopTest.kt` | 1 | A swipe on a scrollable moves it by the distance minus the touch slop | ported: `crates/compose-test/tests/suite/swipes.rs` (the clock paused for the swipe: compose-rs's `perform_touch_input` waits for idle after it, which would run the fling Compose's test reads before) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/SwipeWithVelocityTest.kt` | 1 | `swipeWithVelocity` ends with the requested velocity | partial: the path (`crates/compose-test/tests/suite/input.rs` `a_swipe_with_velocity_ends_at_its_end_at_its_duration`); the measured velocity needs a public `VelocityTracker` at Compose's parity |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/SynchronizedWithMainClockTest.kt` | 2 | Event times follow the main clock across `perform…Input` blocks | ported: `crates/compose-test/tests/suite/input.rs` (`events_follow_the_main_clock`) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/injectionscope/touch/UpTest.kt` | 6 | `up` per pointer, errors | ported: `crates/compose-test/tests/suite/input.rs` (`fingers_move_and_lift`) |
