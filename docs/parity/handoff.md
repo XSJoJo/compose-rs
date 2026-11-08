@@ -97,7 +97,7 @@ Never merge the `ime-logging` branch (it records everything typed) or `parked/na
 
 ## In flight
 
-As of 2026-11-08, `origin/main` is at the merge of `input-layout-ports` (14,089 tests). Branches marked "review pending" were merged without the usual review; review them first.
+As of 2026-11-08, `origin/main` is at 1ebd8492 (14,469 tests). Nothing is in flight; the weekly quota ran out here. Every branch below is merged; those marked "review pending" were merged without the usual review, review them first. Branches marked "review pending" were merged without the usual review; review them first.
 
 | Branch | What | State |
 |---|---|---|
