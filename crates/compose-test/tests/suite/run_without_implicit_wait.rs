@@ -6,7 +6,6 @@
 
 use compose_animation::*;
 use compose_foundation::layout::*;
-use compose_foundation::*;
 use compose_runtime::*;
 use compose_test::*;
 use compose_ui::{Color, Density, IntSize, LOCAL_DENSITY, Modifier, UnitExt};

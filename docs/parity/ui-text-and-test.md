@@ -26,9 +26,9 @@ What compose-rs has of two Jetpack Compose libraries, test file by test file and
 | `feature:…` | 44 | 413 | 30 / 312 | 13 / 98 | 1 / 3 |
 | `n/a` | 81 | 535 | 32 / 384 | 46 / 145 | 3 / 6 |
 
-Those are whole files' tests. By citation (distinct `// Compose:` lines in `crates` and `examples`, `grep -rh '// Compose: compose/ui/ui-text/' crates examples | sed 's/^ *//' | sort -u | wc -l`): 1,477 of ui-text's 2,639 tests, some of them in `partial` files, and 175 of ui-test's 1,188; ui-unit's TextUnitTest, in another ledger's module, adds 57.
+Those are whole files' tests. By citation (distinct `// Compose:` lines in `crates` and `examples`, `grep -rh '// Compose: compose/ui/ui-text/' crates examples | sed 's/^ *//' | sort -u | wc -l`): 1,589 of ui-text's 2,639 tests, some of them in `partial` files, and 399 of ui-test's 1,188; ui-unit's TextUnitTest, in another ledger's module, adds 57.
 
-The `feature:…` files by feature (files, tests): android-text-device-tests 4 (68), fonts 8 (60), device-configuration-override 2 (35), text-actions 1 (27), line-height-style-modes 1 (25), html-annotated-string 1 (23), placeholders 1 (23), styled-accessibility-text 1 (21), line-break-hyphens 2 (17), locale 2 (17), scroll-actions 4 (16), text-indent 1 (16), text-direction 2 (12), link-actions 1 (10), platform-text-style 1 (8), annotations 2 (7), font-variations 2 (7), font-weight-adjustment 1 (7), run-compose-ui-test 2 (6), touch-injection 1 (2), font-loading 1 (1), indirect-pointer-injection 1 (1). A file is counted under the feature that blocks it first; several need more than one (the Status column names the others).
+The `feature:…` files by feature (files, tests): android-text-device-tests 4 (68), fonts 8 (60), device-configuration-override 2 (35), text-actions 1 (27), line-height-style-modes 1 (25), html-annotated-string 1 (23), placeholders 1 (23), styled-accessibility-text 1 (21), line-break-hyphens 2 (17), locale 2 (17), scroll-actions 4 (16), text-indent 1 (16), text-direction 2 (12), link-actions 1 (10), platform-text-style 1 (8), annotations 2 (7), font-variations 2 (7), font-weight-adjustment 1 (7), run-compose-ui-test 2 (6), frame-resumption-order 1 (2), touch-injection 1 (2), unplaced-content 1 (2), font-loading 1 (1), indirect-pointer-injection 1 (1). A file is counted under the feature that blocks it first; several need more than one (the Status column names the others).
 
 The 530 `n/a` tests: 314 test Android text internals or internal helpers (`Spannable` spans, `TextPaint`, `StaticLayout`/`BoringLayout` wrappers, caches, EmojiCompat, the gap buffer), 67 the deprecated `GestureScope` (the same behaviour is in `injectionscope/touch`), 53 other deprecated APIs (`TextInputService`, `Font.ResourceLoader`, `Typeface(context, …)`), 56 Android or JVM test infrastructure (activities, fragments, Espresso, Robolectric's looper, PixelCopy, `Bundle` limits, the accessibility test framework), 24 value-class plumbing that Rust's derives replace, 2 self-tests of the test library's helpers, 14 internals of Compose's injection (its velocity path helpers, the Android framework tracker's path, the dispatcher's batching) that compose-test does otherwise (D903).
 
@@ -634,7 +634,7 @@ Then text:
 14. **font-loading** (L), **font-variations** (M), **font-weight-adjustment** (S).
 15. **html-annotated-string** (M), **styled-accessibility-text** (M), **android-text-device-tests** (M).
 
-Ready now, no feature needed: the 32 `port` files (252 tests) and the ported halves of the 35 `partial` files, of which the largest are TextStyleTest, SpanStyleTest, AnnotatedStringBuilderTest, AnnotatedStringTest and SpannableExtensionsTest (they test compose-rs's existing style model and `runs`).
+No `port` rows are left: the 37 of the 2026-11-08 audit were ported on `wip/ui-text-ports` (some now `partial` or `feature:` for what they showed). Ready now, no feature needed: the rest of the `partial` files, of which the largest are TextStyleTest, SpanStyleTest, AnnotatedStringBuilderTest, AnnotatedStringTest and SpannableExtensionsTest (they test compose-rs's existing style model and `runs`).
 
 ## Notes for the porting agents
 
