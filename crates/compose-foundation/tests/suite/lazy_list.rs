@@ -13,7 +13,7 @@ use compose_foundation::*;
 use compose_runtime::*;
 use compose_test::*;
 use compose_ui::platform::Optimizations;
-use compose_ui::{IntSize, UnitExt};
+use compose_ui::{Dp, IntSize, UnitExt};
 
 use crate::lazy_support::{Lazy, LazyColumnOrRow, no_padding};
 use crate::scroll_support::{Touch, run};
@@ -1700,5 +1700,80 @@ fn an_item_filling_the_parent_is_not_measured_again_when_scrolled_back() {
             let _ = handle.scroll_to_item(0, 0).await;
         });
         assert_eq!(measures.get(), 0, "{lazy:?}");
+    }
+}
+
+// Compose: compose/foundation/foundation/integration-tests/lazy-tests/src/androidTest/kotlin/androidx/compose/foundation/lazy/list/LazyListTest.kt, animContentSize_resetOnReuse
+/// An item's `animate_content_size` starts again from nothing when its node is reused for
+/// another item: scrolled to items of another size, none of them animates.
+#[test]
+fn animate_content_size_is_reset_on_reuse() {
+    use compose_animation::AnimationModifiers;
+    for lazy in orientations() {
+        let (box_main, small, medium, large) = (100.0, 100.0, 200.0, 300.0);
+        let medium_start = 50;
+        let checked = Rc::new(Cell::new((false, false)));
+        let wrong: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let expanded = mutable_state_of(false);
+        let state = LazyListState::new(0, 0);
+        let (handle, open) = (*state, expanded.handle());
+        let (c, w) = (checked.clone(), wrong.clone());
+        let mut ui = rule(move || {
+            let (c, w) = (c.clone(), w.clone());
+            let modifier = if lazy.vertical {
+                Modifier.height(Dp(box_main * 10.0))
+            } else {
+                Modifier.width(Dp(box_main * 10.0))
+            };
+            LazyColumnOrRow(lazy, modifier, handle, no_padding(), move |scope: LazyListScope| {
+                let (c, w) = (c.clone(), w.clone());
+                scope.items(100, move |index| {
+                    let (c, w) = (c.clone(), w.clone());
+                    // Only the first item may animate: the others are measured at their size.
+                    let check = Modifier.layout(move |scope, measurable, constraints| {
+                        let placeable = scope.measure(measurable, constraints);
+                        if index != 0 {
+                            let cross = if index >= medium_start { medium } else { small };
+                            let (main, other) = if lazy.vertical {
+                                (placeable.height, placeable.width)
+                            } else {
+                                (placeable.width, placeable.height)
+                            };
+                            if (other, main) != (cross as i32, box_main as i32) {
+                                w.borrow_mut().push(format!("{index}: {other}x{main}"));
+                            }
+                            let (s, m) = c.get();
+                            c.set(if index >= medium_start { (s, true) } else { (true, m) });
+                        }
+                        scope.layout_with(placeable.width, placeable.height, move |placement| {
+                            placement.place(&placeable, 0, 0);
+                        })
+                    });
+                    let inner = if index == 0 {
+                        Modifier.required_size(Dp(if open.get() { large } else { small }))
+                    } else {
+                        let cross = if index >= medium_start { medium } else { small };
+                        if lazy.vertical {
+                            Modifier.required_size((Dp(cross), Dp(box_main)))
+                        } else {
+                            Modifier.required_size((Dp(box_main), Dp(cross)))
+                        }
+                    };
+                    Box!(
+                        modifier = Modifier.wrap_content_size().then(check).animate_content_size(),
+                        |_| Box!(modifier = inner.clone())
+                    );
+                });
+            });
+        });
+        ui.wait_for_idle();
+        expanded.set(true);
+        ui.wait_for_idle();
+        run(&mut ui, async move {
+            let _ = handle.scroll_to_item(medium_start, 0).await;
+        });
+        ui.wait_for_idle();
+        assert_eq!(checked.get(), (true, true), "{lazy:?}: items measured");
+        assert!(wrong.borrow().is_empty(), "{lazy:?}: {:?}", wrong.borrow());
     }
 }
