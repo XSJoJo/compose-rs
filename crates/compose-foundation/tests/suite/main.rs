@@ -236,6 +236,7 @@ mod text_field_default_width;
 mod text_field_double_tap;
 mod text_field_focus;
 mod text_field_height;
+mod text_field_interaction_source_press;
 mod text_field_key_event;
 mod text_field_long_press;
 mod text_field_output;
