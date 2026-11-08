@@ -1053,3 +1053,177 @@ fn an_outer_modifier_overrides_an_inner_ones_description() {
         StringList::from_iter([SharedString::from("high")]),
     ));
 }
+
+// ---- SemanticsTests: updates ------------------------------------------------------------------
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, removingMergedSubtree_updatesSemantics
+#[test]
+fn a_merged_subtree_removed_leaves_the_merging_node() {
+    let show = mutable_state_of(true);
+    let handle = show.handle();
+    let mut ui = compose_test(move || {
+        Box!(modifier = merging().test_tag("tag"), {
+            if handle.get() {
+                Box!(modifier = test_property("foo"));
+            }
+        });
+    });
+    ui.on_node_with_tag("tag").assert(test_property_equals("foo"));
+    ui.run_on_idle(|_| show.set(false));
+    ui.on_node_with_tag("tag").assert(key_not_defined(&TEST_PROPERTY));
+    ui.on_all_nodes_with_text("foo").assert_count_equals(0);
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, addingNewMergedNode_updatesSemantics
+#[test]
+fn a_node_added_under_a_merging_one_merges_into_it() {
+    let show = mutable_state_of(false);
+    let handle = show.handle();
+    let mut ui = compose_test(move || {
+        Box!(modifier = merging().test_tag("tag"), {
+            Box!(modifier = test_property("foo"));
+            if handle.get() {
+                Box!(modifier = Modifier.semantics(|config| config.set_state_description("bar")));
+            }
+        });
+    });
+    ui.on_node_with_tag("tag")
+        .assert(test_property_equals("foo"))
+        .assert(key_not_defined(&SemanticsProperties::STATE_DESCRIPTION));
+    ui.run_on_idle(|_| show.set(true));
+    ui.on_node_with_tag("tag").assert(test_property_equals("foo")).assert_value_equals("bar");
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, removingSubtreeWithoutSemanticsAsTopNode_updatesSemantics
+#[test]
+fn a_subtree_removed_under_a_node_without_semantics_leaves_the_tree() {
+    let show = mutable_state_of(true);
+    let handle = show.handle();
+    let mut ui = compose_test(move || {
+        Box!(modifier = Modifier.test_tag("tag"), {
+            if handle.get() {
+                Box!(modifier = Modifier.semantics(|config| config.set_content_description("foo")));
+            }
+        });
+    });
+    ui.on_all_nodes_with_content_description("foo").assert_count_equals(1);
+    ui.run_on_idle(|_| show.set(false));
+    ui.on_all_nodes_with_content_description("foo").assert_count_equals(0);
+}
+
+/// A description read from `after` when the semantics are computed, as Compose's
+/// `if (isAfter.value) afterLabel else beforeLabel`.
+fn before_or_after(after: MutableState<bool>) -> Modifier {
+    Modifier.semantics(move |config| {
+        config.set_content_description(if after.get() { "after" } else { "before" })
+    })
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, changingStackedSemanticsComponent_updatesSemantics, changingStackedSemanticsComponent_notTopMost_updatesSemantics, changingSemantics_belowStackedLayoutNodes_updatesCorrectly, updateToNodeWithMultipleBoundaryChildren_updatesCorrectly
+/// A description changed by state shows on its node at the root, under a tagged node, under
+/// two layouts, and over two children with semantics of their own.
+#[test]
+fn a_changed_description_shows_wherever_its_node_is() {
+    for place in 0..4 {
+        let after = mutable_state_of(false);
+        let handle = after.handle();
+        let mut ui = compose_test(move || {
+            let node =
+                move || Box!(modifier = Modifier.test_tag("tag").then(before_or_after(handle)));
+            match place {
+                0 => node(),
+                1 => Box!(modifier = Modifier.test_tag("don't care"), {
+                    node();
+                }),
+                2 => Box!({
+                    Box!({
+                        node();
+                    });
+                }),
+                _ => Box!(modifier = Modifier.test_tag("tag").then(before_or_after(handle)), {
+                    Box!(modifier = Modifier.semantics(|_| {}));
+                    Box!(modifier = Modifier.semantics(|_| {}));
+                }),
+            }
+        });
+        ui.on_node_with_tag("tag").assert_content_description_equals(&["before"]);
+        ui.run_on_idle(|_| after.set(true));
+        ui.on_node_with_tag("tag").assert_content_description_equals(&["after"]);
+    }
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, changingSemantics_belowNodeMergedThroughBoundary_updatesCorrectly
+#[test]
+fn a_value_changed_below_a_merging_node_shows_in_it() {
+    let after = mutable_state_of(false);
+    let handle = after.handle();
+    let mut ui = compose_test(move || {
+        Box!(modifier = Modifier.test_tag("tag").then(merging()), {
+            Box!(
+                modifier = Modifier.semantics(move |config| {
+                    let value = if handle.get() { "after" } else { "before" };
+                    config.set(&TEST_PROPERTY, value.into());
+                })
+            );
+        });
+    });
+    ui.on_node_with_tag("tag").assert(test_property_equals("before"));
+    ui.run_on_idle(|_| after.set(true));
+    ui.on_node_with_tag("tag").assert(test_property_equals("after"));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, mergeDescendants_doesNotCrossLayoutNodesUpward
+#[test]
+fn merging_does_not_reach_up_past_the_merging_node() {
+    let mut ui = compose_test(|| {
+        Box!(modifier = Modifier.test_tag("tag"), {
+            Box!(modifier = merging(), {
+                Box!(
+                    modifier = Modifier.semantics(|config| config.set_content_description("label"))
+                );
+            });
+        });
+    });
+    ui.on_node_with_tag("tag").assert(key_not_defined(&SemanticsProperties::CONTENT_DESCRIPTION));
+    ui.on_node_with_content_description("label").assert_exists();
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, changingSemantics_doesNotReplaceNodesBelow
+/// Semantics changed by state don't compose the content below again (b/148606417).
+#[test]
+fn changed_semantics_do_not_compose_the_content_below_again() {
+    let after = mutable_state_of(false);
+    let handle = after.handle();
+    let compositions = Rc::new(Cell::new(0));
+    let counted = compositions.clone();
+    // compose-rs runs a semantics block as the modifier is made, in composition: the state read
+    // there composes the root again, where Compose's block reads outside composition. The
+    // content below is skipped as Compose's is: a composable function given the same callback.
+    let content = Callback::new(move || counted.set(counted.get() + 1));
+    let mut ui = compose_test(move || {
+        let content = content.clone();
+        Box!(
+            modifier = Modifier.test_tag("tag").semantics(move |config| {
+                config.set_content_description(if handle.get() { "after" } else { "before" });
+                config.on_click(None, move || {
+                    let _ = handle.get();
+                    true
+                });
+            }),
+            {
+                SimpleTestLayout(content.clone());
+            }
+        );
+    });
+    ui.on_node_with_tag("tag").assert_content_description_equals(&["before"]);
+    assert_eq!(compositions.get(), 1);
+    ui.run_on_idle(|_| after.set(true));
+    ui.on_node_with_tag("tag").assert_content_description_equals(&["after"]);
+    assert_eq!(compositions.get(), 1);
+}
+
+/// Compose's `SimpleTestLayout { content() }`, as its own composable function.
+#[composable]
+fn SimpleTestLayout(content: Callback) {
+    Box!(move |_| content());
+}
