@@ -8,6 +8,7 @@ mod capture;
 mod color_filters;
 mod context_menu_colors;
 mod deferred_shared_elements;
+mod draw_modifier;
 mod graphics_layers;
 mod line_height;
 mod multi_paragraph;
