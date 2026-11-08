@@ -19,14 +19,14 @@ What compose-rs has of two Jetpack Compose libraries, test file by test file and
 
 | Status | Files | Tests | ui-text (files / tests) | ui-test (files / tests) | ui-test-junit4 (files / tests) |
 |---|---|---|---|---|---|
-| `ported` | 154 | 1,725 | 63 / 1,215 | 90 / 504 | 1 / 6 |
+| `ported` | 155 | 1,755 | 63 / 1,215 | 91 / 534 | 1 / 6 |
 | `covered` | 4 | 5 | 1 / 2 | 3 / 3 | 0 / 0 |
 | `port` | 0 | 0 | 0 / 0 | 0 / 0 | 0 / 0 |
-| `partial` | 45 | 1,164 | 13 / 726 | 32 / 438 | 0 / 0 |
+| `partial` | 44 | 1,134 | 13 / 726 | 31 / 408 | 0 / 0 |
 | `feature:…` | 44 | 413 | 30 / 312 | 13 / 98 | 1 / 3 |
 | `n/a` | 81 | 535 | 32 / 384 | 46 / 145 | 3 / 6 |
 
-Those are whole files' tests. By citation (distinct `// Compose:` lines in `crates` and `examples`, `grep -rh '// Compose: compose/ui/ui-text/' crates examples | sed 's/^ *//' | sort -u | wc -l`): 1,589 of ui-text's 2,639 tests, some of them in `partial` files, and 399 of ui-test's 1,188; ui-unit's TextUnitTest, in another ledger's module, adds 57.
+Those are whole files' tests. By citation (distinct `// Compose:` lines in `crates` and `examples`, `grep -rh '// Compose: compose/ui/ui-text/' crates examples | sed 's/^ *//' | sort -u | wc -l`): 1,589 of ui-text's 2,639 tests, some of them in `partial` files, and 428 of ui-test's 1,188; ui-unit's TextUnitTest, in another ledger's module, adds 57.
 
 The `feature:…` files by feature (files, tests): android-text-device-tests 4 (68), fonts 8 (60), device-configuration-override 2 (35), text-actions 1 (27), line-height-style-modes 1 (25), html-annotated-string 1 (23), placeholders 1 (23), styled-accessibility-text 1 (21), line-break-hyphens 2 (17), locale 2 (17), scroll-actions 4 (16), text-indent 1 (16), text-direction 2 (12), link-actions 1 (10), platform-text-style 1 (8), annotations 2 (7), font-variations 2 (7), font-weight-adjustment 1 (7), run-compose-ui-test 2 (6), frame-resumption-order 1 (2), touch-injection 1 (2), unplaced-content 1 (2), font-loading 1 (1), indirect-pointer-injection 1 (1). A file is counted under the feature that blocks it first; several need more than one (the Status column names the others).
 
@@ -232,7 +232,7 @@ The 530 `n/a` tests: 314 test Android text internals or internal helpers (`Spann
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/FailurePipelineTest.kt` | 8 | Failures capture artifacts (screenshot, hierarchy) through custom handlers | partial: `crates/compose-test/tests/suite/run.rs` (`a_failure_tells_the_handlers_with_the_hierarchy`, `disabled_captures_and_panicking_handlers`, `a_failure_takes_a_screenshot_with_the_installed_renderer`) and `crates/compose-skia/tests/artifacts.rs` (the files under `$COMPOSE_TEST_ARTIFACTS`); the activity, coroutine and interop cases are n/a |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/FindAllTest.kt` | 6 | `onAllNodes` with toggles creating and removing matches, `assertAll` | partial: `crates/compose-test/tests/suite/selectors.rs` (`all_matching_nodes_are_found_in_tree_order`); the toggling cases are to port |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/FindInPopupTest.kt` | 1 | Finding a node inside a popup | covered: popups are semantics roots (`crates/compose-ui/src/semantics.rs`); `crates/compose-foundation/tests/suite/window.rs` finds and taps popup content |
-| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/FindersTest.kt` | 30 | `onNodeWithText`/`ContentDescription` with substring, ignoreCase, editable and input text, merged and unmerged | partial: exact text/description/tag finders, `has_text_containing` and `on_node_unmerged` exist; missing `ignore_case`, the per-finder `substring`/`use_unmerged_tree` options, `on_all_nodes_with_*` |
+| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/FindersTest.kt` | 30 | `onNodeWithText`/`ContentDescription` with substring, ignoreCase, editable and input text, merged and unmerged | ported: `crates/compose-test/tests/suite/finders.rs` (all 30, `findByContentDescription_substring_noResult`, not a `@Test` in Compose, included; the `substring`/`ignoreCase` finders through `on_node(has_text_with(…))` and `has_content_description_with`) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/FocusActionsTest.kt` | 1 | `requestFocus` moves focus between nodes | ported: `crates/compose-test/tests/suite/assert_text.rs` (`request_focus_focuses`) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/FragmentEmptyRuleTest.kt` | 1 | An empty rule with a Fragment | n/a: Android Fragment |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/IndirectPointerValidationRoundingTest.kt` | 8 | Indirect pointer positions tolerate float rounding at the device bounds | ported: `crates/compose-test/tests/suite/indirect.rs` (`positions_must_be_on_the_device`) |

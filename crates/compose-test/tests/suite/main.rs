@@ -14,6 +14,7 @@ mod clock;
 mod configuration_override;
 mod dispatcher;
 mod displayed;
+mod finders;
 mod idling_resources;
 mod indirect;
 mod injection_scopes;
