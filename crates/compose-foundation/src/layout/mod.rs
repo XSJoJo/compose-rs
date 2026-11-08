@@ -710,6 +710,33 @@ impl MeasurePolicy for BoxMeasurePolicy {
         let child_constraints =
             if self.propagate_min_constraints { constraints } else { constraints.loosen() };
         let count = measurables.len();
+        if count == 1 {
+            // As Compose's: a lone child without buffers; matching the box's size, it's measured
+            // at the minimums.
+            let measurable = measurables[0];
+            let (min_width, min_height) = (constraints.min_width, constraints.min_height);
+            let (alignment, placeable, width, height) =
+                match scope.parent_data(measurable).alignment {
+                    Some(ParentAlignment::MatchParentSize) => {
+                        let fixed = Constraints::fixed(min_width, min_height);
+                        let placeable = scope.measure(measurable, fixed);
+                        (Alignment::CENTER, placeable, min_width, min_height)
+                    }
+                    alignment => {
+                        let alignment = match alignment {
+                            Some(ParentAlignment::Box(alignment)) => alignment,
+                            _ => self.alignment,
+                        };
+                        let placeable = scope.measure(measurable, child_constraints);
+                        let (width, height) = (placeable.width, placeable.height);
+                        (alignment, placeable, min_width.max(width), min_height.max(height))
+                    }
+                };
+            let space = compose_ui::IntSize::new(width, height);
+            let position = alignment.align(placeable.size(), space, scope.layout_direction());
+            scope.place_at(&placeable, position);
+            return scope.layout(width, height);
+        }
         let mut placeables: Buffer<Option<Placeable>> = Buffer::new(count);
         let placeables = placeables.as_mut();
         let (mut width, mut height) = (constraints.min_width, constraints.min_height);
@@ -717,7 +744,7 @@ impl MeasurePolicy for BoxMeasurePolicy {
         let mut alignments: Buffer<Option<Alignment>> = Buffer::new(count);
         let alignments = alignments.as_mut();
         // As Compose's: the children matching the box's size measured after the others have
-        // sized it (a lone one at the minimums), and centered.
+        // sized it, and centered.
         let mut any_matches_parent = false;
         for (index, &measurable) in measurables.iter().enumerate() {
             let (alignment, matches_parent) = match scope.parent_data(measurable).alignment {
@@ -736,13 +763,9 @@ impl MeasurePolicy for BoxMeasurePolicy {
             placeables[index] = Some(placeable);
         }
         if any_matches_parent {
-            let matching = if count == 1 {
-                Constraints::fixed(width, height)
-            } else {
-                // The infinity check is for intrinsics measured by measuring.
-                let min = |size: i32| if size == Constraints::INFINITY { 0 } else { size };
-                Constraints::new(min(width), width, min(height), height)
-            };
+            // The infinity check is for intrinsics measured by measuring.
+            let min = |size: i32| if size == Constraints::INFINITY { 0 } else { size };
+            let matching = Constraints::new(min(width), width, min(height), height);
             for (index, &measurable) in measurables.iter().enumerate() {
                 if placeables[index].is_none() {
                     placeables[index] = Some(scope.measure(measurable, matching));
