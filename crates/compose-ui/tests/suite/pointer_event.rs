@@ -1065,6 +1065,20 @@ fn moves_consumed_on_two_independent_paths_stay_on_their_own() {
     );
 }
 
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/input/pointer/HitPathTrackerTest.kt, dispatchChanges_dispatchUnchangedPosition_flagEnabled
+/// A held finger's move to where it is is still told (Compose's default
+/// `isTriggerMoveEventsWhenLocationHasNotChangedEnabled`; compose-rs has no other way).
+#[test]
+fn a_move_to_the_same_place_is_told() {
+    let (mut host, record) = recorded(|record| {
+        Leaf(Modifier.size(50.dp()).then_custom(Recorder("pif", record.clone())));
+    });
+    host.send_pointer(finger_down(13, 0.0, 0.0).at_time(1_000_000));
+    record.borrow_mut().clear();
+    host.send_pointer(finger(13, 0.0, 0.0).at_time(2_000_000));
+    assert_eq!(kinds(&record), ["pif Initial Move", "pif Main Move", "pif Final Move"]);
+}
+
 /// Each node's pass and the event's kind, as heard.
 fn kinds(record: &Record) -> Vec<String> {
     record
