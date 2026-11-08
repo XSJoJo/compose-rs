@@ -19,9 +19,9 @@ What compose-rs has of two Jetpack Compose libraries, test file by test file and
 
 | Status | Files | Tests | ui-text (files / tests) | ui-test (files / tests) | ui-test-junit4 (files / tests) |
 |---|---|---|---|---|---|
-| `ported` | 139 | 1,677 | 60 / 1,195 | 79 / 482 | 0 / 0 |
+| `ported` | 141 | 1,688 | 62 / 1,206 | 79 / 482 | 0 / 0 |
 | `covered` | 4 | 5 | 1 / 2 | 3 / 3 | 0 / 0 |
-| `port` | 19 | 69 | 3 / 20 | 15 / 43 | 1 / 6 |
+| `port` | 17 | 58 | 1 / 9 | 15 / 43 | 1 / 6 |
 | `partial` | 43 | 1,147 | 13 / 726 | 30 / 421 | 0 / 0 |
 | `feature:…` | 43 | 411 | 30 / 312 | 12 / 96 | 1 / 3 |
 | `n/a` | 80 | 533 | 32 / 384 | 45 / 143 | 3 / 6 |
@@ -144,8 +144,8 @@ The 530 `n/a` tests: 314 test Android text internals or internal helpers (`Spann
 | `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/font/PlatformTypefacesTest.kt` | 12 | Named fallback families by weight (`sans-serif-light`, `-medium`, `-black`) | feature:fonts |
 | `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/input/BackspaceCommandTest.kt` | 8 | `BackspaceCommand`: deletes a char/selection/composition, surrogate pairs, ZWJ emoji | ported: `crates/compose-ui/src/text_editing_tests.rs` (all 8; the emoji's indices in bytes, D1100) |
 | `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/input/MoveCursorCommandTest.kt` | 12 | `MoveCursorCommand` left/right by graphemes, surrogates, emoji | ported: `crates/compose-ui/src/text_editing_tests.rs` (all 12, in bytes) |
-| `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/intl/LocaleListTest.kt` | 5 | `LocaleList` from language tags, equality, current | port: `LocaleList` (`from_language_tags`, `get`, `len`, `contains`, `empty`) is in (`crates/compose-ui/src/intl.rs`); `forLanguageTag_single`, `_multiple`, `equals` and `equals_order_matters` are portable, `getCurrent_afterJavaLocaleSetDefault` waits on the platform's current locales (audit: was `feature:locale`) |
-| `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/intl/LocaleTest.kt` | 6 | `Locale` from tags with script/region, equality, platform locale | port: `Locale` (language tag, `language`, `script`, `region`, `to_language_tag`) is in (`crates/compose-ui/src/intl.rs`); `forLanguageTag`, its script form and the `equals_*` cases are portable, `platformLocale_sharesTheAttributes` waits on the platform's locale (audit: was `feature:locale`) |
+| `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/intl/LocaleListTest.kt` | 5 | `LocaleList` from language tags, equality, current | ported: `crates/compose-ui/tests/suite/locale.rs` (4 of 5); `getCurrent_afterJavaLocaleSetDefault` waits on the platform's current locales (n/a until compose-rs has them) |
+| `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/intl/LocaleTest.kt` | 6 | `Locale` from tags with script/region, equality, platform locale | ported: `crates/compose-ui/tests/suite/locale.rs` (5 of 6); `platformLocale_sharesTheAttributes` waits on the platform's locale (n/a until compose-rs has one) |
 | `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/platform/AndroidAccessibilitySpannableStringTest.kt` | 21 | The accessibility text keeps locale, color, size, weight, style, family, decoration, URL and TTS spans | feature:styled-accessibility-text |
 | `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/platform/AndroidParagraphGetRangeForRectTest.kt` | 14 | `getRangeForRect` with character/word granularity and each inclusion strategy, multi-line, bidi, compound characters | ported: `crates/compose-ui/tests/suite/range_for_rect.rs` (all 14, D2048; one also on SkParagraph in `crates/compose-skia/tests/suite/sample_font.rs`) |
 | `compose/ui/ui-text/src/androidDeviceTest/kotlin/androidx/compose/ui/text/platform/AndroidParagraphIntrinsicsTest.kt` | 19 | EmojiCompat staleness, internal new-line heuristic, single-line line-height flag | n/a: EmojiCompat integration and internal heuristics |

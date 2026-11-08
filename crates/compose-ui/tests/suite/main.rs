@@ -31,6 +31,7 @@ mod layout_aware_nodes;
 mod layout_coordinates;
 mod layout_get_horizontal;
 mod layout_node_layout_direction;
+mod locale;
 mod lookahead;
 mod modifier_locals;
 mod modifier_nodes;
