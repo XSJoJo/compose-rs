@@ -841,3 +841,215 @@ fn hiding_the_shape_and_the_background_keep_the_parents() {
     assert_eq!(background.merge(None, &red), None);
     assert_eq!(background.merge(Some(&blue), &red), Some(blue));
 }
+
+// ---- SemanticsTests: merging and clearing through layouts -------------------------------------
+
+/// Compose's `TestProperty`: merged, the parent's value, a comma, the child's.
+fn concatenate(parent: Option<&SharedString>, child: &SharedString) -> Option<SharedString> {
+    Some(match parent {
+        None => child.clone(),
+        Some(parent) => SharedString::from(format!("{parent}, {child}")),
+    })
+}
+
+static TEST_PROPERTY: SemanticsPropertyKey<SharedString> =
+    SemanticsPropertyKey::with_merge_policy("TestProperty", concatenate);
+
+fn test_property(value: &'static str) -> Modifier {
+    Modifier.semantics(move |config| config.set(&TEST_PROPERTY, SharedString::from(value)))
+}
+
+fn merging() -> Modifier {
+    Modifier.semantics_with(true, |_| {})
+}
+
+fn test_property_equals(value: &str) -> Matcher {
+    expect_value(&TEST_PROPERTY, SharedString::from(value.to_string()))
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, depthFirstPropertyConcat
+/// A merging node takes its descendants' values depth first (Compose's `SimpleTestLayout`, which
+/// stacks its children at the origin, is a `Box` here).
+#[test]
+fn a_merged_value_concatenates_depth_first() {
+    let mut ui = compose_test(|| {
+        Box!(
+            modifier = Modifier
+                .test_tag("tag")
+                .semantics_with(true, |config| config.set(&TEST_PROPERTY, "root".into())),
+            {
+                Box!(modifier = test_property("child1"), {
+                    Box!(modifier = test_property("grandchild1"));
+                    Box!(modifier = test_property("grandchild2"));
+                });
+                // Compose's `child2` is "grandchild2" too.
+                Box!(modifier = test_property("grandchild2"));
+            }
+        );
+    });
+    ui.on_node_with_tag("tag")
+        .assert(test_property_equals("root, child1, grandchild1, grandchild2, grandchild2"));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, nestedMergedSubtree, nestedMergedSubtree_includeAllMergeableChildren
+/// A merging node inside a merging one keeps its subtree's values; the outer one takes the rest.
+#[test]
+fn a_nested_merging_node_keeps_its_own_subtree() {
+    for with_third in [false, true] {
+        let mut ui = compose_test(move || {
+            Box!(modifier = merging().test_tag("tag1"), {
+                Box!(modifier = test_property("foo"));
+                Box!(modifier = merging().test_tag("tag2"), {
+                    Box!(modifier = test_property("bar"));
+                });
+                if with_third {
+                    Box!(modifier = test_property("hi"));
+                }
+            });
+        });
+        let outer = if with_third { "foo, hi" } else { "foo" };
+        ui.on_node_with_tag("tag1").assert(test_property_equals(outer));
+        ui.on_node_with_tag("tag2").assert(test_property_equals("bar"));
+    }
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, clearAndSetSemantics
+/// A clearing node hides its subtree from the merging node above, which takes only what the
+/// clearing node sets; a merging node that clears its own subtree keeps what it sets.
+#[test]
+fn a_clearing_node_gives_a_merging_parent_only_its_own() {
+    let mut ui = compose_test(|| {
+        Box!(modifier = merging().test_tag("tag1"), {
+            Box!(modifier = test_property("foo"));
+            Box!(modifier = Modifier.clear_and_set_semantics(|_| {}), {
+                Box!(modifier = test_property("hidden"));
+            });
+            Box!(
+                modifier = Modifier
+                    .clear_and_set_semantics(|config| config.set(&TEST_PROPERTY, "baz".into())),
+                {
+                    Box!(modifier = test_property("hidden"));
+                }
+            );
+            Box!(
+                modifier = merging()
+                    .test_tag("tag2")
+                    .clear_and_set_semantics(|config| config.set_text("foo")),
+                {
+                    Box!(modifier = text("hidden"));
+                }
+            );
+        });
+    });
+    ui.on_node_with_tag("tag1").assert(test_property_equals("foo, baz"));
+    ui.on_node_with_tag("tag2").assert_text_equals(&["foo"]);
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, clearAndSetSemantics_unmergedTree
+/// A clearing node over a merging one has only its own value, the merging one's left out.
+#[test]
+fn a_clearing_node_over_a_merging_one_has_only_its_own() {
+    let mut ui = compose_test(|| {
+        Box!(
+            modifier = Modifier
+                .test_tag("tag1")
+                .clear_and_set_semantics(|config| config.set(&TEST_PROPERTY, "bar".into())),
+            {
+                Box!(
+                    modifier = Modifier
+                        .semantics_with(true, |config| config.set(&TEST_PROPERTY, "foo".into())),
+                    {
+                        Box!(modifier = test_property("hidden"));
+                    }
+                );
+            }
+        );
+    });
+    ui.on_node_with_tag("tag1").assert(test_property_equals("bar"));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, clearAndSetSemanticsSameLayoutNode
+/// On one node, a clearing modifier clears the modifiers after it, not those before it.
+#[test]
+fn a_clearing_modifier_clears_the_inner_ones_of_its_node() {
+    let mut ui = compose_test(|| {
+        Box!(modifier = merging().test_tag("tag1"), {
+            Box!(
+                modifier = Modifier
+                    .clear_and_set_semantics(|config| config.set(&TEST_PROPERTY, "foo".into()))
+                    .then(text("hidden"))
+            );
+            Box!(
+                modifier =
+                    test_property("baz").clear_and_set_semantics(|config| config.set_text("baz"))
+            );
+        });
+        Box!(
+            modifier = Modifier
+                .test_tag("tag2")
+                .then(test_property("foo"))
+                .clear_and_set_semantics(|_| {})
+                .then(text("foo"))
+        );
+    });
+    ui.on_node_with_tag("tag1").assert(test_property_equals("foo, baz"));
+    ui.on_node_with_tag("tag1").assert_text_equals(&["baz"]);
+    ui.on_node_with_tag("tag2").assert(test_property_equals("foo"));
+    ui.on_node_with_tag("tag2").assert(key_not_defined(&SemanticsProperties::TEXT));
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, clearAndSetSemantics_children
+/// A clearing node's children are in the unmerged tree but not among its accessibility
+/// children; merged, it has none.
+#[test]
+fn a_clearing_nodes_children_are_only_in_the_unmerged_tree() {
+    let mut ui = compose_test(|| {
+        Column!(
+            modifier = Modifier
+                .test_tag("tag")
+                .semantics_with(true, |_| {})
+                .clear_and_set_semantics(|_| {}),
+            {
+                let size = || Modifier.size(100.dp());
+                Box!(modifier = size().semantics(|config| config.set_content_description("box 1")));
+                Box!(
+                    modifier = size()
+                        .clear_and_set_semantics(|config| config.set_content_description("box 2")),
+                    {}
+                );
+                Box!(
+                    modifier = size()
+                        .semantics_with(true, |config| config.set_content_description("box 3"))
+                );
+            }
+        );
+    });
+    let unmerged = ui.on_node_with_tag_unmerged("tag").fetch_semantics_node();
+    let mut children = Vec::new();
+    unmerged.collect_accessibility_children(&mut children);
+    assert!(children.is_empty());
+    assert_eq!(unmerged.children().len(), 3);
+
+    let merged = ui.on_node_with_tag("tag").fetch_semantics_node();
+    let mut merged_children = Vec::new();
+    merged.collect_accessibility_children(&mut merged_children);
+    assert!(merged_children.is_empty());
+    assert!(merged.children().is_empty());
+}
+
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/semantics/SemanticsTests.kt, higherUpSemanticsOverridePropertiesOfLowerSemanticsOnSameNode
+#[test]
+fn an_outer_modifier_overrides_an_inner_ones_description() {
+    let mut ui = compose_test(|| {
+        Box!(
+            modifier = Modifier
+                .test_tag("tag")
+                .semantics(|config| config.set_content_description("high"))
+                .semantics(|config| config.set_content_description("low"))
+        );
+    });
+    ui.on_node_with_tag("tag").assert(expect_value(
+        &SemanticsProperties::CONTENT_DESCRIPTION,
+        StringList::from_iter([SharedString::from("high")]),
+    ));
+}
