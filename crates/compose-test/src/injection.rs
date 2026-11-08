@@ -58,6 +58,12 @@ pub enum MouseButton {
 }
 
 impl MouseButton {
+    /// Its id, as `buttonId`: its bit among an event's buttons (Android's `MotionEvent`
+    /// `BUTTON_*`), which the injection's errors name (D2080).
+    pub fn button_id(self) -> i32 {
+        self.bit().0
+    }
+
     /// Its bit among an event's buttons.
     fn bit(self) -> PointerButtons {
         match self {
@@ -1208,13 +1214,13 @@ impl MouseInjectionScope<'_> {
     /// Presses `button` where the cursor is, as `press(button)`.
     #[track_caller]
     pub fn press(&mut self, button: MouseButton) {
-        self.0.cursor_press(MOUSE, button.bit(), &format!("{button:?}"));
+        self.0.cursor_press(MOUSE, button.bit(), &button.button_id().to_string());
     }
 
     /// Releases `button`, as `release(button)`: the cursor hovers again.
     #[track_caller]
     pub fn release(&mut self, button: MouseButton) {
-        self.0.cursor_release(MOUSE, button.bit(), &format!("{button:?}"));
+        self.0.cursor_release(MOUSE, button.bit(), &button.button_id().to_string());
     }
 
     /// Cancels the press, an event period on, as `cancel()`.

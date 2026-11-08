@@ -381,7 +381,7 @@ fn enqueue_mouse_down_already_down() {
         scope.press(MouseButton::Primary);
         scope.press(MouseButton::Primary);
     });
-    assert_says(&message, "Cannot send mouse button down event, button Primary is already pressed");
+    assert_says(&message, "Cannot send mouse button down event, button 1 is already pressed");
 }
 
 // Compose: compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/inputdispatcher/MouseEventsTest.kt, enqueueMouseDown_outOfBounds
@@ -401,7 +401,7 @@ fn enqueue_mouse_down_out_of_bounds() {
 #[test]
 fn enqueue_mouse_up_without_down() {
     let message = mouse_error(|scope| scope.release(MouseButton::Primary));
-    assert_says(&message, "Cannot send mouse button up event, button Primary is not pressed");
+    assert_says(&message, "Cannot send mouse button up event, button 1 is not pressed");
 }
 
 // Compose: compose/ui/ui-test/src/androidHostTest/kotlin/androidx/compose/ui/test/inputdispatcher/MouseEventsTest.kt, enqueueMouseEnter_alreadyEntered

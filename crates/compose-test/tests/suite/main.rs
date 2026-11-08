@@ -24,6 +24,7 @@ mod key_events;
 mod key_injection;
 mod layout_coordinates_helper;
 mod mouse_events;
+mod mouse_injection;
 mod restoration;
 mod review_d;
 mod robolectric;
