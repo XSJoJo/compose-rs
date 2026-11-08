@@ -98,6 +98,7 @@ mod magnifier;
 mod modifier_memoization;
 mod modifiers_api;
 mod motion_frame_of_reference;
+mod mouse_event;
 mod mouse_wheel;
 mod movable_content_ui;
 mod multi_widget_selection_delegate;

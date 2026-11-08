@@ -392,6 +392,40 @@ fn saved_state_bytes_round_trip_and_reject_garbage() {
     assert_eq!(<Option<u8> as Saveable>::restore(&Some(3u8).save()), Some(Some(3)));
 }
 
+/// A host whose content saves nothing saves an empty state.
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/platform/ComposeViewSavedStateSizeTest.kt, composeViewIsProducingEmptySavedState
+#[test]
+fn compose_view_is_producing_empty_saved_state() {
+    let mut ui = compose_test(|| {
+        Box!({
+            BasicText!("hello world");
+        });
+    });
+    ui.wait_for_idle();
+    assert!(ui.host().save_state().is_empty());
+}
+
+/// Children with graphics layers add nothing to the saved state.
+// Compose: compose/ui/ui/src/androidDeviceTest/kotlin/androidx/compose/ui/platform/ComposeViewSavedStateSizeTest.kt, childrenWithGraphicsLayerAreNotIncreasingTheSavedStateSize
+#[test]
+fn children_with_graphics_layer_are_not_increasing_the_saved_state_size() {
+    let child_count = mutable_state_of(0);
+    let count = child_count.handle();
+    let mut ui = compose_test(move || {
+        Box!({
+            for _ in 0..count.get() {
+                Box!(modifier = Modifier.graphics_layer(|_| {}));
+            }
+        });
+    });
+    ui.wait_for_idle();
+    let initial = ui.host().save_state().to_bytes();
+    child_count.set(10);
+    ui.wait_for_idle();
+    let after = ui.host().save_state().to_bytes();
+    assert_eq!(after.len(), initial.len(), "new {after:?}, initial {initial:?}");
+}
+
 // ---- Configuration -------------------------------------------------------------------------
 
 #[test]
