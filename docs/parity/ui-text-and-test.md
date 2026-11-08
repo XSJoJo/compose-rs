@@ -19,9 +19,9 @@ What compose-rs has of two Jetpack Compose libraries, test file by test file and
 
 | Status | Files | Tests | ui-text (files / tests) | ui-test (files / tests) | ui-test-junit4 (files / tests) |
 |---|---|---|---|---|---|
-| `ported` | 150 | 1,702 | 62 / 1,206 | 88 / 496 | 0 / 0 |
+| `ported` | 153 | 1,716 | 62 / 1,206 | 90 / 504 | 1 / 6 |
 | `covered` | 4 | 5 | 1 / 2 | 3 / 3 | 0 / 0 |
-| `port` | 5 | 31 | 1 / 9 | 3 / 16 | 1 / 6 |
+| `port` | 2 | 17 | 1 / 9 | 1 / 8 | 0 / 0 |
 | `partial` | 44 | 1,156 | 13 / 726 | 31 / 430 | 0 / 0 |
 | `feature:…` | 44 | 413 | 30 / 312 | 13 / 98 | 1 / 3 |
 | `n/a` | 81 | 535 | 32 / 384 | 46 / 145 | 3 / 6 |
@@ -250,7 +250,7 @@ The 530 `n/a` tests: 314 test Android text internals or internal helpers (`Spann
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/TestMonotonicFrameClockTest.kt` | 16 | `TestMonotonicFrameClock`: delays skipped, frames run, resumes inside a frame deferred, exceptions | partial: compose-rs's manual executor clock (`set_manual_clock`, `dispatch_frame`; `crates/compose-runtime/src/executor.rs`, 6 tests) covers delays and frames; the kotlinx dispatcher cases are n/a |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/TextActionsTest.kt` | 27 | `performTextInput/Replacement/Clearance/InputSelection/ImeAction`: unsupported, disabled, read-only, repeated input, transformed text | feature:text-actions |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/UnconfinedTestDispatcherPhaseOrderingTest.kt` | 2 | Same as StandardTestDispatcherPhaseOrderingTest with an unconfined dispatcher | n/a: compose-rs has one effect dispatcher, the UI thread's executor (no unconfined effect context); the standard one's ordering is `StandardTestDispatcherPhaseOrderingTest`'s |
-| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/UnhandledExceptionTest.kt` | 6 | Exceptions in compose/recompose/interaction/measure/draw/teardown fail the test | port: as JUnitUnhandledExceptionTest |
+| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/UnhandledExceptionTest.kt` | 6 | Exceptions in compose/recompose/interaction/measure/draw/teardown fail the test | ported: `crates/compose-test/tests/suite/unhandled_exceptions.rs` (5 of 6, under `run_compose_ui_test`; `throwDuringTeardown` is ignored in Compose, b/397662811) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/actions/CustomAccessibilityActionsTest.kt` | 12 | `performCustomAccessibilityActionWithLabel(Matching)`: no match, several, merged actions | partial: `crates/compose-foundation/tests/suite/semantics_properties.rs` (`custom_actions_are_performed_by_label`: no action, several, exactly one, a false result, the predicate); the no-node and merged-tree cases not ported yet |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/actions/LinkClickTest.kt` | 10 | `performFirstLinkClick` in merged/unmerged trees, with inline content | feature:link-actions |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/actions/ScrollToIndexTest.kt` | 6 | `performScrollToIndex` inside/outside the viewport, bounds, missing semantics | feature:scroll-actions |
@@ -353,7 +353,7 @@ The 530 `n/a` tests: 314 test Android text internals or internal helpers (`Spann
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/MultipleComposeRootsTest.kt` | 1 | Two ComposeViews sharing state in one activity | n/a: Android views and Espresso |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/SynchronizationMethodsTest.kt` | 9 | `runOnUiThread`/`runOnIdle` return values, nulls, rethrown exceptions | partial: `run_on_idle`/`run_on_ui_thread` (`crates/compose-test/tests/suite/clock.rs` `running_on_idle_waits_then_returns_the_result`); the thread and exception-rethrow cases are n/a |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/TimeOutTest.kt` | 6 | Infinite recomposition and busy idling resources time out; test isolation after a timeout | partial: `wait_for_idle` panics after a minute of test time or 100,000 frames, or a minute of real time with an idling resource busy (`crates/compose-test/tests/suite/run.rs`, `waiting_for_idle_waits_for_idling_resources`); the isolation after a timeout is n/a (each test its thread) |
-| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/UncaughtExceptionsInCoroutinesTest.kt` | 2 | An exception in a `LaunchedEffect` fails the test | port: a panicking task unwinds through `wait_for_idle` |
+| `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/UncaughtExceptionsInCoroutinesTest.kt` | 2 | An exception in a `LaunchedEffect` fails the test | ported: `crates/compose-test/tests/suite/unhandled_exceptions.rs` (both) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/ViewVisibilityTest.kt` | 2 | A hidden host view doesn't time out | n/a: Android view visibility |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/WaitUntilNodeCountTest.kt` | 9 | `waitUntil…` node helpers and no roots | ported: `crates/compose-test/tests/suite/wait_until_node_count.rs` (all 9, under `run_compose_ui_test`) |
 | `compose/ui/ui-test/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/WaitingForOnCommitCallbackTest.kt` | 4 | `setContent` and `waitForIdle` wait for cascading side effects | ported: `crates/compose-test/tests/suite/waiting.rs` (3 of 4; the cascade with `await_idle` once, compose-rs having one effect dispatcher: `cascadingOnCommits_suspendedWait_unconfinedTestDispatcher` is n/a, no unconfined effect context) |
@@ -418,7 +418,7 @@ The 530 `n/a` tests: 314 test Android text internals or internal helpers (`Spann
 |---|---|---|---|
 | `compose/ui/ui-test-junit4/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/CustomEffectContextRuleTest.kt` | 3 | An effect context given to `createComposeRule`/`createAndroidComposeRule`/`createEmptyComposeRule` reaches the composition | feature:run-compose-ui-test |
 | `compose/ui/ui-test-junit4/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/CustomRetryRuleTest.kt` | 1 | A retry rule around the compose rule | n/a: JUnit rule chaining |
-| `compose/ui/ui-test-junit4/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/JUnitUnhandledExceptionTest.kt` | 6 | An exception thrown during composition, recomposition, an interaction, measure, draw or teardown fails the test with that exception | port: compose-rs panics unwind into the test; partly exercised by `crates/compose-ui/tests/suite/review_d_panic_*.rs` |
+| `compose/ui/ui-test-junit4/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/JUnitUnhandledExceptionTest.kt` | 6 | An exception thrown during composition, recomposition, an interaction, measure, draw or teardown fails the test with that exception | ported: `crates/compose-test/tests/suite/unhandled_exceptions.rs` (5 of 6, under the rule; `throwDuringTeardown` is ignored in Compose, b/397662811; Compose's two activities are compose-rs's one headless host) |
 | `compose/ui/ui-test-junit4/src/androidDeviceTest/kotlin/androidx/compose/ui/test/junit4/StateRestorationTesterTest.kt` | 3 | `emulateSavedInstanceStateRestore` against Android's Bundle size limit and Parcelables | n/a: Android `Bundle`/`Parcelable` limits (the tester itself is the state-restoration-tester feature) |
 
 ### `compose/ui/ui-test-junit4/src/androidHostTest`

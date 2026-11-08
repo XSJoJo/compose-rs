@@ -32,5 +32,6 @@ mod selectors;
 mod swipes;
 mod touch_events;
 mod trackpad;
+mod unhandled_exceptions;
 mod wait_until_node_count;
 mod waiting;
