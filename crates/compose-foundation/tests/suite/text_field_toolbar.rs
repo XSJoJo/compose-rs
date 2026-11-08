@@ -724,3 +724,23 @@ fn a_long_press_s_toolbar_goes_around_the_word() {
     // There from the start (D2033).
     assert_eq!(it.toolbar.first_content_rect(), Some(rect));
 }
+
+/// A long press on a field whose decoration doesn't place the inner field (a 50 dp red box
+/// instead): nothing crashes. From Compose's `TextFieldToolbarTest`; its `btf1` twin is n/a (the
+/// deprecated value-based field).
+// Compose: compose/foundation/foundation/src/androidDeviceTest/kotlin/androidx/compose/foundation/textfield/TextFieldToolbarTest.kt, btf2_decorationBoxNotCallInnerTextField_longPress_doNotCrash
+#[test]
+fn btf2_decorationBoxNotCallInnerTextField_longPress_doNotCrash() {
+    let mut ui = compose_test(|| {
+        let state = compose_runtime::remember(|| TextFieldState::new(""));
+        BasicTextFieldOfState!(
+            state,
+            modifier = Modifier.test_tag("TestBasicTextField"),
+            decorator = |_inner: compose_runtime::Callback| {
+                Box!(Modifier.size((50.dp(), 50.dp())).background(compose_ui::Color::RED));
+            },
+        );
+    });
+    ui.on_node_with_tag("TestBasicTextField").perform_touch_input(|touch| touch.long_click());
+    ui.wait_for_idle();
+}
