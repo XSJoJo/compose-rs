@@ -1,6 +1,7 @@
 //! The compose-skia integration tests in one binary, each file a module, so
 //! they build and link once (docs/08-fast-builds.md).
 
+mod advanced_border;
 mod advanced_border_renderer;
 mod alpha;
 mod blur;
