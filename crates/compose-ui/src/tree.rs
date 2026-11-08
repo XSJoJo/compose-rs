@@ -395,6 +395,8 @@ pub struct UiTree {
     pub(crate) text_toolbar: Option<Rc<dyn crate::text_toolbar::TextToolbar>>,
     /// The platform's edge effects, if it has any: overscroll's default on Android.
     pub(crate) edge_effects: Option<Rc<crate::edge_effect::PlatformEdgeEffects>>,
+    /// The platform's magnifiers, if it has any (Android's).
+    pub(crate) magnifier_factory: Option<Rc<dyn crate::magnifier::PlatformMagnifierFactory>>,
     pub(crate) density: Density,
     /// The host's view configuration, if it set one (else Android's at the density, D907).
     pub(crate) view_configuration: Option<crate::view_configuration::ViewConfiguration>,
@@ -682,6 +684,7 @@ impl UiTree {
             text_action_modes: None,
             text_toolbar: None,
             edge_effects: None,
+            magnifier_factory: None,
             density,
             view_configuration: None,
             display_list: DisplayList::default(),

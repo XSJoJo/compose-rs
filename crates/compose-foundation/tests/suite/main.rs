@@ -92,6 +92,7 @@ mod lazy_support;
 mod legacy;
 mod locals;
 mod lookahead_scenes;
+mod magnifier;
 mod modifier_memoization;
 mod modifiers_api;
 mod motion_frame_of_reference;

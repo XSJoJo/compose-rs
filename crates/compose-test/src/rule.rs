@@ -78,6 +78,7 @@ pub struct ComposeTestRule {
     idling_resources: Vec<Rc<dyn IdlingResource>>,
     /// The tree's floating text toolbars, as a device test's platform (D2031).
     text_toolbar: Rc<crate::text_toolbar::TestTextToolbar>,
+    magnifiers: Rc<crate::magnifier::TestMagnifierFactory>,
     /// The tree's platform autofill, installed when a test first asks for it (D1682).
     autofill: std::cell::RefCell<Option<Rc<crate::autofill::TestAutofillManager>>>,
 }
@@ -128,6 +129,13 @@ impl ComposeTestRule {
         // The platform has autofill, as where Compose's device tests run: a field's toolbar
         // offers it (D1682). Told nothing until a test installs a manager (`autofill`).
         host.with_tree(|tree| tree.set_autofill_available(true));
+        // The platform has a magnifier, as where Compose's device tests run (API 28+): text
+        // selection shows one while a handle is dragged (D2072).
+        let magnifiers = Rc::new(crate::magnifier::TestMagnifierFactory::new());
+        {
+            let factory: Rc<dyn compose_ui::PlatformMagnifierFactory> = magnifiers.clone();
+            host.with_tree(|tree| tree.set_platform_magnifier_factory(Some(factory)));
+        }
         let mut rule = ComposeTestRule {
             host,
             auto_advance,
@@ -142,6 +150,7 @@ impl ComposeTestRule {
             test_deadline: None,
             idling_resources: Vec::new(),
             text_toolbar,
+            magnifiers,
             autofill: Default::default(),
         };
         if let Some(optimizations) = thread_optimizations() {
@@ -190,6 +199,11 @@ impl ComposeTestRule {
     /// The floating text toolbar the tree shows its text toolbars in (D2031).
     pub fn text_toolbar(&self) -> Rc<crate::text_toolbar::TestTextToolbar> {
         self.text_toolbar.clone()
+    }
+
+    /// The magnifiers the tree makes (D2072): a recording factory, the tree's from the start.
+    pub fn magnifiers(&self) -> Rc<crate::magnifier::TestMagnifierFactory> {
+        self.magnifiers.clone()
     }
 
     /// What the tree tells the platform's autofill: a recording manager, installed at the first
