@@ -33,3 +33,4 @@ mod swipes;
 mod touch_events;
 mod trackpad;
 mod wait_until_node_count;
+mod waiting;
