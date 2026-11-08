@@ -61,10 +61,12 @@ Never merge the `ime-logging` branch (it records everything typed) or `parked/na
 
 ## In flight
 
-As of 2026-11-07, `origin/main` is at 6e12fd99 (13,329 tests; the same with `COMPOSE_TEST_AUTOFILL=1`; 11,912 with the runtime feature off). The branches below marked merged are on main. Two were merged without the usual review because the weekly quota ran short; review them first.
+As of 2026-11-08, `origin/main` is at e359f521 (13,363 tests). The branches below marked merged are on main. Two were merged without the usual review because the weekly quota ran short; review them first.
 
 | Branch | What | State |
 |---|---|---|
+| `deferred-shared-elements` | `DeferredSharedElementTest` (15) and the deferred transition's hand-off of manual transforms (D1340 and up) | In progress |
+| `magnifier` | Compose foundation's magnifier: the modifier and node, selection and field integration, Android's platform magnifier (D2072 and up) | In progress |
 | `bidi-selection` | All 39 of `TextSelectionGesturesBidiTest`, passing; one fix: a text's direction at an offset is its paragraph's on an empty line, as Compose's `getTextDirectionForOffset` (D2062). Reviewed after: the end of a cut text now says what the cut says (D2071); its text-of-paragraphs path tested (`review_bidi_selection.rs`) | Merged, reviewed |
 | `a11y-cut-text` | Android accessibility line and page traversal stop at a cut text's last shown line instead of panicking (D2070); a plain text cut by its maximum lines changes the same way, a recorded divergence from Compose (whose iterators return a reversed or overlong range there). Reviewed after: its right-to-left guards and the shown end after a line feed now tested (`review_a11y_cut_text.rs`) | Merged, reviewed |
 | `multi-paragraph-2` | The paragraph API's second part (D2049–D2052). Merged first, reviewed after; the review's findings are fixed by D2053, D2054 (a text's own layout result paints), D2060 (blend modes on each glyph's paint) and D2061 (locale directions from ICU 68.2) | Merged, reviewed |
